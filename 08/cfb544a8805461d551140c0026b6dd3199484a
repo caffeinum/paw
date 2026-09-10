@@ -1,0 +1,18 @@
+CLAUDE.md
+  h_e9fef506e0f829 1655-1657
+scripts/check-web.ts
+  h_e9fef506e0f829 1401,1414-1416,1423-1424,1432-1434,1452-1456
+web/app/village.js
+  h_e9fef506e0f829 102,171,251-252,258,264,266,280-286
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "08cfb544a8805461d551140c0026b6dd3199484a",
+  "prompts": {},
+  "humans": {
+    "h_e9fef506e0f829": {
+      "author": "Aleksey Bykhun <theisease@gmail.com>"
+    }
+  }
+}
