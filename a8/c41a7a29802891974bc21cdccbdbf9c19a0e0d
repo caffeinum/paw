@@ -1,0 +1,14 @@
+scripts/githooks/pre-push
+  h_e9fef506e0f829 3-5,13-16
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "a8c41a7a29802891974bc21cdccbdbf9c19a0e0d",
+  "prompts": {},
+  "humans": {
+    "h_e9fef506e0f829": {
+      "author": "Aleksey Bykhun <theisease@gmail.com>"
+    }
+  }
+}
