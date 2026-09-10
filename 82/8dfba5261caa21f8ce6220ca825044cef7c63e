@@ -1,0 +1,14 @@
+README.md
+  h_e9fef506e0f829 5,9,14,21,24,27,29,31-39,41,43,47,49
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "828dfba5261caa21f8ce6220ca825044cef7c63e",
+  "prompts": {},
+  "humans": {
+    "h_e9fef506e0f829": {
+      "author": "Aleksey Bykhun <theisease@gmail.com>"
+    }
+  }
+}
