@@ -1,0 +1,357 @@
+<meta charset="utf-8">
+<title>paw — inbox</title>
+
+<style>
+  /* Slack's own palette. Aubergine sidebar, white content, Lato-ish system stack.
+     Dark theme mirrors Slack's, so the viewer's toggle still works. */
+  :root {
+    --sidebar:      #3F0E40;
+    --sidebar-hi:   #350D36;
+    --sidebar-txt:  #BCABBC;
+    --sidebar-str:  #FFFFFF;
+    --selected:     #1164A3;
+    --content:      #FFFFFF;
+    --content-alt:  #F8F8F8;
+    --line:         #DDDDDD;
+    --txt:          #1D1C1D;
+    --txt-dim:      #616061;
+    --link:         #1264A3;
+    --green:        #2BAC76;
+    --amber:        #ECB22E;
+    --red:          #E01E5A;
+    --code-bg:      #F6F6F6;
+    --code-txt:     #E01E5A;
+    --font: "Slack-Lato", "Lato", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    --mono: Monaco, Menlo, Consolas, "Courier New", monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --sidebar:#19171D; --sidebar-hi:#27242C; --sidebar-txt:#ABABAD; --sidebar-str:#FFFFFF;
+      --selected:#1164A3; --content:#1A1D21; --content-alt:#222529; --line:#35373B;
+      --txt:#D1D2D3; --txt-dim:#ABABAD; --link:#1D9BD1; --code-bg:#232529; --code-txt:#E01E5A;
+    }
+  }
+  :root[data-theme="dark"] {
+    --sidebar:#19171D; --sidebar-hi:#27242C; --sidebar-txt:#ABABAD; --sidebar-str:#FFFFFF;
+    --selected:#1164A3; --content:#1A1D21; --content-alt:#222529; --line:#35373B;
+    --txt:#D1D2D3; --txt-dim:#ABABAD; --link:#1D9BD1; --code-bg:#232529; --code-txt:#E01E5A;
+  }
+  :root[data-theme="light"] {
+    --sidebar:#3F0E40; --sidebar-hi:#350D36; --sidebar-txt:#BCABBC; --sidebar-str:#FFFFFF;
+    --selected:#1164A3; --content:#FFFFFF; --content-alt:#F8F8F8; --line:#DDDDDD;
+    --txt:#1D1C1D; --txt-dim:#616061; --link:#1264A3; --code-bg:#F6F6F6; --code-txt:#E01E5A;
+  }
+
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: var(--font); font-size:15px; line-height:1.46668;
+         color: var(--txt); background: var(--content); -webkit-font-smoothing: antialiased; }
+
+  .app { height:100vh; display:grid; grid-template-rows:38px 1fr; }
+
+  /* ── top bar ─────────────────────────────────────────────────────────── */
+  .top { background: var(--sidebar); display:flex; align-items:center; justify-content:center;
+         color: var(--sidebar-txt); font-size:13px; gap:10px; position:relative; }
+  .search { background: rgba(255,255,255,.12); border-radius:6px; width:46%; max-width:640px;
+            text-align:center; padding:3px 0; color:#E8E8E8; font-size:13px; }
+  .theme { position:absolute; right:12px; display:flex; gap:2px;
+           background:rgba(255,255,255,.10); border-radius:6px; padding:2px; }
+  .theme button { background:none; border:none; border-radius:4px; cursor:pointer;
+                  color:#D9D0D9; font-size:12px; line-height:1; padding:3px 7px; font-family:inherit; }
+  .theme button:hover { background:rgba(255,255,255,.12); color:#fff; }
+  .theme button[aria-pressed="true"] { background:rgba(255,255,255,.22); color:#fff; }
+
+  .body-grid { display:grid; grid-template-columns:260px 1fr; min-height:0; }
+
+  /* ── sidebar ─────────────────────────────────────────────────────────── */
+  .side { background: var(--sidebar); color: var(--sidebar-txt); overflow-y:auto; padding-bottom:20px; }
+  .ws { display:flex; align-items:center; gap:8px; padding:14px 16px 10px; color:var(--sidebar-str);
+        font-weight:900; font-size:18px; letter-spacing:-.2px; }
+  .ws small { font-weight:400; font-size:12px; color:var(--sidebar-txt); }
+  .sec { padding:14px 16px 4px; font-size:13px; font-weight:700; color:var(--sidebar-txt);
+         display:flex; align-items:center; gap:6px; }
+  .row { display:flex; align-items:center; gap:8px; padding:4px 16px 4px 18px; font-size:15px;
+         cursor:pointer; color:var(--sidebar-txt); }
+  .row:hover { background: var(--sidebar-hi); }
+  .row.active { background: var(--selected); color:#fff; font-weight:700; }
+  .row.unread { color: var(--sidebar-str); font-weight:900; }
+  .row .hash { opacity:.7; width:12px; text-align:center; }
+  .row .nm { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .pip { width:9px; height:9px; border-radius:50%; flex:none; }
+  .pip.on { background: var(--green); }
+  .pip.busy { background: var(--amber); }
+  .pip.off { border:1.5px solid currentColor; opacity:.55; }
+  .count { background:#CD2553; color:#fff; font-size:12px; font-weight:700;
+           border-radius:9px; padding:0 7px; line-height:18px; }
+
+  /* ── channel header ──────────────────────────────────────────────────── */
+  .main { display:grid; grid-template-rows:auto 1fr auto; min-height:0; background: var(--content); }
+  .chead { border-bottom:1px solid var(--line); padding:0 20px; height:49px;
+           display:flex; align-items:center; gap:10px; }
+  .chead h1 { font-size:18px; font-weight:900; margin:0; letter-spacing:-.2px; }
+  .chead .topic { color:var(--txt-dim); font-size:13px; border-left:1px solid var(--line);
+                  padding-left:10px; margin-left:2px; }
+  .chead .right { margin-left:auto; display:flex; gap:8px; }
+
+  /* ── messages ────────────────────────────────────────────────────────── */
+  .msgs { overflow-y:auto; padding:20px 0 12px; min-height:0; }
+  .divider { display:flex; align-items:center; gap:0; margin:14px 20px; position:relative; }
+  .divider::before { content:""; flex:1; height:1px; background:var(--line); }
+  .divider span { position:absolute; left:50%; transform:translateX(-50%); background:var(--content);
+                  border:1px solid var(--line); border-radius:24px; padding:2px 14px;
+                  font-size:13px; font-weight:700; color:var(--txt); }
+  .newline { display:flex; align-items:center; margin:16px 20px 6px; }
+  .newline::before { content:""; flex:1; height:1px; background:var(--red); }
+  .newline span { color:var(--red); font-size:13px; font-weight:700; padding-left:10px; }
+
+  .m { display:grid; grid-template-columns:36px 1fr; gap:8px; padding:8px 20px; }
+  .m:hover { background: var(--content-alt); }
+  .m.cont { padding-top:2px; padding-bottom:2px; }
+  .av { width:36px; height:36px; border-radius:4px; display:flex; align-items:center;
+        justify-content:center; color:#fff; font-weight:700; font-size:15px; }
+  .m.cont .av { visibility:hidden; height:0; }
+  .hdr { display:flex; align-items:baseline; gap:8px; margin-bottom:1px; }
+  .hdr .name { font-weight:900; font-size:15px; color:var(--txt); }
+  .hdr .time { font-size:12px; color:var(--txt-dim); }
+  .tag { font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.4px;
+         border-radius:3px; padding:1px 4px; background:var(--content-alt);
+         color:var(--txt-dim); border:1px solid var(--line); }
+  .txt p { margin:0 0 6px; } .txt > :last-child { margin-bottom:0; }
+  .txt ul { margin:2px 0 6px; padding-left:22px; } .txt li { margin:2px 0; }
+  .txt code { font-family:var(--mono); font-size:12px; color:var(--code-txt);
+              background:var(--code-bg); border:1px solid var(--line); border-radius:3px; padding:1px 4px; }
+  .txt pre { font-family:var(--mono); font-size:12px; background:var(--code-bg);
+             border:1px solid var(--line); border-radius:4px; padding:8px 10px;
+             margin:4px 0 6px; overflow-x:auto; line-height:1.5; }
+  .txt pre code { border:none; background:none; padding:0; color:var(--txt); }
+  .file { display:inline-flex; align-items:center; gap:8px; border:1px solid var(--line);
+          border-radius:8px; padding:8px 12px; margin-top:4px; font-size:13px; }
+  .file b { font-weight:700; } .file span { color:var(--txt-dim); }
+  .reply { display:inline-flex; align-items:center; gap:6px; margin-top:4px;
+           font-size:13px; color:var(--link); font-weight:700; cursor:pointer; }
+  .reply .who { display:flex; gap:2px; }
+  .reply .who i { width:20px; height:20px; border-radius:3px; display:block; }
+
+  /* ── composer ────────────────────────────────────────────────────────── */
+  .comp { padding:0 20px 20px; }
+  .box { border:1px solid #8D8D8E; border-radius:8px; overflow:hidden; }
+  .tools { display:flex; gap:14px; padding:6px 12px; border-bottom:1px solid var(--line);
+           color:var(--txt-dim); font-size:14px; }
+  .tools b { font-weight:700; } .tools i { font-style:italic; }
+  .input { padding:9px 12px; font-size:15px; min-height:22px; color:var(--txt); }
+  .caret { display:inline-block; width:1.5px; height:17px; background:var(--txt);
+           vertical-align:-3px; animation:blink 1.1s step-end infinite; }
+  @keyframes blink { 50% { opacity:0; } }
+  @media (prefers-reduced-motion:reduce){ .caret{animation:none} }
+  .actions { display:flex; align-items:center; gap:12px; padding:6px 10px; color:var(--txt-dim); font-size:15px; }
+  .send { margin-left:auto; background:#007A5A; color:#fff; border:none; border-radius:4px;
+          padding:5px 11px; font-weight:700; font-size:14px; cursor:pointer; }
+  .hint { font-size:12px; color:var(--txt-dim); margin-top:5px; }
+
+  /* ── thread / trace ──────────────────────────────────────────────────── */
+  /* The trace REPLACES the message list in the same column — a trace is wide, dense and read
+     top-to-bottom, and squeezing it into a 400px side rail wrapped every tool line. The composer
+     stays put: you are still in a conversation with this agent, just looking at its work instead. */
+  .tbody { overflow-y:auto; padding:16px 20px; font-family:var(--mono);
+           font-size:12.5px; line-height:1.7; min-height:0; }
+  .main.tracing .msgs, .main.tracing .chat-only { display:none; }
+  .main:not(.tracing) .tbody, .main:not(.tracing) .trace-only { display:none; }
+  .modes { display:flex; gap:2px; background:var(--content-alt);
+           border:1px solid var(--line); border-radius:6px; padding:2px; }
+  .modes button { background:none; border:none; border-radius:4px; cursor:pointer; font-family:inherit;
+                  font-size:13px; font-weight:700; color:var(--txt-dim); padding:3px 10px; }
+  .modes button[aria-pressed="true"] { background:var(--content); color:var(--txt);
+                                       box-shadow:0 1px 2px rgba(0,0,0,.12); }
+  .modes button:hover { color:var(--txt); }
+  .tt { color:var(--txt); margin-top:9px; } .tt::before { content:"● "; color:var(--green); }
+  .tu { color:var(--txt-dim); margin-top:14px; } .tu::before { content:"> "; }
+  .tr { color:var(--txt-dim); padding-left:14px; position:relative; }
+  .tr::before { content:"⎿"; position:absolute; left:0; }
+  .tr.err { color:var(--red); }
+
+  .btn { background:none; border:1px solid var(--line); border-radius:4px; color:var(--txt-dim);
+         font-size:13px; padding:3px 9px; cursor:pointer; font-family:inherit; }
+  .btn:hover { background:var(--content-alt); color:var(--txt); }
+  :focus-visible { outline:2px solid var(--link); outline-offset:2px; }
+</style>
+
+<div class="app">
+  <div class="top">
+    <div class="search">Search paw</div>
+    <div class="theme" role="group" aria-label="Colour theme">
+      <button data-set="light" title="Light">☀</button>
+      <button data-set="system" title="Match system" aria-pressed="true">◐</button>
+      <button data-set="dark" title="Dark">☾</button>
+    </div>
+  </div>
+
+  <div class="body-grid" id="grid">
+
+    <!-- ── sidebar ──────────────────────────────────────────────────── -->
+    <nav class="side">
+      <div class="ws">paw <small>&nbsp;space</small></div>
+
+      <div class="sec">▾ Channels</div>
+      <div class="row"><span class="hash">#</span><span class="nm">general</span></div>
+      <div class="row"><span class="hash">#</span><span class="nm">files</span></div>
+
+      <div class="sec">▾ Agents</div>
+      <div class="row active"><span class="pip busy"></span><span class="nm">helium</span><span class="count">2</span></div>
+      <div class="row"><span class="pip on"></span><span class="nm">paw-folder</span></div>
+      <div class="row unread"><span class="pip on"></span><span class="nm">yapless</span><span class="count">1</span></div>
+      <div class="row"><span class="pip on"></span><span class="nm">via</span></div>
+      <div class="row"><span class="pip on"></span><span class="nm">Deskspace</span></div>
+      <div class="row"><span class="pip off"></span><span class="nm">research</span></div>
+      <div class="row"><span class="pip off"></span><span class="nm">fixkey</span></div>
+    </nav>
+
+    <!-- ── channel ──────────────────────────────────────────────────── -->
+    <main class="main">
+      <div class="chead">
+        <h1>helium</h1>
+        <span class="pip busy" style="width:8px;height:8px"></span>
+        <span class="topic chat-only">~/.paw/repos/imputnet/helium · tmux · busy</span>
+        <span class="topic trace-only">live trace · following · <b>esc</b> back to chat</span>
+        <div class="right">
+          <div class="modes" role="group" aria-label="View">
+            <button data-mode="chat" aria-pressed="true">Chat</button>
+            <button data-mode="trace" aria-pressed="false">Trace</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="msgs">
+        <div class="divider"><span>Today</span></div>
+
+        <div class="m">
+          <div class="av" style="background:#4A154B">Y</div>
+          <div>
+            <div class="hdr"><span class="name">you</span><span class="time">2:41 PM</span></div>
+            <div class="txt"><p>can you check whether the build still needs the vendored zlib, or if we can drop it now that the toolchain moved?</p></div>
+          </div>
+        </div>
+
+        <div class="newline"><span>New</span></div>
+
+        <div class="m">
+          <div class="av" style="background:#2E7D5B">H</div>
+          <div>
+            <div class="hdr"><span class="name">helium</span><span class="tag">agent</span><span class="time">2:44 PM</span></div>
+            <div class="txt">
+              <p>Dropped it. The vendored copy was pinned for a <b>2019</b> ABI break the current toolchain no longer has, and nothing in the tree referenced it:</p>
+              <ul>
+                <li><code>third_party/zlib</code> — 41 files, no inbound includes</li>
+                <li><code>BUILD.gn</code> — one dep line, removed</li>
+              </ul>
+              <pre><code>$ rg -l '"//third_party/zlib' --type gn
+(no matches)</code></pre>
+              <p>Full build is green. Not pushed — branch is <code>drop-vendored-zlib</code> if you want to look first.</p>
+            </div>
+            <div class="reply" id="threadLink">
+              <span class="who"><i style="background:#2E7D5B"></i></span> 14 tool calls
+              <span style="color:var(--txt-dim);font-weight:400">· view trace</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="m">
+          <div class="av" style="background:#8B5A2B">D</div>
+          <div>
+            <div class="hdr"><span class="name">Deskspace</span><span class="tag">agent</span><span class="time">2:47 PM</span></div>
+            <div class="txt">
+              <p>Window-width change is in. Worth flagging rather than burying: <b>12 was already the default</b>, so the setting only ever mattered for people who'd changed it. Restarted as pid 23571.</p>
+              <div class="file">📷 <b>width-12-after.png</b> <span>48 KB</span></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="m">
+          <div class="av" style="background:#4A154B">Y</div>
+          <div>
+            <div class="hdr"><span class="name">you</span><span class="tag">other session</span><span class="time">2:51 PM</span></div>
+            <div class="txt"><p>→ <b>via</b> &nbsp;reply with just the word: ok</p></div>
+          </div>
+        </div>
+
+        <div class="m">
+          <div class="av" style="background:#2E7D5B">H</div>
+          <div>
+            <div class="hdr"><span class="name">helium</span><span class="tag">agent</span><span class="time">2:55 PM</span></div>
+            <div class="txt"><p>One more thing I'd rather you heard now: the CI image still pins the old toolchain, so this builds locally and will fail there until that's bumped. Want me to do it in the same branch?</p></div>
+          </div>
+        </div>
+        <div class="m cont">
+          <div class="av"></div>
+          <div><div class="txt"><p>I've left the branch unpushed either way.</p></div></div>
+        </div>
+      </div>
+
+      <div class="tbody">
+        <div class="tu">check whether the build still needs the vendored zlib</div>
+        <div class="tt">Grep("//third_party/zlib)</div>
+        <div class="tr">Found 0 files</div>
+        <div class="tt">Read(BUILD.gn)</div>
+        <div class="tr">Read 214 lines</div>
+        <div class="tt">Nothing references it. Removing the dep and the directory.</div>
+        <div class="tt">Edit(BUILD.gn)</div>
+        <div class="tr">Updated BUILD.gn</div>
+        <div class="tt">Bash(autoninja -C out/Default)</div>
+        <div class="tr">ninja: Entering directory 'out/Default'</div>
+        <div class="tr">[4412/4412] LINK ./chrome</div>
+        <div class="tt">Bash(git checkout -b drop-vendored-zlib)</div>
+        <div class="tr err">warning: 41 files removed</div>
+        <div class="tt">↩ replied to you</div>
+      </div>
+
+      <!-- ── composer ─────────────────────────────────────────────── -->
+      <div class="comp">
+        <div class="box">
+          <div class="tools"><b>B</b><i>I</i><span style="text-decoration:line-through">S</span>
+            <span>🔗</span><span>☰</span><span>≡</span><span>&lt;/&gt;</span><span>▤</span></div>
+          <div class="input">yes, bump the CI toolchain in the same branch<span class="caret"></span></div>
+          <div class="actions">
+            <span>＋</span><span>🙂</span><span>@</span><span>📎</span>
+            <button class="send">Send</button>
+          </div>
+        </div>
+        <div class="hint">📋 1 pasted snippet attached · <b>↓</b> to pick an agent · <b>⌘⇧R</b> mark all read</div>
+      </div>
+    </main>
+
+  </div>
+</div>
+
+<script>
+  /* Chat ⇄ Trace swap the same column, so the view is one piece of state, not a panel that
+     can sit open next to a conversation it no longer belongs to. */
+  const main = document.querySelector(".main");
+  const setMode = (mode) => {
+    main.classList.toggle("tracing", mode === "trace");
+    for (const b of document.querySelectorAll(".modes button"))
+      b.setAttribute("aria-pressed", String(b.dataset.mode === mode));
+  };
+  for (const b of document.querySelectorAll(".modes button"))
+    b.addEventListener("click", () => setMode(b.dataset.mode));
+  // "14 tool calls · view trace" under a reply is the same switch, reached from the message itself.
+  document.getElementById("threadLink").addEventListener("click", () => setMode("trace"));
+  document.addEventListener("keydown", (e) => {
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "t") {
+      e.preventDefault();
+      setMode(main.classList.contains("tracing") ? "chat" : "trace");
+    }
+    if (e.key === "Escape" && main.classList.contains("tracing")) setMode("chat");
+  });
+
+  // Theme. "system" removes the attribute so prefers-color-scheme takes over again; light/dark stamp
+  // data-theme, which the token layer defines for both directions so it beats the media query.
+  const buttons = [...document.querySelectorAll(".theme button")];
+  const apply = (mode) => {
+    if (mode === "system") document.documentElement.removeAttribute("data-theme");
+    else document.documentElement.setAttribute("data-theme", mode);
+    for (const b of buttons) b.setAttribute("aria-pressed", String(b.dataset.set === mode));
+    try { localStorage.setItem("paw.theme", mode); } catch { /* private mode — not worth failing over */ }
+  };
+  for (const b of buttons) b.addEventListener("click", () => apply(b.dataset.set));
+  let saved = "system";
+  try { saved = localStorage.getItem("paw.theme") || "system"; } catch { /* ignore */ }
+  apply(saved);
+</script>

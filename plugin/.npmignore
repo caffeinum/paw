@@ -1,0 +1,6 @@
+# Deliberately empty of ignores.
+#
+# `cotal ext add ./plugin` runs `npm install --install-links`, which PACKS this directory. Without
+# an .npmignore here npm falls back to a .gitignore — and the repo root ignores `dist/`, which is
+# exactly the build output this package's `files` allowlist has to ship. An empty .npmignore takes
+# precedence and ignores nothing; `files` in package.json is the allowlist.

@@ -1,0 +1,65 @@
+{
+  "name": "paw",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Zero-config warm claude-code agents on the cotal mesh — one agent per folder, addressable, persistent.",
+  "bin": {
+    "paw": "./bin/paw.mjs"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "check:addressing": "tsx scripts/check-addressing.ts",
+    "check:web": "tsx scripts/check-web.ts",
+    "check:transcript": "tsx scripts/check-transcript.ts",
+    "check:adopt": "tsx scripts/check-adopt.ts",
+    "check:chat": "tsx scripts/check-chat.ts",
+    "check:commands": "tsx scripts/check-commands.ts",
+    "check:concurrency": "tsx scripts/check-concurrency.ts",
+    "check:dispatch": "tsx scripts/check-dispatch.ts",
+    "check:foreground": "tsx scripts/check-foreground.ts",
+    "check:github": "tsx scripts/check-github.ts",
+    "check:images": "tsx scripts/check-images.ts",
+    "check:launch": "tsx scripts/check-launch.ts",
+    "check:log": "tsx scripts/check-log.ts",
+    "check:loop": "tsx scripts/check-loop.ts",
+    "check:markdown": "tsx scripts/check-markdown.ts",
+    "check:paste": "tsx scripts/check-paste.ts",
+    "check:rail": "tsx scripts/check-rail.ts",
+    "check:rename": "tsx scripts/check-rename.ts",
+    "check:rm": "tsx scripts/check-rm.ts",
+    "check:spawn-env": "tsx scripts/check-spawn-env.ts",
+    "check:status": "tsx scripts/check-status.ts",
+    "check:stdout": "tsx scripts/check-stdout.ts",
+    "check:url": "tsx scripts/check-url.ts",
+    "check:worktree": "tsx scripts/check-worktree.ts",
+    "paw": "tsx bin/paw.ts",
+    "plugin:build": "tsc -p plugin/tsconfig.json && node plugin/scripts/stamp-root.mjs",
+    "plugin:install": "pnpm plugin:build && cotal ext add ./plugin",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "check:mcp": "tsx scripts/check-mcp.ts"
+  },
+  "dependencies": {
+    "@cotal-ai/cli": "^0.48.1",
+    "@cotal-ai/cmux": "^0.48.1",
+    "@cotal-ai/connector-claude-code": "^0.48.1",
+    "@cotal-ai/connector-codex": "0.48.1",
+    "@cotal-ai/connector-opencode": "0.48.1",
+    "@cotal-ai/core": "^0.48.1",
+    "@cotal-ai/manager": "^0.48.1",
+    "@cotal-ai/tmux": "^0.48.1",
+    "@cotal-ai/workspace": "^0.48.1",
+    "@nats-io/jetstream": "^3.4.0",
+    "@nats-io/transport-node": "^3.4.0"
+  },
+  "devDependencies": {
+    "@types/node": "22.19.19",
+    "tsx": "4.22.4",
+    "typescript": "5.9.3"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "packageManager": "pnpm@11.1.2",
+  "license": "Apache-2.0"
+}

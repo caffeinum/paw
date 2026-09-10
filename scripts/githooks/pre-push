@@ -1,0 +1,21 @@
+#!/bin/sh
+# private-main is local history with no upstream. never send it (or --all) to github.
+# git-ai notes on origin re-leaked that history after the repo recreate; block new notes,
+# but allow deleting them (local_sha all-zero).
+zeros=0000000000000000000000000000000000000000
+while read local_ref local_sha remote_ref remote_sha; do
+  case "$remote_ref" in
+    refs/heads/private-main)
+      echo "paw: refusing to push private-main — local history, no upstream" >&2
+      exit 1
+      ;;
+    refs/notes/*)
+      if [ "$local_sha" = "$zeros" ]; then
+        continue
+      fi
+      echo "paw: refusing to push $remote_ref — git-ai notes stay local" >&2
+      exit 1
+      ;;
+  esac
+done
+exit 0

@@ -1,0 +1,22 @@
+# pnpm 11 reads its settings here (the package.json "pnpm" field and pnpm-specific .npmrc
+# keys are no longer honored).
+#
+# packages: paw is the root package; the two endpoint packages are workspace members so
+#   `@cotal-ai/endpoint-core` resolves for endpoint-telegram (its `workspace:*` dep) across tsx,
+#   the test runners, and typecheck. After pulling this branch, run `pnpm install` once so pnpm
+#   links endpoint-core into node_modules/@cotal-ai/ (the launchd telegram daemon needs it on the
+#   module path). NEVER commit a node_modules symlink for this — the workspace link is the only
+#   sanctioned mechanism.
+#
+# allowBuilds.esbuild: false — explicitly decline to run esbuild's postinstall build script
+#   (same security as the global ignore-scripts policy: no dependency scripts execute). Stating
+#   the decision stops pnpm escalating the skipped build to a fatal error. esbuild runs from its
+#   prebuilt platform binary, so tsx still works.
+# verifyDepsBeforeRun: false — don't auto-reinstall before `pnpm <script>`. Our deps are link:ed
+#   from a local cotal checkout and never drift from a registry; the check otherwise re-runs
+#   install and inherits the esbuild build decision as a fatal error.
+packages:
+  - "."
+allowBuilds:
+  esbuild: false
+verifyDepsBeforeRun: false

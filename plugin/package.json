@@ -1,0 +1,25 @@
+{
+  "name": "paw-cotal-plugin",
+  "version": "0.1.0",
+  "description": "paw's verbs as a cotal extension — `cotal paw <verb> …`",
+  "type": "module",
+  "main": "./dist/index.js",
+  "exports": {
+    ".": "./dist/index.js"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json && node scripts/stamp-root.mjs"
+  },
+  "peerDependencies": {
+    "@cotal-ai/core": ">=0.14.0"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "private": false,
+  "license": "MIT"
+}

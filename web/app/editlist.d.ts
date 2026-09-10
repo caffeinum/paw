@@ -1,0 +1,2 @@
+export function keyAction(key: string, title: string, caret: { offset: number; len: number; collapsed: boolean }, shift?: boolean): string;
+export function wireEditableList(container: HTMLElement, opts: { api: (p: string, o?: unknown) => Promise<any>; parent?: string; onCreated?: (id: string, title: string) => void; onRenamed?: (id: string, title: string) => void; onRemoved?: (id: string) => void; onSynced?: () => void; log?: (...a: unknown[]) => void }): { newRowHtml: (title?: string) => string };

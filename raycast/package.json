@@ -1,0 +1,64 @@
+{
+  "$schema": "https://www.raycast.com/schemas/extension.json",
+  "name": "paw",
+  "title": "paw",
+  "description": "Your warm claude agents on the cotal mesh — see who is live, and chat with any of them.",
+  "icon": "paw-icon.png",
+  "author": "aleks",
+  "categories": [
+    "Developer Tools"
+  ],
+  "license": "MIT",
+  "platforms": [
+    "macOS"
+  ],
+  "commands": [
+    {
+      "name": "agents",
+      "title": "Paw Agents",
+      "subtitle": "paw",
+      "description": "Every registered agent: mesh status, runtime, folder, inbox lag and last-active.",
+      "mode": "view"
+    },
+    {
+      "name": "chat",
+      "title": "Paw Chat",
+      "subtitle": "paw",
+      "description": "Chat with any live agent on the mesh.",
+      "mode": "view"
+    }
+  ],
+  "preferences": [
+    {
+      "name": "pawPath",
+      "type": "textfield",
+      "title": "paw executable",
+      "description": "Absolute path to the paw launcher. Raycast runs with a minimal PATH, so this must not rely on your shell.",
+      "default": "~/.local/bin/paw",
+      "required": false
+    },
+    {
+      "name": "space",
+      "type": "textfield",
+      "title": "Space",
+      "description": "The mesh space to talk to. Leave blank to use paw's default (PAW_SPACE, else \"paw\").",
+      "default": "",
+      "required": false
+    }
+  ],
+  "dependencies": {
+    "@raycast/api": "1.104.23",
+    "date-fns": "^4.4.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.10",
+    "@types/react": "19.2.17",
+    "typescript": "^5.8.2"
+  },
+  "scripts": {
+    "build": "ray build -e dist",
+    "dev": "ray develop",
+    "lint": "ray lint",
+    "publish": "npx @raycast/api@latest publish"
+  }
+}
