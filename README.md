@@ -11,14 +11,14 @@ paw inbox     # the result (or a question) is waiting
 
 ## Quickstart
 
-Node ≥ 22, [pnpm](https://pnpm.io), [Claude Code](https://claude.com/claude-code). `pnpm install` pulls `@cotal-ai/*` — no separate cotal install.
+Node ≥ 22, [Claude Code](https://claude.com/claude-code). No separate cotal install — `@cotal-ai/*` comes down with paw.
 
 ```bash
-git clone https://github.com/caffeinum/paw && cd paw && pnpm install && pnpm paw release
-pnpm paw chat .
+npx github:caffeinum/paw release   # pin the immutable snapshot the daemons run from
+npx github:caffeinum/paw chat .    # bring up the mesh, spawn this folder's agent, drop into a REPL
 ```
 
-`paw release` pins an immutable snapshot the daemons run from (a missing pin fails loud). Then `pnpm paw chat .` brings up the mesh, spawns this folder's agent, and drops you into a REPL.
+`paw release` is a deliberate first act — a missing pin fails loud, `ensure()` never snapshots behind your back. Clone-and-`pnpm install` still works if you'd rather hack on paw itself.
 
 ```bash
 mkdir -p ~/.local/bin && ln -sf "$PWD/bin/paw.mjs" ~/.local/bin/paw   # optional PATH
