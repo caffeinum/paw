@@ -1018,7 +1018,7 @@ const stillAligned = async (ws: RawWs, label: string, ...setup: Buffer[]): Promi
 // exposes (POST /api/dm against agents that run bypassPermissions), not a new capability — and it
 // inherits the same and only defences, asserted above: loopback, exact Origin, Host.
 {
-  const { parseBang, bashMessage, runBash, shellInvocation } = await import("../src/bash.js");
+  const { parseBang, bashMessage, runBash, shellInvocation, stripRcNoise } = await import("../src/bash.js");
 
   // The `!` runner uses the OPERATOR'S shell so their rc (aliases, functions, PATH) loads — reported
   // live 2026-09-09: `!preview` "command not found" under a bare /bin/sh that sources nothing.
@@ -1064,8 +1064,13 @@ const stillAligned = async (ws: RawWs, label: string, ...setup: Buffer[]): Promi
   assert(cwdRun.output.trim().endsWith(tmpdir().replace(/\/$/, "").split("/").pop() ?? ""), "it runs in the cwd it was given");
   // `code` is a NUMBER on exit and a STRING on spawn failure; reporting the raw value would render
   // "exit ETIMEDOUT".
-  const killed = await runBash("sleep 5", process.cwd(), undefined, 150);
+  const killed = await runBash("sleep 5", process.cwd(), 150);
   assert(killed.timedOut === true && killed.code === null, "a timeout is flagged, and its code is null rather than a string");
+  // Detached: the shell runs in its own session with stdin CLOSED, so an rc/command that reads stdin
+  // ends instead of hanging on an open pipe.
+  const stdinClosed = await runBash("cat; echo after", process.cwd(), 2000);
+  assert(stdinClosed.timedOut === false && stdinClosed.output.trim() === "after", "stdin is closed, not an open pipe — `cat` returns at once");
+  assert(stripRcNoise("(eval):1: can't change option: zle\nreal error\n(eval):3: can't change option: zle") === "real error", "only the exact zle artifact of an rc sourced without a tty is dropped; other stderr survives");
 
   // The route: runs, then hands it to the agent. Both halves are reported.
   const ran = await fetch(`${base}/api/bash`, {
@@ -1470,7 +1475,7 @@ console.log("\nall paw web checks passed 🐾");
   assert(rankItems(items, "").length === 5, "an empty query returns everything, order untouched");
   const r = rankItems(items, "re").map((i) => i.label);
   assert(r[0] === "re", "an EXACT match ranks first");
-  assert(r[1] === "rearrange" && r[2] === "research", "then PREFIX matches, shorter first");
+  assert(r[1] === "research" && r[2] === "rearrange", "then PREFIX matches, shorter first");
   assert(!r.includes("aws"), "a non-match is dropped");
   assert(rankItems(items, "gen").map((i) => i.label).includes("#general"), "a channel matches by its label including the #");
   assert(rankItems(items, "zzz").length === 0, "no match → empty list (the palette shows 'no match')");

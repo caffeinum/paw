@@ -1162,7 +1162,7 @@ async function chat(argv: string[]): Promise<void> {
     if (!cwd) return void emit(c.red(`! no registered folder for "${curName}" — \`paw status\` lists them`));
     if (!existsSync(cwd)) return void emit(c.red(`! "${curName}" is registered at ${cwd}, which no longer exists`));
     emit(c.dim(`$ ${command}  (in ${cwd})`), "you", true);
-    const result = await runBash(command, cwd, undefined, undefined, true); // paw chat is a real terminal → source the operator's shell rc
+    const result = await runBash(command, cwd, undefined, true); // paw chat is a real terminal → source the operator's shell rc
     const body = result.output.trim() || "(no output)";
     const status = result.timedOut ? "timed out" : result.code === 0 || result.code === null ? undefined : `exit ${result.code}`;
     // One emit for the whole block: emit redraws the prompt after each call, and a 200-line build

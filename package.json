@@ -37,7 +37,8 @@
     "plugin:build": "tsc -p plugin/tsconfig.json && node plugin/scripts/stamp-root.mjs",
     "plugin:install": "pnpm plugin:build && cotal ext add ./plugin",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "check:mcp": "tsx scripts/check-mcp.ts"
+    "check:mcp": "tsx scripts/check-mcp.ts",
+    "check:bash-tty": "tsx scripts/check-bash-tty.ts"
   },
   "dependencies": {
     "@cotal-ai/cli": "^0.48.1",
@@ -53,6 +54,7 @@
     "@nats-io/transport-node": "^3.4.0"
   },
   "devDependencies": {
+    "@lydell/node-pty": "1.2.0-beta.12",
     "@types/node": "22.19.19",
     "tsx": "4.22.4",
     "typescript": "5.9.3"

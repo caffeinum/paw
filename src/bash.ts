@@ -17,7 +17,7 @@
  * The command runs through a shell ON PURPOSE — pipes and redirection are most of why you'd type `!` —
  * so nothing here may ever be assembled from anything but what the operator typed.
  */
-import { execFile } from "node:child_process";
+import { spawn } from "node:child_process";
 import { bdEnv } from "./tasks.js";
 
 /** How long a command may run before it is killed. Long enough for a build step to say something,
@@ -72,36 +72,73 @@ export function shellInvocation(command: string, interactive: boolean, shell = p
 }
 
 /**
+ * An rc sourced by `-i` with no terminal trips on its own `setopt zle` (zsh refuses to enable the line
+ * editor without a tty) and prints this per call. It is an artifact of HOW paw runs the shell, not
+ * output of the operator's command, and their real shell never shows it — so it is dropped, and only
+ * this exact line. Pure; unit-tested.
+ */
+export function stripRcNoise(stderr: string): string {
+  return stderr
+    .split("\n")
+    .filter((l) => !/^\(eval\):\d+: can't change option: zle$/.test(l))
+    .join("\n");
+}
+
+/**
  * Run `command` in `cwd`. Never throws: a failing command is a RESULT — its exit code and stderr are
  * exactly what the operator asked to see — not an exception for the route to turn into a 500.
+ *
+ * The child is DETACHED (its own session, no controlling tty) with stdin closed — load-bearing for the
+ * interactive path, and measured (2026-09-11, `!gs` in `paw chat`): an interactive zsh that INHERITS
+ * paw chat's tty initialises job control against it, and readline's next read on that tty fails with
+ * `EIO: i/o error, read` — the chat died on the first `!` every time under a real pty. `setsid` gives
+ * the shell no terminal to touch; readline's tty is untouched. Closing stdin is what makes "can't hang
+ * waiting for input" true (a pipe left open never reaches EOF). A timeout kills the whole PROCESS GROUP
+ * — with its own session the shell's children are no longer in ours, so killing the pid alone would
+ * leave a `sleep`/build running.
  */
-export async function runBash(
-  command: string,
-  cwd: string,
-  run: typeof execFile = execFile,
-  timeoutMs = BASH_TIMEOUT_MS,
-  interactive = false,
-): Promise<BashResult> {
+export async function runBash(command: string, cwd: string, timeoutMs = BASH_TIMEOUT_MS, interactive = false): Promise<BashResult> {
   return new Promise((resolve) => {
     // bdEnv, not process.env: `!bd create …` from the composer must hit the SAME shared task db the
     // agents' BEADS_DIR pins — without it bd resolves a repo-local .beads and the task lands in that
     // project's own tracker, invisibly. It also backfills PATH for the launchd-started daemon.
     const { sh, args } = shellInvocation(command, interactive);
-    run(sh, args, { cwd, env: bdEnv(), timeout: timeoutMs, maxBuffer: BASH_MAX_BYTES }, (err, stdout, stderr) => {
-      const e = err as (NodeJS.ErrnoException & { code?: number | string; killed?: boolean }) | null;
-      const both = `${String(stdout ?? "")}${String(stderr ?? "")}`;
-      // `code` is a NUMBER for a normal exit and a STRING for a spawn failure (ETIMEDOUT, ENOENT), so
-      // it can't be reported as an exit status without checking — a string here would render as though
-      // the command had exited with "ETIMEDOUT".
-      const numeric = typeof e?.code === "number" ? e.code : e ? null : 0;
+    const child = spawn(sh, args, { cwd, env: bdEnv(), detached: true, stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    let timedOut = false;
+    let done = false;
+    const cap = (s: string, d: Buffer) => (s.length > BASH_MAX_BYTES ? s : s + d.toString());
+    child.stdout.on("data", (d: Buffer) => (stdout = cap(stdout, d)));
+    child.stderr.on("data", (d: Buffer) => (stderr = cap(stderr, d)));
+    const timer = setTimeout(() => {
+      timedOut = true;
+      if (child.pid !== undefined) {
+        try {
+          process.kill(-child.pid, "SIGKILL");
+        } catch {
+          child.kill("SIGKILL");
+        }
+      }
+    }, timeoutMs);
+    const finish = (code: number | null, spawnError?: string) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      const err = interactive ? stripRcNoise(stderr) : stderr;
+      const both = `${stdout}${err}${spawnError ? `${spawnError}\n` : ""}`;
       resolve({
         command,
         cwd,
         output: both.length > BASH_MAX_BYTES ? `${both.slice(0, BASH_MAX_BYTES)}\n… output truncated` : both,
-        code: numeric,
-        timedOut: e?.killed === true || e?.code === "ETIMEDOUT",
+        // a killed or unspawnable command has no exit status — null, never a signal name or errno
+        // rendered as though the command had exited with it
+        code: timedOut ? null : code,
+        timedOut,
       });
-    });
+    };
+    child.on("error", (e: NodeJS.ErrnoException) => finish(null, `paw: could not run ${sh}: ${e.message}`));
+    child.on("close", (code) => finish(code));
   });
 }
 

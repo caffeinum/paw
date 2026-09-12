@@ -1083,6 +1083,17 @@ addressable, talking to each other and to you. A thin layer over cotal with **no
   prepended stdin listener (the picker/paste pattern): the `!` check runs after readline folds the key in
   (`setImmediate`, `rl.line === "!"`), Backspace is read BEFORE readline eats it against an already-empty
   buffer. Verified under node-pty: `!` → prompt flips; BS → back; `echo MODE_OK` ran + DM landed; Esc kept `abc`.
+  **The shell is DETACHED from the chat's tty (`runBash`, 2026-09-11):** `!gs` killed `paw chat` with
+  `EIO: i/o error, read` ("happened a few times"). Reproduced deterministically under node-pty: an
+  interactive zsh (`-ic`, needed for aliases) that INHERITS the chat's controlling tty runs its
+  job-control init against it, and readline's next read on that tty fails EIO — first `!`, every time.
+  `runBash` now `spawn`s with `detached:true` (own session, no ctty) + `stdio:["ignore",…]` (stdin really
+  closed — execFile left a pipe open, so an rc/command reading stdin hung, the check:web hang) and kills
+  the PROCESS GROUP on timeout (a detached child's `sleep`/build is no longer in ours). `stripRcNoise`
+  drops only the exact `(eval):N: can't change option: zle` line an rc prints when sourced without a
+  tty. Applies to web's `!` too (same function; no behaviour change there). Test: `check:bash-tty` —
+  a real pty child raw-reading stdin while `runBash(…, interactive)` runs `$SHELL -ic` with keystrokes
+  arriving; skips when `$SHELL` isn't zsh/bash. `@lydell/node-pty` became a devDependency for it.
 - **`paw chat` follows the conversation (`shouldFollowDm`, 2026-08-19)** — an arriving DM takes over the
   sticky target when your input is EMPTY, so answering whoever just spoke (the overwhelmingly common
   next act) doesn't cost a re-typed `@name`. "Empty" is deliberately WIDER than the text buffer, because

@@ -11,8 +11,9 @@ export interface VillageRow {
 export interface VillageTreeNode {
   name: string;
   children: Map<string, VillageTreeNode>;
-  agents: Array<{ name: string; st: string }>;
+  agents: Array<{ name: string; st: string; branch?: string; worktree?: boolean }>;
 }
+export function stationLabel(name: string, branch?: string, worktree?: boolean): string;
 export function placement(space: string, names: string[]): (name: string) => number;
 export function segmentsFor(row: VillageRow, repoIndex?: Map<string, string[]>): string[];
 export function buildTree(rows: VillageRow[]): VillageTreeNode;
