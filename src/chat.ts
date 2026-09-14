@@ -156,7 +156,8 @@ const FOLLOW_FRESH_MS = 60_000;
  * What the positional MEANS, by its sigil. Three modes, because "who am I talking to" and "what am I
  * looking at" are different questions and the CLI only ever answered the first:
  *
- *   paw chat            → global: every conversation, plain lines broadcast to #general
+ *   paw chat            → this folder's agent (`.`) PRESELECTED, like `paw attach`
+ *   paw chat --all      → global: every conversation, plain lines broadcast to #general
  *   paw chat <folder>   → global, with that agent PRESELECTED as the sticky target
  *   paw chat @<agent>   → FILTERED: only that agent's DMs are shown, read, and sent to
  *   paw chat '#<chan>'  → that channel only, and plain lines post to it
@@ -169,11 +170,18 @@ const FOLLOW_FRESH_MS = 60_000;
  * `#` must be quoted in a shell (it starts a comment unquoted) — that's the operator's business, but
  * an empty sigil is ours, and fails loud rather than silently meaning "global".
  */
+/** A bare `paw chat` means THIS folder's agent, like `paw attach`/`paw open` (operator, 2026-09-14); the
+ *  every-conversation view with nothing preselected is `--all`. Pure; `check:chat`. */
+export function chatTargetArg(given: string | undefined, all: boolean): string | undefined {
+  if (all && given !== undefined) throw new Error(`paw: --all is every conversation with no agent preselected — drop "${given}" or drop --all`);
+  return all ? undefined : (given ?? ".");
+}
+
 export function parseChatTarget(raw?: string): { mode: "global" | "agent" | "channel"; target?: string } {
   if (raw === undefined) return { mode: "global" };
   if (raw.startsWith("@")) {
     const name = raw.slice(1).trim();
-    if (!name) throw new Error('paw: `@` needs an agent name — e.g. `paw chat @research` (or `paw chat` for every conversation)');
+    if (!name) throw new Error('paw: `@` needs an agent name — e.g. `paw chat @research` (or `paw chat --all` for every conversation)');
     return { mode: "agent", target: name };
   }
   if (raw.startsWith("#")) {
@@ -233,8 +241,9 @@ export function completeMention(line: string, names: string[]): [string[], strin
   return [hits, `@${m[1]}`];
 }
 
-function parseArgs(argv: string[]): { space?: string; server?: string; target?: string; model?: string; name?: string; fresh: boolean; only: boolean } {
-  const out: { space?: string; server?: string; target?: string; model?: string; name?: string; fresh: boolean; only: boolean } = { fresh: false, only: false };
+type ChatArgs = { space?: string; server?: string; target?: string; model?: string; name?: string; fresh: boolean; only: boolean; all: boolean };
+function parseArgs(argv: string[]): ChatArgs {
+  const out: ChatArgs = { fresh: false, only: false, all: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--space") out.space = argv[++i];
@@ -243,6 +252,7 @@ function parseArgs(argv: string[]): { space?: string; server?: string; target?: 
     else if (a === "--name") out.name = argv[++i]; // pin an EXTRA agent instance at the folder (multi-instance)
     else if (a === "--fresh") out.fresh = true; // birth a NEW agent (was `paw create`); fails loud if one exists
     else if (a === "--only") out.only = true; // FILTER to the target agent (the `@name` view, reached by folder/`.` instead of a name)
+    else if (a === "--all") out.all = true; // every conversation, no agent preselected (what a bare `paw chat` used to mean)
     else if (!a.startsWith("-") && out.target === undefined) out.target = a;
   }
   return out;
@@ -274,7 +284,8 @@ function freshTarget(space: string, target: string): { folder: string; name: str
 }
 
 async function chat(argv: string[]): Promise<void> {
-  const { space: spaceArg, server: serverArg, target: rawTarget, model, name: nameFlag, fresh, only } = parseArgs(argv);
+  const { space: spaceArg, server: serverArg, target: givenTarget, model, name: nameFlag, fresh, only, all } = parseArgs(argv);
+  const rawTarget = chatTargetArg(givenTarget, all);
   // The sigil decides the MODE; the rest of setup then sees a plain target and behaves exactly as
   // before, so `@name` reuses the same spawn/resume path a bare name has always taken.
   const addressed = parseChatTarget(rawTarget);
@@ -288,7 +299,7 @@ async function chat(argv: string[]): Promise<void> {
   const server = serverArg ?? DEFAULT_SERVER;
   if (!fresh) assertUnambiguousTarget(space, target); // a bare token that's BOTH a known name and a folder → fail loud (skipped under --fresh: the only interpretation there is a folder)
 
-  // No target => start in broadcast mode: plain lines go to #general, and @name latches a sticky DM
+  // No target (only `--all` gets here) => start in broadcast mode: plain lines go to #general, and @name latches a sticky DM
   // (so you only pin a target once you actually mention someone). A target seeds that sticky target up
   // front: a <repo>@<branch> ref or a real directory => folder mode (spawn if absent); else a live
   // agent's name to focus.
@@ -371,7 +382,7 @@ async function chat(argv: string[]): Promise<void> {
   // filter TO, so both fail loud rather than silently doing nothing.
   if (only) {
     if (addressed.mode === "channel") throw new Error("paw: --only filters to an AGENT; a `#channel` session is already single-channel (drop --only)");
-    if (!name) throw new Error("paw: --only needs an agent or folder target — e.g. `paw chat --only .` (this folder's agent) or `paw chat --only research`");
+    if (!name) throw new Error("paw: --only needs an agent — it can't combine with --all");
     filter = { kind: "agent", name };
   }
 
@@ -1434,7 +1445,7 @@ const chatCommand: Command = {
   name: "chat",
   group: "Mesh",
   summary: "chat with the agent for a folder (auto-spawns it); replies stream back live — --fresh births a NEW one",
-  usage: 'chat [<folder>|<name>] [--name <n>] [--fresh]   (default: "."; --name pins a 2nd+ EXTRA agent at the folder; --fresh births a NEW default agent, fails loud if one already exists)',
+  usage: 'chat [<folder>|<name>|@<name>|#<channel>] [--only] [--all] [--name <n>] [--fresh]   (default: "." — this folder\'s agent; --all = every conversation, nothing preselected; --name pins a 2nd+ EXTRA agent at the folder; --fresh births a NEW default agent, fails loud if one already exists)',
   run: (a) => chat([...a.raw]),
 };
 

@@ -103,6 +103,13 @@ assert(!shouldFollowDm({ ...base, from: "" }), "a nameless sender can't become a
 // ---- parseChatTarget: the sigil picks the mode ----
 const threw = (f: () => unknown): boolean => { try { f(); return false; } catch { return true; } };
 assert(parseChatTarget(undefined).mode === "global", "no positional → global (every conversation)");
+{
+  const { chatTargetArg } = await import("../src/chat.js");
+  assert(chatTargetArg(undefined, false) === ".", "bare `paw chat` targets this folder, like `paw attach`");
+  assert(chatTargetArg("research", false) === "research", "a given target is kept");
+  assert(chatTargetArg(undefined, true) === undefined, "--all is every conversation, nothing preselected");
+  assert(threw(() => chatTargetArg("research", true)), "--all with a target fails loud rather than picking one");
+}
 assert(parseChatTarget("evals").mode === "global", "a BARE name stays global — no existing invocation changes meaning");
 assert(parseChatTarget("evals").target === "evals", "…with the agent preselected");
 assert(parseChatTarget("@research").mode === "agent" && parseChatTarget("@research").target === "research", "@name → filtered to that agent, sigil stripped");
