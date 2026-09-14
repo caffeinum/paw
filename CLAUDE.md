@@ -489,6 +489,22 @@ addressable, talking to each other and to you. A thin layer over cotal with **no
   over the session's `/rename` name. `--no-start` only warns. (paw can't stop the reverse — a `claude -r`
   you launch AFTER adopting — that's outside paw; the adopted agent's mesh name is the **folder** name
   unless `--name`/a named session sets it.) Test: `check:adopt` (self-ancestor/sanitize/parseArgs/in-flight).
+  **One agent per session, and no silent re-pin (`assertSafeRepin`, 2026-09-14):** the operator ran
+  `paw adopt --resume 159777dd . ` meaning "add an agent" — it re-pinned the folder's DEFAULT (`evals`
+  lost its session, only a `note —` line said so), a second try with `--name arena-tier-list` pinned the
+  SAME session again, and a manager-numbered `evals_2` ended up running `--resume 159777dd` beside
+  `arena-tier-list`: two live writers on one transcript. The two-writer guard never saw it because both
+  holders were MESH agents, which it excludes by design. Now, checked BEFORE the name is registered (a
+  refusal leaves no half-made agent): (1) a session any OTHER persona in the space already pins is
+  refused, `--name`/`--replace`/`--force` included; (2) an EXPLICIT `--resume` that would change an
+  existing default's pin needs **`--replace`** (the refusal names both `--name <new>` and `--replace`);
+  a bare `paw adopt .` keeps its re-pin-to-latest behaviour; (3) re-adopting a session an agent of THIS
+  folder already runs targets that agent instead of minting an extra named after the session. Also: a
+  transcript STORED under another project dir (claude started in a worktree, then cd'd — evals'
+  eb587d4d lives under `…evals--claude-worktrees-feat-runtime-config-fingerprint`) but RECORDING this
+  folder's cwd is now found (`locateSession` returns the dir); "not found" there had broken adopt's own
+  undo hint, which now includes `--replace`. Verified live against the real registry (refusals left
+  folders.json/agents.json/personas byte-identical).
 - `src/addressing.ts` — folder→agent addressing. The mesh carries an agent's NAME but not its cwd
   (neither presence/roster nor `ps` expose it), so paw owns a per-space folder→name registry under
   `~/.paw/spaces/<space>/folders.json` (basename, collision-qualified with a path hash so two

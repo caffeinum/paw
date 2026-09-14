@@ -13,7 +13,7 @@ process.env.PAW_HOME = home; // persona + registry under here too
 process.env.PAW_SPACE = "adopt";
 
 import type { Command } from "@cotal-ai/core";
-const { claudeProjectDir, latestSession, transcriptCwd, sanitizeAdoptName, parseArgs, pinSession, pinClaudeArgs, planAdoptName } = await import("../src/adopt.js");
+const { claudeProjectDir, latestSession, transcriptCwd, sanitizeAdoptName, parseArgs, pinSession, pinClaudeArgs, planAdoptName, assertSafeRepin } = await import("../src/adopt.js");
 const { registry } = await import("@cotal-ai/core");
 const { personaFilePath } = await import("../src/addressing.js");
 const adoptCmd = registry.resolve<Command>("command", "adopt");
@@ -75,13 +75,27 @@ const body = existsSync(persona) ? readFileSync(persona, "utf8") : "";
 assert(/name:\s*myproj/.test(body), "persona has name: myproj");
 assert(/resume:\s*new-sess/.test(body), "persona has resume: <latest session>");
 
-// re-adopt with an explicit older session (--resume, the primary flag) updates ONLY the resume line.
-await runAdopt([folder, "--resume", "old-sess", "--no-start"]);
+// re-adopt with an explicit older session WITHOUT --replace is refused and leaves the pin alone.
+let repinRefused = "";
+try { await runAdopt([folder, "--resume", "old-sess", "--no-start"]); } catch (e) { repinRefused = (e as Error).message; }
+assert(/would replace it/.test(repinRefused) && /resume:\s*new-sess/.test(readFileSync(persona, "utf8")), "explicit --resume onto a pinned default is refused and the pin is untouched");
+// with --replace it updates ONLY the resume line.
+await runAdopt([folder, "--resume", "old-sess", "--replace", "--no-start"]);
 const body2 = readFileSync(persona, "utf8");
 assert(/resume:\s*old-sess/.test(body2), "--resume pins the chosen session");
 assert((body2.match(/resume:/g) ?? []).length === 1, "no duplicate resume: lines after re-adopt");
+// A session STORED under another project dir (claude started in a worktree, then cd'd to the main checkout)
+// but RECORDING this folder's cwd is still this folder's session — adopt's own undo hint depended on it.
+const strayDir = join(home, ".claude", "projects", "-some-worktree-dir");
+mkdirSync(strayDir, { recursive: true });
+writeFileSync(join(strayDir, "stray-sess.jsonl"), JSON.stringify({ cwd: canonical, type: "x" }) + "\n");
+await runAdopt([folder, "--resume", "stray-sess", "--replace", "--no-start"]);
+assert(/resume:\s*stray-sess/.test(readFileSync(persona, "utf8")), "a session stored under another project dir but recorded at this folder is adoptable");
+writeFileSync(join(strayDir, "foreign-sess.jsonl"), JSON.stringify({ cwd: "/some/other/project", type: "x" }) + "\n");
+assert(/belongs to \/some\/other\/project/.test(await runAdopt([folder, "--resume", "foreign-sess", "--replace", "--no-start"]).then(() => "", (e: Error) => e.message)), "a stray session recorded at ANOTHER folder is still refused, naming that folder");
+await runAdopt([folder, "--resume", "old-sess", "--replace", "--no-start"]);
 // --session remains an accepted alias for --resume.
-await runAdopt([folder, "--session", "new-sess", "--no-start"]);
+await runAdopt([folder, "--session", "new-sess", "--replace", "--no-start"]);
 assert(/resume:\s*new-sess/.test(readFileSync(persona, "utf8")), "--session alias still works");
 
 // VERIFY: a session recorded at a different cwd must be refused (lossy-encoding guard).
@@ -123,8 +137,11 @@ assert(resolveNamedSession(canonical, "personal-burn") === "new-sess", "resolveN
 assert(resolveNamedSession(canonical, "no-such-name") === undefined, "resolveNamedSession returns undefined for an unknown name");
 assert(namesForFolder(canonical).get("new-sess") === "personal-burn", "namesForFolder maps sessionId → name for the folder");
 assert(!namesForFolder(canonical).has("elsewhere"), "namesForFolder excludes other folders' named sessions");
-// adopt --resume <name> pins the resolved UUID, not the name.
+// adopt --resume <name> pins the resolved UUID, not the name. (--name myproj: without it the session's
+// name would mint an EXTRA "personal-burn" on the session myproj already runs — refused, one agent per session.)
 await runAdopt([folder, "--resume", "personal-burn", "--no-start"]);
+assert(!existsSync(personaFilePath("adopt", "personal-burn")), "re-adopting a session this folder's agent already runs targets THAT agent, not a new extra named after the session");
+assert(/already pinned to "myproj"/.test(await runAdopt([folder, "--resume", "personal-burn", "--name", "other", "--no-start"]).then(() => "", (e: Error) => e.message)), "a NEW --name onto a session another agent runs is refused — one agent per session");
 assert(/resume:\s*new-sess/.test(readFileSync(persona, "utf8")), "--resume <name> pins the resolved session id");
 // A name with no transcript on disk fails loud (index points at a missing jsonl).
 writeFileSync(join(sessIndex, "333.json"), JSON.stringify({ sessionId: "ghost", cwd: canonical, name: "orphan", updatedAt: 100 }));
@@ -145,9 +162,9 @@ assert(procs.some((p) => p.pid === process.pid && !p.mesh), "liveSessionProcs re
 writeFileSync(join(sessIndex, "777.json"), JSON.stringify({ sessionId: "new-sess", cwd: canonical, name: "ghost-tui", pid: 2147480000 }));
 assert(!liveSessionProcs("new-sess").some((p) => p.pid === 2147480000), "liveSessionProcs skips a dead pid");
 // Start path refuses (the guard throws BEFORE ensure(), so no daemons boot).
-assert(await throwsAsync(() => runAdopt([folder, "--resume", "new-sess"])), "adopt refuses to start a session open in another process");
+assert(/open in another process/.test(await runAdopt([folder, "--resume", "new-sess", "--name", "myproj"]).then(() => "", (e: Error) => e.message)), "adopt refuses to start a session open in another process");
 // --no-start still pins (warns, doesn't throw) even when the session is open elsewhere.
-await runAdopt([folder, "--resume", "new-sess", "--no-start"]);
+await runAdopt([folder, "--resume", "new-sess", "--name", "myproj", "--no-start"]);
 assert(/resume:\s*new-sess/.test(readFileSync(persona, "utf8")), "adopt --no-start pins despite the session being open elsewhere");
 
 // latestSession: the auto-pick (adopt with no --resume) takes the NEWEST session by mtime — INCLUDING
@@ -202,6 +219,21 @@ assert(planAdoptName(undefined, "research").kind === "folder-default", "no desir
 let namePlanThrew = false;
 try { planAdoptName("///", "research"); } catch { namePlanThrew = true; }
 assert(namePlanThrew, "a desired name that sanitizes to empty fails loud");
+
+// assertSafeRepin — the 2026-09-14 incident: `paw adopt --resume <id> .` (meaning "add an agent")
+// re-pinned the folder's default, and a session ended up with two agents running it.
+const base = { sessionId: "S2", explicitResume: true, name: "evals", planKind: "folder-default" as const, prevPin: "S1", replace: false, target: ".", pinnedBy: [] as string[] };
+const refuses = (o: Parameters<typeof assertSafeRepin>[0]) => { try { assertSafeRepin(o); return ""; } catch (e) { return (e as Error).message; } };
+assert(/would replace it/.test(refuses(base)) && /--name <new-name>/.test(refuses(base)) && /--replace/.test(refuses(base)), "explicit --resume onto an existing default pinned elsewhere is REFUSED, naming --name and --replace");
+assert(refuses({ ...base, replace: true }) === "", "--replace makes the re-pin deliberate");
+assert(refuses({ ...base, planKind: "repin-default" }) !== "", "naming the default explicitly still needs --replace");
+assert(refuses({ ...base, planKind: "extra" }) === "", "an EXTRA (--name) never touches the default's pin");
+assert(refuses({ ...base, explicitResume: false }) === "", "a bare `paw adopt .` keeps its re-pin-to-latest behaviour");
+assert(refuses({ ...base, prevPin: "S2" }) === "", "re-adopting the SAME session is a no-op, not a refusal");
+assert(refuses({ ...base, prevPin: undefined }) === "", "a first pin replaces nothing");
+assert(/already pinned to "arena-tier-list"/.test(refuses({ ...base, planKind: "extra", pinnedBy: ["arena-tier-list"] })), "a session another agent is pinned to is refused even with --name — one transcript, one agent");
+assert(refuses({ ...base, replace: true, pinnedBy: ["x"] }) !== "", "--replace does not lift the one-agent-per-session rule");
+assert(parseArgs(["--replace"]).replace === true, "parseArgs reads --replace");
 
 // parseArgs handles the new flags and still rejects unknown ones.
 assert(parseArgs(["--name", "foo"]).name === "foo", "parseArgs reads --name <n>");

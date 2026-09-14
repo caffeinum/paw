@@ -16,11 +16,12 @@
  */
 import { existsSync, readFileSync, readdirSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { DEFAULT_SERVER, registry, type Command } from "@cotal-ai/core";
 import {
   assertUnambiguousTarget,
   ensureAgentSpawned,
+  folderForName,
   folderToName,
   lookupFolderName,
   registerInstance,
@@ -42,11 +43,12 @@ const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms
 
 /** Find which folder a session id belongs to by scanning every claude project dir — so adopt can point
  *  you at the right folder when you give an id recorded under a different worktree. */
-function locateSession(sessionId: string): string | undefined {
+function locateSession(sessionId: string): { dir: string; cwd: string | undefined } | undefined {
   const projects = join(homedir(), ".claude", "projects");
   if (!existsSync(projects)) return undefined;
   for (const d of readdirSync(projects)) {
-    if (existsSync(join(projects, d, `${sessionId}.jsonl`))) return transcriptCwd(join(projects, d), sessionId);
+    const dir = join(projects, d);
+    if (existsSync(join(dir, `${sessionId}.jsonl`))) return { dir, cwd: transcriptCwd(dir, sessionId) };
   }
   return undefined;
 }
@@ -168,8 +170,9 @@ export function findSessionByRecordedName(dir: string, name: string): string | u
   return undefined;
 }
 
-export function parseArgs(argv: string[]): { space?: string; session?: string; target?: string; noStart?: boolean; force?: boolean; name?: string; noAttach?: boolean } {
-  const out: { space?: string; session?: string; target?: string; noStart?: boolean; force?: boolean; name?: string; noAttach?: boolean } = {};
+type AdoptArgs = { space?: string; session?: string; target?: string; noStart?: boolean; force?: boolean; name?: string; noAttach?: boolean; replace?: boolean };
+export function parseArgs(argv: string[]): AdoptArgs {
+  const out: AdoptArgs = {};
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--space") out.space = argv[++i];
@@ -178,7 +181,8 @@ export function parseArgs(argv: string[]): { space?: string; session?: string; t
     else if (a === "--force") out.force = true; // TAKE OVER a session open elsewhere: stop the holder, then resume
     else if (a === "--name") out.name = argv[++i]; // override the agent name (else the session/folder name)
     else if (a === "--no-attach") out.noAttach = true; // skip the auto-attach after a takeover (the detached child passes this)
-    else if (a.startsWith("-")) throw new Error(`paw: unknown flag "${a}" — adopt takes [<folder>] [--resume <id|name>] [--name <n>] [--no-start] [--force] [--no-attach] [--space <s>]`);
+    else if (a === "--replace") out.replace = true; // re-pin the folder's EXISTING default agent to --resume's session
+    else if (a.startsWith("-")) throw new Error(`paw: unknown flag "${a}" — adopt takes [<folder>] [--resume <id|name>] [--name <n>] [--replace] [--no-start] [--force] [--no-attach] [--space <s>]`);
     else if (out.target === undefined) out.target = a;
     else throw new Error(`paw: unexpected argument "${a}" — adopt takes a single folder`);
   }
@@ -212,8 +216,50 @@ export function planAdoptName(desired: string | undefined, oldName: string | und
   return { kind: "extra", name: cleaned };
 }
 
+/** Refuse the two ways an explicit `--resume` silently damaged a working agent (2026-09-14): `paw adopt
+ *  --resume <id> .` with no --name re-pinned the folder's EXISTING default (evals lost its session when
+ *  the operator meant to ADD one), and adopting a session another agent is already pinned to put two
+ *  agents on one transcript (evals_2 + arena-tier-list both ran --resume 159777dd). A bare `paw adopt .`
+ *  (no --resume) keeps its documented re-pin-to-latest behaviour. Pure; `check:adopt`. */
+export function assertSafeRepin(o: {
+  sessionId: string;
+  explicitResume: boolean;
+  name: string;
+  planKind: AdoptNamePlan["kind"];
+  prevPin: string | undefined;
+  replace: boolean;
+  target: string;
+  pinnedBy: string[]; // OTHER agents in the space whose persona pins sessionId
+}): void {
+  if (o.pinnedBy.length) {
+    throw new Error(
+      `paw: session ${o.sessionId} is already pinned to ${o.pinnedBy.map((n) => `"${n}"`).join(", ")} — ` +
+        `two agents on one transcript corrupt it.\n` +
+        `  talk to it:      paw chat ${o.pinnedBy[0]}\n` +
+        `  rename it:       paw rename ${o.pinnedBy[0]} <name>`,
+    );
+  }
+  const repinsDefault = o.planKind === "folder-default" || o.planKind === "repin-default";
+  if (o.explicitResume && repinsDefault && o.prevPin !== undefined && o.prevPin !== o.sessionId && !o.replace) {
+    throw new Error(
+      `paw: "${o.name}" already runs session ${o.prevPin} — adopting ${o.sessionId} would replace it.\n` +
+        `  add it alongside:  paw adopt ${o.target} --resume ${o.sessionId} --name <new-name>\n` +
+        `  replace it:        paw adopt ${o.target} --resume ${o.sessionId} --replace`,
+    );
+  }
+}
+
+/** Names of agents in `space` (other than `except`) whose persona pins `sessionId`. */
+function agentsPinnedTo(space: string, sessionId: string, except: string): string[] {
+  const dir = dirname(personaFilePath(space, except));
+  return readdirSync(dir)
+    .filter((f) => f.endsWith(".md") && f !== `${except}.md`)
+    .filter((f) => readResumeId(join(dir, f)) === sessionId)
+    .map((f) => f.slice(0, -".md".length));
+}
+
 async function adopt(argv: string[]): Promise<void> {
-  const { space: spaceArg, session, target, noStart, force, name: nameFlag, noAttach } = parseArgs(argv);
+  const { space: spaceArg, session, target, noStart, force, name: nameFlag, noAttach, replace } = parseArgs(argv);
   // --resume takes a session id OR a named session (`claude --session-name`/`/rename`). Both are bare
   // tokens; reject anything else BEFORE it touches the filesystem — `join(dir, x + ".jsonl")` would
   // otherwise let `../x` escape the project dir.
@@ -228,7 +274,14 @@ async function adopt(argv: string[]): Promise<void> {
   assertUnambiguousTarget(space, target); // a bare token that's BOTH a known name and a folder here → fail loud
   const folder = resolveExistingFolderArg(target); // <repo>@<branch> worktree or a plain folder; a URL/gh:/web: handle fails loud (adopt never clones/mints)
 
-  const dir = claudeProjectDir(folder);
+  let dir = claudeProjectDir(folder);
+  // A session can be STORED under a different project dir than the cwd it records: a claude started in a
+  // worktree that then `cd`s to the main checkout keeps writing under the worktree's encoded dir (evals'
+  // eb587d4d lives under `…-evals--claude-worktrees-feat-runtime-config-fingerprint` but records
+  // cwd=evals). The recorded cwd is the truth the verify step checks, so an explicit id found elsewhere
+  // WITH a matching cwd is this folder's session — "not found" there broke adopt's own undo hint.
+  const stray = session !== undefined && !existsSync(join(dir, `${session}.jsonl`)) ? locateSession(session) : undefined;
+  if (stray?.cwd !== undefined && (existsSync(stray.cwd) ? realpathSync(stray.cwd) : stray.cwd) === folder) dir = stray.dir;
   if (!existsSync(dir)) {
     throw new Error(`paw: no claude sessions found for ${folder} (looked in ${dir})`);
   }
@@ -247,7 +300,7 @@ async function adopt(argv: string[]): Promise<void> {
       // `agent-name`), and that copy outlives the process.
       const resolved = resolveNamedSession(folder, session) ?? findSessionByRecordedName(dir, session);
       if (!resolved) {
-        const elsewhere = locateSession(session); // a real id, but recorded under a different folder?
+        const elsewhere = stray?.cwd; // a real id, but recorded under a different folder?
         throw new Error(
           elsewhere && elsewhere !== folder
             ? `paw: session "${session}" belongs to ${elsewhere}, not ${folder} — run \`paw adopt ${elsewhere} --resume ${session}\``
@@ -322,9 +375,25 @@ async function adopt(argv: string[]): Promise<void> {
   // A desired name that differs from an EXISTING default agent becomes an EXTRA instance beside it
   // (planAdoptName above); adopt never renames or silently replaces the default's pin.
   const sessionName = resolvedSessionName ?? namesForFolder(folder).get(sessionId);
-  const desired = nameFlag ?? sessionName; // --name wins, else the session's name
+  // An agent of THIS folder already running the session IS the target of a re-adopt — otherwise the
+  // session's recorded name mints a second agent onto the same transcript (refused below as two writers).
+  const runningOwner = nameFlag === undefined ? agentsPinnedTo(space, sessionId, "").find((n) => folderForName(space, n) === folder) : undefined;
+  const desired = nameFlag ?? runningOwner ?? sessionName; // --name wins, else the agent already on it, else the session's name
   const oldName = lookupFolderName(space, folder);
   const plan = planAdoptName(desired, oldName);
+  // Checked BEFORE the name is registered, so a refusal leaves no half-made agent behind.
+  const prospective = plan.kind === "folder-default" ? oldName : plan.name;
+  const prospectiveFile = prospective !== undefined ? personaFilePath(space, prospective) : undefined;
+  assertSafeRepin({
+    sessionId,
+    explicitResume: session !== undefined && !inFlightChild,
+    name: prospective ?? "",
+    planKind: plan.kind,
+    prevPin: prospectiveFile && existsSync(prospectiveFile) ? readResumeId(prospectiveFile) : undefined,
+    replace: replace === true,
+    target: target ?? ".",
+    pinnedBy: agentsPinnedTo(space, sessionId, prospective ?? ""),
+  });
   const name =
     plan.kind === "folder-default" ? folderToName(space, folder)
     : plan.kind === "register-default" ? setFolderName(space, folder, desired!).name
@@ -349,7 +418,7 @@ async function adopt(argv: string[]): Promise<void> {
   const prevPin = existsSync(file) ? readResumeId(file) : undefined;
   const pinChanged = prevPin !== sessionId; // re-adopting the same session?
   if (prevPin !== undefined && pinChanged) {
-    console.error(`paw: note — "${name}" was pinned to ${prevPin}; undo with \`paw adopt ${target ?? "."} --resume ${prevPin}\``);
+    console.error(`paw: note — "${name}" was pinned to ${prevPin}; undo with \`paw adopt ${target ?? "."} --resume ${prevPin} --replace\``);
   }
   pinSession(space, name, sessionId);
 
