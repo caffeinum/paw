@@ -40,6 +40,10 @@ export function unstickDecision(row: AgentStatus, now: number, lastUnstickMs: nu
   if (!row.live) return { restart: false, reason: "not live" };
   if (row.mesh !== "idle") return { restart: false, reason: `mesh ${row.mesh}` };
   if (!inboxStuck(row)) return { restart: false, reason: "inbox not stuck" };
+  // A turn still open in the transcript (a tool_use with no result yet) is a slow or hung TOOL, not a
+  // deaf agent: its DMs are queued behind the turn and drain when the tool returns (queue-ea, 2026-09-15:
+  // one `fly ssh` sat 51m, mail queued, the transcript went silent). A restart would kill that work.
+  if (row.busy) return { restart: false, reason: "a turn is in flight (tool still running)" };
   if (row.failure) return { restart: false, reason: `last turn failed: ${row.failure.text}` };
   if (row.activeMs === undefined) return { restart: false, reason: "no transcript activity known" };
   const quietMs = now - row.activeMs;

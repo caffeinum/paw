@@ -146,6 +146,7 @@ console.log("\nall paw status checks passed 🐾");
   assert(unstickDecision(base, now, undefined).restart, "live + idle + unread + quiet transcript → restart");
   assert(!unstickDecision({ ...base, activeMs: now - 30_000 }, now, undefined).restart, "a transcript written 30s ago may be mid-turn → never restart");
   assert(!unstickDecision({ ...base, mesh: "working" }, now, undefined).restart, "an agent that says working is not stuck");
+  assert(!unstickDecision({ ...base, busy: true }, now, undefined).restart, "a turn still in flight (hung tool) is never restarted, however quiet");
   assert(!unstickDecision({ ...base, live: false, mesh: "offline" }, now, undefined).restart, "offline is the wake gate's job, not the keeper's");
   assert(!unstickDecision({ ...base, inbox: { kind: "lag", queued: 0, unread: 0 } }, now, undefined).restart, "nothing waiting → nothing to unstick");
   assert(!unstickDecision({ ...base, inbox: { kind: "error" } }, now, undefined).restart, "an unknown inbox is not evidence");
