@@ -75,9 +75,13 @@ export function withoutServer(config: CotalConfig, name: string): CotalConfig | 
 }
 
 /** A server name is a bare token: it becomes a key in a `.mcp.json` and is matched by `--share-tools`,
- *  so anything needing quoting would be a name you could never select. */
+ *  so anything needing quoting would be a name you could never select. `:` and `.` ARE allowed (2026-09-14):
+ *  claude keys an MCP server's stored OAuth by `<name>|sha256({type,url,headers})`, so a remote server
+ *  the operator already authorized as a PLUGIN (`plugin:slack:slack`) only reuses that token under its
+ *  exact name — under any other name the agent would have to run a browser OAuth flow it cannot run.
+ *  What must stay out is a comma or whitespace, which `shareTools:` splits on. */
 export function isValidServerName(name: string): boolean {
-  return /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(name);
+  return /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$/.test(name);
 }
 
 /**

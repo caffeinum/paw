@@ -66,6 +66,13 @@ assert(withoutServer(added, "nope") === undefined, "removing something absent re
 
 // 3. Server names must be selectable by --share-tools, so they are bare tokens.
 for (const ok of ["github", "tavily-2", "a_b"]) assert(isValidServerName(ok), `valid name: ${ok}`);
+// A plugin-style name must be allowed: claude keys stored MCP OAuth by `<name>|hash(config)`, so
+// `plugin:slack:slack` under any other name would need a browser login the agent can't do.
+assert(isValidServerName("plugin:slack:slack"), "a plugin-style name (colons) is a valid server name");
+assert(isValidServerName("my.server"), "a dotted name is valid");
+assert(!isValidServerName("a,b"), "a comma is refused — shareTools: splits on it");
+assert(!isValidServerName("a b"), "whitespace is refused");
+
 for (const bad of ["", "a b", "--flag", "-x", "a;b", "a/b", "x".repeat(65)]) assert(!isValidServerName(bad), `rejected name: ${JSON.stringify(bad)}`);
 
 // 4. Specs. A spec that can never launch is refused HERE, not discovered later as a broken agent.
