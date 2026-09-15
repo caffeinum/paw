@@ -505,6 +505,15 @@ addressable, talking to each other and to you. A thin layer over cotal with **no
   folder's cwd is now found (`locateSession` returns the dir); "not found" there had broken adopt's own
   undo hint, which now includes `--replace`. Verified live against the real registry (refusals left
   folders.json/agents.json/personas byte-identical).
+  **A WORKTREE session is adoptable FROM THE REPO ROOT (`sameRepoWorktree`, 2026-09-14):** `paw sessions`
+  run at the root is repo-aware and lists every worktree's sessions, but adopt refused those same ids
+  ("belongs to <worktree>, not <root>") — the operator's point: "worktree sessions should be adoptable
+  from the repo root, we were supposed to make worktrees invisible". An explicit `--resume <id>` whose
+  recorded cwd is a worktree of the TARGET's repo (`git worktree list` from its toplevel, both
+  directions) now retargets the adopt to that worktree, announcing it; the agent still registers to the
+  WORKTREE's folder (that is where its cwd is). An unrelated project is still refused, naming its folder.
+  The post-adopt hint names the AGENT (`paw chat <name>`), not `.` — from the root `.` is a different
+  folder, and a folder target reaches that folder's DEFAULT, not the extra just adopted.
 - `src/addressing.ts` — folder→agent addressing. The mesh carries an agent's NAME but not its cwd
   (neither presence/roster nor `ps` expose it), so paw owns a per-space folder→name registry under
   `~/.paw/spaces/<space>/folders.json` (basename, collision-qualified with a path hash so two

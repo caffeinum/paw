@@ -37,6 +37,7 @@ import { adoptInFlight, adoptLogPath, ensure, finishDetachedAdopt, resolveSpace,
 import { isSelfAncestor, liveSessionProcs, namesForFolder, resolveNamedSession, selfSessionProc } from "./named.js";
 import { tailRead } from "./transcript.js";
 import { resolveExistingFolderArg } from "./address.js";
+import { gitToplevel, listWorktrees } from "./worktree.js";
 import { attachResolved } from "./open.js";
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
@@ -249,6 +250,15 @@ export function assertSafeRepin(o: {
   }
 }
 
+/** Is `cwd` a worktree of the same repo as `folder`? Both directions count (root → worktree, and one
+ *  worktree → its sibling), since `git worktree list` from any checkout lists them all. Pure-ish (git). */
+export function sameRepoWorktree(folder: string, cwd: string, list: typeof listWorktrees = listWorktrees, top: typeof gitToplevel = gitToplevel): boolean {
+  const root = top(folder);
+  if (!root) return false;
+  const canon = (p: string) => (existsSync(p) ? realpathSync(p) : p);
+  return list(root).some((w) => canon(w.path) === canon(cwd));
+}
+
 /** Names of agents in `space` (other than `except`) whose persona pins `sessionId`. */
 function agentsPinnedTo(space: string, sessionId: string, except: string): string[] {
   const dir = dirname(personaFilePath(space, except));
@@ -272,7 +282,7 @@ async function adopt(argv: string[]): Promise<void> {
   const inFlightChild = process.env.PAW_ADOPT_INFLIGHT !== undefined; // we ARE the detached self-adopt child
   const space = spaceArg ?? resolveSpace();
   assertUnambiguousTarget(space, target); // a bare token that's BOTH a known name and a folder here → fail loud
-  const folder = resolveExistingFolderArg(target); // <repo>@<branch> worktree or a plain folder; a URL/gh:/web: handle fails loud (adopt never clones/mints)
+  let folder = resolveExistingFolderArg(target); // <repo>@<branch> worktree or a plain folder; a URL/gh:/web: handle fails loud (adopt never clones/mints)
 
   let dir = claudeProjectDir(folder);
   // A session can be STORED under a different project dir than the cwd it records: a claude started in a
@@ -281,7 +291,19 @@ async function adopt(argv: string[]): Promise<void> {
   // cwd=evals). The recorded cwd is the truth the verify step checks, so an explicit id found elsewhere
   // WITH a matching cwd is this folder's session — "not found" there broke adopt's own undo hint.
   const stray = session !== undefined && !existsSync(join(dir, `${session}.jsonl`)) ? locateSession(session) : undefined;
-  if (stray?.cwd !== undefined && (existsSync(stray.cwd) ? realpathSync(stray.cwd) : stray.cwd) === folder) dir = stray.dir;
+  const strayCwd = stray?.cwd !== undefined ? (existsSync(stray.cwd) ? realpathSync(stray.cwd) : stray.cwd) : undefined;
+  if (strayCwd === folder) dir = stray!.dir;
+  // A WORKTREE of this repo is adoptable FROM THE REPO ROOT (operator, 2026-09-14: "worktree sessions
+  // should be adoptable from the repo root, we were supposed to make worktrees invisible"). `paw sessions`
+  // is already repo-aware — it lists every worktree's sessions from the root — so adopt refusing the very
+  // ids that listing shows was the inconsistency. The agent is still registered to the WORKTREE's folder
+  // (that is where the session's cwd is, and where its agent must run); only the address you may type
+  // widens. A session from an unrelated project is still refused, naming its folder.
+  else if (strayCwd !== undefined && sameRepoWorktree(folder, strayCwd)) {
+    console.error(`paw: session ${session} lives in the worktree ${strayCwd} — adopting it there`);
+    folder = strayCwd;
+    dir = stray!.dir;
+  }
   if (!existsSync(dir)) {
     throw new Error(`paw: no claude sessions found for ${folder} (looked in ${dir})`);
   }
@@ -428,7 +450,7 @@ async function adopt(argv: string[]): Promise<void> {
       console.error(`paw: note — session ${sessionId} is open in pid ${foreignPids}; kill it before bringing this agent live.`);
     }
     console.log(`✓ adopted "${name}" ← session ${sessionId} (pinned, not started)`);
-    console.log(`  run \`paw chat ${target ?? "."}\` (or \`paw open\`) to resume it on the mesh`);
+    console.log(`  run \`paw chat ${name}\` (or \`paw open ${name}\`) to resume it on the mesh`);
     return;
   }
 

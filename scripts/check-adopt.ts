@@ -94,6 +94,17 @@ assert(/resume:\s*stray-sess/.test(readFileSync(persona, "utf8")), "a session st
 writeFileSync(join(strayDir, "foreign-sess.jsonl"), JSON.stringify({ cwd: "/some/other/project", type: "x" }) + "\n");
 assert(/belongs to \/some\/other\/project/.test(await runAdopt([folder, "--resume", "foreign-sess", "--replace", "--no-start"]).then(() => "", (e: Error) => e.message)), "a stray session recorded at ANOTHER folder is still refused, naming that folder");
 await runAdopt([folder, "--resume", "old-sess", "--replace", "--no-start"]);
+// A session recorded in a WORKTREE of this repo is adoptable FROM THE REPO ROOT — the agent registers
+// to the worktree's folder, not the root. (sameRepoWorktree is git-driven, so the list/toplevel are injected.)
+{
+  const { sameRepoWorktree } = await import("../src/adopt.js");
+  const wt = join(work, "wt-a");
+  mkdirSync(wt, { recursive: true });
+  const list = (root: string) => (root === canonical ? [{ path: canonical }, { path: realpathSync(wt) }] : []);
+  assert(sameRepoWorktree(canonical, realpathSync(wt), list as never, () => canonical), "a sibling worktree of the same repo is recognised");
+  assert(!sameRepoWorktree(canonical, "/some/other/project", list as never, () => canonical), "an unrelated folder is not");
+  assert(!sameRepoWorktree(canonical, realpathSync(wt), list as never, () => undefined), "a non-repo folder recognises nothing (no git toplevel)");
+}
 // --session remains an accepted alias for --resume.
 await runAdopt([folder, "--session", "new-sess", "--replace", "--no-start"]);
 assert(/resume:\s*new-sess/.test(readFileSync(persona, "utf8")), "--session alias still works");
