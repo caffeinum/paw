@@ -1,0 +1,23 @@
+CLAUDE.md
+  s_ed25aaaf9c7e77::t_46bd3c5ea444bf 508-516
+scripts/check-adopt.ts
+  s_ed25aaaf9c7e77::t_d03e4c894ee11d 97-107
+src/adopt.ts
+  s_ed25aaaf9c7e77::t_4ae5c9e2b50b2c 40,253-261,285,294-306,453
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "154eaf8d62ae6f1b0c7b0f314592ab5ab979fc60",
+  "prompts": {},
+  "sessions": {
+    "s_ed25aaaf9c7e77": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "90dd1251-161e-469a-96db-040d1e555035",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Aleksey Bykhun <theisease@gmail.com>"
+    }
+  }
+}
