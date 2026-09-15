@@ -10,7 +10,7 @@ import { join } from "node:path";
 process.env.PAW_HOME = mkdtempSync(join(tmpdir(), "paw-chat-home-"));
 process.env.PAW_SPACE = "chattest";
 
-const { completeMention, shouldFollowDm, parseChatTarget, passesFilter } = await import("../src/chat.js");
+const { completeMention, shouldFollowDm, parseChatTarget, passesFilter, presenceVisible, activityLine } = await import("../src/chat.js");
 
 let failures = 0;
 function assert(cond: boolean, msg: string): void {
@@ -123,6 +123,12 @@ assert(threw(() => parseChatTarget("#")), "a bare # fails loud too");
 const agentF = { kind: "agent" as const, name: "research" };
 const chanF = { kind: "channel" as const, name: "team2027" };
 assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "no filter → everything shows");
+assert(presenceVisible(undefined, "canary"), "no filter → every presence change shows");
+assert(presenceVisible({ kind: "agent", name: "Queue-EA" }, "queue-ea"), "agent filter: that agent's presence shows");
+assert(!presenceVisible({ kind: "agent", name: "queue-ea" }, "research"), "agent filter: another agent's presence is hidden");
+assert(!presenceVisible({ kind: "channel", name: "general" }, "research"), "channel filter: no agent presence");
+assert(activityLine("Bash: SC=/tmp; rm -rf x\n  for j in a b") === "Bash: SC=/tmp; rm -rf x for j in a b", "multi-line activity collapses to one line");
+assert(activityLine("x".repeat(150)).length === 100 && activityLine("x".repeat(150)).endsWith("…"), "long activity is cut at 100");
 assert(passesFilter(agentF, { kind: "dm", from: "research" }), "agent filter: that agent's DM shows");
 assert(passesFilter(agentF, { kind: "dm", from: "RESEARCH" }), "…case-insensitively");
 assert(!passesFilter(agentF, { kind: "dm", from: "queue" }), "agent filter: another agent's DM is hidden (and so not marked read)");

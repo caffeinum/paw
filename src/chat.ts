@@ -208,6 +208,20 @@ export function passesFilter(
   return m.kind === "channel" && m.channel === filter.name;
 }
 
+/** A presence change belongs in a filtered session only when it is the filtered agent's; a channel
+ *  view has no single agent, so it shows none. Unfiltered sessions see everyone. */
+export function presenceVisible(filter: { kind: "agent" | "channel"; name: string } | undefined, name: string): boolean {
+  if (!filter) return true;
+  return filter.kind === "agent" && name.toLowerCase() === filter.name.toLowerCase();
+}
+
+/** Presence activity is whatever the hook saw — a whole multi-line Bash script included. A status
+ *  line must stay one line, so whitespace collapses and the tail is cut. */
+export function activityLine(activity: string, max = 100): string {
+  const flat = activity.replace(/\s+/g, " ").trim();
+  return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
+}
+
 function statusBadge(status: PresenceStatus): string {
   if (status === "working") return c.yellow("● working");
   if (status === "waiting") return c.magenta("● waiting");
@@ -752,6 +766,7 @@ async function chat(argv: string[]): Promise<void> {
   ep.on("presence", (ev) => {
     const card = ev.presence.card;
     if (card.id === me) return;
+    if (!presenceVisible(filter, card.name)) return;
     if (ev.type === "join") emit(`${c.green("→")} ${who(card)} joined ${statusBadge(ev.presence.status)}`);
     else if (ev.type === "offline") emit(c.dim(`← ${who(card)} went offline`));
     else if (
@@ -763,11 +778,11 @@ async function chat(argv: string[]): Promise<void> {
       // The agent we're waiting on flipped to working — an explicit "got it, on it" receipt for your
       // message (otherwise the only feedback is the final reply, which can be minutes away).
       awaiting.picked = true;
-      emit(`${c.green("✓")} ${card.name} picked it up${ev.presence.activity ? c.dim(" — " + ev.presence.activity) : c.dim(" — working…")}`, "you");
+      emit(`${c.green("✓")} ${card.name} picked it up${ev.presence.activity ? c.dim(" — " + activityLine(ev.presence.activity)) : c.dim(" — working…")}`, "you");
     } else
       emit(
         `${c.dim("•")} ${who(card)} ${statusBadge(ev.presence.status)}` +
-          (ev.presence.activity ? c.dim(" — " + ev.presence.activity) : ""),
+          (ev.presence.activity ? c.dim(" — " + activityLine(ev.presence.activity)) : ""),
       );
   });
 
