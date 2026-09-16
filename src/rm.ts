@@ -10,7 +10,7 @@
  */
 import { existsSync, rmSync } from "node:fs";
 import { DEFAULT_SERVER, registry, type Command } from "@cotal-ai/core";
-import { agentNamesForFolder, assertUnambiguousTarget, canonicalDir, folderForName, lookupFolderName, personaFilePath, readAgentIndex, removeAgentName, removeFolder, stopAgent } from "./addressing.js";
+import { agentNamesForFolder, assertUnambiguousTarget, canonicalDir, folderForName, listAgents, lookupFolderName, personaFilePath, readAgentIndex, removeAgentName, removeFolder, stopAgent } from "./addressing.js";
 import { withManagerControl } from "./control.js";
 import { readForeground, unregisterForeground } from "./foreground.js";
 import { parseGithubHandle, repoDir } from "./github.js";
@@ -106,7 +106,13 @@ async function rm(argv: string[]): Promise<void> {
   rmSync(persona, { force: true });
 
   console.log(`✓ removed "${name}"${stopped ? " (stopped + forgotten)" : " (forgotten)"} — mapping + persona deleted`);
-  if (pin) console.log(`  transcript kept (session ${pin}) — revive with \`paw adopt${folder ? ` "${folder}"` : ""} --resume ${pin}\``);
+  if (pin) {
+    // The session may still belong to another agent (a second name for one conversation) — then there is
+    // nothing to revive, and the adopt hint would be refused as two agents on one transcript.
+    const holders = listAgents(space).map((a) => a.name).filter((n) => readResumeId(personaFilePath(space, n)) === pin);
+    if (holders.length) console.log(`  its session ${pin} lives on in ${holders.map((n) => `"${n}"`).join(", ")} — nothing lost`);
+    else console.log(`  transcript kept (session ${pin}) — revive with \`paw adopt${folder ? ` "${folder}"` : ""} --resume ${pin}\``);
+  }
 }
 
 const rmCommand: Command = {
