@@ -1,0 +1,19 @@
+src/commands/optimize.ts
+  s_ed25aaaf9c7e77::t_d68c15db2cd1e4 99
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "052e4e6a8eaa1932ef3cdd99573c514879b8cfb0",
+  "prompts": {},
+  "sessions": {
+    "s_ed25aaaf9c7e77": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "90dd1251-161e-469a-96db-040d1e555035",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Aleksey Bykhun <theisease@gmail.com>"
+    }
+  }
+}
