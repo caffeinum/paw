@@ -12,13 +12,15 @@
  *  - one agent at a time, re-checked right before its restart (the fleet changes while this runs), paced
  *    by machine load, verified afterwards: the agent is back under ITS OWN name and alone on its session.
  *    (That day's first run came back as eight `<name>_2` agents; spawn now hard-pins the name.)
+ * An agent whose folder was deleted (a merged, cleaned-up worktree) can never be restarted there, so it
+ * is STOPPED instead — same idle checks — and its transcript is left for `paw adopt --resume` elsewhere.
  * Memory is the process tree's macOS phys_footprint (claude + its MCP servers), before and after; where
  * `footprint` isn't available no number is printed rather than a guessed one.
  */
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { DEFAULT_SERVER, registry, type Command } from "@cotal-ai/core";
-import { psRowAlive, restartAgent, type PsRow } from "../addressing.js";
+import { psRowAlive, restartAgent, stopAgent, type PsRow } from "../addressing.js";
 import { withManagerControl } from "../control.js";
 import { ensure, resolveSpace } from "../lifecycle.js";
 import { liveSessionProcs, type LiveSessionProc } from "../named.js";
@@ -52,7 +54,7 @@ export function parseOptimizeArgs(argv: string[]): OptimizeArgs {
   return out;
 }
 
-export type Verdict = { act: "restart"; idleMs: number; pid: number } | { act: "skip"; reason: string } | { act: "recent" };
+export type Verdict = { act: "restart" | "stop"; idleMs: number; pid: number } | { act: "skip"; reason: string } | { act: "recent" };
 
 /** Pure: should this agent be restarted now? `procs` = live processes holding its pinned session. */
 export function optimizeVerdict(row: AgentStatus, procs: LiveSessionProc[], now: number, opts: { sinceMs: number }): Verdict {
@@ -63,7 +65,6 @@ export function optimizeVerdict(row: AgentStatus, procs: LiveSessionProc[], now:
   const idleMs = now - row.activeMs;
   if (idleMs < opts.sinceMs) return { act: "recent" };
   if (row.runtime === "fg") return { act: "skip", reason: "foreground `paw claude` — lives in your terminal" };
-  if (!existsSync(row.folder)) return { act: "skip", reason: `folder is gone (${row.folder}) — it could not come back` };
   if (!row.pin || !row.durable) return { act: "skip", reason: "no resumable session — a restart would lose its context" };
   if (procs.length === 0) return { act: "skip", reason: "no process found on its session" };
   if (procs.length > 1) return { act: "skip", reason: `${procs.length} processes on one session (pids ${procs.map((p) => p.pid).join(", ")}) — a duplicate; resolve it first` };
@@ -71,6 +72,9 @@ export function optimizeVerdict(row: AgentStatus, procs: LiveSessionProc[], now:
   if (row.mesh !== "idle" || row.busy) return { act: "skip", reason: row.busy ? "mid-turn" : row.mesh };
   if (row.inbox.kind === "lag" && (row.inbox.queued > 0 || row.inbox.unread > 0)) return { act: "skip", reason: "DMs waiting" };
   if (row.inbox.kind !== "lag" && row.inbox.kind !== "none") return { act: "skip", reason: "inbox state unknown" };
+  // Its folder was deleted (a merged/cleaned worktree): it can never be restarted there, so a restart
+  // is impossible and leaving it running only holds memory. Stop it; the transcript stays resumable.
+  if (!existsSync(row.folder)) return { act: "stop", idleMs, pid: proc.pid };
   return { act: "restart", idleMs, pid: proc.pid };
 }
 
@@ -115,23 +119,38 @@ async function optimize(argv: string[]): Promise<void> {
 
     const verdictOf = (row: AgentStatus) => optimizeVerdict(row, row.pin ? liveSessionProcs(row.pin) : [], Date.now(), opts);
     const plan = first.map((row) => ({ row, v: verdictOf(row) }));
-    const todo = plan.filter((p) => p.v.act === "restart");
+    const todo = plan.filter((p) => p.v.act === "restart" || p.v.act === "stop");
     const skipped = plan.filter((p) => p.v.act === "skip" && (args.names.length || p.row.live));
-    console.log(`paw optimize — inactive for over ${hours(args.sinceMs)}: ${todo.length} to restart, ${skipped.length} skipped`);
-    for (const { row, v } of todo) if (v.act === "restart") console.log(`  • ${row.name}  last active ${hours(v.idleMs)} ago  ${mb(treeFootprintMb(v.pid))}`);
+    const stops = todo.filter((p) => p.v.act === "stop").length;
+    console.log(`paw optimize — inactive for over ${hours(args.sinceMs)}: ${todo.length - stops} to restart, ${stops} to stop (folder gone), ${skipped.length} skipped`);
+    for (const { row, v } of todo) {
+      if (v.act !== "restart" && v.act !== "stop") continue;
+      const what = v.act === "stop" ? `  STOP — folder gone (${row.folder})` : "";
+      console.log(`  • ${row.name}  last active ${hours(v.idleMs)} ago  ${mb(treeFootprintMb(v.pid))}${what}`);
+    }
     for (const { row, v } of skipped) if (v.act === "skip") console.log(`  – ${row.name}: ${v.reason}`);
     if (args.dryRun || !todo.length) return;
 
     const results: Array<{ name: string; before?: number; after?: number; error?: string }> = [];
+    const stopped: Array<{ name: string; freed?: number }> = [];
     for (const { row } of todo) {
       // The fleet moves while this runs: re-read this agent right before touching it.
       const fresh = (await collectStatus(space, ctl)).rows.find((r) => r.name === row.name);
       const v = fresh ? verdictOf(fresh) : ({ act: "skip", reason: "gone" } as Verdict);
-      if (v.act !== "restart") {
+      if (v.act !== "restart" && v.act !== "stop") {
         console.log(`  – ${row.name}: now ${v.act === "skip" ? v.reason : "active again"}, left alone`);
         continue;
       }
       const before = treeFootprintMb(v.pid);
+      if (v.act === "stop") {
+        if (!(await stopAgent(ctl, row.name))) {
+          console.log(`  ✗ ${row.name}: the manager didn't stop it — stopping here; check \`paw status\``);
+          break;
+        }
+        stopped.push({ name: row.name, freed: before });
+        console.log(`  ■ ${row.name} stopped, ${mb(before)} freed — resume it elsewhere: paw adopt <folder> --resume ${fresh!.pin}`);
+        continue;
+      }
       const headroom = await awaitSpawnHeadroom({ onWait: (load, thr) => console.log(`    load ${load.toFixed(0)} > ${thr}, waiting before ${row.name}…`) });
       if (headroom === "gave-up") console.log(`    still loaded — restarting ${row.name} anyway`);
       try {
@@ -157,8 +176,8 @@ async function optimize(argv: string[]): Promise<void> {
     }
     const ok = results.filter((r) => !r.error);
     const measured = ok.filter((r) => r.before !== undefined && r.after !== undefined);
-    const freed = measured.reduce((s, r) => s + (r.before! - r.after!), 0);
-    console.log(`✓ restarted ${ok.length}${measured.length ? `, ${freed >= 0 ? "freed" : "grew"} ${Math.abs(freed)}MB` : ""}${results.length > ok.length ? `, 1 failed` : ""}`);
+    const freed = measured.reduce((s, r) => s + (r.before! - r.after!), 0) + stopped.reduce((s, r) => s + (r.freed ?? 0), 0);
+    console.log(`✓ restarted ${ok.length}, stopped ${stopped.length}${measured.length || stopped.length ? `, ${freed >= 0 ? "freed" : "grew"} ${Math.abs(freed)}MB` : ""}${results.length > ok.length ? `, 1 failed` : ""}`);
   });
 }
 

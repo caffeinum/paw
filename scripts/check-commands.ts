@@ -484,5 +484,6 @@ console.log("\nall paw command checks passed 🐾");
   ok(v({ inbox: { kind: "lag", queued: 0, unread: 2 } }).act === "skip", "unread DMs → skip");
   ok(v({ durable: false }).act === "skip" && v({ harness: "codex" }).act === "skip", "no resumable session / non-claude → skip");
   ok(v({ live: false }).act === "skip" && v({ runtime: "fg" }).act === "skip", "offline / foreground → skip");
-  ok(v({ folder: "/definitely/not/here" }).act === "skip", "folder deleted → skip (it could not come back)");
+  ok(v({ folder: "/definitely/not/here" }).act === "stop", "folder deleted + idle past the window → stop (it can never come back there)");
+  ok(v({ folder: "/definitely/not/here", busy: true }).act === "skip", "folder deleted but mid-turn → still left alone");
 }
