@@ -100,6 +100,24 @@ assert(twoFences[0].includes("a") && twoFences[2].includes("c"), "both fenced bo
   assert(!renderMarkdownBlock("this | that | the other").includes("│"), "a sentence with pipes is not a table");
 }
 
+// ── tables fit the terminal ─────────────────────────────────────────────────────────────────────
+{
+  const { fitWidths, wrapCell, visibleWidth } = await import("../src/markdown.js");
+  assert(fitWidths([5, 10], 100).join() === "5,10", "a table that fits keeps its natural widths");
+  const fit = fitWidths([10, 80, 60], 90);
+  assert(fit[0] === 10 && fit[1] + fit[2] + fit[0] <= 90, "the widest columns are capped first; a narrow one keeps its width");
+  assert(wrapCell("one two three four", 9).every((l) => l.length <= 9), "cells wrap on words within the column");
+  assert(wrapCell("abcdefghijklmnop", 5).join("") === "abcdefghijklmnop", "a word longer than the column is split, never dropped");
+  const code = wrapCell("run `cloud auth:token --add --token` now", 16);
+  assert(code.every((l) => (l.match(/`/g) ?? []).length % 2 === 0), "a code span cut by the wrap is closed and reopened on each line");
+  const wide = "| a | b |\n|---|---|\n| " + "word ".repeat(40) + "| " + "other ".repeat(30) + "|";
+  const lines = renderMarkdown(wide, { width: 60 });
+  assert(lines.every((l) => visibleWidth(l) <= 60), "every rendered line fits the given width");
+  const text = lines.join(" ").replace(/[│├┼┤─┄]/g, " ").split(/\s+/).filter(Boolean);
+  assert(text.filter((w) => w === "word").length === 40 && text.filter((w) => w === "other").length === 30, "wrapping loses no content");
+  assert(process.stdout.isTTY || renderMarkdown(wide, {}).length === 3, "no width (piped) → no wrapping");
+}
+
 if (failures > 0) {
   console.error(`\n${failures} markdown check(s) failed`);
   process.exit(1);

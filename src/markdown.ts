@@ -104,11 +104,69 @@ export function visibleWidth(s: string): number {
  * Cells are NOT truncated to fit. This renderer's rule is that it never loses content, and a table wide
  * enough to wrap is still more readable padded than not — the columns line up until the wrap.
  */
-function renderTable(head: string[], rows: string[][], align: ("" | "left" | "center" | "right")[]): string[] {
-  const cells = [head, ...rows].map((r) => r.map(inlineMd));
-  const cols = Math.max(...cells.map((r) => r.length));
-  const width: number[] = [];
-  for (let n = 0; n < cols; n++) width[n] = Math.max(...cells.map((r) => visibleWidth(r[n] ?? "")));
+/**
+ * Column widths that fit `budget` printable characters: the widest columns are capped first (water
+ * filling), so narrow columns keep their natural width. Never below `floor` (or the column's own width,
+ * if smaller) — past that, fitting would shred every word, and a wrapped table is the lesser evil.
+ */
+export function fitWidths(natural: number[], budget: number, floor = 8): number[] {
+  const total = (cap: number) => natural.reduce((sum, w) => sum + Math.min(w, Math.max(cap, Math.min(w, floor))), 0);
+  if (natural.reduce((a, b) => a + b, 0) <= budget) return natural;
+  let lo = 1;
+  let hi = Math.max(...natural);
+  while (lo < hi) {
+    const mid = Math.ceil((lo + hi) / 2);
+    if (total(mid) <= budget) lo = mid;
+    else hi = mid - 1;
+  }
+  return natural.map((w) => Math.min(w, Math.max(lo, Math.min(w, floor))));
+}
+
+/**
+ * Word-wrap one RAW (pre-markdown) cell to `width` printable characters. Wrapping the source rather than
+ * the styled output keeps ANSI out of the arithmetic; a `code span` or **bold** run the wrap cuts through
+ * is closed at the end of its line and reopened on the next, so the styling survives the break.
+ */
+export function wrapCell(raw: string, width: number): string[] {
+  const plainLen = (x: string) => x.replace(/\*\*|`/g, "").length;
+  const lines: string[] = [];
+  let cur = "";
+  for (let word of raw.split(/\s+/).filter(Boolean)) {
+    while (plainLen(word) > width) {
+      if (cur) { lines.push(cur); cur = ""; }
+      lines.push(word.slice(0, width));
+      word = word.slice(width);
+    }
+    if (!cur) cur = word;
+    else if (plainLen(cur) + 1 + plainLen(word) <= width) cur += ` ${word}`;
+    else { lines.push(cur); cur = word; }
+  }
+  if (cur || !lines.length) lines.push(cur);
+  const open = { code: false, bold: false };
+  return lines.map((line) => {
+    let out = (open.bold ? "**" : "") + (open.code ? "`" : "") + line;
+    if (((line.match(/`/g) ?? []).length) % 2) open.code = !open.code;
+    if (((line.replace(/`[^`]*`/g, "").match(/\*\*/g) ?? []).length) % 2) open.bold = !open.bold;
+    if (open.code) out += "`";
+    if (open.bold) out += "**";
+    return out;
+  });
+}
+
+function renderTable(head: string[], rows: string[][], align: ("" | "left" | "center" | "right")[], maxWidth?: number): string[] {
+  const rawRows = [head, ...rows];
+  const cols = Math.max(...rawRows.map((r) => r.length));
+  const natural: number[] = [];
+  for (let n = 0; n < cols; n++) natural[n] = Math.max(...rawRows.map((r) => visibleWidth(inlineMd(r[n] ?? ""))));
+  // `│ a │ b │` spends 3 characters per column plus 1 on borders and padding.
+  const width = maxWidth ? fitWidths(natural, maxWidth - (3 * cols + 1)) : natural;
+  // A row whose cells wrap becomes several physical lines; short cells are padded down with blanks.
+  const physical = (r: string[]): string[][] => {
+    const wrapped = Array.from({ length: cols }, (_, n) => (natural[n] > width[n] ? wrapCell(r[n] ?? "", width[n]) : [r[n] ?? ""]));
+    const height = Math.max(...wrapped.map((w) => w.length));
+    return Array.from({ length: height }, (_, k) => wrapped.map((w) => inlineMd(w[k] ?? "")));
+  };
+  const cells = rawRows.map(physical);
   const pad = (cell: string, n: number): string => {
     const gap = Math.max(0, width[n] - visibleWidth(cell));
     if (align[n] === "right") return " ".repeat(gap) + cell;
@@ -120,10 +178,21 @@ function renderTable(head: string[], rows: string[][], align: ("" | "left" | "ce
   // The delimiter row becomes a RULE — it is markup, not content, and printing `|---|---|` in a
   // rendered table is the noise this whole function exists to remove.
   const rule = c.dim(`├${width.map((w) => "─".repeat(w + 2)).join("┼")}┤`);
-  return [line(cells[0], true), rule, ...cells.slice(1).map((r) => line(r, false))];
+  const wrapped = width.some((w, n) => w < natural[n]);
+  // Wrapped rows run together without a separator — a thin rule between them keeps rows apart.
+  const between = c.dim(`├${width.map((w) => "┄".repeat(w + 2)).join("┼")}┤`);
+  const body = cells.slice(1).flatMap((r, k) => [...(wrapped && k ? [between] : []), ...r.map((l) => line(l, false))]);
+  return [...cells[0].map((l) => line(l, true)), rule, ...body];
 }
 
-export function renderMarkdown(text: string): string[] {
+/** Width a rendered table may use: the terminal's, minus the indent chat/log put in front of a body.
+ *  Piped output (no tty) is not wrapped — there is no width to fit, and a reader can reflow it. */
+function defaultWidth(): number | undefined {
+  return process.stdout.isTTY && process.stdout.columns ? process.stdout.columns - 4 : undefined;
+}
+
+export function renderMarkdown(text: string, opts: { width?: number } = {}): string[] {
+  const maxWidth = opts.width ?? defaultWidth();
   const out: string[] = [];
   let fence: string | undefined;
   const lines = text.split("\n");
@@ -153,7 +222,7 @@ export function renderMarkdown(text: string): string[] {
       i += 2;
       while (i < lines.length && lines[i].includes("|") && lines[i].trim()) rows.push(splitRow(lines[i++]));
       i--; // the loop's own i++ consumes the terminator
-      out.push(...renderTable(head, rows, align));
+      out.push(...renderTable(head, rows, align, maxWidth));
       continue;
     }
     if (RULE.test(raw)) {
@@ -188,6 +257,6 @@ export function renderMarkdown(text: string): string[] {
 }
 
 /** Convenience for the common "render a message body into one printable string" case. */
-export function renderMarkdownBlock(text: string): string {
-  return renderMarkdown(text).join("\n");
+export function renderMarkdownBlock(text: string, opts: { width?: number } = {}): string {
+  return renderMarkdown(text, opts).join("\n");
 }
