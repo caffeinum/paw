@@ -119,8 +119,8 @@ export function liveSessionProcs(sessionId: string): LiveSessionProc[] {
  * spawned into a shared folder sits beside other agents' transcripts, and "the newest one there" can be
  * someone else's conversation. Several live matches (a duplicate) → undefined, never a guess.
  */
-export function meshAgentSession(space: string, name: string): { sessionId: string; cwd: string; pid: number } | undefined {
-  const hits: { sessionId: string; cwd: string; pid: number }[] = [];
+export function meshAgentSession(space: string, name: string): { sessionId: string; cwd: string; pid: number; agentFile?: string } | undefined {
+  const hits: { sessionId: string; cwd: string; pid: number; agentFile?: string }[] = [];
   for (const e of readIndex()) {
     if (e.pid === undefined || !isAlive(e.pid)) continue;
     let cmd: string;
@@ -130,7 +130,9 @@ export function meshAgentSession(space: string, name: string): { sessionId: stri
       continue;
     }
     const has = (k: string, v: string) => new RegExp(`(^|\\s)${k}=${v.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(\\s|$)`).test(cmd);
-    if (has("COTAL_NAME", name) && has("COTAL_SPACE", space)) hits.push({ sessionId: e.sessionId, cwd: e.cwd, pid: e.pid });
+    // COTAL_AGENT_FILE: the persona cotal launched it from — the only place its own prompt survives.
+    const agentFile = /(?:^|\s)COTAL_AGENT_FILE=(\S+)/.exec(cmd)?.[1];
+    if (has("COTAL_NAME", name) && has("COTAL_SPACE", space)) hits.push({ sessionId: e.sessionId, cwd: e.cwd, pid: e.pid, agentFile });
   }
   return hits.length === 1 ? hits[0] : undefined;
 }

@@ -11,6 +11,7 @@
  */
 import { DEFAULT_SERVER, registry, type Command } from "@cotal-ai/core";
 import {
+  agentRecord,
   assertUnambiguousTarget,
   canonicalDir,
   folderForName,
@@ -100,7 +101,10 @@ async function stop(argv: string[]): Promise<void> {
 
   const stopped = await withManagerControl(space, DEFAULT_SERVER, (ctl) => stopAgent(ctl, name));
   if (stopped) console.log(`✓ stopped ${name}`);
-  else console.log(c.dim(`"${name}" isn't running — nothing to stop`));
+  else if (rawName === undefined && !agentRecord(space, name)) {
+    // Neither registered nor held by the manager: not an agent at all, most likely a typo.
+    throw new Error(`paw: no agent "${name}" — not registered and not running (\`paw status\` for names)`);
+  } else console.log(c.dim(`"${name}" isn't running — nothing to stop`));
 }
 
 const stopCommand: Command = {

@@ -13,6 +13,7 @@
 import { DEFAULT_SERVER, registry, type Command } from "@cotal-ai/core";
 import { existsSync } from "node:fs";
 import {
+  agentRecord,
   ensureAgentSpawned,
   folderForName,
   psRowAlive,
@@ -31,6 +32,7 @@ import {
   assertRuntimeUsable,
   ensure,
   finishDetachedRestart,
+  managerProcs,
   readRuntimePreference,
   resolveSpace,
   restartLogPath,
@@ -170,6 +172,11 @@ async function restart(argv: string[]): Promise<void> {
   // only reads at startup (a new MCP server, an edited persona), which is exactly when bouncing the
   // whole fleet would be the wrong tool.
   if (agent !== undefined) {
+    // Unregistered AND no manager running → it can't be a live cotal peer either. Say so before
+    // booting a manager just to find out (a typo used to start one).
+    if (!agentRecord(space, agent) && managerProcs(space).length === 0) {
+      throw new Error(`paw: "${agent}" is neither a runtime (${RUNTIMES.join(", ")}) nor a known agent — \`paw status\` lists the agents`);
+    }
     await ensure({ needMesh: true, needManager: true, space });
     await withManagerControl(space, DEFAULT_SERVER, async (ctl) => {
       const folder = await resolveAgentFolder(ctl, space, agent); // a live cotal_spawn peer counts too

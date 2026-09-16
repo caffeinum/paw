@@ -258,6 +258,10 @@ export function registerLivePeer(space: string, row: PsRow): string | undefined 
   const claude = isClaudeHarness(row.agent);
   const session = claude ? meshAgentSession(space, row.name) : undefined;
   const persona = personaFilePath(space, row.name);
+  // Keep the peer's own prompt: cotal launched it from COTAL_AGENT_FILE, and without its body the
+  // registered agent would come back from its next restart as paw's generic folder agent.
+  const own = session?.agentFile && existsSync(session.agentFile) ? readFileSync(session.agentFile, "utf8").replace(/\r\n/g, "\n").match(/^---\n[\s\S]*?\n---\n?([\s\S]*)$/)?.[1] : undefined;
+  if (own?.trim() && !existsSync(persona)) writeFileSync(persona, `---\n---\n${own}`);
   if (existsSync(persona) && readResumeId(persona)) {
     setPersonaKeys(space, row.name, { cwd: row.cwd }); // an orphaned paw persona: keep its own pin
   } else {
