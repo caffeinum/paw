@@ -217,6 +217,12 @@ export function presenceVisible(filter: { kind: "agent" | "channel"; name: strin
 
 /** Presence activity is whatever the hook saw — a whole multi-line Bash script included. A status
  *  line must stay one line, so whitespace collapses and the tail is cut. */
+/** The prompt badge for traffic a filtered session keeps off screen: one count that updates in place
+ *  (the prompt is redrawn, never appended to), so a busy space costs zero lines. */
+export function elsewhereBadge(hidden: number): string {
+  return hidden > 0 ? `${hidden} elsewhere` : "";
+}
+
 export function activityLine(activity: string, max = 100): string {
   const flat = activity.replace(/\s+/g, " ").trim();
   return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
@@ -531,6 +537,8 @@ async function chat(argv: string[]): Promise<void> {
    *  `state.bang`). The `!` is CONSUMED — it is the mode now, shown by the prompt, not a character in
    *  what you typed — so the line you send and the line you see agree. One command per entry. */
   let bang = false;
+  /** Messages a filtered session did not show. Counted, never printed — see elsewhereBadge. */
+  let hiddenCount = 0;
   const bangPrompt = (): string => {
     const folder = curName ? folderForName(space, curName) : undefined;
     return `${c.yellow("$")} ${c.dim(`runs in ${folder ? folder.replace(homedir(), "~") : curName} → then tells ${curName}`)}${c.yellow(">")} `;
@@ -538,7 +546,7 @@ async function chat(argv: string[]): Promise<void> {
   const promptFor = (): string => {
     if (bang && curName) return bangPrompt();
     const where = curName ? `${HUMAN_PEER} → ${curName}${filter?.kind === "agent" ? " (only)" : ""}` : `${HUMAN_PEER} → #${room}`;
-    const badges = [pending.length ? `${pending.length} img` : "", pastes.length ? `${pastes.length} pasted` : ""].filter(Boolean);
+    const badges = [pending.length ? `${pending.length} img` : "", pastes.length ? `${pastes.length} pasted` : "", elsewhereBadge(hiddenCount)].filter(Boolean);
     return c.dim(badges.length ? `${where} [${badges.join(" · ")}]> ` : `${where}> `);
   };
 
@@ -678,8 +686,13 @@ async function chat(argv: string[]): Promise<void> {
     // then advancing the cursor past it would silently consume mail you never saw. It is announced in
     // one dim line so nothing vanishes without trace, and it stays in `paw inbox` to be read for real.
     if (!passesFilter(filter, { kind: meta.kind, from: m.from?.name, channel: (m as { channel?: string }).channel })) {
-      const what = meta.kind === "dm" ? `dm from ${m.from.name}` : `#${(m as { channel?: string }).channel ?? "?"}`;
-      emit(c.dim(`⋯ ${what} hidden by this session's filter — \`paw inbox\` to read it`));
+      // Not shown, not marked read, and not printed either — a line per hidden message was the clutter
+      // this mode exists to remove. The count lives in the prompt and redraws in place.
+      hiddenCount++;
+      if (rl && !closing && !bang) {
+        rl.setPrompt(promptFor());
+        rl.prompt(true);
+      }
       d.ack();
       return;
     }

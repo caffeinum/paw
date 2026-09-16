@@ -10,7 +10,7 @@ import { join } from "node:path";
 process.env.PAW_HOME = mkdtempSync(join(tmpdir(), "paw-chat-home-"));
 process.env.PAW_SPACE = "chattest";
 
-const { completeMention, shouldFollowDm, parseChatTarget, passesFilter, presenceVisible, activityLine } = await import("../src/chat.js");
+const { completeMention, shouldFollowDm, parseChatTarget, passesFilter, presenceVisible, activityLine, elsewhereBadge } = await import("../src/chat.js");
 
 let failures = 0;
 function assert(cond: boolean, msg: string): void {
@@ -124,6 +124,7 @@ const agentF = { kind: "agent" as const, name: "research" };
 const chanF = { kind: "channel" as const, name: "team2027" };
 assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "no filter → everything shows");
 assert(presenceVisible(undefined, "canary"), "no filter → every presence change shows");
+assert(elsewhereBadge(0) === "" && elsewhereBadge(3) === "3 elsewhere", "hidden traffic is one prompt badge, empty when nothing is hidden");
 assert(presenceVisible({ kind: "agent", name: "Queue-EA" }, "queue-ea"), "agent filter: that agent's presence shows");
 assert(!presenceVisible({ kind: "agent", name: "queue-ea" }, "research"), "agent filter: another agent's presence is hidden");
 assert(!presenceVisible({ kind: "channel", name: "general" }, "research"), "channel filter: no agent presence");
