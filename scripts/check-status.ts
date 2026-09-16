@@ -130,6 +130,53 @@ assert(!inferBusy("waiting", true, BUSY_NOW - 2_000, BUSY_NOW), "`waiting` (bloc
 assert(!inferBusy("idle", true, undefined, BUSY_NOW), "no transcript mtime → no inference, never a fabricated one");
 assert(!inferBusy("idle", true, BUSY_NOW + 5_000, BUSY_NOW), "an mtime in the FUTURE (clock skew) is not evidence — not busy");
 
+// ---- hung tool: status rendering + the keeper's Esc decision ----
+{
+  const { hungTool, toolLabel, HUNG_TOOL_SHOW_MS } = await import("../src/status.js");
+  const { toolUnstickDecision, parseToolThreshold, TOOL_UNSTICK_COOLDOWN_MS, UNSTICK_TOOL_DEFAULT_MIN } = await import("../src/unstick.js");
+  const now = 50_000_000;
+  const tool = { id: "toolu_A", name: "Bash", summary: "for j in a b c; do fly ssh console -a queue -C 'cat /data/jobs/result.json'; done", startedMs: now - 51 * 60_000 };
+  const row = { name: "queue-ea", folder: "/q", mesh: "idle", live: true, runtime: "tmux" as const, pin: "p", durable: true, activeMs: now - 5_000, busy: true, conflictPids: [] as number[], inbox: lag(0, 6), tool };
+  assert(hungTool(row, now) === 51 * 60_000, "hungTool: a live agent 51m inside one call → its age");
+  assert(hungTool({ ...row, tool: { ...tool, startedMs: now - 60_000 } }, now) === undefined, "hungTool: a 1-minute tool is normal work, not called out");
+  assert(hungTool({ ...row, live: false }, now) === undefined, "hungTool: offline → no claim");
+  assert(hungTool({ ...row, tool: { ...tool, startedMs: undefined } }, now) === undefined, "hungTool: unknown start → no claim");
+  assert(hungTool({ ...row, tool: { ...tool, startedMs: now + 60_000 } }, now) === undefined, "hungTool: a start in the future (clock skew) is not evidence");
+  assert(HUNG_TOOL_SHOW_MS === 5 * 60_000, "hungTool: shown after 5 minutes");
+  const label = toolLabel(tool);
+  assert(label.startsWith("Bash: for j in a b c") && label.length <= "Bash: ".length + 60, "toolLabel: tool + the first ~60 chars of the command");
+  const out = formatStatus([row], now);
+  assert(/queue-ea\s+in tool 51m/.test(out), "status: a hung tool renders `in tool 51m` in STATUS, not `busy`");
+  assert(out.includes("⚠ tool running 51m (Bash: for j in a b c") && out.includes("paw unstick queue-ea"), "status: the note names the tool, its age, the command, and the fix");
+  assert(!out.includes("inbox stuck"), "status: a hung tool is not mislabelled a deaf inbox");
+  assert(out.includes("1 agent(s) inside a long-running tool"), "status: the footer counts hung tools");
+  assert(/queue-ea\s+busy/.test(formatStatus([{ ...row, tool: { ...tool, startedMs: now - 30_000 } }], now)), "status: a short tool still reads busy");
+
+  const T = 30 * 60_000;
+  const d = (r: object, last?: number, th: number | "off" = T) => toolUnstickDecision({ ...row, ...r } as never, now, last, th === "off" ? undefined : th);
+  assert(d({}).interrupt && /Bash for 51m/.test(d({}).reason), "keeper: live tmux agent 51m inside Bash, threshold 30m → Esc, with the evidence");
+  assert(!d({ live: false }).interrupt, "keeper: offline → never");
+  assert(!d({ runtime: "pty" }).interrupt && !d({ runtime: "cmux" }).interrupt && !d({ runtime: "fg" }).interrupt, "keeper: not tmux → no pane to send Esc to");
+  assert(!d({ tool: undefined }).interrupt, "keeper: no tool in flight → nothing to interrupt");
+  assert(!d({ tool: { ...tool, startedMs: now - 29 * 60_000 } }).interrupt, "keeper: below the threshold → wait");
+  assert(!d({ tool: { ...tool, startedMs: undefined } }).interrupt, "keeper: unknown start → no claim, no Esc");
+  assert(!d({ tool: { ...tool, name: "Task" } }).interrupt && !d({ tool: { ...tool, name: "Agent" } }).interrupt, "keeper: a subagent call is left alone");
+  assert(!d({}, now - TOOL_UNSTICK_COOLDOWN_MS + 1).interrupt, "keeper: inside the cooldown → wait");
+  assert(d({}, now - TOOL_UNSTICK_COOLDOWN_MS - 1).interrupt, "keeper: past the cooldown → eligible again");
+  assert(!d({}, undefined, "off").interrupt, "keeper: disabled threshold → never");
+
+  assert(parseToolThreshold(undefined) === UNSTICK_TOOL_DEFAULT_MIN * 60_000 && UNSTICK_TOOL_DEFAULT_MIN === 30, "PAW_UNSTICK_TOOL_MIN: unset → 30 minutes");
+  assert(parseToolThreshold("") === 30 * 60_000, "PAW_UNSTICK_TOOL_MIN: blank → default");
+  assert(parseToolThreshold("0") === undefined && parseToolThreshold("off") === undefined && parseToolThreshold("OFF") === undefined, "PAW_UNSTICK_TOOL_MIN: 0/off → disabled");
+  assert(parseToolThreshold("45") === 45 * 60_000 && parseToolThreshold("0.5") === 30_000, "PAW_UNSTICK_TOOL_MIN: minutes → ms");
+  let threw = false;
+  try { parseToolThreshold("30m"); } catch { threw = true; }
+  assert(threw, "PAW_UNSTICK_TOOL_MIN: garbage throws — a typo never silently disables or arms it");
+  threw = false;
+  try { parseToolThreshold("-5"); } catch { threw = true; }
+  assert(threw, "PAW_UNSTICK_TOOL_MIN: negative throws");
+}
+
 if (failures > 0) {
   console.error(`\n${failures} paw status check(s) failed`);
   process.exit(1);

@@ -23,7 +23,8 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { restartAgent } from "./addressing.js";
 import type { ManagerControl } from "./control.js";
-import { collectStatus, inboxStuck, type AgentStatus } from "./status.js";
+import { collectStatus, inboxStuck, toolLabel, type AgentStatus } from "./status.js";
+import { interruptTool, parseToolThreshold, readLastToolUnstick, toolUnstickDecision, writeLastToolUnstick } from "./unstick.js";
 
 /** How long the transcript must be silent, with mail waiting, before the agent counts as stuck. */
 export const STUCK_MS = 10 * 60_000;
@@ -74,11 +75,36 @@ export function writeLastUnstick(space: string, name: string, ms: number): void 
   writeFileSync(join(dir, name), `${ms}\n`);
 }
 
-/** One sweep: restart every stuck agent, with its evidence on stderr. Returns what was restarted. */
-export async function unstickSweep(space: string, ctl: ManagerControl, now = Date.now()): Promise<string[]> {
+/**
+ * One sweep, two remedies, each with its evidence on stderr before acting:
+ *  - an agent stuck INSIDE one tool past `PAW_UNSTICK_TOOL_MIN` (default 30m) gets Esc in its tmux pane
+ *    (src/unstick.ts) — never a restart; the session and its work survive, and the queued DMs drain;
+ *  - an idle agent that never drains its inbox is restarted (unstickDecision).
+ * A bad PAW_UNSTICK_TOOL_MIN throws before anything is touched.
+ */
+export async function unstickSweep(space: string, ctl: ManagerControl, now = Date.now()): Promise<{ restarted: string[]; interrupted: string[] }> {
+  const thresholdMs = parseToolThreshold(process.env.PAW_UNSTICK_TOOL_MIN);
   const { rows } = await collectStatus(space, ctl);
   const restarted: string[] = [];
+  const interrupted: string[] = [];
   for (const row of rows) {
+    const t = toolUnstickDecision(row, now, readLastToolUnstick(space, row.name), thresholdMs);
+    if (t.interrupt && row.tool && row.pin) {
+      console.error(`paw keeper: sending Esc to "${row.name}" — ${t.reason} (${toolLabel(row.tool)}, tool_use ${row.tool.id})`);
+      writeLastToolUnstick(space, row.name, now); // before acting: a failed Esc is not retried every tick either
+      try {
+        const out = await interruptTool(space, row.name, row.pin, row.tool);
+        if (out.interrupted) interrupted.push(row.name);
+        console.error(
+          out.interrupted
+            ? `paw keeper: "${row.name}" ${row.tool.name} got its result ${Math.round(out.afterMs / 1000)}s after Esc`
+            : `paw keeper: "${row.name}" still inside ${row.tool.name} ${Math.round(out.afterMs / 1000)}s after Esc — left alone (no restart)`,
+        );
+      } catch (e) {
+        console.error(`paw keeper: couldn't send Esc to "${row.name}": ${(e as Error).message}`);
+      }
+      continue;
+    }
     const d = unstickDecision(row, now, readLastUnstick(space, row.name));
     if (!d.restart) continue;
     console.error(`paw keeper: restarting "${row.name}" — ${d.reason} (ps mesh=${row.mesh}, activeMs=${row.activeMs})`);
@@ -90,5 +116,5 @@ export async function unstickSweep(space: string, ctl: ManagerControl, now = Dat
       console.error(`paw keeper: couldn't restart "${row.name}": ${(e as Error).message}`);
     }
   }
-  return restarted;
+  return { restarted, interrupted };
 }

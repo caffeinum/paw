@@ -20,6 +20,8 @@ const { renderTap } = await import("../src/commands/watch.js");
 const { formatWho, dedupeRoster } = await import("../src/commands/who.js");
 const { extractFileEntry, formatReceived, formatSize } = await import("../src/commands/files.js");
 const { extractBindCode, formatBindOutput, BIND_CODE_PROTO } = await import("../src/commands/bind.js");
+const { parseUnstickArgs } = await import("../src/commands/unstick.js");
+const { tmuxTarget } = await import("../src/unstick.js");
 await import("../src/commands/msg.js");
 await import("../src/commands/ask.js");
 const { folderToName } = await import("../src/addressing.js");
@@ -51,7 +53,7 @@ function throws(fn: () => unknown): boolean {
 }
 
 // Every endpoint-native command is registered with a summary + usage.
-for (const name of ["stop", "msg", "ask", "who", "history", "watch", "files", "bind"]) {
+for (const name of ["stop", "unstick", "msg", "ask", "who", "history", "watch", "files", "bind"]) {
   let cmd: Command | undefined;
   try {
     cmd = registry.resolve<Command>("command", name);
@@ -61,6 +63,17 @@ for (const name of ["stop", "msg", "ask", "who", "history", "watch", "files", "b
   assert(cmd !== undefined, `"${name}" is registered`);
   assert(!!cmd && cmd.summary.length > 0, `"${name}" has a summary`);
   assert(!!cmd && !!cmd.usage && cmd.usage.length > 0, `"${name}" has a usage line`);
+}
+
+// unstick: arg parse + the EXACT tmux target (a prefix match would type Esc into `web-2` for `web`).
+{
+  const p = parseUnstickArgs(["queue-ea", "--force", "--space", "s1"]);
+  assert(p.target === "queue-ea" && p.force && p.space === "s1", "unstick: name, --force and --space parse");
+  assert(!parseUnstickArgs(["x"]).force, "unstick: --force is opt-in");
+  assert(throws(() => parseUnstickArgs([])), "unstick: no target throws");
+  assert(throws(() => parseUnstickArgs(["a", "b"])), "unstick: two targets throw");
+  assert(throws(() => parseUnstickArgs(["a", "--kill"])), "unstick: an unknown flag throws");
+  assert(tmuxTarget("paw", "web") === "=cotal-paw:=web", "unstick: tmux target pins session AND window to an exact match");
 }
 
 // (ps was merged into `paw status`; its rendering is covered by check:status. `paw cotal ps` is the raw view.)
