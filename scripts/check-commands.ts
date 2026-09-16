@@ -460,3 +460,28 @@ console.log("\nall paw command checks passed 🐾");
   }
   console.log("✓ launchd node path is the nvm shim");
 }
+
+// ---- paw optimize: the cutoff parse and the careful restart verdict ----
+{
+  const { parseWindow, parseOptimizeArgs, optimizeVerdict } = await import("../src/commands/optimize.js");
+  const ok = (c: boolean, m: string) => { if (!c) throw new Error(`optimize: ${m}`); console.log(`  ok  optimize: ${m}`); };
+  ok(parseWindow("24h", "--since") === 86_400_000 && parseWindow("30m", "--since") === 1_800_000 && parseWindow("2d", "--since") === 172_800_000, "windows parse (m/h/d)");
+  let threw = false; try { parseWindow("24", "--since"); } catch { threw = true; }
+  ok(threw, "a unitless window fails loud");
+  const a = parseOptimizeArgs(["--since", "48h", "--dry-run", "research"]);
+  ok(a.sinceMs === 172_800_000 && a.dryRun && a.names[0] === "research", "flags + names");
+  const now = 10_000_000_000;
+  const H = 3_600_000;
+  const row = { name: "x", folder: "/x", mesh: "idle", live: true, runtime: "tmux", pin: "p", durable: true, activeMs: now - 30 * H, busy: false, conflictPids: [], inbox: { kind: "lag", queued: 0, unread: 0 } } as never;
+  const one = [{ pid: 7, mesh: true }];
+  const o = { sinceMs: 24 * H };
+  const v = (r: object, p: object[] = one) => optimizeVerdict({ ...(row as object), ...r } as never, p as never, now, o);
+  ok(v({}).act === "restart", "idle, last active 30h ago, alone on its session → restart");
+  ok(v({ activeMs: now - 2 * H }).act === "recent", "active 2h ago → not a candidate");
+  ok(v({ activeMs: undefined }).act === "skip", "unknown last activity → skip, never assume idle");
+  ok(v({}, [...one, { pid: 8, mesh: true }]).act === "skip", "two processes on one session → never touched");
+  ok(v({ busy: true }).act === "skip" && v({ mesh: "working" }).act === "skip", "mid-turn / working → skip");
+  ok(v({ inbox: { kind: "lag", queued: 0, unread: 2 } }).act === "skip", "unread DMs → skip");
+  ok(v({ durable: false }).act === "skip" && v({ harness: "codex" }).act === "skip", "no resumable session / non-claude → skip");
+  ok(v({ live: false }).act === "skip" && v({ runtime: "fg" }).act === "skip", "offline / foreground → skip");
+}

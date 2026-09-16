@@ -40,6 +40,7 @@ import "../src/commands/mcp.js"; // self-registers "mcp" (which MCP servers agen
 import "../src/commands/launchd.js"; // self-registers "launchd" (fleet + web at login); LOCAL — plists + launchctl, self-resolves the manager only to capture the live list
 import "../src/global.js"; // self-registers the "global" command (bring up the always-on $HOME machine agent)
 import "../src/start.js"; // self-registers the "start" command (cold-start the whole registered fleet)
+import "../src/commands/optimize.js"; // self-registers "optimize" (restart long-running idle agents, one at a time, verified)
 import "../src/web.js"; // self-registers the "web" command (local http+ws UI over feed/transcript/status)
 import "../src/commands/complete.js"; // self-registers "completion" + the hidden "__complete" dispatcher (shell-completion)
 import { expandEqFlags, stripCotalNamespace, withDefaultSpace } from "../src/dispatch.js";

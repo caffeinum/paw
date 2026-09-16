@@ -18,6 +18,7 @@ interface SessionIndexEntry {
   name?: string;
   updatedAt?: number;
   pid?: number;
+  startedAt?: number;
 }
 
 /** All parseable entries in the named-session index (skips unreadable/partial files). */
@@ -36,6 +37,7 @@ function readIndex(): SessionIndexEntry[] {
           name: typeof rec.name === "string" ? rec.name : undefined,
           updatedAt: typeof rec.updatedAt === "number" ? rec.updatedAt : undefined,
           pid: typeof rec.pid === "number" ? rec.pid : undefined,
+          startedAt: typeof rec.startedAt === "number" ? rec.startedAt : undefined,
         });
       }
     } catch {
@@ -74,6 +76,8 @@ export interface LiveSessionProc {
   name?: string;
   /** true => a paw/cotal mesh agent (launched with the wake flag); false => a standalone `claude` TUI. */
   mesh: boolean;
+  /** When claude recorded the process starting (ms epoch), if the index carries it. */
+  startedAt?: number;
 }
 
 /** Does `pid` still exist? (signal 0 probes existence without delivering anything.) */
@@ -103,7 +107,7 @@ export function liveSessionProcs(sessionId: string): LiveSessionProc[] {
   const out: LiveSessionProc[] = [];
   for (const e of readIndex()) {
     if (e.sessionId !== sessionId || e.pid === undefined || !isAlive(e.pid)) continue;
-    out.push({ pid: e.pid, name: e.name, mesh: isMeshProc(e.pid) });
+    out.push({ pid: e.pid, name: e.name, mesh: isMeshProc(e.pid), startedAt: e.startedAt });
   }
   return out;
 }
