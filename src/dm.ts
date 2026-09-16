@@ -13,7 +13,7 @@
  *
  * `--name <n>` targets an EXTRA agent instance at a DIRECTORY (multiple claudes in one dir): with a
  * folder target — a plain path OR an address handle (a `repo@branch` worktree / `github:` clone both
- * resolve to a directory) — it `registerInstance`s the name in the agents.json side-table (fail-loud on
+ * resolve to a directory) — it `registerInstance`s the name as an extra persona (fail-loud on
  * a collision) and DMs that instance instead of the folder's default. `--name` fails loud only when
  * combined with a bare agent NAME (a name already IS one agent; an extra is minted against a directory).
  * Mirrors `paw chat`/`paw open` so the same handle form addresses the extra you created there.

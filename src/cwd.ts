@@ -41,7 +41,7 @@ function isInside(root: string, child: string): boolean {
 /** The paw-MANAGED cwd islands: `~/.paw/repos` (clones + PR/branch worktrees) and `~/.paw/web`
  *  (website scratch) — the ONLY dirs paw itself creates and roots agents in, so they're always-allowed
  *  even under a PAW_ROOT pointed at a code tree (else `github:`/url agents break, the latent 2026-07
- *  bug). Deliberately NOT all of ~/.paw: state like spaces/ (personas, folders.json, locks) is never an
+ *  bug). Deliberately NOT all of ~/.paw: state like spaces/ (personas, locks) is never an
  *  agent cwd, so widening the island to the whole home would needlessly weaken confinement. Tolerant:
  *  a not-yet-created subdir contributes nothing to allow. */
 function pawManagedRoots(): string[] {

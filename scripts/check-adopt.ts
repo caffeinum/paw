@@ -134,7 +134,7 @@ writeFileSync(persona, "Plain instructions, no frontmatter.");
 await runAdopt([folder, "--no-start"]);
 const wrapped = readFileSync(persona, "utf8");
 assert(/Plain instructions, no frontmatter\./.test(wrapped), "frontmatter-free persona body preserved (wrapped, not clobbered)");
-assert(/^---\nname: myproj\nresume: new-sess\n---/.test(wrapped), "frontmatter prepended to a frontmatter-free persona");
+assert(/^---\nname: myproj\n(cwd: .*\n)?resume: new-sess\n---/.test(wrapped), "frontmatter prepended to a frontmatter-free persona");
 
 // NAMED SESSIONS: `claude --session-name`/`/rename` records the name in ~/.claude/sessions/<pid>.json
 // (NOT the transcript). `--resume <name>` must resolve name → session id, scoped to the folder.

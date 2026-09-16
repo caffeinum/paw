@@ -7,6 +7,24 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 
 /**
+ * The raw value of one frontmatter `key:` line in an agent file, or undefined when the key (or the
+ * frontmatter) is absent. The persona is paw's whole per-agent record — name, folder (`cwd:`), pin,
+ * harness, flags — so every reader goes through this one parse. Throws if the file is unreadable.
+ */
+export function personaValue(configPath: string, key: string): string | undefined {
+  const frontmatter = readFileSync(resolve(configPath), "utf8").match(/^---\n([\s\S]*?)\n---/);
+  const line = frontmatter?.[1].split("\n").find((l) => l.trimStart().startsWith(`${key}:`));
+  return line?.slice(line.indexOf(`${key}:`) + key.length + 1).trim();
+}
+
+/** A scalar frontmatter value with quotes stripped. A missing file is "no value", not an error: listings
+ *  read every registered agent, and one absent file must not take the whole view down. */
+function scalar(configPath: string | undefined, key: string): string | undefined {
+  if (!configPath || !existsSync(resolve(configPath))) return undefined;
+  return personaValue(configPath, key)?.replace(/^["']|["']$/g, "") || undefined;
+}
+
+/**
  * Read a paw `resume:` session id from an agent file's YAML frontmatter, if present. paw writes this
  * at birth (a minted uuid) and when adopting an existing claude session; a config with no resume key
  * cold-starts. Returns undefined when the key is absent. Throws (fail-loud) if a declared config file
@@ -14,18 +32,12 @@ import { join, resolve } from "node:path";
  */
 export function readResumeId(configPath: string | undefined): string | undefined {
   if (!configPath) return undefined;
-  const raw = readFileSync(resolve(configPath), "utf8");
-  const frontmatter = raw.match(/^---\n([\s\S]*?)\n---/);
-  if (!frontmatter) return undefined;
-  const line = frontmatter[1].split("\n").find((l) => l.trimStart().startsWith("resume:"));
-  if (!line) return undefined;
-  const afterKey = line.slice(line.indexOf("resume:") + "resume:".length);
   // Drop a YAML inline comment (requires whitespace before '#'), then quotes/whitespace.
-  const value = afterKey.replace(/\s+#.*$/, "").trim().replace(/^["']|["']$/g, "");
-  if (value.startsWith("|") || value.startsWith(">")) {
+  const value = personaValue(configPath, "resume")?.replace(/\s+#.*$/, "").trim().replace(/^["']|["']$/g, "");
+  if (value?.startsWith("|") || value?.startsWith(">")) {
     throw new Error(`paw: resume id in ${configPath} looks like a YAML block scalar ("${value}"); a session id must be a single-line value`);
   }
-  return value.length > 0 ? value : undefined;
+  return value || undefined;
 }
 
 /**
@@ -38,13 +50,7 @@ export function readResumeId(configPath: string | undefined): string | undefined
  * A malformed value throws rather than silently launching without the operator's flags.
  */
 export function readClaudeArgs(configPath: string | undefined): string[] {
-  if (!configPath) return [];
-  const raw = readFileSync(resolve(configPath), "utf8");
-  const frontmatter = raw.match(/^---\n([\s\S]*?)\n---/);
-  if (!frontmatter) return [];
-  const line = frontmatter[1].split("\n").find((l) => l.trimStart().startsWith("claudeArgs:"));
-  if (!line) return [];
-  const value = line.slice(line.indexOf("claudeArgs:") + "claudeArgs:".length).trim();
+  const value = configPath ? personaValue(configPath, "claudeArgs") : undefined;
   if (!value) return [];
   let parsed: unknown;
   try {
@@ -57,26 +63,11 @@ export function readClaudeArgs(configPath: string | undefined): string[] {
   return parsed as string[];
 }
 
-/**
- * Read the `shareTools:` line from an agent file's frontmatter — which of the operator's MCP servers
- * this agent gets, forwarded to the manager as `--share-tools` at spawn.
- *
- * Absent ⇒ undefined ⇒ EVERY server declared for the connector, which is cotal's own default and the
- * behaviour `paw mcp add` promises ("adds to all agents"). `none` is a real value meaning share
- * nothing, and is deliberately distinct from absent — "I chose none" must not read as "I said nothing".
- */
 /** The persona's `agent:` frontmatter — which CONNECTOR runs this agent (codex, opencode, …).
  *  Absent ⇒ the manager's default ("claude", paw's opinionated connector). Durable in the persona so a
  *  restart/revival/wake respawns the SAME harness, not a claude with someone else's transcript. */
 export function readAgentType(configPath: string | undefined): string | undefined {
-  if (!configPath || !existsSync(resolve(configPath))) return undefined;
-  const raw = readFileSync(resolve(configPath), "utf8");
-  const frontmatter = raw.match(/^---\n([\s\S]*?)\n---/);
-  if (!frontmatter) return undefined;
-  const line = frontmatter[1].split("\n").find((l) => l.trimStart().startsWith("agent:"));
-  if (!line) return undefined;
-  const value = line.slice(line.indexOf("agent:") + "agent:".length).trim().replace(/^["']|["']$/g, "");
-  return value.length > 0 ? value : undefined;
+  return scalar(configPath, "agent");
 }
 
 /** True when this agent writes a claude jsonl that `paw log` / the web trace can tail.
@@ -86,20 +77,21 @@ export function isClaudeHarness(agentType: string | undefined): boolean {
   return agentType === "claude" || agentType === "cotal" || agentType === "paw";
 }
 
+/**
+ * Read the `shareTools:` line from an agent file's frontmatter — which of the operator's MCP servers
+ * this agent gets, forwarded to the manager as `--share-tools` at spawn.
+ *
+ * Absent ⇒ undefined ⇒ EVERY server declared for the connector, which is cotal's own default and the
+ * behaviour `paw mcp add` promises ("adds to all agents"). `none` is a real value meaning share
+ * nothing, and is deliberately distinct from absent — "I chose none" must not read as "I said nothing".
+ */
 export function readShareTools(configPath: string | undefined): string | undefined {
-  if (!configPath) return undefined;
-  // A registered agent whose persona file is gone has no selection recorded — that is an answer, not an
-  // error. Unlike `readResumeId`, which fails loud because a missing pin at SPAWN time would silently
-  // cold-start an amnesiac session, this is read by listings across every registered agent, and one
-  // absent file must not take the whole view down.
-  if (!existsSync(resolve(configPath))) return undefined;
-  const raw = readFileSync(resolve(configPath), "utf8");
-  const frontmatter = raw.match(/^---\n([\s\S]*?)\n---/);
-  if (!frontmatter) return undefined;
-  const line = frontmatter[1].split("\n").find((l) => l.trimStart().startsWith("shareTools:"));
-  if (!line) return undefined;
-  const value = line.slice(line.indexOf("shareTools:") + "shareTools:".length).trim().replace(/^["']|["']$/g, "");
-  return value.length > 0 ? value : undefined;
+  return scalar(configPath, "shareTools");
+}
+
+/** The folder a registered agent runs in (`cwd:`) — undefined for an orphaned persona (no folder). */
+export function readCwd(configPath: string | undefined): string | undefined {
+  return scalar(configPath, "cwd");
 }
 
 /**
@@ -110,12 +102,7 @@ export function readShareTools(configPath: string | undefined): string | undefin
  * (--session-id) — making the very first session durable, so the next restart can resume it.
  */
 export function transcriptExists(sessionId: string): boolean {
-  const projects = join(homedir(), ".claude", "projects");
-  if (!existsSync(projects)) return false;
-  for (const dir of readdirSync(projects)) {
-    if (existsSync(join(projects, dir, `${sessionId}.jsonl`))) return true;
-  }
-  return false;
+  return transcriptPath(sessionId) !== undefined;
 }
 
 /** The path to `sessionId`'s transcript, or undefined if claude has none yet. Same cwd-agnostic scan as
@@ -133,11 +120,6 @@ export function transcriptPath(sessionId: string): string | undefined {
 /** The last-modified time (ms) of `sessionId`'s transcript — a proxy for the agent's "last active"
  *  — or undefined if it has no transcript yet. Same cwd-agnostic scan as {@link transcriptExists}. */
 export function transcriptMtime(sessionId: string): number | undefined {
-  const projects = join(homedir(), ".claude", "projects");
-  if (!existsSync(projects)) return undefined;
-  for (const dir of readdirSync(projects)) {
-    const f = join(projects, dir, `${sessionId}.jsonl`);
-    if (existsSync(f)) return statSync(f).mtimeMs;
-  }
-  return undefined;
+  const file = transcriptPath(sessionId);
+  return file ? statSync(file).mtimeMs : undefined;
 }

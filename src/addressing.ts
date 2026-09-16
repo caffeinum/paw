@@ -1,18 +1,17 @@
 /**
- * Folder → agent addressing for paw. The cotal mesh carries an agent's NAME (in presence) but not
- * its working directory — neither presence/roster nor manager `ps` expose cwd. So paw owns the
- * folder↔name mapping itself: a per-space registry under ~/.paw that turns a canonical folder path
- * into a stable, collision-safe agent name. Spawning + presence still go through cotal (the manager
- * control plane and the endpoint roster); this module only adds the folder-addressing layer.
+ * Folder → agent addressing for paw. The manager's ps row carries a LIVE agent's cwd, but the manager
+ * is not durable (empty after a restart) and never knew the session id, so paw keeps the durable part
+ * itself — in the persona files cotal already loads at spawn (see {@link agentRecord}). Spawning +
+ * presence still go through cotal (the manager control plane and the endpoint roster).
  *
  * Built on cotal, never forking it: spawns invoke the manager's own `spawn` command on its v0.4
  * service endpoint (`src/control.ts`) exactly as cotal's own `spawn` does, and the human peer is a
  * plain CotalEndpoint.
  */
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import {
   CotalEndpoint,
   DEV_OWNER,
@@ -27,8 +26,8 @@ import { pawCotalRoot } from "./cotal-root.js";
 import { confineAndTrustCwd } from "./cwd.js";
 import { readForeground } from "./foreground.js";
 import { withFileLock, withFileLockAsync } from "./lock.js";
-import { liveSessionProcs } from "./named.js";
-import { readResumeId, readAgentType, readShareTools, transcriptMtime } from "./session.js";
+import { liveSessionProcs, meshAgentSession } from "./named.js";
+import { isClaudeHarness, personaValue, readAgentType, readCwd, readResumeId, readShareTools, transcriptMtime } from "./session.js";
 import { defaultTmuxEnv, readRuntimeMarker } from "./lifecycle.js";
 import { nudgeTmuxConfirm } from "./native-attach.js";
 import { HOST_RE } from "./url.js";
@@ -87,223 +86,157 @@ function shortHash(s: string): string {
   return createHash("sha256").update(s).digest("hex").slice(0, 6);
 }
 
-function registryFile(space: string): string {
-  return join(spaceDir(space), "folders.json");
+/** A desired agent name reduced to the manager's safe charset (may be empty — callers fail loud). */
+export function cleanAgentName(desired: string): string {
+  return desired.replace(/[^A-Za-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "");
 }
 
-function readFolderMap(space: string): Record<string, string> {
-  const file = registryFile(space);
-  if (!existsSync(file)) return {};
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(readFileSync(file, "utf8"));
-  } catch (e) {
-    throw new Error(`paw: folder registry ${file} is corrupt (${(e as Error).message}); fix or delete it`);
-  }
-  // typeof [] === "object", so an array would slip past a bare object check and then be silently
-  // re-stringified by writeFolderMap (mappings never persist → folders share agents). Reject it.
-  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-    throw new Error(`paw: folder registry ${file} is not a JSON object; fix or delete it`);
-  }
-  return parsed as Record<string, string>;
-}
-
-function writeFolderMap(space: string, map: Record<string, string>): void {
-  const file = registryFile(space);
-  const tmp = `${file}.${process.pid}.tmp`;
-  writeFileSync(tmp, JSON.stringify(map, null, 2));
-  renameSync(tmp, file);
-}
+/** One registered agent: its name, the folder it runs in, and whether it is an EXTRA (a 2nd+ agent at
+ *  that folder, minted via `--name`) rather than the folder's DEFAULT. */
+export type AgentRecord = { name: string; folder: string; extra: boolean };
 
 /**
- * The EXTRA-instance side-table: `~/.paw/spaces/<space>/agents.json`, `Record<extraName, folder>`.
- * `folders.json` still maps folder → its ONE default agent; agents.json holds only 2nd+ agents at a
- * folder (minted via `paw chat/dm/open --name <n>`). An agent lives in EXACTLY one file — default in
- * folders.json, extra in agents.json, never both — so the two can't desync. Absent file ⇒ {} (a
- * plain 1:1 install has no agents.json and behaves byte-identically to before the side-table).
+ * THE REGISTRY IS THE PERSONA FILES. Every paw agent already has `personas/<name>.md` — the agent file
+ * cotal's manager loads at spawn (`config`), carrying its name, `resume:` pin, `agent:` harness and
+ * flags. It used to live beside two side-tables (folders.json: folder → default name, agents.json:
+ * extra name → folder), and three stores for one fact is three places for it to disagree. The folder
+ * now rides IN the persona as `cwd:` (cotal keeps unmodelled keys verbatim in `AgentDef.meta`), an extra
+ * carries `paw-extra: true`, and the filename is the name — so global name-uniqueness is the
+ * filesystem's, and forgetting an agent is deleting one file. A persona without `cwd:` is an ORPHAN
+ * (`paw rm` can still remove it by name, nothing addresses it). The manager itself cannot be the store:
+ * it comes up empty after a restart and never knew the session id.
  */
-function agentIndexFile(space: string): string {
-  return join(spaceDir(space), "agents.json");
+export function agentRecord(space: string, name: string): AgentRecord | undefined {
+  migrateRegistry(space);
+  if (!/^[A-Za-z0-9_-]+$/.test(name)) return undefined; // a path-ish token is never a persona filename
+  const file = personaFilePath(space, name);
+  const folder = readCwd(file);
+  return folder ? { name, folder, extra: personaValue(file, "paw-extra") === "true" } : undefined;
 }
 
-/** Read the extra-instance side-table (fail loud on corrupt / non-object JSON, exactly like
- *  readFolderMap). Exported so `paw rm`/`paw rename` can tell an EXTRA from a DEFAULT before deciding
- *  which registry mutator to call. */
-export function readAgentIndex(space: string): Record<string, string> {
-  const file = agentIndexFile(space);
-  if (!existsSync(file)) return {};
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(readFileSync(file, "utf8"));
-  } catch (e) {
-    throw new Error(`paw: agent index ${file} is corrupt (${(e as Error).message}); fix or delete it`);
-  }
-  // typeof [] === "object": an array would slip a bare object check and get silently re-stringified,
-  // dropping the name→folder map. Reject it, same as readFolderMap.
-  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-    throw new Error(`paw: agent index ${file} is not a JSON object; fix or delete it`);
-  }
-  return parsed as Record<string, string>;
+/** Read-only: every registered agent in the space. Backs `paw status`, `paw start`, completion. */
+export function listAgents(space: string): AgentRecord[] {
+  migrateRegistry(space);
+  return readdirSync(dirname(personaFilePath(space, "_")))
+    .filter((f) => f.endsWith(".md"))
+    .flatMap((f) => agentRecord(space, f.slice(0, -".md".length)) ?? []);
 }
 
-function writeAgentIndex(space: string, map: Record<string, string>): void {
-  const file = agentIndexFile(space);
-  const tmp = `${file}.${process.pid}.tmp`;
-  writeFileSync(tmp, JSON.stringify(map, null, 2));
-  renameSync(tmp, file);
-}
-
-/**
- * Resolve a canonical folder to its stable paw agent name, persisting the mapping. The common case
- * is the folder's basename ("web"); on a collision with a *different* folder already mapped to that
- * name, the name is qualified with a short path hash ("web-1a2b3c") so two folders never silently
- * share one agent. Deterministic and idempotent: the same folder always resolves to the same name.
- */
-/** Read-only: the registered agent name for a canonical folder, or undefined if not yet mapped. Used
- *  by list-style commands (e.g. `paw sessions`) that must not register a folder just to inspect it. */
+/** Read-only: the folder's DEFAULT agent name, or undefined if it has none (never registers). */
 export function lookupFolderName(space: string, canonical: string): string | undefined {
-  return readFolderMap(space)[canonical];
+  return listAgents(space).find((a) => a.folder === canonical && !a.extra)?.name;
 }
 
-/** Read-only: every registered (folder, name) pair for the space. Backs list-style views like
- *  `paw status` that report on all known agents, live or not. */
-export function listAgents(space: string): Array<{ folder: string; name: string }> {
-  return [
-    ...Object.entries(readFolderMap(space)).map(([folder, name]) => ({ folder, name })),
-    // Extras (agents.json is name→folder, the inverse of folders.json) so multi-instance agents show
-    // up in `paw status` and every listing view alongside the folder's default.
-    ...Object.entries(readAgentIndex(space)).map(([name, folder]) => ({ folder, name })),
-  ];
+/** Reverse lookup: the folder of agent `name` (default or extra), or undefined if unregistered. */
+export function folderForName(space: string, name: string): string | undefined {
+  return agentRecord(space, name)?.folder;
 }
 
+/** Every agent NAME at `canonical`: its default (if any) first, then its extras. Named
+ *  `agentNamesForFolder` (NOT `namesForFolder`, which named.ts already uses for SESSIONS). */
+export function agentNamesForFolder(space: string, canonical: string): string[] {
+  return listAgents(space)
+    .filter((a) => a.folder === canonical)
+    .sort((a, b) => Number(a.extra) - Number(b.extra))
+    .map((a) => a.name);
+}
+
+/** Write (or remove, with undefined) frontmatter keys in `name`'s persona, keeping the rest of the file.
+ *  A missing persona is created with an EMPTY body — a registered-but-unborn agent; `ensurePersonaFile`
+ *  gives it a pin and a body at its first spawn. */
+export function setPersonaKeys(space: string, name: string, keys: Record<string, string | undefined>): void {
+  const file = personaFilePath(space, name);
+  // Normalize CRLF so the LF-anchored frontmatter regex matches a Windows-authored persona — otherwise
+  // it would fall through and silently discard the body.
+  const existing = existsSync(file) ? readFileSync(file, "utf8").replace(/\r\n/g, "\n") : "---\n---\n";
+  const fm = existing.match(/^---\n(?:([\s\S]*?)\n)?---\n?([\s\S]*)$/);
+  // Existing content with no parseable frontmatter is never clobbered: it becomes the body.
+  const [head, body] = fm ? [fm[1] ?? "", fm[2]] : ["", `${existing.trim()}\n`];
+  const lines = head.split("\n").filter((l) => l && !Object.keys(keys).some((k) => l.trimStart().startsWith(`${k}:`)));
+  if (!lines.some((l) => l.trimStart().startsWith("name:"))) lines.unshift(`name: ${name}`);
+  for (const [k, v] of Object.entries(keys)) if (v !== undefined) lines.push(`${k}: ${v}`);
+  writeFileSync(file, `---\n${lines.join("\n")}\n---\n${body}`);
+}
+
+/** Is `name` free to give to (folder, extra)? Free = no persona, an orphan persona (no folder), or
+ *  already exactly this registration. */
+function nameFree(space: string, name: string, folder: string, extra: boolean): boolean {
+  const rec = agentRecord(space, name);
+  return !rec || (rec.folder === folder && rec.extra === extra);
+}
+
+/** Serialize a registry read-modify-write across paw processes (two claims of one name must not both win). */
+export function withRegistryLock<T>(space: string, fn: () => T): T {
+  return withFileLock(join(spaceDir(space), "registry.lock"), fn);
+}
+
+/**
+ * Resolve a canonical folder to its stable DEFAULT agent name, registering it if new. The common case
+ * is the folder's basename ("web"); if another agent already holds that name, it's qualified with a
+ * short path hash ("web-1a2b3c") so two folders never silently share one agent. Idempotent. Locked so
+ * two concurrent paw processes can't both pick the same name for different folders.
+ */
 export function folderToName(space: string, canonical: string): string {
-  // Lock the whole read-modify-write: without it two concurrent paw processes can each read an empty
-  // map, both pick the same name, and clobber each other's write — mapping two folders to one agent
-  // (and losing entries). Re-read INSIDE the lock so each writer sees the prior one's commit.
-  return withFileLock(`${registryFile(space)}.lock`, () => {
-    const map = readFolderMap(space);
-    const existing = map[canonical];
-    if (existing) return existing;
-
-    const base = sanitizeAgentName(canonical);
-    // Include agents.json keys so a minted DEFAULT can't collide with an existing EXTRA instance
-    // (readAgentIndex reads a DIFFERENT file, so it's safe inside the folders.json lock).
-    const taken = new Set([...Object.values(map), ...Object.keys(readAgentIndex(space))]);
-    let name = base;
-    if (taken.has(name)) {
-      name = `${base}-${shortHash(canonical)}`;
-      if (taken.has(name)) {
-        throw new Error(`paw: could not derive a unique agent name for ${canonical} ("${name}" already in use)`);
-      }
-    }
-    map[canonical] = name;
-    writeFolderMap(space, map);
-    return name;
-  });
+  return withRegistryLock(space, () => lookupFolderName(space, canonical) ?? claimName(space, canonical, sanitizeAgentName(canonical), false));
 }
 
-/** Force this folder's agent name to `desired` (cleaned to the safe charset), creating OR renaming the
- *  mapping; qualifies with a path hash if another folder already holds that name. Returns
- *  `{ name, previous }` so the caller can retire an agent that was running under the old name. Used by
- *  adopt to name an agent after its (possibly just-renamed) session. */
+/** Register `base` (or its hash-qualified form) for (folder, extra). Caller holds the registry lock. */
+function claimName(space: string, canonical: string, base: string, extra: boolean): string {
+  const name = nameFree(space, base, canonical, extra) ? base : `${base}-${shortHash(canonical)}`;
+  if (!nameFree(space, name, canonical, extra)) {
+    throw new Error(`paw: could not derive a unique agent name for ${canonical} ("${name}" already in use)`);
+  }
+  setPersonaKeys(space, name, { cwd: canonical, "paw-extra": extra ? "true" : undefined });
+  return name;
+}
+
+/** Force this folder's DEFAULT agent name to `desired` (cleaned to the safe charset), creating it or
+ *  replacing the previous default (whose persona is left as an orphan, as before); hash-qualified if
+ *  another agent holds the name. Returns `{ name, previous }` so the caller can retire the old name. */
 export function setFolderName(space: string, canonical: string, desired: string): { name: string; previous?: string } {
-  return withFileLock(`${registryFile(space)}.lock`, () => {
-    const map = readFolderMap(space);
-    const previous = map[canonical];
-    const cleaned = desired.replace(/[^A-Za-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "") || sanitizeAgentName(canonical);
+  return withRegistryLock(space, () => {
+    const previous = lookupFolderName(space, canonical);
+    const cleaned = cleanAgentName(desired) || sanitizeAgentName(canonical);
     if (previous === cleaned) return { name: cleaned, previous };
-    // Exclude this folder's own current default, but include every OTHER default and every EXTRA
-    // (agents.json keys) so a forced default name can't collide with an extra instance.
-    const taken = new Set([
-      ...Object.entries(map).filter(([f]) => f !== canonical).map(([, n]) => n),
-      ...Object.keys(readAgentIndex(space)),
-    ]);
-    let name = cleaned;
-    if (taken.has(name)) {
-      name = `${cleaned}-${shortHash(canonical)}`;
-      if (taken.has(name)) throw new Error(`paw: could not assign name "${cleaned}" to ${canonical} ("${name}" already in use)`);
-    }
-    map[canonical] = name;
-    writeFolderMap(space, map);
+    const name = claimName(space, canonical, cleaned, false);
+    if (previous && previous !== name) setPersonaKeys(space, previous, { cwd: undefined });
     return { name, previous };
   });
 }
 
-/** Remove the (folder → name) mapping for `canonical`, returning the removed agent name (or undefined
- *  if the folder wasn't registered). Locked RMW, mirroring folderToName/setFolderName so a concurrent
- *  registration can't clobber the delete. Used by `paw rm` to forget an agent. */
-export function removeFolder(space: string, canonical: string): string | undefined {
-  return withFileLock(`${registryFile(space)}.lock`, () => {
-    const map = readFolderMap(space);
-    const name = map[canonical];
-    if (name === undefined) return undefined;
-    delete map[canonical];
-    writeFolderMap(space, map);
-    return name;
-  });
-}
-
 /**
- * Register an EXTRA agent instance `name` at `canonical` (a 2nd+ agent in a folder, opt-in via
- * `--name`). Writes agents.json, NOT folders.json — the folder's default is left untouched. Under the
- * SAME lock as the folder mutators so folders.json + agents.json writes serialize together (the global
- * name-uniqueness invariant spans both files). Idempotent (re-registering the same name→folder is a
- * no-op that returns the cleaned name). Fails loud if the cleaned name is empty or already taken by
- * anything else — a DIFFERENT folder's default, another extra, or (edge) this folder's OWN default —
- * naming the holder so the operator can pick a different `--name`. Never fabricates a fallback name.
+ * Register an EXTRA agent instance `name` at `canonical` (opt-in via `--name`); the folder's default is
+ * untouched. Idempotent for the same (name, folder). Fails loud if the cleaned name is empty or held by
+ * any other agent — naming the holder — and never fabricates a fallback name.
  */
 export function registerInstance(space: string, canonical: string, name: string): string {
-  const cleaned = name.replace(/[^A-Za-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "");
+  const cleaned = cleanAgentName(name);
   if (!cleaned) {
     throw new Error(`paw: --name "${name}" is empty after cleaning to the safe charset; pick a name with letters/digits`);
   }
-  return withFileLock(`${registryFile(space)}.lock`, () => {
-    const extras = readAgentIndex(space);
-    if (extras[cleaned] === canonical) return cleaned; // idempotent re-register
-    // Global uniqueness across folders.json values ∪ agents.json keys.
-    const defaultHolder = Object.entries(readFolderMap(space)).find(([, n]) => n === cleaned)?.[0];
-    if (defaultHolder !== undefined) {
-      const self = defaultHolder === canonical ? " (this folder's own default agent)" : "";
-      throw new Error(
-        `paw: agent name "${cleaned}" is already the default agent for ${defaultHolder}${self}; pick a different --name`,
-      );
+  return withRegistryLock(space, () => {
+    const holder = agentRecord(space, cleaned);
+    if (holder && !(holder.folder === canonical && holder.extra)) {
+      const what = holder.extra ? "an extra agent" : "the default agent";
+      const self = holder.folder === canonical ? " (this folder's own default agent)" : "";
+      throw new Error(`paw: agent name "${cleaned}" is already ${what} for ${holder.folder}${self}; pick a different --name`);
     }
-    const extraHolder = extras[cleaned];
-    if (extraHolder !== undefined) {
-      throw new Error(`paw: agent name "${cleaned}" is already an extra agent for ${extraHolder}; pick a different --name`);
-    }
-    extras[cleaned] = canonical;
-    writeAgentIndex(space, extras);
+    setPersonaKeys(space, cleaned, { cwd: canonical, "paw-extra": "true" });
     return cleaned;
   });
 }
 
-/** Every agent NAME registered for `canonical`: the folder's default (if mapped) plus every extra
- *  instance in agents.json whose value is that folder. Named `agentNamesForFolder` (NOT `namesForFolder`,
- *  which named.ts already uses for SESSIONS) to avoid a collision. */
-export function agentNamesForFolder(space: string, canonical: string): string[] {
-  const names: string[] = [];
-  const def = readFolderMap(space)[canonical];
-  if (def !== undefined) names.push(def);
-  for (const [name, folder] of Object.entries(readAgentIndex(space))) if (folder === canonical) names.push(name);
-  return names;
-}
-
 /**
- * The agent `paw chat .` / `paw attach .` / `paw dm .` talks to when `--name` is absent.
- *
- * Default (folders.json) wins — extras stay opt-in via `--name`. If there is NO default, the sole
- * extra in agents.json IS the folder's agent: `cd ~/paw-opencode && paw chat .` must reach
- * `opencode1`, not mint a sibling claude default. Several extras and no default → fail loud
- * (never invent which extra, never spawn a claude beside them). An unregistered folder still
- * mints a default via {@link folderToName}.
+ * The agent `paw chat .` / `paw attach .` / `paw dm .` talks to when `--name` is absent: the folder's
+ * default; with no default, its sole extra (`cd ~/paw-opencode && paw chat .` reaches `opencode1`
+ * rather than minting a sibling claude); several extras and no default → fail loud; nothing
+ * registered → mint the default via {@link folderToName}.
  */
 export function resolveFolderAgent(space: string, canonical: string): string {
-  const def = lookupFolderName(space, canonical);
-  if (def) return def;
-  const extras = agentNamesForFolder(space, canonical); // no default → extras only
-  if (extras.length === 1) return extras[0];
-  if (extras.length > 1) {
+  const [first, ...rest] = agentNamesForFolder(space, canonical);
+  if (first !== undefined && (!agentRecord(space, first)?.extra || rest.length === 0)) return first;
+  if (first !== undefined) {
+    const extras = [first, ...rest];
     throw new Error(
       `paw: ${canonical} has extra agents ${extras.map((n) => `"${n}"`).join(", ")} and no default — ` +
         `pick one with --name (e.g. \`paw chat . --name ${extras[0]}\`)`,
@@ -312,28 +245,68 @@ export function resolveFolderAgent(space: string, canonical: string): string {
   return folderToName(space, canonical);
 }
 
-/** Remove an EXTRA agent from the side-table, returning its folder (or undefined if `name` wasn't an
- *  extra — a folder's DEFAULT is removed by removeFolder instead). Locked RMW, mirroring removeFolder
- *  so a concurrent registerInstance can't clobber the delete. Used by `paw rm` of an extra. */
-export function removeAgentName(space: string, name: string): string | undefined {
-  return withFileLock(`${registryFile(space)}.lock`, () => {
-    const extras = readAgentIndex(space);
-    const folder = extras[name];
-    if (folder === undefined) return undefined;
-    delete extras[name];
-    writeAgentIndex(space, extras);
-    return folder;
-  });
+/**
+ * Register a LIVE agent paw never spawned — a `cotal_spawn`/`paw cotal spawn` peer — from what the
+ * manager's ps row carries (cwd, harness, model) plus the one thing it doesn't: the claude session the
+ * live process holds (via claude's session index). After this it is an ordinary paw agent: `paw
+ * restart` revives it on the same session, `paw start`/`log`/`rm` address it. Returns its folder, or
+ * undefined when the row has no cwd (nothing honest to register).
+ */
+export function registerLivePeer(space: string, row: PsRow): string | undefined {
+  if (agentRecord(space, row.name)) return agentRecord(space, row.name)!.folder;
+  if (!row.cwd || !/^[A-Za-z0-9_-]+$/.test(row.name)) return undefined;
+  const claude = isClaudeHarness(row.agent);
+  const session = claude ? meshAgentSession(space, row.name) : undefined;
+  const persona = personaFilePath(space, row.name);
+  if (existsSync(persona) && readResumeId(persona)) {
+    setPersonaKeys(space, row.name, { cwd: row.cwd }); // an orphaned paw persona: keep its own pin
+  } else {
+    setPersonaKeys(space, row.name, { cwd: row.cwd, resume: session?.sessionId, agent: claude ? undefined : row.agent, model: row.model });
+  }
+  return row.cwd;
 }
 
-/** Reverse lookup: the folder currently mapped to agent `name`, or undefined. Lets chat resurrect a
- *  known-but-offline agent by `@name` (it needs the cwd to respawn, which only the registry holds). */
-export function folderForName(space: string, name: string): string | undefined {
-  for (const [folder, n] of Object.entries(readFolderMap(space))) if (n === name) return folder;
-  // Fall back to the extra-instance side-table so an EXTRA agent (created via --name) also resolves
-  // to its folder — chat/dm/open/rm/rename all reach extras through this one reverse lookup.
-  return readAgentIndex(space)[name];
+/** The folder of agent `name`: its registration, else — for a live peer the manager lists but paw never
+ *  spawned — registered on the spot from its ps row ({@link registerLivePeer}). Undefined = unknown. */
+export async function resolveAgentFolder(ctl: ManagerControl, space: string, name: string): Promise<string | undefined> {
+  const known = folderForName(space, name);
+  if (known) return known;
+  const ps = await ctl.ps();
+  const row = ps.ok ? ((ps.data as PsRow[]) ?? []).find((r) => r.name === name) : undefined;
+  return row ? registerLivePeer(space, row) : undefined;
 }
+
+/**
+ * One-time migration from the pre-persona registry: fold every folders.json / agents.json entry into its
+ * persona as `cwd:` (+ `paw-extra`), creating an unborn persona where none existed, then drop a
+ * `registry.v2` marker so the side-tables are never read again. The legacy files are LEFT in place on
+ * purpose: daemons run from an immutable release (`paw web`) that still reads them until the next
+ * `paw release`, and deleting them under it would empty its roster. Idempotent — only fills a persona
+ * that has no folder — so two processes migrating at once converge on the same result.
+ */
+function migrateRegistry(space: string): void {
+  const dir = spaceDir(space);
+  if (existsSync(join(dir, "registry.v2"))) return;
+  for (const [file, extra] of [["folders.json", false], ["agents.json", true]] as const) {
+    const path = join(dir, file);
+    if (!existsSync(path)) continue;
+    let map: unknown;
+    try {
+      map = JSON.parse(readFileSync(path, "utf8"));
+    } catch (e) {
+      throw new Error(`paw: legacy registry ${path} is corrupt (${(e as Error).message}); fix or delete it`);
+    }
+    if (typeof map !== "object" || map === null || Array.isArray(map)) {
+      throw new Error(`paw: legacy registry ${path} is not a JSON object; fix or delete it`);
+    }
+    for (const [key, value] of Object.entries(map as Record<string, string>)) {
+      const [folder, name] = extra ? [value, key] : [key, value];
+      if (!readCwd(personaFilePath(space, name))) setPersonaKeys(space, name, { cwd: folder, "paw-extra": extra ? "true" : undefined });
+    }
+  }
+  writeFileSync(join(dir, "registry.v2"), `personas are the registry (migrated ${new Date().toISOString()})\n`);
+}
+
 
 /**
  * Fail loud when a BARE positional is genuinely ambiguous: it's BOTH a registered agent NAME and the
@@ -464,33 +437,29 @@ export function withChannelGrants(raw: string): string | undefined {
 
 export function ensurePersonaFile(space: string, name: string, opts?: { brief?: string; kind?: Kind }): string {
   const file = personaFilePath(space, name);
-  if (existsSync(file)) {
-    // Self-heal a persona minted before paw granted channel scope (see GRANT_LINES). Every spawn
-    // passes through here, so the fleet upgrades as its agents restart rather than needing a
-    // migration pass — and a persona that already declares its scope is left untouched.
-    const upgraded = withChannelGrants(readFileSync(file, "utf8"));
-    if (upgraded !== undefined) writeFileSync(file, upgraded);
+  // BIRTH: a persona that doesn't exist, or one registration created with an empty body (an unborn
+  // agent — see setPersonaKeys). Mint a stable `resume:` id so the agent is DURABLE from its first boot:
+  // the connector creates the session at this id (--session-id), then resumes it (--resume) on every
+  // restart. A pinless persona makes claude cold-start a fresh, amnesiac session each launch — the agent
+  // silently loses all history on any mesh bounce / reboot (the paw-reset bug of 2026-06-26). An adopted
+  // pin already written is kept; a born persona is never rewritten (a hand-customized body survives).
+  // A URL-sourced agent (web/pr/…) carries a `paw-kind:` marker (absent ⇒ folder) and a per-kind
+  // brief. NOT `kind:` — cotal's own AgentDef reserves that key and hard-validates it to
+  // "agent"/"endpoint" (agent-file.js), so paw's unrelated folder/worktree/repo/pr/web marker needs
+  // its own namespaced key or a URL-sourced spawn fails loud on load ("kind" must be "agent" or
+  // "endpoint" — the eve.md incident, 2026-07-22). An unmodelled key is kept verbatim in AgentDef.meta.
+  const existing = existsSync(file) ? readFileSync(file, "utf8").match(/^---\r?\n[\s\S]*?\r?\n---\r?\n?([\s\S]*)$/) : null;
+  if (!existsSync(file) || (existing && !existing[1].trim())) {
+    const kind = opts?.kind && opts.kind !== "folder" ? opts.kind : undefined;
+    setPersonaKeys(space, name, { resume: (existing && readResumeId(file)) || randomUUID(), "paw-kind": kind });
+    const body = opts?.brief ?? `You are the paw agent for the "${name}" folder — a peer on the cotal mesh, acting unattended on this repository.`;
+    writeFileSync(file, `${readFileSync(file, "utf8")}${body}\n`);
   }
-  if (!existsSync(file)) {
-    // Mint a stable `resume:` id at birth so the agent is DURABLE from its first boot: the connector
-    // creates the session at this id (--session-id), then resumes it (--resume) on every restart. A
-    // pinless persona makes claude cold-start a fresh, amnesiac session each launch — the agent silently
-    // loses all history on any mesh bounce / reboot (the paw-reset bug of 2026-06-26). `adopt` overwrites
-    // this pin with a real past session id; a hand-customized persona is never clobbered (write-if-absent).
-    // A URL-sourced agent (web/pr/…) carries a `paw-kind:` marker (absent ⇒ folder) and a per-kind
-    // brief. NOT `kind:` — cotal's own AgentDef reserves that key and hard-validates it to
-    // "agent"/"endpoint" (agent-file.js), so paw's unrelated folder/worktree/repo/pr/web marker needs
-    // its own namespaced key or a URL-sourced spawn fails loud on load ("kind" must be "agent" or
-    // "endpoint" — the eve.md incident, 2026-07-22). An unmodelled key is kept verbatim in AgentDef.meta.
-    const kindLine = opts?.kind && opts.kind !== "folder" ? `paw-kind: ${opts.kind}\n` : "";
-    const body =
-      opts?.brief ??
-      `You are the paw agent for the "${name}" folder — a peer on the cotal mesh, acting unattended on this repository.`;
-    writeFileSync(
-      file,
-      `---\nname: ${name}\nresume: ${randomUUID()}\n${GRANT_LINES.join("\n")}\n${kindLine}---\n${body}\n`,
-    );
-  }
+  // Self-heal a persona minted before paw granted channel scope (see GRANT_LINES). Every spawn passes
+  // through here, so the fleet upgrades as its agents restart rather than needing a migration pass —
+  // and a persona that already declares its scope is left untouched.
+  const upgraded = withChannelGrants(readFileSync(file, "utf8"));
+  if (upgraded !== undefined) writeFileSync(file, upgraded);
   return file;
 }
 
@@ -562,7 +531,7 @@ export function wirePrincipal(id: string): string {
  *  agent's mesh card.id — a `<owner>.<actor>` PRINCIPAL dot-form as of cotal 0.11 (was a bare nkey). Its
  *  durable DM consumer is `dm_<owner>-<actor>` (`dmDurable(owner, actor)`), which `paw status` re-derives
  *  by re-splitting the id with `parsePrincipalKey` to find each agent's inbox lag. */
-export type PsRow = { name: string; status?: string; mesh?: string; id?: string; agent?: string };
+export type PsRow = { name: string; status?: string; mesh?: string; id?: string; agent?: string; cwd?: string; model?: string };
 
 /** Is this ps row a REACHABLE agent (vs a zombie the manager still lists)? An exited process or a
  *  mesh-offline agent is dead; "absent" (mid-start) counts as alive so a legitimate boot isn't killed. */

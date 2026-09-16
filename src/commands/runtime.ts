@@ -16,6 +16,8 @@ import {
   ensureAgentSpawned,
   folderForName,
   psRowAlive,
+  registerLivePeer,
+  resolveAgentFolder,
   restartAgent,
   type PsRow,
 } from "../addressing.js";
@@ -72,7 +74,11 @@ async function liveAgentNames(space: string): Promise<string[]> {
     return await withManagerControl(space, DEFAULT_SERVER, async (ctl) => {
       const ps = await ctl.ps();
       if (!ps.ok) return [];
-      return ((ps.data as PsRow[]) ?? []).filter(psRowAlive).map((r) => r.name);
+      // A live agent paw never spawned (`cotal_spawn`) is registered from its ps row NOW, while its
+      // process still names its session — after the bounce the manager forgets it and so would we.
+      const live = ((ps.data as PsRow[]) ?? []).filter(psRowAlive);
+      for (const row of live) registerLivePeer(space, row);
+      return live.map((r) => r.name);
     });
   } catch {
     return [];
@@ -82,7 +88,7 @@ async function liveAgentNames(space: string): Promise<string[]> {
 /** Re-spawn `names` (from paw's folder→name registry) under the current manager — the "bring
  *  everyone back" step a manager restart otherwise leaves to a lazy `dm`/`chat`. Idempotent:
  *  ensureAgentSpawned reuses an already-live agent, so this is safe even when nothing bounced. A
- *  name with no folder mapping (registry-less, e.g. a raw `cotal start`) or a vanished folder is
+ *  name with no folder (a live peer whose ps row carried no cwd) or a vanished folder is
  *  skipped — reported, never fabricated. Each agent resumes its pinned session, so it comes back warm. */
 async function reviveAgents(space: string, names: string[]): Promise<{ revived: string[]; skipped: string[] }> {
   const revived: string[] = [];
@@ -164,14 +170,14 @@ async function restart(argv: string[]): Promise<void> {
   // only reads at startup (a new MCP server, an edited persona), which is exactly when bouncing the
   // whole fleet would be the wrong tool.
   if (agent !== undefined) {
-    const folder = folderForName(space, agent);
-    if (!folder)
-      throw new Error(
-        `paw: "${agent}" is neither a runtime (${RUNTIMES.join(", ")}) nor a registered agent — \`paw status\` lists the agents`,
-      );
-    if (!existsSync(folder)) throw new Error(`paw: "${agent}" is registered at ${folder}, which no longer exists`);
     await ensure({ needMesh: true, needManager: true, space });
     await withManagerControl(space, DEFAULT_SERVER, async (ctl) => {
+      const folder = await resolveAgentFolder(ctl, space, agent); // a live cotal_spawn peer counts too
+      if (!folder)
+        throw new Error(
+          `paw: "${agent}" is neither a runtime (${RUNTIMES.join(", ")}) nor a known agent — \`paw status\` lists the agents`,
+        );
+      if (!existsSync(folder)) throw new Error(`paw: "${agent}" is registered at ${folder}, which no longer exists`);
       const res = await restartAgent(ctl, { space, name: agent, cwd: folder });
       console.log(
         res.restarted

@@ -65,8 +65,10 @@ export function resolveStopName(space: string, target: string): string {
     if (name) return name;
     throw new Error(`paw: no agent registered for ${folder} (\`paw status\` to list)`);
   }
-
-  throw new Error(`paw: no agent "${target}" — not a registered name or a folder (\`paw ps\` for live names)`);
+  // Not paw's — but the MANAGER may hold it (a `cotal_spawn` peer, an auto-numbered `web_2`), so the
+  // name goes to it as-is; an unknown name then reads "isn't running", which is the truth.
+  if (/^[A-Za-z0-9_-]+$/.test(target)) return target;
+  throw new Error(`paw: "${target}" is not an agent name or a folder (\`paw status\` for names)`);
 }
 
 async function stop(argv: string[]): Promise<void> {

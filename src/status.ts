@@ -212,7 +212,7 @@ export function inboxStuck(r: AgentStatus): boolean {
 
 /** A trailing durability/health note, or "" when the agent is quietly durable. */
 function note(r: AgentStatus, now: number): string {
-  if (r.unregistered) return `unregistered ${r.unregistered.agent} peer (cotal_spawn) — not revived by paw restart/start`;
+  if (r.unregistered) return `unregistered ${r.unregistered.agent} peer (cotal_spawn) — paw restart registers + revives it`;
   // A hung tool outranks everything: it is WHY the inbox isn't draining, and `paw unstick` is the fix.
   const hung = hungTool(r, now);
   if (hung !== undefined && r.tool) return `⚠ tool running ${ago(now - hung, now)} (${toolLabel(r.tool)}) — \`paw unstick ${r.name}\``;
@@ -518,7 +518,7 @@ export async function collectStatus(space: string, ctl?: ManagerControl): Promis
     const s = meshStatus(psRow);
     rows.push({
       name,
-      folder: "",
+      folder: psRow.cwd ?? "", // the manager knows where a live peer runs; paw invents nothing beyond it
       mesh: s.text,
       live: s.live,
       runtime: s.live ? runtime : undefined,

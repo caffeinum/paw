@@ -64,7 +64,7 @@ function pathSegs(folder) {
   return segs.length ? segs : ["home"];
 }
 export function segmentsFor(row, repoIndex) {
-  if (row.unregistered || !row.folder) return ["· workers"];
+  if (!row.folder) return ["· workers"];
   // A worktree lives under its repo, not where it physically sits (operator: "worktrees belong to its
   // repo's folder"). Two ways to know it's a worktree and find its repo:
   //  (a) git reports it — place it at its repo's MAIN checkout (git.mainPath).

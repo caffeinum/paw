@@ -78,14 +78,15 @@ for (const name of ["stop", "unstick", "msg", "ask", "who", "history", "watch", 
 
 // (ps was merged into `paw status`; its rendering is covered by check:status. `paw cotal ps` is the raw view.)
 
-// stop: resolveStopName — a registered NAME, a mapped folder, fail-loud on everything else.
+// stop: resolveStopName — a registered NAME, a mapped folder, a raw manager name; fail-loud on anything else.
 const folder = realpathSync(mkdtempSync(join(tmpdir(), "paw-commands-proj-")));
 const name = folderToName(space, folder); // registers folder → basename
 assert(resolveStopName(space, name) === name, "resolveStopName: a registered agent NAME resolves to itself");
 assert(resolveStopName(space, folder) === name, "resolveStopName: a mapped folder resolves to its agent name");
 const unmapped = realpathSync(mkdtempSync(join(tmpdir(), "paw-commands-unmapped-")));
 assert(throws(() => resolveStopName(space, unmapped)), "resolveStopName: an unmapped folder throws");
-assert(throws(() => resolveStopName(space, "never-existed-xyz")), "resolveStopName: an unknown token throws");
+assert(resolveStopName(space, "never-existed-xyz") === "never-existed-xyz", "resolveStopName: an unregistered NAME goes to the manager as-is (a cotal_spawn peer is stoppable)");
+assert(throws(() => resolveStopName(space, "no/such/path")), "resolveStopName: a token that is neither a name nor a folder throws");
 
 // history: stripChannel / formatWhen / idNames.
 assert(stripChannel("#general") === "general", "stripChannel: strips one leading #");

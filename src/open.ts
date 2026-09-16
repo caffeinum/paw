@@ -44,7 +44,7 @@ async function open(argv: string[]): Promise<void> {
   if (target !== undefined && isAddressHandle(target)) {
     const addr = resolveAddress(target);
     folder = addr.cwd;
-    // --name attaches an EXTRA instance at this folder (agents.json side-table); no --name keeps the
+    // --name attaches an EXTRA instance at this folder (its own persona); no --name keeps the
     // default path (addr.name sets the folder's default, else the folder-derived default name).
     name = nameFlag !== undefined
       ? registerInstance(space, folder, nameFlag)

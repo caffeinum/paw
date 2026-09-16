@@ -1,5 +1,5 @@
 /**
- * Smoke check for `paw rename`'s on-disk effects (renameAgentOnDisk): the folder-map entry is
+ * Smoke check for `paw rename`'s on-disk effects (renameAgentOnDisk): the registration is
  * renamed, the persona file MOVES with its `resume:` pin and gets its `name:` frontmatter rewritten,
  * and the fail-loud guards fire (no-op, empty/invalid name, collision with another folder, unmapped
  * target). Pure — isolated PAW_HOME, no mesh/daemons. Run: pnpm check:rename
@@ -11,7 +11,7 @@ import { join } from "node:path";
 // Isolate paw's state dir so the real ~/.paw is never touched (spaceDir honours PAW_HOME).
 process.env.PAW_HOME = mkdtempSync(join(tmpdir(), "paw-home-"));
 
-const { setFolderName, ensurePersonaFile, personaFilePath, lookupFolderName, registerInstance, readAgentIndex } =
+const { setFolderName, ensurePersonaFile, personaFilePath, lookupFolderName, registerInstance, agentRecord } =
   await import("../src/addressing.js");
 const { readResumeId } = await import("../src/session.js");
 const { renameAgentOnDisk } = await import("../src/rename.js");
@@ -45,7 +45,7 @@ assert(typeof pin === "string" && pin.length > 0, "seed persona has a resume pin
 // Happy path: web → api.
 const { from, to } = renameAgentOnDisk(SPACE, FOLDER, "api");
 assert(from === "web" && to === "api", "renameAgentOnDisk returns { from: web, to: api }");
-assert(lookupFolderName(SPACE, FOLDER) === "api", "folders.json now maps the folder to 'api'");
+assert(lookupFolderName(SPACE, FOLDER) === "api", "the folder's default is now 'api'");
 assert(!existsSync(personaFilePath(SPACE, "web")), "old persona file (web.md) is gone");
 const moved = personaFilePath(SPACE, "api");
 assert(existsSync(moved), "new persona file (api.md) exists");
@@ -64,19 +64,19 @@ ensurePersonaFile(SPACE, "queue");
 assert(throws(() => renameAgentOnDisk(SPACE, FOLDER, "queue")), "renaming to a name held by a DIFFERENT folder fails loud");
 assert(lookupFolderName(SPACE, FOLDER) === "api", "the rejected collision left the mapping unchanged");
 
-// --- EXTRA-instance rename (agents.json side-table) ---
+// --- EXTRA-instance rename (a paw-extra persona) ---
 // Seed a 2nd agent at FOLDER via --name; its persona carries its own resume pin.
 registerInstance(SPACE, FOLDER, "web-alt");
 const extraSeed = ensurePersonaFile(SPACE, "web-alt");
 const extraPin = readResumeId(extraSeed);
-assert(readAgentIndex(SPACE)["web-alt"] === FOLDER, "extra 'web-alt' registered in agents.json → FOLDER");
+assert(agentRecord(SPACE, "web-alt")?.folder === FOLDER && agentRecord(SPACE, "web-alt")?.extra === true, "extra 'web-alt' registered (its persona) → FOLDER");
 
-// Rename the EXTRA (currentName = "web-alt"): moves the agents.json key, leaves the DEFAULT alone.
+// Rename the EXTRA (currentName = "web-alt"): moves that persona, leaves the DEFAULT alone.
 const ext = renameAgentOnDisk(SPACE, FOLDER, "web-beta", "web-alt");
 assert(ext.from === "web-alt" && ext.to === "web-beta", "extra rename returns { from: web-alt, to: web-beta }");
 assert(lookupFolderName(SPACE, FOLDER) === "api", "extra rename left the folder's DEFAULT ('api') untouched");
-assert(readAgentIndex(SPACE)["web-alt"] === undefined, "old extra key 'web-alt' dropped from agents.json");
-assert(readAgentIndex(SPACE)["web-beta"] === FOLDER, "new extra key 'web-beta' → FOLDER in agents.json");
+assert(agentRecord(SPACE, "web-alt") === undefined, "old extra 'web-alt' no longer registered");
+assert(agentRecord(SPACE, "web-beta")?.folder === FOLDER && agentRecord(SPACE, "web-beta")?.extra === true, "new extra 'web-beta' → FOLDER, still an extra");
 assert(!existsSync(personaFilePath(SPACE, "web-alt")), "old extra persona (web-alt.md) is gone");
 const extMoved = personaFilePath(SPACE, "web-beta");
 assert(existsSync(extMoved) && readResumeId(extMoved) === extraPin, "extra persona moved with its resume pin");
@@ -87,7 +87,12 @@ assert(throws(() => renameAgentOnDisk(SPACE, FOLDER, "api", "web-beta")), "renam
 assert(throws(() => renameAgentOnDisk(SPACE, FOLDER, "queue", "web-beta")), "renaming an extra to another folder's default fails loud");
 registerInstance(SPACE, FOLDER, "web-gamma");
 assert(throws(() => renameAgentOnDisk(SPACE, FOLDER, "web-gamma", "web-beta")), "renaming an extra onto a SAME-folder extra fails loud");
-assert(readAgentIndex(SPACE)["web-beta"] === FOLDER, "rejected extra collisions left 'web-beta' intact");
+assert(agentRecord(SPACE, "web-beta")?.folder === FOLDER, "rejected extra collisions left 'web-beta' intact");
+// `paw rename <default-name> <new>` passes the name as currentName — it relabels that default, not an extra.
+const byName = renameAgentOnDisk(SPACE, "/fake/repo/queue", "queue2", "queue");
+assert(byName.from === "queue" && lookupFolderName(SPACE, "/fake/repo/queue") === "queue2", "a DEFAULT addressed by name is relabeled");
+// A currentName that belongs to ANOTHER folder never redirects the rename to it.
+assert(renameAgentOnDisk(SPACE, FOLDER, "api2", "queue2").from === "api", "a foreign currentName falls back to the folder's own default");
 
 if (failures > 0) {
   console.error(`\n${failures} paw rename check(s) failed`);

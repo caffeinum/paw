@@ -352,7 +352,7 @@ async function chat(argv: string[]): Promise<void> {
       // returns the cwd + kind + optional brief/name hint (all throw clearly on failure).
       const addr = resolveAddress(target);
       folder = addr.cwd;
-      // --name pins a 2nd+ EXTRA instance at the resolved folder (agents.json), overriding the address's
+      // --name pins a 2nd+ EXTRA instance at the resolved folder (its own persona), overriding the address's
       // own name hint and the folder default; otherwise honour the hint, else mint the folder default.
       name = nameFlag
         ? registerInstance(space, folder, nameFlag)
@@ -372,7 +372,7 @@ async function chat(argv: string[]): Promise<void> {
       }
       if (asFolder !== undefined) {
         folder = asFolder;
-        // --name → register a 2nd+ EXTRA agent at this folder (agents.json); no --name → the folder default.
+        // --name → register a 2nd+ EXTRA agent at this folder (its own persona); no --name → the folder default.
         name = nameFlag ? registerInstance(space, folder, nameFlag) : resolveFolderAgent(space, folder);
       } else {
         // A bare NAME target. --name creates an EXTRA for a FOLDER, so it's meaningless here — fail loud.

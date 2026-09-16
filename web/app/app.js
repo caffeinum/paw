@@ -717,7 +717,7 @@ function headerTopic(row) {
   // A cotal_spawn'd peer paw never registered: no folder to show, so say what IS known (its harness)
   // and why paw can't do more (no revival, no trace) — "it's on the mesh but the dashboard hides it"
   // was the question this row exists to answer.
-  if (row.unregistered) parts.push(`<span title="spawned outside paw (cotal_spawn) — no folder, pin or transcript; not revived by paw restart/start">unregistered ${esc(row.unregistered.agent)} peer</span>`);
+  if (row.unregistered) parts.push(`<span title="spawned outside paw (cotal_spawn) — no pin yet; paw restart registers and revives it">unregistered ${esc(row.unregistered.agent)} peer</span>`);
   else if (!g.repo && !g.branch) parts.push(esc(row.folder)); // not a checkout — the folder is all there is
   if (g.repo) parts.push(esc(g.repo));
   if (g.branch) {

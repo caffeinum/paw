@@ -8,7 +8,7 @@
  *   paw completion install [shell]     # install it persistently (auto-detects $SHELL)
  *   paw __complete <words…>            # internal: candidates for the current cursor position
  *
- * `__complete` is local-only by contract (registry names + folders.json/agents.json — no mesh, no
+ * `__complete` is local-only by contract (registry names from the personas — no mesh, no
  * manager), so a <TAB> never blocks on a cold daemon. bin/paw.ts gives `__complete` a dedicated
  * early branch (mirrors `claude`'s passthrough) so withDefaultSpace/expandEqFlags never mangle the
  * half-typed line being completed.
@@ -29,7 +29,7 @@ const EARLY_VERBS: Array<{ name: string; summary: string }> = [
   { name: "help", summary: "show the one-screen command list" },
 ];
 
-/** Commands whose first positional is an agent name (folders.json default ∪ agents.json extra) —
+/** Commands whose first positional is an agent name (a registered default or extra) —
  *  `start` takes any NUMBER of them, the rest take exactly one. Centralized here rather than a
  *  `complete` hook per command file: one map, one behavior, easy to extend as commands are added. */
 const AGENT_TARGET_COMMANDS = new Set([

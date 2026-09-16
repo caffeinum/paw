@@ -5,7 +5,7 @@
  * untouched, and uses real temp directories (folderToName canonicalises via realpath). Run:
  * pnpm check:addressing
  */
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -26,8 +26,8 @@ const {
   agentNamesForFolder,
   resolveFolderAgent,
   lookupFolderName,
-  removeAgentName,
-  readAgentIndex,
+  agentRecord,
+  setPersonaKeys,
   listAgents,
   ensurePersonaFile,
   withChannelGrants,
@@ -91,14 +91,14 @@ assert(setFolderName(space, dSess, "renamed").name.startsWith("renamed-"), "setF
 const eSess = canonicalDir(mkdir(mkdtempSync(join(root, "eps-")), "svc3"));
 assert(setFolderName(space, eSess, "!!!").name === "svc3", "setFolderName falls back to basename when the desired cleans to empty");
 
-// ── EXTRA instances (Model B′ agents.json side-table): >1 agent per folder, opt-in via registerInstance.
+// ── EXTRA instances (a persona with paw-extra: true): >1 agent per folder, opt-in via registerInstance.
 const multi = canonicalDir(mkdir(mkdtempSync(join(root, "multi-")), "api"));
 assert(folderToName(space, multi) === "api", "folderToName seeds the folder's DEFAULT agent");
 assert(registerInstance(space, multi, "api-worker") === "api-worker", "registerInstance mints an EXTRA agent at the same folder");
 assert(folderToName(space, multi) === "api", "registerInstance does NOT move the folder's default");
 assert(folderForName(space, "api-worker") === multi, "folderForName resolves an EXTRA → its folder");
 assert(folderForName(space, "api") === multi, "folderForName still resolves the DEFAULT");
-assert(readAgentIndex(space)["api-worker"] === multi, "the extra lives in agents.json (side-table), not folders.json");
+assert(agentRecord(space, "api-worker")?.extra === true && agentRecord(space, "api")?.extra === false, "the extra is marked in ITS persona (paw-extra); the default is not");
 // Idempotent + name-cleaning + fail-loud on empty-after-clean.
 assert(registerInstance(space, multi, "api-worker") === "api-worker", "registerInstance is idempotent for the same name→folder");
 assert(registerInstance(space, multi, "api worker#2") === "api-worker-2", "registerInstance cleans the name to the safe charset");
@@ -129,7 +129,7 @@ assert(resolveFolderAgent(space, aWeb) === "web", "resolveFolderAgent is the def
 {
   const oc = canonicalDir(mkdir(mkdtempSync(join(root, "oc-")), "paw-opencode"));
   assert(registerInstance(space, oc, "opencode1") === "opencode1", "extra-only folder (no default) — opencode1");
-  assert(lookupFolderName(space, oc) === undefined, "extra-only folder has no folders.json default");
+  assert(lookupFolderName(space, oc) === undefined, "extra-only folder has no default");
   assert(resolveFolderAgent(space, oc) === "opencode1", "chat/attach . uses the sole extra, does not mint a claude default");
   assert(lookupFolderName(space, oc) === undefined, "resolveFolderAgent does not write a default beside the extra");
   assert(registerInstance(space, oc, "opencode2") === "opencode2", "second extra at the extra-only folder");
@@ -139,12 +139,50 @@ assert(resolveFolderAgent(space, aWeb) === "web", "resolveFolderAgent is the def
 const listed = listAgents(space);
 assert(listed.some((r) => r.name === "api" && r.folder === multi), "listAgents includes the default");
 assert(listed.some((r) => r.name === "api-worker" && r.folder === multi), "listAgents includes the extra");
-// removeAgentName: drops an extra, leaves the default; undefined for a non-extra (default removed by removeFolder).
-assert(removeAgentName(space, "api-worker-2") === multi, "removeAgentName drops an extra and returns its folder");
+// Forgetting an extra is deleting its persona — the folder's default is a separate file and stays.
+rmSync(personaPath(space, "api-worker-2"));
 assert(folderForName(space, "api-worker-2") === undefined, "the removed extra no longer resolves");
-assert(folderToName(space, multi) === "api", "removeAgentName leaves the folder's default intact");
-assert(removeAgentName(space, "api") === undefined, "removeAgentName returns undefined for a DEFAULT (not an extra)");
-assert(folderForName(space, "api") === multi, "the default survives a removeAgentName(default) no-op");
+assert(folderToName(space, multi) === "api", "removing an extra leaves the folder's default intact");
+assert(!listAgents(space).some((r) => r.name === "api-worker-2"), "the removed extra is gone from listAgents");
+// setFolderName replacing a default leaves the old persona as an ORPHAN (no folder), never deleted.
+assert(folderForName(space, "my-research") === undefined, "a replaced default no longer resolves to the folder");
+assert(readFileSync(personaPath(space, "my-research"), "utf8").includes("name: my-research"), "…but its persona file survives as an orphan");
+// A path-shaped token is never read as a persona filename (no traversal via a name lookup).
+assert(folderForName(space, "../test/personas/api") === undefined, "folderForName rejects a path-shaped name");
+
+// Registration writes an UNBORN persona (folder, no body); the first spawn gives it a pin + body, and
+// keeps a pin adopt already wrote.
+{
+  const unborn = readFileSync(personaPath(space, "api-worker"), "utf8");
+  assert(!/resume:/.test(unborn) && unborn.includes(`cwd: ${multi}`), "registration writes cwd, no pin yet");
+  const born = readFileSync(ensurePersonaFile(space, "api-worker"), "utf8");
+  assert(/resume: \S+/.test(born) && /paw agent for the "api-worker"/.test(born) && born.includes(`cwd: ${multi}`), "first spawn mints pin + body, keeps cwd");
+  assert(readFileSync(ensurePersonaFile(space, "api-worker"), "utf8") === born, "a born persona is never re-minted");
+  setPersonaKeys(space, "api", { resume: "adopted-1" });
+  assert(/resume: adopted-1\n/.test(readFileSync(ensurePersonaFile(space, "api"), "utf8")), "an adopted pin on an unborn persona survives birth");
+  const custom = personaPath(space, "custom");
+  writeFileSync(custom, "---\r\nname: custom\r\n---\r\nmy own words\r\n");
+  setPersonaKeys(space, "custom", { cwd: multi, "paw-extra": "true" });
+  assert(readFileSync(custom, "utf8").endsWith("my own words\n") && agentRecord(space, "custom")?.extra === true, "setPersonaKeys keeps a CRLF body");
+  rmSync(custom);
+}
+
+// MIGRATION: a pre-persona install (folders.json + agents.json) folds into its personas exactly once.
+{
+  const mig = "migrate";
+  const dir = join(process.env.PAW_HOME!, "spaces", mig);
+  mkdirSync(join(dir, "personas"), { recursive: true });
+  writeFileSync(join(dir, "folders.json"), JSON.stringify({ [aWeb]: "old-web", [multi]: "old-api" }));
+  writeFileSync(join(dir, "agents.json"), JSON.stringify({ "old-extra": multi }));
+  writeFileSync(join(dir, "personas", "old-web.md"), "---\nname: old-web\nresume: keep-me\n---\nhand-written\n");
+  assert(folderForName(mig, "old-web") === aWeb && lookupFolderName(mig, multi) === "old-api", "migration: defaults resolve from their personas");
+  assert(agentRecord(mig, "old-extra")?.extra === true && folderForName(mig, "old-extra") === multi, "migration: the extra stays an extra");
+  assert(/resume: keep-me/.test(readFileSync(join(dir, "personas", "old-web.md"), "utf8")), "migration: an existing persona keeps its pin + body");
+  assert(existsSync(join(dir, "folders.json")) && existsSync(join(dir, "registry.v2")), "migration: legacy file kept for old releases, marker written");
+  writeFileSync(join(dir, "folders.json"), JSON.stringify({ [bWeb]: "late-entry" })); // an old release writing after migration
+  assert(folderForName(mig, "late-entry") === undefined, "migration: runs once — the side-tables are never read again");
+  assert(listAgents(mig).length === 3, "migration: every legacy agent is listed, none vanish");
+}
 
 // assertUnambiguousTarget: a BARE token that's BOTH a registered agent name AND a folder basename in
 // the cwd must fail loud; everything with a single valid interpretation (or an explicit sigil) resolves.

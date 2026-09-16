@@ -1,22 +1,21 @@
 /**
- * `paw rename <folder|name> <newname>` — relabel an agent: its folder→name mapping (folders.json),
- * its persona file (resume pin + body carried over, `name:` frontmatter rewritten), and its live mesh
- * name. The pin moves with it, so the agent keeps its conversation. paw's OWN command, not a cotal
- * verb. The set: chat --fresh = new, adopt = resume a past session, rename = relabel an existing agent.
+ * `paw rename <folder|name> <newname>` — relabel an agent: its persona file (the registry — folder,
+ * resume pin + body carried over, `name:` frontmatter rewritten) and its live mesh name. The pin moves
+ * with it, so the agent keeps its conversation. paw's OWN command, not a cotal verb. The set: chat
+ * --fresh = new, adopt = resume a past session, rename = relabel an existing agent.
  */
-import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { readFileSync, renameSync, writeFileSync } from "node:fs";
 import { DEFAULT_SERVER, registry, type Command } from "@cotal-ai/core";
 import {
+  agentRecord,
   assertUnambiguousTarget,
+  cleanAgentName,
   ensureAgentSpawned,
   folderForName,
   lookupFolderName,
   personaFilePath,
-  readAgentIndex,
-  registerInstance,
-  removeAgentName,
-  setFolderName,
   stopAgent,
+  withRegistryLock,
 } from "./addressing.js";
 import { withManagerControl } from "./control.js";
 import { resolveSpace } from "./lifecycle.js";
@@ -48,21 +47,12 @@ function resolveTarget(space: string, arg: string): string {
 }
 
 /**
- * Move an agent's on-disk identity from its current name to `desired`: rename its registry entry and
- * move its persona file (preserving its `resume:` pin + body, rewriting the `name:` frontmatter so the
- * mesh identity matches). Pure — no mesh — so it's unit-testable. Returns the `{from, to}` names.
+ * Move an agent's on-disk identity from its current name to `desired`: the persona file IS the
+ * registration, so moving it (and rewriting `name:`, the mesh identity) moves the folder, the pin, the
+ * extra/default role and the body together. `currentName` names the specific agent at `canonical`
+ * (an EXTRA is addressed by its own name); absent, the folder's DEFAULT is relabeled. Pure — no mesh.
  *
- * Two kinds of agent, one entry each:
- *   - DEFAULT (folders.json, folder → its one default name): relabel via `setFolderName`. `currentName`
- *     is absent → the renamed agent is the folder's default (`lookupFolderName`). BYTE-IDENTICAL to the
- *     pre-multi-instance behavior.
- *   - EXTRA (agents.json, a 2nd+ agent minted via `--name`): `currentName` names the specific extra and
- *     `readAgentIndex(space)[currentName] === canonical` confirms it's an extra of THIS folder. Relabel
- *     by moving the agents.json key: `registerInstance` under the new name, then `removeAgentName` the
- *     old — the folder's DEFAULT is untouched (never call `setFolderName` for an extra).
- *
- * Fails loud on an empty/invalid name, a no-op, or a name already held by ANY other agent (a different
- * folder's default, another extra, or — for an extra rename — this folder's own default). Never
+ * Fails loud on an empty/invalid name, a no-op, or a name already held by ANY other agent. Never
  * fabricates a hash-qualified fallback: the caller must pick a free name.
  */
 export function renameAgentOnDisk(
@@ -71,58 +61,23 @@ export function renameAgentOnDisk(
   desired: string,
   currentName?: string,
 ): { from: string; to: string } {
-  // An EXTRA is addressed by its own name; a DEFAULT by its folder. currentName (set only when the
-  // rename target was an extra name) disambiguates which agent at the folder we're relabeling.
-  const isExtra = currentName !== undefined && readAgentIndex(space)[currentName] === canonical;
-  const current = isExtra ? currentName! : lookupFolderName(space, canonical);
-  if (!current) {
-    throw new Error(`paw: no agent is mapped for ${canonical} — nothing to rename (\`paw chat --fresh "${canonical}"\` first)`);
-  }
-  const cleaned = desired.replace(/[^A-Za-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "");
-  if (!cleaned) throw new Error(`paw: "${desired}" has no usable name characters (allowed: letters, digits, _ and -)`);
-  if (cleaned === current) throw new Error(`paw: "${current}" already has that name — nothing to rename`);
-
-  // The new name must be globally free. folderForName resolves every DEFAULT and EXTRA, and `cleaned`
-  // isn't `current` (checked above), so ANY hit is a genuine clash — including one of THIS folder's own
-  // extras (holder === canonical). Reject before mutating either registry: for a DEFAULT rename this is
-  // the fix for the partial-write-then-throw bug where setFolderName would hash-qualify + commit
-  // folders.json against a same-folder extra, then throw (losing the default's session). Same guard for
-  // both branches.
-  const holder = folderForName(space, cleaned);
-  if (holder !== undefined) {
-    throw new Error(`paw: the name "${cleaned}" is already used by an agent at ${holder} — pick another`);
-  }
-
-  let from: string;
-  let to: string;
-  if (isExtra) {
-    // Register the new key FIRST (its own locked global-uniqueness guard fails loud without touching
-    // the old entry), then drop the old key — so a rejected rename leaves the extra intact.
-    to = registerInstance(space, canonical, cleaned);
-    removeAgentName(space, current);
-    from = current;
-  } else {
-    const { name, previous } = setFolderName(space, canonical, cleaned);
-    if (name !== cleaned) {
-      // Defensive: the holder check above already rejected every collision, so setFolderName cannot have
-      // hash-qualified. Unreachable in practice — kept as a belt-and-suspenders that fails loud, never
-      // silently accepts a mis-qualified default name.
-      throw new Error(`paw: refusing to rename — "${cleaned}" resolved to "${name}" (unexpected name collision)`);
+  return withRegistryLock(space, () => {
+    const named = currentName !== undefined && agentRecord(space, currentName)?.folder === canonical;
+    const from = named ? currentName! : lookupFolderName(space, canonical);
+    if (!from) {
+      throw new Error(`paw: no agent is mapped for ${canonical} — nothing to rename (\`paw chat --fresh "${canonical}"\` first)`);
     }
-    to = name;
-    from = previous ?? current;
-  }
-
-  const fromFile = personaFilePath(space, from);
-  const toFile = personaFilePath(space, to);
-  if (existsSync(fromFile)) {
-    if (fromFile !== toFile) renameSync(fromFile, toFile);
-    // The persona's `name:` IS the agent's mesh identity — keep it in sync with the new file name.
-    const body = readFileSync(toFile, "utf8").replace(/^name:.*$/m, `name: ${to}`);
-    writeFileSync(toFile, body);
-  }
-  // No persona yet (agent never spawned) → the registry rename is enough; the next spawn writes one.
-  return { from, to };
+    const to = cleanAgentName(desired);
+    if (!to) throw new Error(`paw: "${desired}" has no usable name characters (allowed: letters, digits, _ and -)`);
+    if (to === from) throw new Error(`paw: "${from}" already has that name — nothing to rename`);
+    // Checked BEFORE anything moves, so a rejected rename leaves the agent exactly as it was.
+    const holder = folderForName(space, to);
+    if (holder !== undefined) throw new Error(`paw: the name "${to}" is already used by an agent at ${holder} — pick another`);
+    const toFile = personaFilePath(space, to);
+    renameSync(personaFilePath(space, from), toFile);
+    writeFileSync(toFile, readFileSync(toFile, "utf8").replace(/^name:.*$/m, `name: ${to}`));
+    return { from, to };
+  });
 }
 
 async function rename(argv: string[]): Promise<void> {
@@ -131,12 +86,8 @@ async function rename(argv: string[]): Promise<void> {
   const space = spaceArg ?? resolveSpace();
   assertUnambiguousTarget(space, target); // a bare token that's BOTH a known name and a folder here → fail loud
   const canonical = resolveTarget(space, target);
-  // If the target is an EXTRA agent's name (agents.json key), rename THAT instance — not the folder's
-  // default. A folder path / default name isn't an agents.json key, so currentName stays undefined and
-  // the folder's default is relabeled (the unchanged 1:1 path).
-  const currentName = readAgentIndex(space)[target] !== undefined ? target : undefined;
-
-  const { from, to } = renameAgentOnDisk(space, canonical, newName, currentName);
+  // An agent NAME renames that agent (default or extra); a folder path relabels the folder's default.
+  const { from, to } = renameAgentOnDisk(space, canonical, newName, target);
 
   // If the agent is live under the old name, retire it and respawn under the new one — it resumes
   // via the moved persona pin. The mesh + manager are already up (rename is in NEEDS_MANAGER).

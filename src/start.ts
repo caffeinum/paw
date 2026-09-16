@@ -1,6 +1,6 @@
 /**
  * `paw start [<name>…]` — COLD-START the fleet: bring up mesh + manager, then spawn every REGISTERED
- * agent (folders.json defaults + agents.json extras), each resuming its pinned session (warm). The
+ * agent (every persona with a folder), each resuming its pinned session (warm). The
  * missing "bring the whole fleet up from cold" verb.
  *
  * Why it's distinct from `paw restart`: restart bounces the manager and revives only the agents that were
@@ -32,12 +32,10 @@ async function start(argv: string[]): Promise<void> {
   const { space: spaceArg, names } = parseArgs(argv);
   const space = spaceArg ?? resolveSpace();
 
-  // Resolve the target set: the named agents, or the WHOLE registry. Names are globally unique across
-  // folders.json values ∪ agents.json keys, so listAgents needs no dedup; a named target that isn't
-  // registered resolves to no folder and is reported (never fabricated).
-  const targets = names.length
-    ? names.map((name) => ({ name, folder: folderForName(space, name) }))
-    : listAgents(space).map((a) => ({ name: a.name, folder: a.folder as string | undefined }));
+  // Resolve the target set: the named agents, or the WHOLE registry. Names are persona filenames, so
+  // listAgents needs no dedup; a named target that isn't registered resolves to no folder and is
+  // reported (never fabricated).
+  const targets = names.length ? names.map((name) => ({ name, folder: folderForName(space, name) })) : listAgents(space);
 
   if (!targets.length) {
     console.log("paw: no agents registered to start (`paw chat --fresh <folder>` to make one)");
@@ -55,16 +53,16 @@ async function start(argv: string[]): Promise<void> {
     const ps = await ctl.ps();
     const live = new Set(ps.ok ? ((ps.data as PsRow[]) ?? []).filter(psRowAlive).map((r) => r.name) : []);
     for (const t of targets) {
+      if (live.has(t.name)) {
+        alive.push(t.name); // live is live, whether or not paw spawned it (a cotal_spawn peer)
+        continue;
+      }
       if (!t.folder) {
         skipped.push(`${t.name} (not registered)`);
         continue;
       }
       if (!existsSync(t.folder)) {
         skipped.push(`${t.name} (folder gone: ${t.folder})`);
-        continue;
-      }
-      if (live.has(t.name)) {
-        alive.push(t.name);
         continue;
       }
       // Anti-thundering-herd: never start a cold-boot burst into a machine with no headroom

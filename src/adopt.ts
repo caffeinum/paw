@@ -14,7 +14,7 @@
  * is lossy (e.g. `my.repo` and `my-repo` collide), so adopt VERIFIES the transcript's recorded `cwd`
  * matches the folder before resuming — never resume the wrong project.
  */
-import { existsSync, readFileSync, readdirSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { DEFAULT_SERVER, registry, type Command } from "@cotal-ai/core";
@@ -28,6 +28,7 @@ import {
   personaFilePath,
   restartAgent,
   setFolderName,
+  setPersonaKeys,
   stopAgent,
   waitForMeshLive,
 } from "./addressing.js";
@@ -92,12 +93,10 @@ export function transcriptCwd(dir: string, sessionId: string): string | undefine
  * Pin a durable `resume: <sessionId>` into the folder-agent's persona — the single write both `adopt`
  * and `paw claude` (src/claude.ts) share, so an agent later brought up via the manager resumes the
  * SAME session. Upserts into an existing persona (keeping its body/frontmatter) or mints a fresh
- * minimal one; never clobbers a hand-customized body (personaWithResume handles both). Pure disk I/O.
+ * minimal one; never clobbers a hand-customized body (setPersonaKeys). Pure disk I/O.
  */
 export function pinSession(space: string, name: string, sessionId: string): void {
-  const file = personaFilePath(space, name);
-  const existing = existsSync(file) ? readFileSync(file, "utf8") : undefined;
-  writeFileSync(file, personaWithKey(existing, name, "resume", sessionId));
+  setPersonaKeys(space, name, { resume: sessionId });
 }
 
 /**
@@ -107,33 +106,7 @@ export function pinSession(space: string, name: string, sessionId: string): void
  * `[]`, so "no extra flags" and "never asked for any" are the same state on disk.
  */
 export function pinClaudeArgs(space: string, name: string, args: string[]): void {
-  const file = personaFilePath(space, name);
-  const existing = existsSync(file) ? readFileSync(file, "utf8") : undefined;
-  writeFileSync(file, personaWithKey(existing, name, "claudeArgs", args.length ? JSON.stringify(args) : undefined));
-}
-
-/** Set/replace one frontmatter key in an existing persona (preserving the rest), or build a fresh
- *  minimal persona. Keeps a hand-customized persona body intact across re-adoption. `value`
- *  undefined REMOVES the key. */
-function personaWithKey(existing: string | undefined, name: string, key: string, value: string | undefined): string {
-  if (existing) {
-    // Normalize CRLF so the frontmatter regex (LF-anchored) matches a Windows-authored persona —
-    // otherwise it would fall through and silently discard the body.
-    const normalized = existing.replace(/\r\n/g, "\n");
-    const fm = normalized.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
-    if (fm) {
-      const lines = fm[1].split("\n").filter((l) => !l.trimStart().startsWith(`${key}:`));
-      if (!lines.some((l) => l.trimStart().startsWith("name:"))) lines.unshift(`name: ${name}`);
-      if (value !== undefined) lines.push(`${key}: ${value}`);
-      return `---\n${lines.join("\n")}\n---\n${fm[2]}`;
-    }
-    // Existing content with no parseable frontmatter — never clobber it: keep it as the persona body
-    // and prepend the frontmatter (name + resume) above it.
-    const head = value === undefined ? `name: ${name}` : `name: ${name}\n${key}: ${value}`;
-    return `---\n${head}\n---\n${normalized.trim()}\n`;
-  }
-  const head = value === undefined ? `name: ${name}` : `name: ${name}\n${key}: ${value}`;
-  return `---\n${head}\n---\nYou are the paw agent for the "${name}" folder, resumed from a prior session — a peer on the cotal mesh.\n`;
+  setPersonaKeys(space, name, { claudeArgs: args.length ? JSON.stringify(args) : undefined });
 }
 
 /**
@@ -201,7 +174,7 @@ export function sanitizeAdoptName(s: string): string {
  *  ("aws") into a folder whose default agent is "research" RENAMED research and deleted its persona,
  *  and when the name lookup failed it silently RE-PINNED research to the new session (the 2026-08-31
  *  incident: research lost its 366MB session pointer). Now: a desired name that differs from an
- *  EXISTING default becomes an EXTRA instance (agents.json) beside it — the default keeps its pin;
+ *  EXISTING default becomes an EXTRA instance (its own persona) beside it — the default keeps its pin;
  *  adopt never renames (that's `paw rename`'s job). */
 export type AdoptNamePlan =
   | { kind: "folder-default" }            // no desired name — the folder's default agent (registered if absent)

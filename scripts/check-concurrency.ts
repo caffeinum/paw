@@ -5,7 +5,7 @@
  * re-execs itself as `--child <folder>` workers. Run: pnpm check:concurrency
  */
 import { spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -18,7 +18,7 @@ if (childIdx !== -1) {
 }
 
 // Instance-child mode: register one EXTRA agent (--instance <folder> <name>) at a shared folder and
-// print the name. Proves the agents.json side-table serializes on the SAME lock as folders.json.
+// print the name. Proves extras serialize on the SAME registry lock as defaults.
 const instIdx = process.argv.indexOf("--instance");
 if (instIdx !== -1) {
   const { registerInstance, canonicalDir } = await import("../src/addressing.js");
@@ -68,12 +68,14 @@ const unique = new Set(names);
 assert(unique.size === N, `all ${N} racing resolutions got distinct names (got ${unique.size}: ${[...unique].join(", ")})`);
 assert(names.every((n) => /^[A-Za-z0-9_-]+$/.test(n)), "every name is a valid bare token");
 
-const map = JSON.parse(readFileSync(join(home, "spaces", space, "folders.json"), "utf8"));
-assert(Object.keys(map).length === N, `registry persisted all ${N} folder→name entries (no lost update; got ${Object.keys(map).length})`);
-assert(new Set(Object.values(map)).size === N, "no two folders share a name in the persisted registry");
+process.env.PAW_HOME = home;
+const { listAgents } = await import("../src/addressing.js");
+const defaults = listAgents(space).filter((r) => !r.extra);
+assert(defaults.length === N, `registry persisted all ${N} folder→name entries (no lost update; got ${defaults.length})`);
+assert(new Set(defaults.map((r) => r.folder)).size === N, "no two folders share a name in the persisted registry");
 
 // EXTRA instances: N processes racing registerInstance at ONE shared folder must yield N distinct
-// agents.json entries, all → that folder (the shared folders.json lock serializes agents.json writes too).
+// extras, all → that folder (one registry lock serializes every claim).
 const shared = join(root, "shared", "svc");
 mkdirSync(shared, { recursive: true });
 const instNames = await Promise.all(
@@ -91,10 +93,10 @@ const instNames = await Promise.all(
   ),
 );
 assert(new Set(instNames).size === N, `all ${N} racing registerInstance calls got distinct names (got ${new Set(instNames).size})`);
-const agents = JSON.parse(readFileSync(join(home, "spaces", space, "agents.json"), "utf8"));
-assert(Object.keys(agents).length === N, `agents.json persisted all ${N} extra instances (no lost update; got ${Object.keys(agents).length})`);
+const extras = listAgents(space).filter((r) => r.extra);
+assert(extras.length === N, `the registry persisted all ${N} extra instances (no lost update; got ${extras.length})`);
 const realShared = realpathSync(shared);
-assert(Object.values(agents).every((f) => f === realShared), "every racing extra instance maps to the one shared folder");
+assert(extras.every((r) => r.folder === realShared), "every racing extra instance maps to the one shared folder");
 
 rmSync(home, { recursive: true, force: true });
 rmSync(root, { recursive: true, force: true });
