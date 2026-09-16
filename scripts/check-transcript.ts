@@ -274,6 +274,13 @@ assert(tailRead(file, 10_000).split("\n")[0] === "AAAAAAAAAA", "a window larger 
   const interruptedRec = rec({ type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_A", content: "Interrupted", is_error: true }] }, toolUseResult: { interrupted: true } });
   const r = toolResultFor([hung, interruptedRec].join("\n"), "toolu_A");
   assert(r?.isError === true && r.interrupted === true && r.text === "Interrupted", "toolResultFor: finds the result for the id, with claude's interrupted flag");
+  // The exact shape claude 2.1.273 wrote when paw's Esc hit a running Bash (measured in the e2e).
+  const escRec = rec({ type: "user", message: { role: "user", content: [{ type: "tool_result", content: "The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). STOP what you are doing and wait for the user to tell you how to proceed.", is_error: true, tool_use_id: "toolu_A" }] }, toolUseResult: "User rejected tool use", toolDenialKind: "user-rejected" });
+  assert(toolResultFor([hung, escRec].join("\n"), "toolu_A")?.interrupted === true, "toolResultFor: the measured Esc record (toolDenialKind user-rejected) reads as interrupted");
+  const interruptText = rec({ type: "user", message: { role: "user", content: [{ type: "text", text: "[Request interrupted by user for tool use]" }] }, interruptedMessageId: "msg_x" });
+  const afterEsc = [hung, escRec, interruptText].join("\n");
+  assert(turnState(afterEsc).inFlight === false && turnState(afterEsc).tool === undefined, "turnState: a turn ended by Esc ([Request interrupted by user…]) is NOT in flight");
+  assert(turnState([afterEsc, prompt].join("\n")).inFlight === true, "turnState: a new prompt after the interrupt is a running turn again");
   assert(toolResultFor(hung, "toolu_A") === undefined, "toolResultFor: no result yet → undefined (still stuck)");
   assert(toolResultFor(answered, "toolu_A")?.interrupted === undefined, "toolResultFor: a result without the flag reports it as unknown, not false");
 }

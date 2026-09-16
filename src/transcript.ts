@@ -521,8 +521,13 @@ export function turnState(tailText: string): TurnState {
       continue;
     }
     if (rec.type === "user") {
-      inFlight ??= true; // a tool result or a new prompt — either way the turn continues
       const content = rec.message?.content;
+      // An Esc'd turn ends on claude's own "[Request interrupted by user…]" text record — no turn_duration,
+      // no end_turn (measured in the paw unstick e2e). Read as running, an interrupted agent would show
+      // `busy` until something else woke it.
+      const interruptedTurn = Array.isArray(content) && (content as Part[]).some((p) => p?.type === "text" && p.text?.startsWith("[Request interrupted by user"));
+      if (interruptedTurn) return { inFlight: inFlight ?? false, tool };
+      inFlight ??= true; // a tool result or a new prompt — either way the turn continues
       const results = Array.isArray(content) ? (content as Part[]).filter((p) => p?.type === "tool_result") : [];
       if (results.length === 0) return { inFlight, tool }; // a prompt opens this turn — nothing older is pending in it
       for (const r of results) if (r.tool_use_id) answered.add(r.tool_use_id);
@@ -565,7 +570,12 @@ export function toolResultFor(
     if (rec.type !== "user" || !Array.isArray(rec.message?.content)) continue;
     const hit = (rec.message!.content as Part[]).find((p) => p?.type === "tool_result" && p.tool_use_id === toolUseId);
     if (!hit) continue;
-    const flag = rec.toolUseResult && typeof rec.toolUseResult === "object" ? rec.toolUseResult.interrupted : undefined;
+    // Measured 2026-09-16 (claude 2.1.273), Esc pressed on a running Bash: the result record carries
+    // `toolDenialKind: "user-rejected"` and `toolUseResult: "User rejected tool use"` (is_error true),
+    // followed by a user text record "[Request interrupted by user for tool use]". A Bash that returned
+    // on its own carries an object `toolUseResult` with a boolean `interrupted` instead.
+    const denial = (rec as { toolDenialKind?: unknown }).toolDenialKind === "user-rejected" || (rec.toolUseResult as unknown) === "User rejected tool use";
+    const flag = denial ? true : rec.toolUseResult && typeof rec.toolUseResult === "object" ? rec.toolUseResult.interrupted : undefined;
     return { isError: hit.is_error === true, text: resultText(hit.content), ...(typeof flag === "boolean" ? { interrupted: flag } : {}) };
   }
   return undefined;
