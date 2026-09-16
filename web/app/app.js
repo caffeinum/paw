@@ -430,6 +430,9 @@ function renderSearch(now) {
   for (const r of el.querySelectorAll(".srch")) {
     r.addEventListener("click", () => {
       const { kind, target, ts } = r.dataset;
+      // Picking a result means the search found what it was for — clear the box and its sidebar filter.
+      $("conn").value = "";
+      state.filter = "";
       if (kind === "transcript") { focusTarget(target); setMode("trace"); return; }
       if (kind === "channel") { focusTarget("#" + target); state.jumpTo = Number(ts); return; }
       focusTarget(target);
