@@ -472,7 +472,7 @@ console.log("\nall paw command checks passed 🐾");
   ok(a.sinceMs === 172_800_000 && a.dryRun && a.names[0] === "research", "flags + names");
   const now = 10_000_000_000;
   const H = 3_600_000;
-  const row = { name: "x", folder: "/x", mesh: "idle", live: true, runtime: "tmux", pin: "p", durable: true, activeMs: now - 30 * H, busy: false, conflictPids: [], inbox: { kind: "lag", queued: 0, unread: 0 } } as never;
+  const row = { name: "x", folder: "/tmp", mesh: "idle", live: true, runtime: "tmux", pin: "p", durable: true, activeMs: now - 30 * H, busy: false, conflictPids: [], inbox: { kind: "lag", queued: 0, unread: 0 } } as never;
   const one = [{ pid: 7, mesh: true }];
   const o = { sinceMs: 24 * H };
   const v = (r: object, p: object[] = one) => optimizeVerdict({ ...(row as object), ...r } as never, p as never, now, o);
@@ -484,4 +484,5 @@ console.log("\nall paw command checks passed 🐾");
   ok(v({ inbox: { kind: "lag", queued: 0, unread: 2 } }).act === "skip", "unread DMs → skip");
   ok(v({ durable: false }).act === "skip" && v({ harness: "codex" }).act === "skip", "no resumable session / non-claude → skip");
   ok(v({ live: false }).act === "skip" && v({ runtime: "fg" }).act === "skip", "offline / foreground → skip");
+  ok(v({ folder: "/definitely/not/here" }).act === "skip", "folder deleted → skip (it could not come back)");
 }

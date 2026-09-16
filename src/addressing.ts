@@ -802,6 +802,9 @@ export async function restartAgent(
   ctl: ManagerControl,
   opts: { space: string; name: string; cwd: string; model?: string; allowForeignWriter?: boolean },
 ): Promise<{ spawned: boolean; id?: string; restarted: boolean }> {
+  // Check what the respawn needs BEFORE stopping anything: a restart into a deleted worktree stopped
+  // the agent and then could not start it (paw optimize, 2026-09-16).
+  if (!existsSync(opts.cwd)) throw new Error(`paw: won't restart "${opts.name}" — its folder ${opts.cwd} no longer exists, so it could not come back`);
   const ps = await ctl.ps();
   if (!ps.ok) throw new Error(`paw: manager isn't answering (${ps.error ?? "no reply"})`);
   const live = ((ps.data as Array<{ name: string }>) ?? []).some((a) => a.name === opts.name);

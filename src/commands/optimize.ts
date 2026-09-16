@@ -16,6 +16,7 @@
  * `footprint` isn't available no number is printed rather than a guessed one.
  */
 import { execFileSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import { DEFAULT_SERVER, registry, type Command } from "@cotal-ai/core";
 import { psRowAlive, restartAgent, type PsRow } from "../addressing.js";
 import { withManagerControl } from "../control.js";
@@ -62,6 +63,7 @@ export function optimizeVerdict(row: AgentStatus, procs: LiveSessionProc[], now:
   const idleMs = now - row.activeMs;
   if (idleMs < opts.sinceMs) return { act: "recent" };
   if (row.runtime === "fg") return { act: "skip", reason: "foreground `paw claude` — lives in your terminal" };
+  if (!existsSync(row.folder)) return { act: "skip", reason: `folder is gone (${row.folder}) — it could not come back` };
   if (!row.pin || !row.durable) return { act: "skip", reason: "no resumable session — a restart would lose its context" };
   if (procs.length === 0) return { act: "skip", reason: "no process found on its session" };
   if (procs.length > 1) return { act: "skip", reason: `${procs.length} processes on one session (pids ${procs.map((p) => p.pid).join(", ")}) — a duplicate; resolve it first` };
