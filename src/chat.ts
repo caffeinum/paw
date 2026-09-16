@@ -816,6 +816,19 @@ async function chat(argv: string[]): Promise<void> {
     completer,
   });
 
+  // A paste is payload, not typing — but readline echoes it line by line and redraws the prompt after
+  // every newline, so a 16-line paste painted sixteen `you → x>` lines that looked like sixteen sends
+  // (it was one message; reported 2026-09-16). Readline's output is muted while a paste is open or
+  // being swallowed; stagePaste (or the short-paste redraw) repaints the line once it is known.
+  // `_writeToOutput` is readline's single internal write path — fail loud if a node release drops it.
+  const rlInternal = rl as unknown as { _writeToOutput?: (s: string) => void };
+  if (typeof rlInternal._writeToOutput !== "function") throw new Error("paw chat: readline._writeToOutput is gone — paste echo muting needs a new hook");
+  const writeToOutput = rlInternal._writeToOutput.bind(rl);
+  rlInternal._writeToOutput = (str: string) => {
+    if (scanner.pasting || pasteOpen || swallow) return;
+    writeToOutput(str);
+  };
+
   // LIVE placeholder swap: the moment a pasted/dragged path lands in the line buffer, stage it and
   // rewrite what you're looking at to `[Image #1]` — so the prompt shows what you're SENDING, not a
   // 90-char temp path (this is the Claude Code/OpenCode feel). Cmd-V is invisible to us — the
@@ -1111,7 +1124,11 @@ async function chat(argv: string[]): Promise<void> {
               : "";
         pasteFirstRaw = undefined;
         // A short single-line paste is indistinguishable from typing — leave it as ordinary input.
-        if (!shouldCollapse(text)) continue;
+        if (!shouldCollapse(text)) {
+          // Echo was muted while it arrived; show the (ordinary, uncollapsed) text now it's in the buffer.
+          setImmediate(() => { if (rl && !closing) rl.prompt(true); });
+          continue;
+        }
         const block = makeBlock(pastes.length + 1, text);
         // Only the lines still to come: the ones already eaten while the paste was open are accounted
         // for by `pasteFired`, and counting them twice would swallow real input typed afterwards.
