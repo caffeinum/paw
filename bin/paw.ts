@@ -42,6 +42,7 @@ import "../src/commands/launchd.js"; // self-registers "launchd" (fleet + web at
 import "../src/global.js"; // self-registers the "global" command (bring up the always-on $HOME machine agent)
 import "../src/start.js"; // self-registers the "start" command (cold-start the whole registered fleet)
 import "../src/commands/optimize.js"; // self-registers "optimize" (restart long-running idle agents, one at a time, verified)
+import "../src/commands/top.js"; // self-registers "top" (per-agent memory/cpu/subprocesses + cleanup hints; read-only, self-ensures)
 import "../src/web.js"; // self-registers the "web" command (local http+ws UI over feed/transcript/status)
 import "../src/commands/complete.js"; // self-registers "completion" + the hidden "__complete" dispatcher (shell-completion)
 import { expandEqFlags, stripCotalNamespace, withDefaultSpace } from "../src/dispatch.js";

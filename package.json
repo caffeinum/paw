@@ -38,7 +38,8 @@
     "plugin:install": "pnpm plugin:build && cotal ext add ./plugin",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "check:mcp": "tsx scripts/check-mcp.ts",
-    "check:bash-tty": "tsx scripts/check-bash-tty.ts"
+    "check:bash-tty": "tsx scripts/check-bash-tty.ts",
+    "check:top": "tsx scripts/check-top.ts"
   },
   "dependencies": {
     "@cotal-ai/cli": "^0.48.1",

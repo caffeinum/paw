@@ -17,11 +17,11 @@
  * Memory is the process tree's macOS phys_footprint (claude + its MCP servers), before and after; where
  * `footprint` isn't available no number is printed rather than a guessed one.
  */
-import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { DEFAULT_SERVER, registry, type Command } from "@cotal-ai/core";
+import { registry, type Command } from "@cotal-ai/core";
 import { psRowAlive, restartAgent, stopAgent, type PsRow } from "../addressing.js";
 import { withManagerControl } from "../control.js";
+import { fmtMb, machineLine, pawMb, renderTable, serverPorts, snapshotFleet, sortRows, topRows, verdictText, type Fleet } from "../fleet.js";
 import { ensure, resolveSpace } from "../lifecycle.js";
 import { liveSessionProcs, type LiveSessionProc } from "../named.js";
 import { awaitSpawnHeadroom } from "../pacing.js";
@@ -57,7 +57,7 @@ export function parseOptimizeArgs(argv: string[]): OptimizeArgs {
 export type Verdict = { act: "restart" | "stop"; idleMs: number; pid: number } | { act: "skip"; reason: string } | { act: "recent" };
 
 /** Pure: should this agent be restarted now? `procs` = live processes holding its pinned session. */
-export function optimizeVerdict(row: AgentStatus, procs: LiveSessionProc[], now: number, opts: { sinceMs: number }): Verdict {
+export function optimizeVerdict(row: AgentStatus, procs: Pick<LiveSessionProc, "pid">[], now: number, opts: { sinceMs: number; ports?: number[] }): Verdict {
   if (row.unregistered) return { act: "skip", reason: "unregistered — paw can't bring it back" };
   if (row.harness && row.harness !== "claude") return { act: "skip", reason: `${row.harness} agent` };
   if (!row.live) return { act: "skip", reason: "not running" };
@@ -72,76 +72,56 @@ export function optimizeVerdict(row: AgentStatus, procs: LiveSessionProc[], now:
   if (row.mesh !== "idle" || row.busy) return { act: "skip", reason: row.busy ? "mid-turn" : row.mesh };
   if (row.inbox.kind === "lag" && (row.inbox.queued > 0 || row.inbox.unread > 0)) return { act: "skip", reason: "DMs waiting" };
   if (row.inbox.kind !== "lag" && row.inbox.kind !== "none") return { act: "skip", reason: "inbox state unknown" };
+  // A dev server it started in the background would be orphaned by a restart, not stopped.
+  if (opts.ports?.length) return { act: "skip", reason: `has a live server on ${opts.ports.map((p) => `:${p}`).join(" ")}` };
   // Its folder was deleted (a merged/cleaned worktree): it can never be restarted there, so a restart
   // is impossible and leaving it running only holds memory. Stop it; the transcript stays resumable.
   if (!existsSync(row.folder)) return { act: "stop", idleMs, pid: proc.pid };
   return { act: "restart", idleMs, pid: proc.pid };
 }
 
-/** phys_footprint (MB) of `pid` and its descendants, or undefined when it can't be measured. */
-export function treeFootprintMb(pid: number): number | undefined {
-  try {
-    const ps = execFileSync("ps", ["-axo", "pid=,ppid="], { encoding: "utf8" });
-    const kids = new Map<number, number[]>();
-    for (const line of ps.trim().split("\n")) {
-      const [c, p] = line.trim().split(/\s+/).map(Number);
-      kids.set(p, [...(kids.get(p) ?? []), c]);
-    }
-    const tree: number[] = [];
-    const walk = (p: number) => { tree.push(p); for (const k of kids.get(p) ?? []) walk(k); };
-    walk(pid);
-    let total = 0;
-    for (const p of tree) {
-      const out = execFileSync("footprint", ["-p", String(p)], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
-      const m = /phys_footprint:\s*([\d.]+)\s*(KB|MB|GB)/.exec(out);
-      if (m) total += Number(m[1]) * ({ KB: 1 / 1024, MB: 1, GB: 1024 } as const)[m[2] as "KB" | "MB" | "GB"];
-    }
-    return Math.round(total);
-  } catch {
-    return undefined;
-  }
-}
-
 const hours = (ms: number) => (ms >= 48 * 3_600_000 ? `${Math.round(ms / 86_400_000)}d` : `${Math.round(ms / 3_600_000)}h`);
-const mb = (v: number | undefined) => (v === undefined ? "?" : `${v}MB`);
+const mb = fmtMb;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+/** The agent's tree footprint right now (after a restart the process — and its pid — is new). */
+const memOf = async (space: string, name: string) => (await snapshotFleet(space, { sampleMs: 0 })).agents[name]?.mem;
 
 async function optimize(argv: string[]): Promise<void> {
   const args = parseOptimizeArgs(argv);
   const space = args.space ?? resolveSpace();
   const { server } = await ensure({ needMesh: true, needManager: true, space });
-  const opts = { sinceMs: args.sinceMs };
 
   await withManagerControl(space, server, async (ctl) => {
     const pick = (rows: AgentStatus[]) => (args.names.length ? rows.filter((r) => args.names.includes(r.name)) : rows);
-    const first = pick((await collectStatus(space, ctl)).rows);
+    const [status, fleet] = await Promise.all([collectStatus(space, ctl, { git: false }), snapshotFleet(space)]);
+    const first = pick(status.rows);
     for (const n of args.names) if (!first.some((r) => r.name === n)) throw new Error(`paw: no registered agent "${n}"`);
 
-    const verdictOf = (row: AgentStatus) => optimizeVerdict(row, row.pin ? liveSessionProcs(row.pin) : [], Date.now(), opts);
-    const plan = first.map((row) => ({ row, v: verdictOf(row) }));
-    const todo = plan.filter((p) => p.v.act === "restart" || p.v.act === "stop");
-    const skipped = plan.filter((p) => p.v.act === "skip" && (args.names.length || p.row.live));
-    const stops = todo.filter((p) => p.v.act === "stop").length;
-    console.log(`paw optimize — inactive for over ${hours(args.sinceMs)}: ${todo.length - stops} to restart, ${stops} to stop (folder gone), ${skipped.length} skipped`);
-    for (const { row, v } of todo) {
-      if (v.act !== "restart" && v.act !== "stop") continue;
-      const what = v.act === "stop" ? `  STOP — folder gone (${row.folder})` : "";
-      console.log(`  • ${row.name}  last active ${hours(v.idleMs)} ago  ${mb(treeFootprintMb(v.pid))}${what}`);
-    }
-    for (const { row, v } of skipped) if (v.act === "skip") console.log(`  – ${row.name}: ${v.reason}`);
+    const verdictOf = (row: AgentStatus, f: Fleet) =>
+      optimizeVerdict(row, row.pin ? liveSessionProcs(row.pin) : [], Date.now(), { sinceMs: args.sinceMs, ports: serverPorts(f.agents[row.name]) });
+    const plan = new Map(first.map((row) => [row.name, verdictOf(row, fleet)]));
+    const todo = first.filter((r) => ["restart", "stop"].includes(plan.get(r.name)!.act));
+    const shown = first.filter((r) => plan.get(r.name)!.act !== "recent" && (args.names.length || r.live));
+    const stops = todo.filter((r) => plan.get(r.name)!.act === "stop").length;
+    const now = Date.now();
+    console.log(machineLine(fleet.machine, pawMb(fleet)));
+    console.log(`paw optimize — inactive for over ${hours(args.sinceMs)}: ${todo.length - stops} to restart, ${stops} to stop (folder gone), ${shown.length - todo.length} skipped\n`);
+    const rows = topRows(first, fleet, now, (row) => verdictText(plan.get(row.name)!)).filter((r) => shown.some((s) => s.name === r.name));
+    console.log(renderTable(sortRows(rows, "mem"), { width: process.stdout.columns ?? 160, now, noteHeader: "VERDICT" }));
     if (args.dryRun || !todo.length) return;
 
     const results: Array<{ name: string; before?: number; after?: number; error?: string }> = [];
     const stopped: Array<{ name: string; freed?: number }> = [];
-    for (const { row } of todo) {
-      // The fleet moves while this runs: re-read this agent right before touching it.
-      const fresh = (await collectStatus(space, ctl)).rows.find((r) => r.name === row.name);
-      const v = fresh ? verdictOf(fresh) : ({ act: "skip", reason: "gone" } as Verdict);
+    for (const row of todo) {
+      // The fleet moves while this runs: re-read this agent (and what it's running) right before touching it.
+      const [freshStatus, freshFleet] = await Promise.all([collectStatus(space, ctl, { git: false }), snapshotFleet(space, { sampleMs: 0 })]);
+      const fresh = freshStatus.rows.find((r) => r.name === row.name);
+      const v = fresh ? verdictOf(fresh, freshFleet) : ({ act: "skip", reason: "gone" } as Verdict);
       if (v.act !== "restart" && v.act !== "stop") {
         console.log(`  – ${row.name}: now ${v.act === "skip" ? v.reason : "active again"}, left alone`);
         continue;
       }
-      const before = treeFootprintMb(v.pid);
+      const before = freshFleet.agents[row.name]?.mem;
       if (v.act === "stop") {
         if (!(await stopAgent(ctl, row.name))) {
           console.log(`  ✗ ${row.name}: the manager didn't stop it — stopping here; check \`paw status\``);
@@ -164,7 +144,7 @@ async function optimize(argv: string[]): Promise<void> {
         if (strays.length) throw new Error(`a duplicate came up (${strays.join(", ")})`);
         if (holders.length !== 1) throw new Error(`${holders.length} processes now hold its session`);
         await sleep(30_000); // a resumed claude peaks while it loads its transcript; 5s measured that spike (+169MB), not the steady state
-        const after = treeFootprintMb(holders[0].pid);
+        const after = await memOf(space, row.name);
         results.push({ name: row.name, before, after });
         console.log(`  ✓ ${row.name}  ${mb(before)} → ${mb(after)}`);
       } catch (e) {
@@ -177,7 +157,7 @@ async function optimize(argv: string[]): Promise<void> {
     const ok = results.filter((r) => !r.error);
     const measured = ok.filter((r) => r.before !== undefined && r.after !== undefined);
     const freed = measured.reduce((s, r) => s + (r.before! - r.after!), 0) + stopped.reduce((s, r) => s + (r.freed ?? 0), 0);
-    console.log(`✓ restarted ${ok.length}, stopped ${stopped.length}${measured.length || stopped.length ? `, ${freed >= 0 ? "freed" : "grew"} ${Math.abs(freed)}MB` : ""}${results.length > ok.length ? `, 1 failed` : ""}`);
+    console.log(`✓ restarted ${ok.length}, stopped ${stopped.length}${measured.length || stopped.length ? `, ${freed >= 0 ? "freed" : "grew"} ${mb(Math.abs(freed))}` : ""}${results.length > ok.length ? `, 1 failed` : ""}`);
   });
 }
 

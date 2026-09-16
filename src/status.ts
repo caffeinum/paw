@@ -16,7 +16,7 @@ import { withManagerControl, type ManagerControl } from "./control.js";
 import { listForeground } from "./foreground.js";
 import { readRuntimeMarker, resolveSpace, type Runtime } from "./lifecycle.js";
 import { writeJson } from "./stdout.js";
-import { foreignWriters, liveSessionProcs, nameForSession } from "./named.js";
+import { liveSessionProcs, nameForSession } from "./named.js";
 import { isClaudeHarness, readAgentType, readResumeId, transcriptExists, transcriptMtime, transcriptPath } from "./session.js";
 import { lastFailure } from "./transcript.js";
 import { tailRead, turnState, type PendingTool, type TurnState } from "./transcript.js";
@@ -159,7 +159,7 @@ export function transcriptFailure(pin: string): { text: string; ts: number } | u
 
 function sessionConflicts(pin: string): number[] {
   const all = liveSessionProcs(pin);
-  return all.length > 1 ? all.map((p) => p.pid) : foreignWriters(pin).map((p) => p.pid);
+  return (all.length > 1 ? all : all.filter((p) => !p.mesh)).map((p) => p.pid); // one index read, not two
 }
 
 export function inferBusy(mesh: string, live: boolean, activeMs: number | undefined, now: number): boolean {
@@ -435,7 +435,7 @@ async function fetchRoster(space: string, server: string, want: Set<string>): Pr
  * inbox-lag `errors` travel together on purpose: an error here means a lag figure is UNKNOWN, and a
  * consumer that got the rows without the errors would render "—" as if it were a measured zero.
  */
-export async function collectStatus(space: string, ctl?: ManagerControl): Promise<{ rows: AgentStatus[]; errors: string[] }> {
+export async function collectStatus(space: string, ctl?: ManagerControl, opts: { git?: boolean } = {}): Promise<{ rows: AgentStatus[]; errors: string[] }> {
   const agents = listAgents(space);
   const runtime = readRuntimeMarker(space);
   const readPs = async (c: ManagerControl) => {
@@ -460,7 +460,7 @@ export async function collectStatus(space: string, ctl?: ManagerControl): Promis
   const inboxByName = await fetchInboxLag(space, DEFAULT_SERVER, withIds, inboxErrors);
   // One CONCURRENT pass over every folder before the rows are built. Serially, 54 agents × 5 git
   // processes was 2.5s of a 3.9s collect — what the Raycast roster sat on showing "Reading the roster…".
-  const gitByFolder = await gitInfoMany(agents.map(({ folder }) => folder));
+  const gitByFolder = opts.git === false ? new Map<string, GitInfo>() : await gitInfoMany(agents.map(({ folder }) => folder));
   const rows: AgentStatus[] = agents.map(({ folder, name }) => {
     const file = personaFilePath(space, name);
     const pin = existsSync(file) ? readResumeId(file) : undefined;
