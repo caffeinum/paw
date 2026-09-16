@@ -379,6 +379,24 @@ async function adopt(argv: string[]): Promise<void> {
       return;
     }
     const desiredName = nameFlag ?? namesForFolder(folder).get(sessionId); // child re-derives the folder default if undefined
+    // The one-agent-per-session check must run HERE, in this process: the detached child runs the
+    // pinned RELEASE, which can predate the check, and anything it refuses would only land in adopt.log.
+    // (2026-09-16: `paw adopt . --name evals-scenarios` from inside the holder pinned 6b9172ed beside
+    // queue-pr-132, which already pinned it.) An agent of THIS folder already on the session is what an
+    // unnamed re-adopt targets, so it isn't a conflict.
+    const pinnedElsewhere = agentsPinnedTo(space, sessionId, desiredName ?? "").filter(
+      (n) => !(nameFlag === undefined && folderForName(space, n) === folder),
+    );
+    assertSafeRepin({
+      sessionId,
+      explicitResume: false,
+      name: desiredName ?? "",
+      planKind: "folder-default",
+      prevPin: undefined,
+      replace: replace === true,
+      target: target ?? ".",
+      pinnedBy: pinnedElsewhere,
+    });
     const launched = spawnDetachedAdopt(space, folder, sessionId, desiredName);
     console.log(
       launched
