@@ -272,3 +272,11 @@ function mkdir(parent: string, name: string): string {
   mkdirSync(p, { recursive: true });
   return p;
 }
+
+{
+  const { isNameHeldRefusal } = await import("../src/addressing.js");
+  const refusal = 'the name "queue-ea" is hard-pinned (--name/identity override) but is already held by a live incarnation (managed here, an unmanaged foreground/connector session, or another manager\'s agent); a pinned same-name collision refuses at accept - pick another name or despawn the existing one';
+  if (!isNameHeldRefusal(refusal)) throw new Error("isNameHeldRefusal: the manager's pinned-name collision must be recognised (retry, never `_2`)");
+  if (isNameHeldRefusal("unknown connector \"x\"") || isNameHeldRefusal(undefined)) throw new Error("isNameHeldRefusal: other refusals must not be retried");
+  console.log("  ok  a hard-pinned name collision is recognised for retry; other refusals are not");
+}

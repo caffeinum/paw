@@ -16,7 +16,7 @@ import { withManagerControl, type ManagerControl } from "./control.js";
 import { listForeground } from "./foreground.js";
 import { readRuntimeMarker, resolveSpace, type Runtime } from "./lifecycle.js";
 import { writeJson } from "./stdout.js";
-import { foreignWriters, nameForSession } from "./named.js";
+import { foreignWriters, liveSessionProcs, nameForSession } from "./named.js";
 import { isClaudeHarness, readAgentType, readResumeId, transcriptExists, transcriptMtime, transcriptPath } from "./session.js";
 import { lastFailure } from "./transcript.js";
 import { tailRead, turnInFlight } from "./transcript.js";
@@ -121,6 +121,11 @@ export function transcriptFailure(pin: string): { text: string; ts: number } | u
   } catch {
     return undefined;
   }
+}
+
+function sessionConflicts(pin: string): number[] {
+  const all = liveSessionProcs(pin);
+  return all.length > 1 ? all.map((p) => p.pid) : foreignWriters(pin).map((p) => p.pid);
 }
 
 export function inferBusy(mesh: string, live: boolean, activeMs: number | undefined, now: number): boolean {
@@ -446,7 +451,9 @@ export async function collectStatus(space: string, ctl?: ManagerControl): Promis
       durable: pin ? transcriptExists(pin) : false,
       activeMs: pin ? transcriptMtime(pin) : undefined,
       failure: pin ? transcriptFailure(pin) : undefined,
-      conflictPids: pin ? foreignWriters(pin).map((p) => p.pid) : [],
+      // A standalone claude on the pin, OR more than one process of any kind (a leftover `<name>_2` mesh
+      // duplicate resuming the same session) — both put two writers on one transcript.
+      conflictPids: pin ? sessionConflicts(pin) : [],
       inbox: inboxByName.get(name) ?? { kind: "none" },
       // Computed HERE, not at render time. It used to live only inside formatStatus, so `paw status`
       // printed "busy" while `--json` and the web UI — reading the very same rows — saw a plain "idle"

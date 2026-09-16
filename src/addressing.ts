@@ -27,7 +27,7 @@ import { pawCotalRoot } from "./cotal-root.js";
 import { confineAndTrustCwd } from "./cwd.js";
 import { readForeground } from "./foreground.js";
 import { withFileLock, withFileLockAsync } from "./lock.js";
-import { foreignWriters } from "./named.js";
+import { liveSessionProcs } from "./named.js";
 import { readResumeId, readAgentType, readShareTools, transcriptMtime } from "./session.js";
 import { defaultTmuxEnv, readRuntimeMarker } from "./lifecycle.js";
 import { nudgeTmuxConfirm } from "./native-attach.js";
@@ -685,19 +685,27 @@ export async function ensureAgentSpawned(
     const pin = readResumeId(config);
     if (pin && !opts.allowForeignWriter) {
       // allowForeignWriter: the caller (adopt's make-before-break takeover) will kill the holder right after we confirm this agent is live
-      const foreign = foreignWriters(pin);
+      // Mesh holders count too. A restart despawns the old process but its window can take seconds to
+      // exit, and a second agent on the same pin (the `evals_2` / `canary-env-52_2` incidents) writes the
+      // same transcript. Give a despawned holder a bounded window to go, then refuse.
+      await waitForSessionRelease(pin, SESSION_RELEASE_MS);
+      const foreign = liveSessionProcs(pin);
       if (foreign.length) {
         const pids = foreign.map((p) => p.pid).join(", ");
+        const mesh = foreign.some((p) => p.mesh);
         throw new Error(
-          `paw: won't start "${opts.name}" — its session ${pin} is open in another process (pid ${pids}); ` +
-            `resuming it would put two writers on one transcript and can corrupt it.\n` +
-            `  close it first:  kill ${pids}\n` +
+          `paw: won't start "${opts.name}" — its session ${pin} is still open in ${mesh ? "a running mesh agent" : "another process"} (pid ${pids}) ${Math.round(SESSION_RELEASE_MS / 1000)}s on; ` +
+            `a second copy would put two writers on one transcript and can corrupt it.\n` +
+            (mesh ? `  find it:  paw cotal ps   (a leftover \`${opts.name}_2\`-style duplicate)\n` : `  close it first:  kill ${pids}\n`) +
             `  or re-pin it to its own session:  paw adopt "${opts.cwd}" --resume <id> --no-start`,
         );
       }
     }
     const cwd = confineAndTrustCwd(opts.cwd);
-    const args: Record<string, unknown> = { name: opts.name, config, cwd };
+    // `identity` HARD-PINS the name: on a collision the manager refuses instead of minting `<name>_2`.
+    // Without it a restart whose old presence hadn't expired yet came back as `queue-ea_2` — alive,
+    // resumed, and unreachable under its own name (2026-09-16: eight restarts, eight `_2` agents).
+    const args: Record<string, unknown> = { name: opts.name, config, cwd, identity: opts.name };
     const model = resolveModel(opts.model); // explicit --model wins, else PAW_MODEL env default
     if (model) args.model = model;
     // Which of the operator's MCP servers this agent gets (`paw mcp share`). Absent ⇒ the flag isn't
@@ -709,7 +717,7 @@ export async function ensureAgentSpawned(
     // the spawn op's `agent` so a codex/opencode agent respawns as ITSELF on every wake/revival path.
     const agentType = readAgentType(config);
     if (agentType) args.agent = agentType;
-    const reply = await ctl.spawn(args, 60_000); // a claude cold-start can take a while
+    const reply = await spawnPinned(ctl, args, opts.name);
     if (!reply.ok) {
       const err = reply.error ?? "no reply";
       // The cmux runtime reports "couldn't reach the app" not only when cmux is closed, but also when
@@ -732,7 +740,12 @@ export async function ensureAgentSpawned(
     // tokens the manager actually allocated rather than guessing an owner for a bare key. A reply
     // missing either yields NO id (the caller then waits for presence) — never a half-formed principal,
     // which would be a recipient that resolves to nobody.
-    const allocated = reply.data as { owner?: string; actor?: string } | undefined;
+    const allocated = reply.data as { name?: string; owner?: string; actor?: string } | undefined;
+    if (allocated?.name && allocated.name !== opts.name) {
+      // A manager that ignored the pin. Never leave a renamed sibling running on this agent's session.
+      await ctl.despawn(allocated.name).catch(() => {});
+      throw new Error(`paw: the manager started "${opts.name}" as "${allocated.name}" (name still held); despawned it — retry in a few seconds`);
+    }
     const id = allocated?.owner && allocated.actor ? principalKey(allocated.owner, allocated.actor).key : undefined;
 
     // The reply is the ACCEPTANCE, not the outcome (see ManagerControl.spawn): the agent is allocated,
@@ -748,6 +761,35 @@ export async function ensureAgentSpawned(
     }
     return { spawned: true, id };
   });
+}
+
+/** How long a just-despawned process gets to release its session / name before paw gives up. */
+export const SESSION_RELEASE_MS = 30_000;
+
+/** The manager's refusal for a hard-pinned name that a live incarnation still holds. */
+export function isNameHeldRefusal(error: string | undefined): boolean {
+  return !!error && /hard-pinned/.test(error) && /already held by a live incarnation/.test(error);
+}
+
+/** Spawn with a hard-pinned name, retrying while a just-retired incarnation's presence lingers. */
+async function spawnPinned(ctl: ManagerControl, args: Record<string, unknown>, name: string) {
+  const deadline = Date.now() + SESSION_RELEASE_MS;
+  for (;;) {
+    const reply = await ctl.spawn(args, 60_000); // a claude cold-start can take a while
+    if (reply.ok || !isNameHeldRefusal(reply.error) || Date.now() >= deadline) {
+      if (!reply.ok && isNameHeldRefusal(reply.error)) {
+        return { ...reply, error: `"${name}" is still held on the mesh ${Math.round(SESSION_RELEASE_MS / 1000)}s after it should have stopped — \`paw status\` / \`paw cotal ps\` for who holds it (${reply.error})` };
+      }
+      return reply;
+    }
+    await sleep(2000);
+  }
+}
+
+/** Wait (bounded) until no live process holds `pin`. Returns quietly on timeout — the caller decides. */
+async function waitForSessionRelease(pin: string, timeoutMs: number): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (liveSessionProcs(pin).length && Date.now() < deadline) await sleep(1000);
 }
 
 /**
