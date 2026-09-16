@@ -144,7 +144,7 @@ async function optimize(argv: string[]): Promise<void> {
         if (!self || !psRowAlive(self)) throw new Error(`not back on the mesh under "${row.name}"`);
         if (strays.length) throw new Error(`a duplicate came up (${strays.join(", ")})`);
         if (holders.length !== 1) throw new Error(`${holders.length} processes now hold its session`);
-        await sleep(5000); // let the new process settle before measuring it
+        await sleep(30_000); // a resumed claude peaks while it loads its transcript; 5s measured that spike (+169MB), not the steady state
         const after = treeFootprintMb(holders[0].pid);
         results.push({ name: row.name, before, after });
         console.log(`  ✓ ${row.name}  ${mb(before)} → ${mb(after)}`);
