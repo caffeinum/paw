@@ -112,6 +112,29 @@ export function liveSessionProcs(sessionId: string): LiveSessionProc[] {
   return out;
 }
 
+/**
+ * The live claude session behind a MESH agent that paw's registry doesn't know — a `cotal_spawn` peer.
+ * cotal stamps `COTAL_NAME`/`COTAL_SPACE` into every agent it launches, and claude's session index maps
+ * that process to its session id, so the process itself is the exact link. The folder is NOT: an agent
+ * spawned into a shared folder sits beside other agents' transcripts, and "the newest one there" can be
+ * someone else's conversation. Several live matches (a duplicate) → undefined, never a guess.
+ */
+export function meshAgentSession(space: string, name: string): { sessionId: string; cwd: string; pid: number } | undefined {
+  const hits: { sessionId: string; cwd: string; pid: number }[] = [];
+  for (const e of readIndex()) {
+    if (e.pid === undefined || !isAlive(e.pid)) continue;
+    let cmd: string;
+    try {
+      cmd = execFileSync("ps", ["-E", "-o", "command=", "-p", String(e.pid)], { encoding: "utf8" });
+    } catch {
+      continue;
+    }
+    const has = (k: string, v: string) => new RegExp(`(^|\\s)${k}=${v.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(\\s|$)`).test(cmd);
+    if (has("COTAL_NAME", name) && has("COTAL_SPACE", space)) hits.push({ sessionId: e.sessionId, cwd: e.cwd, pid: e.pid });
+  }
+  return hits.length === 1 ? hits[0] : undefined;
+}
+
 /** The human name (`claude --session-name` / `/rename`) recorded for a session id, if any. Lets
  *  `paw status` show "research" instead of a bare uuid so a session is recognizable at a glance. */
 export function nameForSession(sessionId: string): string | undefined {

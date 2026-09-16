@@ -85,6 +85,7 @@ import { sendAsYou } from "./dm.js";
 import { FETCH_CAP, messageText, observerEndpoint, pollLoop, readConversation, type Entry } from "./feed.js";
 import { ensure, resolveSpace, reexecUnderNode } from "./lifecycle.js";
 import { blocksForAgent, chooseTranscriptId } from "./log.js";
+import { meshAgentSession } from "./named.js";
 import { HUMAN_PEER } from "./names.js";
 import { readAgentType, readResumeId } from "./session.js";
 import { searchEntries, searchTranscript, snippet, type MessageHit, type TranscriptHit } from "./search.js";
@@ -593,15 +594,13 @@ function transcriptFileFor(space: string, name: string): string | undefined {
 }
 
 export function traceBlocks(space: string, name: string, tail: number, bytes = TRACE_TAIL_BYTES): Block[] {
-  const folder = folderForName(space, name);
-  if (!folder) {
-    throw new Error(
-      `paw: "${name}" isn't registered with paw in space "${space}" — paw's trace needs a folder to find the session; ` +
-        `watch an unregistered peer with \`cotal attach --name ${name}\``,
-    );
-  }
   const window = Math.min(Math.max(bytes, TRACE_TAIL_BYTES), TRACE_MAX_BYTES);
-  return blocksForAgent(space, name, folder, { tail, bytes: window }).blocks;
+  const folder = folderForName(space, name);
+  if (folder) return blocksForAgent(space, name, folder, { tail, bytes: window }).blocks;
+  // Not registered with paw (a `cotal_spawn` peer): its live process names its exact session.
+  const live = meshAgentSession(space, name);
+  if (!live) throw new Error(`paw: "${name}" isn't registered with paw and no live claude on the mesh carries that name — nothing to trace`);
+  return blocksForAgent(space, name, live.cwd, { tail, bytes: window, sessionId: live.sessionId }).blocks;
 }
 
 /* ── http ─────────────────────────────────────────────────────────────────────────────────────── */

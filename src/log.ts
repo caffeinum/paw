@@ -18,6 +18,7 @@ import { registry, type Command } from "@cotal-ai/core";
 import { assertUnambiguousTarget, canonicalDir, folderForName, lookupFolderName, personaFilePath, sanitizeAgentName } from "./addressing.js";
 import { claudeProjectDir, latestSession } from "./adopt.js";
 import { CodexParser, findCodexSessionFile, resolveCodexRoots } from "./codex-log.js";
+import { meshAgentSession } from "./named.js";
 import { latestOpencodeSession, opencodeBlocks, resolveOpencodeDb } from "./opencode-log.js";
 import { isClaudeHarness, readAgentType, readResumeId } from "./session.js";
 import { resolveSpace } from "./lifecycle.js";
@@ -125,7 +126,7 @@ export function agentNameForFolder(space: string, folder: string): string {
 /** Resolve a target to its agent name + folder. Folder, worktree, or a live agent name.
  *  The try/catch ONLY guards canonicalDir (path vs name disambiguation) — agentNameForFolder is
  *  called outside it so its collision error propagates instead of being mis-handled as name mode. */
-export function resolveLogTarget(space: string, target: string | undefined): { name: string; folder: string } {
+export function resolveLogTarget(space: string, target: string | undefined): { name: string; folder: string; sessionId?: string } {
   if (target && parseWorktreeRef(target)) {
     const folder = resolveWorktreeFolder(target);
     return { name: agentNameForFolder(space, folder), folder };
@@ -136,7 +137,12 @@ export function resolveLogTarget(space: string, target: string | undefined): { n
   } catch {
     if (target === undefined) throw new Error(`paw: "." is not a directory`);
     const named = folderForName(space, target); // name mode — reverse-resolve the folder from the registry
-    if (!named) throw new Error(`paw: no folder known for agent "${target}" (\`paw ps\` for live names)`);
+    if (!named) {
+      // Not registered with paw — a `cotal_spawn` peer. Its live process names its exact session.
+      const live = meshAgentSession(space, target);
+      if (live) return { name: target, folder: live.cwd, sessionId: live.sessionId };
+      throw new Error(`paw: no agent "${target}" — not registered with paw, and no live claude on the mesh carries that name (\`paw status\` for names)`);
+    }
     return { name: target, folder: named };
   }
   return { name: agentNameForFolder(space, folder), folder };
@@ -150,24 +156,24 @@ export type AgentLog = {
 };
 
 /** Open the harness-native session for this agent. Claude path stays the jsonl pin/latest walk. */
-export function openAgentLog(space: string, name: string, folder: string, bytes = TAIL_BYTES): AgentLog {
+export function openAgentLog(space: string, name: string, folder: string, bytes = TAIL_BYTES, sessionId?: string): AgentLog {
   const persona = personaFilePath(space, name);
   const agentType = existsSync(persona) ? readAgentType(persona) : undefined;
-  if (isClaudeHarness(agentType)) return openClaudeLog(space, name, folder, bytes);
+  if (isClaudeHarness(agentType)) return openClaudeLog(space, name, folder, bytes, sessionId);
   if (agentType === "opencode") return openOpencodeLog(space, name, folder);
   if (agentType === "codex") return openCodexLog(space, name, folder, bytes);
   throw new Error(`paw: "${name}" is a ${agentType} agent — paw log does not read ${agentType} sessions yet.`);
 }
 
 /** One-shot blocks for the web trace (and tests). Same dispatch as `paw log`. */
-export function blocksForAgent(space: string, name: string, folder: string, opts?: { tail?: number; bytes?: number }): { name: string; label: string; blocks: Block[] } {
-  const log = openAgentLog(space, name, folder, opts?.bytes ?? TAIL_BYTES);
+export function blocksForAgent(space: string, name: string, folder: string, opts?: { tail?: number; bytes?: number; sessionId?: string }): { name: string; label: string; blocks: Block[] } {
+  const log = openAgentLog(space, name, folder, opts?.bytes ?? TAIL_BYTES, opts?.sessionId);
   return { name: log.name, label: log.label, blocks: log.blocks(opts?.tail ?? 20) };
 }
 
-function openClaudeLog(space: string, name: string, folder: string, bytes: number): AgentLog {
+function openClaudeLog(space: string, name: string, folder: string, bytes: number, sessionId?: string): AgentLog {
   const persona = personaFilePath(space, name);
-  const pinned = existsSync(persona) ? readResumeId(persona) : undefined;
+  const pinned = sessionId ?? (existsSync(persona) ? readResumeId(persona) : undefined);
   const agentType = existsSync(persona) ? readAgentType(persona) : undefined;
   const dir = claudeProjectDir(folder);
   const file = join(dir, `${chooseTranscriptId(name, dir, pinned, agentType)}.jsonl`);
@@ -342,8 +348,8 @@ async function log(argv: string[]): Promise<void> {
   const { space: spaceArg, target, tail, follow } = parseArgs(argv);
   const space = spaceArg ?? resolveSpace();
   assertUnambiguousTarget(space, target); // a bare token that's BOTH a known name and a folder here → fail loud
-  const { name, folder } = resolveLogTarget(space, target);
-  const session = openAgentLog(space, name, folder);
+  const { name, folder, sessionId } = resolveLogTarget(space, target);
+  const session = openAgentLog(space, name, folder, TAIL_BYTES, sessionId);
   console.log(c.dim(`# ${session.name} · ${session.label}`));
 
   for (const b of session.blocks(tail)) emit(renderBlock(b));
