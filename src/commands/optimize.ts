@@ -96,7 +96,7 @@ export function treeFootprintMb(pid: number): number | undefined {
   }
 }
 
-const hours = (ms: number) => `${Math.round(ms / 3_600_000)}h`;
+const hours = (ms: number) => (ms >= 48 * 3_600_000 ? `${Math.round(ms / 86_400_000)}d` : `${Math.round(ms / 3_600_000)}h`);
 const mb = (v: number | undefined) => (v === undefined ? "?" : `${v}MB`);
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
