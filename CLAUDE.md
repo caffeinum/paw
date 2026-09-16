@@ -1885,45 +1885,6 @@ addressable, talking to each other and to you. A thin layer over cotal with **no
   without a non-default `PAW_HOME` and a `PAW_SPACE` that isn't `paw`, because it starts a real manager;
   and it `removeMesh(space)`es on teardown (the check:loop landmine).
 
-## 2026-09-16 changes (fleet memory day)
-- **`paw optimize [--since 24h] [--dry-run] [<name>…]`** (`src/commands/optimize.ts`) — restarts agents whose
-  transcript hasn't been written for longer than the window (the operator's cutoff is LAST ACTIVE, not process
-  uptime), one at a time: live + idle, no turn in flight, no queued/unread DM, exactly ONE process on the pinned
-  session, a resumable transcript. Each is re-checked right before its restart, paced by `awaitSpawnHeadroom`, and
-  verified after (back under its own name, no `<name>_N`, alone on its session); it stops at the first failure.
-  An idle agent whose FOLDER IS GONE (a cleaned-up worktree) is STOPPED instead — it can never come back there;
-  its transcript stays for `paw adopt --resume`. Memory = the process tree's macOS phys_footprint, measured 30s
-  after the restart (5s measured the resume spike, +169MB). Measured: 133h agents 640MB → 350MB. Never-used agents
-  (no transcript) read "last activity unknown" and are skipped. Test: `check:commands`.
-- **Spawn hard-pins the name (`identity: <name>`)** — the manager auto-numbers a persona-derived name while the old
-  incarnation's presence is still live, so a despawn→spawn came back as `<name>_2`: alive, resumed on the SAME
-  session (two writers), unreachable under its name. Eight restarts produced eight `_2`s. Now a collision refuses
-  (`isNameHeldRefusal`) and `spawnPinned` retries for `SESSION_RELEASE_MS` (30s); the two-writer guard waits for
-  and counts MESH holders too (`liveSessionProcs`, not just `foreignWriters`); a renamed reply is despawned; `paw
-  status` flags >1 process on a pin. `restartAgent` refuses BEFORE stopping when the folder no longer exists.
-- **adopt: one-agent-per-session is checked before a self-adopt hands off** to the detached child — the child runs
-  the pinned RELEASE, which predated `assertSafeRepin`, so `paw adopt . --name evals-scenarios` from inside the
-  holder pinned a session `queue-pr-132` already held. `paw rm` no longer offers a revive hint for a session
-  another agent still holds.
-- **keeper**: `unstickDecision` never restarts a `busy` agent (a turn still in flight = a slow/hung tool, not a
-  deaf agent; queue-ea sat 51m in one `fly ssh`, its DMs queued by claude and redelivered by cotal every 60s —
-  filed upstream 71ee80bd: ack_wait 60s, no backoff).
-- **chat**: filtered sessions (`--only`/`@name`/`#ch`) print NOTHING for other traffic — no "hidden by filter"
-  lines, no other agents' presence; the count is a prompt badge (`elsewhereBadge`, "N elsewhere") redrawn in
-  place. Presence activity is one line (`activityLine`, 100 chars). readline's per-line echo is muted while a
-  bracketed paste arrives (`_writeToOutput` hook, fail-loud if node drops it) — measured 19 echoed lines → 1.
-- **Memory facts measured on this box**: a paw claude agent ≈ claude 200–420MB (grows with uptime; bare idle
-  claude ≈132MB) + cotal's `mcp.cjs` ≈80MB (upstream, filed f630bc08 — the bundle inlines ~0.9MB of docs) +
-  tracepaper. tracepaper via `npx github:…` = npm exec 80MB + node shim 13MB + bun 61MB per agent; the local
-  interim config runs `bun run ~/.paw/mcp/tracepaper-0.9.5/…/src/index.ts` (machine-local, pinned 0.9.5, not
-  portable); tracepaper is building a shared HTTP server (one ~80MB process for all agents). Most of the 22GB
-  swap was macOS services leaking over 7 days' uptime (WiFiAgent 5.8GB, fseventsd 5.3GB, sharingd, locationd,
-  rapportd), not paw.
-- **No lighter compliant harness for a Claude Max subscription**: Anthropic's terms restrict subscription OAuth
-  to Claude Code (Feb 2026); opencode removed Claude login; pi needs a spoofing plugin. cotal 0.49 ships
-  `@cotal-ai/pi` (no resume/MCP-sharing yet). Upgrade to 0.49 is unstarted: its manager SIGTERM now SPARES agents
-  (breaks paw's restart/down semantics), est. 3–6h.
-
 ## The manager control rail — `src/control.ts` (cotal 0.25)
 
 **paw has exactly one door to the manager, and it is not `requestControl` any more.** cotal's 1d slice
