@@ -1,0 +1,29 @@
+scripts/check-transcript.ts
+  s_ed25aaaf9c7e77::t_7dfac2ca573679 277-283
+src/transcript.ts
+  s_9954c1696087d2::t_5f2c7503a43b7e 525-530,573-578
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "963c619012ce3d3410b2756f8ff891aa41844bf6",
+  "prompts": {},
+  "sessions": {
+    "s_9954c1696087d2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a4a35e6a-35be-48cd-b703-3f25e33a996d",
+        "model": "claude-sonnet-5"
+      },
+      "human_author": "Aleksey Bykhun <theisease@gmail.com>"
+    },
+    "s_ed25aaaf9c7e77": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "90dd1251-161e-469a-96db-040d1e555035",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Aleksey Bykhun <theisease@gmail.com>"
+    }
+  }
+}
