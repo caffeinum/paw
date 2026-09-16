@@ -19,7 +19,7 @@ import { writeJson } from "./stdout.js";
 import { foreignWriters, liveSessionProcs, nameForSession } from "./named.js";
 import { isClaudeHarness, readAgentType, readResumeId, transcriptExists, transcriptMtime, transcriptPath } from "./session.js";
 import { lastFailure } from "./transcript.js";
-import { tailRead, turnInFlight } from "./transcript.js";
+import { tailRead, turnState, type PendingTool, type TurnState } from "./transcript.js";
 import { gitInfoMany, type GitInfo } from "./git.js";
 
 const tty = process.stdout.isTTY === true;
@@ -52,6 +52,10 @@ export interface AgentStatus {
    *  rather than folded into `mesh`: one is what the agent CLAIMED, the other is what paw WORKED OUT,
    *  and a reader has to be able to tell them apart. */
   busy?: boolean;
+  /** The tool call the agent's running turn is sitting INSIDE (tool_use with no tool_result yet) — set
+   *  only for a live agent whose transcript shows one. With `startedMs` it says how long; without, no
+   *  age is claimed. A hung tool blocks every later DM until it returns (see {@link hungTool}). */
+  tool?: PendingTool;
   /** Repo, branch and worktree for the agent's folder — the thing you actually want to know when a
    *  dozen agents are working. Absent when the folder isn't a git checkout. */
   git?: GitInfo;
@@ -96,19 +100,49 @@ const BUSY_WINDOW_MS = 10_000;
  * Falls back to that heuristic when the markers cannot be read (no pin, no transcript yet, or hooks
  * disabled so no turn_duration was ever written). The agent's OWN `working` claim still wins over both.
  */
-function liveTurn(pin: string | undefined, mesh: string): boolean {
-  if (mesh === "working" || mesh === "waiting") return true; // what the agent said beats what we infer
-  const file = pin ? transcriptPath(pin) : undefined;
-  if (file) {
-    try {
-      // 64KB is far more than one turn's tail and cheap on a 50MB file.
-      const state = turnInFlight(tailRead(file, 64 * 1024));
-      if (state !== undefined) return state;
-    } catch {
-      /* unreadable → fall through to the heuristic rather than assert either way */
-    }
+function liveTurn(pin: string | undefined, mesh: string): { busy: boolean; tool?: PendingTool } {
+  const state = pin ? readTurnState(pin) : undefined;
+  const tool = state?.inFlight ? state.tool : undefined;
+  if (mesh === "working" || mesh === "waiting") return { busy: true, tool }; // what the agent said beats what we infer
+  if (state?.inFlight !== undefined) return { busy: state.inFlight, tool };
+  return { busy: inferBusy(mesh, true, pin ? transcriptMtime(pin) : undefined, Date.now()) };
+}
+
+/**
+ * The pinned transcript's turn state, read from its tail. 64KB first (cheap on a 50MB file); if that
+ * window holds NO message record at all, widen to 2MB — a tool hung for an hour buries its own
+ * tool_use under `queue-operation` records (one per DM wake nudge, ~3/min in the queue-ea incident),
+ * and a 64KB tail of only those would read as "cannot tell" exactly when it matters most.
+ * Undefined when there is no transcript or it can't be read.
+ */
+export function readTurnState(pin: string): TurnState | undefined {
+  const file = transcriptPath(pin);
+  if (!file) return undefined;
+  try {
+    const small = turnState(tailRead(file, 64 * 1024));
+    return small.inFlight !== undefined ? small : turnState(tailRead(file, 2 * 1024 * 1024));
+  } catch {
+    return undefined; // unreadable → no claim either way
   }
-  return inferBusy(mesh, true, pin ? transcriptMtime(pin) : undefined, Date.now());
+}
+
+/** How long a tool must have been running before `paw status` calls it out (`in tool 12m`). Short tools
+ *  are the normal state of a working agent; this marks the ones that are plausibly stuck. */
+export const HUNG_TOOL_SHOW_MS = 5 * 60_000;
+
+/** Pure: the running tool's age in ms when it has run at least `minMs`, else undefined. Needs a live
+ *  agent and a known start — an unknown start is no claim, and a future start (clock skew) is not
+ *  evidence. */
+export function hungTool(r: Pick<AgentStatus, "live" | "tool">, now: number, minMs = HUNG_TOOL_SHOW_MS): number | undefined {
+  if (!r.live || !r.tool || r.tool.startedMs === undefined) return undefined;
+  const age = now - r.tool.startedMs;
+  return age >= minMs ? age : undefined;
+}
+
+/** `Bash: fly ssh console -a …` — the tool and the first ~60 chars of its gist. */
+export function toolLabel(t: PendingTool): string {
+  const gist = t.summary.length > 60 ? `${t.summary.slice(0, 59)}…` : t.summary;
+  return gist ? `${t.name}: ${gist}` : t.name;
 }
 
 /** The newest turn's runtime failure, if the newest turn IS one. Tail-reads the pinned transcript
@@ -177,8 +211,11 @@ export function inboxStuck(r: AgentStatus): boolean {
 }
 
 /** A trailing durability/health note, or "" when the agent is quietly durable. */
-function note(r: AgentStatus): string {
+function note(r: AgentStatus, now: number): string {
   if (r.unregistered) return `unregistered ${r.unregistered.agent} peer (cotal_spawn) — not revived by paw restart/start`;
+  // A hung tool outranks everything: it is WHY the inbox isn't draining, and `paw unstick` is the fix.
+  const hung = hungTool(r, now);
+  if (hung !== undefined && r.tool) return `⚠ tool running ${ago(now - hung, now)} (${toolLabel(r.tool)}) — \`paw unstick ${r.name}\``;
   // A refused turn is the most actionable note: the mesh reads "idle" while the agent can't answer.
   if (r.failure) return `⚠ ${r.failure.text.split(/\s+\/usage|\n/)[0].slice(0, 80)}`;
   if (r.conflictPids.length) return `⚠ two writers (pid ${r.conflictPids.join(", ")})`;
@@ -207,7 +244,7 @@ function statusColor(text: string): (s: string) => string {
   // `busy` is paw's inference and `working` is the agent's own claim — same colour, because to a
   // reader scanning the column they mean the same thing: this agent is doing something.
   if (text === "idle" || text === "working" || text === "busy") return c.green;
-  if (text === "starting" || text === "waiting") return c.yellow;
+  if (text === "starting" || text === "waiting" || text.startsWith("in tool")) return c.yellow;
   return c.dim; // offline
 }
 
@@ -222,7 +259,11 @@ export function formatStatus(rows: AgentStatus[], now: number): string {
   /** What the STATUS cell says. `busy` is paw's own inference from transcript activity — deliberately
    *  a different word from the mesh's `working`, so a reader can tell "the agent said so" from
    *  "paw worked it out". See inferBusy. */
-  const statusText = (r: AgentStatus) => ((r.busy ?? inferBusy(r.mesh, r.live, r.activeMs, now)) ? "busy" : r.mesh);
+  const statusText = (r: AgentStatus) => {
+    const hung = hungTool(r, now);
+    if (hung !== undefined) return `in tool ${ago(now - hung, now)}`;
+    return (r.busy ?? inferBusy(r.mesh, r.live, r.activeMs, now)) ? "busy" : r.mesh;
+  };
   const cwd = (r: AgentStatus) => (r.folder ? tilde(r.folder) : "—");
   const rtText = (r: AgentStatus) => (r.live && r.runtime ? r.runtime : "—");
   const w = {
@@ -241,7 +282,7 @@ export function formatStatus(rows: AgentStatus[], now: number): string {
     const sess = sessionRef(r);
     const inbox = inboxText(r.inbox);
     const inboxColored = inboxStuck(r) ? c.yellow(inbox) : r.inbox.kind === "error" ? c.red(inbox) : r.inbox.kind === "lag" && inbox === "✓" ? c.green(inbox) : c.dim(inbox);
-    const n = note(r);
+    const n = note(r, now);
     const tail = n ? "  " + (n.startsWith("⚠") ? c.yellow(n) : c.dim(n)) : "";
     return (
       `${pad(c.bold(r.name), r.name.length, w.name)}  ` +
@@ -256,9 +297,11 @@ export function formatStatus(rows: AgentStatus[], now: number): string {
   const conflicts = rows.filter((r) => r.conflictPids.length).length;
   const pinless = rows.filter((r) => !r.pin && isClaudeHarness(r.harness) && !r.unregistered).length;
   const stuck = rows.filter(inboxStuck).length;
+  const hung = rows.filter((r) => hungTool(r, now) !== undefined).length;
   const out = [header, ...lines];
-  if (conflicts || pinless || stuck) {
+  if (conflicts || pinless || stuck || hung) {
     const bits = [
+      hung && `${hung} agent(s) inside a long-running tool`,
       conflicts && `${conflicts} two-writer conflict(s)`,
       stuck && `${stuck} stuck inbox(es)`,
       pinless && `${pinless} unpinned`,
@@ -458,7 +501,7 @@ export async function collectStatus(space: string, ctl?: ManagerControl): Promis
       // Computed HERE, not at render time. It used to live only inside formatStatus, so `paw status`
       // printed "busy" while `--json` and the web UI — reading the very same rows — saw a plain "idle"
       // and drew a working agent as merely online. Every surface now gets the same answer.
-      busy: live ? liveTurn(pin, mesh) : false,
+      ...(live ? liveTurn(pin, mesh) : { busy: false }),
       // Local git only; the PR lookup is network and stays lazy. Read CONCURRENTLY above rather than
       // one folder at a time here — see gitInfoMany.
       git: gitByFolder.get(folder),

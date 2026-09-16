@@ -62,14 +62,19 @@ async function globalUp(argv: string[]): Promise<void> {
   }
   const name = setFolderName(space, folder, GLOBAL_NAME).name; // pin the folder→name mapping to `global`
   const { server } = await ensure({ needMesh: true, needManager: true, space });
-  const { spawned, restarted } = await withManagerControl(space, server, async (ctl) => {
+  const { spawned, restarted, interrupted } = await withManagerControl(space, server, async (ctl) => {
     const r = await ensureAgentSpawned(ctl, { space, name, cwd: folder, brief: GLOBAL_BRIEF });
     // The keeper tick (launchd, every 60s) is the one periodic heartbeat paw has, so the fleet's
     // unstick sweep rides it: an agent sitting idle with DMs it never drains is restarted (src/keeper.ts).
-    const restarted = await unstickSweep(space, ctl).catch((e: Error) => { console.error(`paw keeper: sweep failed: ${e.message}`); return [] as string[]; });
-    return { ...r, restarted };
+    // It also sends Esc to an agent stuck inside one tool past PAW_UNSTICK_TOOL_MIN — never a restart.
+    const swept = await unstickSweep(space, ctl).catch((e: Error) => {
+      console.error(`paw keeper: sweep failed: ${e.message}`);
+      return { restarted: [] as string[], interrupted: [] as string[] };
+    });
+    return { ...r, ...swept };
   });
   if (restarted.length) console.log(`  keeper: restarted ${restarted.join(", ")} (stuck with undrained DMs)`);
+  if (interrupted.length) console.log(`  keeper: interrupted a hung tool in ${interrupted.join(", ")} (Esc — sessions intact)`);
   console.log(spawned ? `✓ global agent up @${name} — full machine access, cwd ${folder}` : `✓ global agent already live @${name}`);
   console.log(`  DM it: \`paw dm ${name} "…"\`  ·  from a bridge it's in /switch and the /help footer`);
   console.log(`  stays warm (resume-pinned), revived by \`paw restart\`; \`paw stop ${name}\` ends it`);

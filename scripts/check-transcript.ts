@@ -234,6 +234,57 @@ assert(tailRead(file, 10_000).split("\n")[0] === "AAAAAAAAAA", "a window larger 
   assert(failureText("Everything worked.") === undefined, "failure: ordinary prose is untouched");
 }
 
+// ── turnState: WHICH tool a running turn is inside, and since when ─────────────────────────────
+{
+  const { turnState, turnInFlight: tif, toolResultFor } = await import("../src/transcript.js");
+  const T0 = "2026-09-15T07:18:56.000Z";
+  const toolUse = (id: string, name: string, input: object, ts = T0) =>
+    rec({ type: "assistant", timestamp: ts, message: { role: "assistant", stop_reason: "tool_use", content: [{ type: "tool_use", id, name, input }] } });
+  const toolResult = (id: string, extra: object = {}) =>
+    rec({ type: "user", timestamp: T0, message: { role: "user", content: [{ type: "tool_result", tool_use_id: id, content: "out", is_error: false }] }, ...extra });
+  const prompt = rec({ type: "user", message: { role: "user", content: "run the trials" } });
+  // The queue-ea shape, measured: the Bash tool_use, then ONLY non-message records while it hangs —
+  // DM wake nudges land as queue-operation lines, so the file keeps growing and mtime never goes quiet.
+  const nudge = rec({ type: "queue-operation", operation: "enqueue", timestamp: "2026-09-15T08:05:34.028Z", content: "<channel>New dm</channel>" });
+  const hung = [prompt, toolUse("toolu_A", "Bash", { command: "for j in a b c; do fly ssh console -a queue -C 'cat result.json'; done" }), nudge, nudge, nudge].join("\n");
+  const s = turnState(hung);
+  assert(s.inFlight === true && s.tool?.id === "toolu_A", "turnState: a tool_use followed only by queue-operation nudges is a tool IN FLIGHT");
+  assert(s.tool?.name === "Bash" && s.tool.startedMs === Date.parse(T0), "turnState: the tool carries its name and its tool_use record's own timestamp");
+  assert(s.tool?.summary.startsWith("for j in a b c; do fly ssh") === true, "turnState: the Bash summary is the command's first line");
+  assert(tif(hung) === true, "turnInFlight is unchanged: it is turnState().inFlight");
+
+  const answered = [prompt, toolUse("toolu_A", "Bash", { command: "ls" }), toolResult("toolu_A")].join("\n");
+  assert(turnState(answered).inFlight === true && turnState(answered).tool === undefined, "turnState: an answered call is not pending (the turn runs, no tool is blocking)");
+
+  // Parallel calls: B returned, A still running — A is the blocker, and the OLDEST pending call wins.
+  const parallel = [prompt, toolUse("toolu_A", "Bash", { command: "sleep 600" }, "2026-09-15T07:00:00.000Z"), toolUse("toolu_B", "Read", { file_path: "/x/y.ts" }, "2026-09-15T07:00:01.000Z"), toolResult("toolu_B")].join("\n");
+  assert(turnState(parallel).tool?.id === "toolu_A", "turnState: with parallel calls, the unanswered one is reported, not the one that returned");
+  const bothPending = [prompt, toolUse("toolu_A", "Bash", { command: "sleep 1" }, "2026-09-15T07:00:00.000Z"), toolUse("toolu_B", "Bash", { command: "sleep 2" }, "2026-09-15T07:00:01.000Z")].join("\n");
+  assert(turnState(bothPending).tool?.id === "toolu_A", "turnState: two pending calls → the OLDEST (the one waited on longest)");
+
+  // Never reach across a turn boundary: a closed turn's call is not pending in a new one.
+  const oldTurn = [toolUse("toolu_OLD", "Bash", { command: "x" }), rec({ type: "system", subtype: "turn_duration" }), prompt].join("\n");
+  assert(turnState(oldTurn).tool === undefined, "turnState: a call from before a closed turn is never reported");
+  assert(turnState(finished).inFlight === false && turnState(finished).tool === undefined, "turnState: a finished turn has no tool");
+  const noTs = rec({ type: "assistant", message: { role: "assistant", stop_reason: "tool_use", content: [{ type: "tool_use", id: "toolu_N", name: "Bash", input: { command: "x" } }] } });
+  assert(turnState(noTs).tool?.id === "toolu_N" && turnState(noTs).tool?.startedMs === undefined, "turnState: no timestamp on the record → no start claimed (unknown ⇒ no age)");
+  assert(turnState("").inFlight === undefined && turnState("").tool === undefined, "turnState: an empty tail claims nothing");
+
+  // toolResultFor: the verification half of `paw unstick`.
+  const interruptedRec = rec({ type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_A", content: "Interrupted", is_error: true }] }, toolUseResult: { interrupted: true } });
+  const r = toolResultFor([hung, interruptedRec].join("\n"), "toolu_A");
+  assert(r?.isError === true && r.interrupted === true && r.text === "Interrupted", "toolResultFor: finds the result for the id, with claude's interrupted flag");
+  // The exact shape claude 2.1.273 wrote when paw's Esc hit a running Bash (measured in the e2e).
+  const escRec = rec({ type: "user", message: { role: "user", content: [{ type: "tool_result", content: "The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). STOP what you are doing and wait for the user to tell you how to proceed.", is_error: true, tool_use_id: "toolu_A" }] }, toolUseResult: "User rejected tool use", toolDenialKind: "user-rejected" });
+  assert(toolResultFor([hung, escRec].join("\n"), "toolu_A")?.interrupted === true, "toolResultFor: the measured Esc record (toolDenialKind user-rejected) reads as interrupted");
+  const interruptText = rec({ type: "user", message: { role: "user", content: [{ type: "text", text: "[Request interrupted by user for tool use]" }] }, interruptedMessageId: "msg_x" });
+  const afterEsc = [hung, escRec, interruptText].join("\n");
+  assert(turnState(afterEsc).inFlight === false && turnState(afterEsc).tool === undefined, "turnState: a turn ended by Esc ([Request interrupted by user…]) is NOT in flight");
+  assert(turnState([afterEsc, prompt].join("\n")).inFlight === true, "turnState: a new prompt after the interrupt is a running turn again");
+  assert(toolResultFor(hung, "toolu_A") === undefined, "toolResultFor: no result yet → undefined (still stuck)");
+  assert(toolResultFor(answered, "toolu_A")?.interrupted === undefined, "toolResultFor: a result without the flag reports it as unknown, not false");
+}
+
 if (failures > 0) {
   console.error(`\n${failures} paw transcript check(s) failed`);
   process.exit(1);

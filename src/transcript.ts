@@ -443,28 +443,97 @@ export class TranscriptParser {
  * from here", so the caller can fall back rather than assert something false.
  */
 export function turnInFlight(tailText: string): boolean | undefined {
+  return turnState(tailText).inFlight;
+}
+
+/** A tool call the transcript shows STARTED and never answered: the assistant's tool_use record with no
+ *  tool_result carrying its id. `startedMs` is that record's own `timestamp` — absent when the record has
+ *  none, and then no age may be claimed. */
+export interface PendingTool {
+  id: string;
+  name: string;
+  /** One-line gist of the call (Bash: the command's first line) — for the evidence line, not parsing. */
+  summary: string;
+  startedMs?: number;
+}
+
+export interface TurnState {
+  /** See {@link turnInFlight}: true running, false closed, undefined cannot tell. */
+  inFlight: boolean | undefined;
+  /** The OLDEST unanswered tool call of the running turn, if any — the one blocking it. */
+  tool?: PendingTool;
+}
+
+type TurnRec = {
+  type?: string;
+  subtype?: string;
+  timestamp?: string;
+  message?: { stop_reason?: string; content?: unknown };
+};
+
+/**
+ * {@link turnInFlight}, plus WHICH tool the running turn is sitting inside and since when.
+ *
+ * Claude Code only starts the next turn once a tool returns, so an agent inside a hung command is not
+ * deaf, it is stuck: every DM queues behind the tool (queue-ea, 2026-09-15: one `fly ssh console` loop
+ * sat 51 minutes). The transcript records exactly that — an assistant `tool_use` with no `tool_result`
+ * for its id — while the FILE keeps moving: claude appends `queue-operation` records for every DM wake
+ * nudge that arrives mid-tool (3/min in that incident). So mtime can never say "stuck in a tool"; only
+ * the tool_use record's own timestamp can, and non-message records are skipped here, never read as
+ * progress.
+ *
+ * The walk goes backwards over the CURRENT turn only: it stops at a closing marker, an ended assistant
+ * message, or a user PROMPT (a user record carrying no tool_result starts a turn; nothing before it is
+ * pending in this one). Parallel calls answered out of order are handled by collecting result ids first.
+ */
+export function turnState(tailText: string): TurnState {
   const lines = tailText.split("\n");
+  let inFlight: boolean | undefined;
+  const answered = new Set<string>();
+  let tool: PendingTool | undefined;
   for (let i = lines.length - 1; i >= 0; i--) {
     const line = lines[i];
     if (!line) continue;
-    let rec: { type?: string; subtype?: string; message?: { stop_reason?: string } };
+    let rec: TurnRec;
     try {
       rec = JSON.parse(line);
     } catch {
       continue; // a truncated tail line proves nothing either way
     }
-    if (rec.type === "system" && rec.subtype === "turn_duration") return false; // closed, and closed last
+    if (rec.type === "system" && rec.subtype === "turn_duration") {
+      return { inFlight: inFlight ?? false, tool }; // closed — and if nothing followed, closed last
+    }
     if (rec.type === "assistant") {
       // `stop_reason` decides, and it must: `turn_duration` is NOT always written. A real transcript
       // was found with a completed turn (`end_turn`) and no turn_duration anywhere in the file, and
       // relying on the marker alone reported that finished session as working forever.
       const stop = rec.message?.stop_reason;
-      if (stop === "end_turn" || stop === "stop_sequence") return false; // the model stopped, nothing followed
-      return true; // tool_use (or an unknown reason) → a step is still in flight
+      if (stop === "end_turn" || stop === "stop_sequence") return { inFlight: inFlight ?? false, tool };
+      inFlight ??= true; // tool_use (or an unknown reason) → a step is still in flight
+      const content = Array.isArray(rec.message?.content) ? (rec.message!.content as Part[]) : [];
+      for (const p of content) {
+        if (p?.type !== "tool_use" || !p.id || !p.name || answered.has(p.id)) continue;
+        const ts = rec.timestamp ? Date.parse(rec.timestamp) : NaN;
+        const input = (p.input ?? {}) as Record<string, unknown>;
+        // Walking backwards, a later hit is an OLDER call: the one the turn has waited on longest.
+        tool = { id: p.id, name: p.name, summary: primaryArg(p.name, input), ...(Number.isFinite(ts) ? { startedMs: ts } : {}) };
+      }
+      continue;
     }
-    if (rec.type === "user") return true; // a tool result or a new prompt — either way the turn continues
+    if (rec.type === "user") {
+      const content = rec.message?.content;
+      // An Esc'd turn ends on claude's own "[Request interrupted by user…]" text record — no turn_duration,
+      // no end_turn (measured in the paw unstick e2e). Read as running, an interrupted agent would show
+      // `busy` until something else woke it.
+      const interruptedTurn = Array.isArray(content) && (content as Part[]).some((p) => p?.type === "text" && p.text?.startsWith("[Request interrupted by user"));
+      if (interruptedTurn) return { inFlight: inFlight ?? false, tool };
+      inFlight ??= true; // a tool result or a new prompt — either way the turn continues
+      const results = Array.isArray(content) ? (content as Part[]).filter((p) => p?.type === "tool_result") : [];
+      if (results.length === 0) return { inFlight, tool }; // a prompt opens this turn — nothing older is pending in it
+      for (const r of results) if (r.tool_use_id) answered.add(r.tool_use_id);
+    }
   }
-  return undefined;
+  return { inFlight, tool };
 }
 
 /** Read the last `bytes` of a file as text, dropping a leading partial line. Cheap on huge transcripts. */
@@ -481,4 +550,33 @@ export function tailRead(file: string, bytes: number): string {
   } finally {
     closeSync(fd);
   }
+}
+
+/** The tool_result a transcript tail carries for `toolUseId`, if any — how `paw unstick` confirms the
+ *  interrupt landed (an Esc'd tool gets a result record like any other). `interrupted` is claude's own
+ *  `toolUseResult.interrupted` flag when the record carries one; absent means unknown, not false. */
+export function toolResultFor(
+  tailText: string,
+  toolUseId: string,
+): { isError: boolean; text: string; interrupted?: boolean } | undefined {
+  for (const line of tailText.split("\n")) {
+    if (!line.includes(toolUseId)) continue;
+    let rec: { type?: string; message?: { content?: unknown }; toolUseResult?: { interrupted?: unknown } };
+    try {
+      rec = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (rec.type !== "user" || !Array.isArray(rec.message?.content)) continue;
+    const hit = (rec.message!.content as Part[]).find((p) => p?.type === "tool_result" && p.tool_use_id === toolUseId);
+    if (!hit) continue;
+    // Measured 2026-09-16 (claude 2.1.273), Esc pressed on a running Bash: the result record carries
+    // `toolDenialKind: "user-rejected"` and `toolUseResult: "User rejected tool use"` (is_error true),
+    // followed by a user text record "[Request interrupted by user for tool use]". A Bash that returned
+    // on its own carries an object `toolUseResult` with a boolean `interrupted` instead.
+    const denial = (rec as { toolDenialKind?: unknown }).toolDenialKind === "user-rejected" || (rec.toolUseResult as unknown) === "User rejected tool use";
+    const flag = denial ? true : rec.toolUseResult && typeof rec.toolUseResult === "object" ? rec.toolUseResult.interrupted : undefined;
+    return { isError: hit.is_error === true, text: resultText(hit.content), ...(typeof flag === "boolean" ? { interrupted: flag } : {}) };
+  }
+  return undefined;
 }

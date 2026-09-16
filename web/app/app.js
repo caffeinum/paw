@@ -733,6 +733,11 @@ function headerTopic(row) {
     // The mesh says idle; the transcript says the model never ran. The transcript wins the header,
     // because "idle" is what makes a refused turn look like being ignored (reported 2026-09-03).
     parts.push(`<span class="fail" title="${esc(row.failure.text)}">⚠ ${esc(shortFailure(row.failure.text))} · ${ago(row.failure.ts, Date.now())} ago</span>`);
+  } else if (row.live && row.tool && row.tool.startedMs !== undefined && Date.now() - row.tool.startedMs >= 5 * 60_000) {
+    // Stuck INSIDE a tool (tool_use, no result): every DM queues behind it. Same 5-minute line as
+    // `paw status` (HUNG_TOOL_SHOW_MS); `paw unstick <name>` sends the Esc that interrupts it.
+    const what = `${row.tool.name}${row.tool.summary ? `: ${row.tool.summary}` : ""}`;
+    parts.push(`<span class="fail" title="${esc(`${what} — paw unstick ${row.name}`)}">⚠ in tool ${ago(row.tool.startedMs, Date.now())} · ${esc(row.tool.name)}</span>`);
   } else parts.push(esc(row.busy && row.mesh === "idle" ? "busy" : row.mesh));
   if (row.runtime) parts.push(esc(row.runtime));
   return parts.join(" · ");
