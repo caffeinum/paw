@@ -199,7 +199,24 @@ export function parseTaskNotification(text: string): { kind: "notification"; sum
 
 /** A user-turn body → wake / notification / plain user. Shared by the claude parser and the
  *  opencode/codex harness readers so a cotal wake prompt looks the same on every surface. */
+/** Is this meta user record one paw renders anyway (a cotal wake or a task notification)? */
+function isShownMeta(content: unknown): boolean {
+  const text = typeof content === "string" ? content : Array.isArray(content) ? (content as Part[]).map((p) => p?.text ?? "").join(" ") : "";
+  return text.includes('<channel source="cotal"') || text.includes("<task-notification>");
+}
+
+/** `<command-name>/dream</command-name><command-args>x</command-args>` → `/dream x`, as Claude Code
+ *  shows a typed slash command; undefined when the text isn't one. */
+export function slashCommandText(text: string): string | undefined {
+  const name = text.match(/<command-name>([^<]*)<\/command-name>/)?.[1]?.trim();
+  if (!name) return undefined;
+  const args = text.match(/<command-args>([\s\S]*?)<\/command-args>/)?.[1]?.trim();
+  return args ? `${name} ${args}` : name;
+}
+
 export function userTextBlock(text: string): Block {
+  const slash = slashCommandText(text);
+  if (slash) return { kind: "user", text: slash };
   const note = parseTaskNotification(text);
   if (note) return note;
   if (text.includes('<channel source="cotal"')) {
@@ -335,7 +352,7 @@ export class TranscriptParser {
   private pending = new Map<string, { name: string; input: Record<string, unknown> }>();
 
   feed(line: string): Block[] {
-    let rec: { type?: string; message?: { role?: string; content?: unknown } };
+    let rec: { type?: string; isMeta?: boolean; message?: { role?: string; content?: unknown; model?: string } };
     try {
       rec = JSON.parse(line);
     } catch {
@@ -343,12 +360,21 @@ export class TranscriptParser {
       // a partial one. Skipping is right; a lenient parse here would invent a turn that never happened.
       return [];
     }
-    const msg = rec.message ?? (rec as { role?: string; content?: unknown });
+    const msg: { role?: string; content?: unknown; model?: string } = rec.message ?? (rec as { role?: string; content?: unknown });
     const role = msg.role ?? rec.type;
     const content = msg.content;
 
-    if (role === "user") return this.feedUser(content);
-    if (role === "assistant" && Array.isArray(content)) return this.feedAssistant(content as Part[]);
+    if (role === "user") {
+      // Harness-injected context (a slash command's expanded skill body, a resume nudge) — Claude Code
+      // doesn't show it. The cotal wake and task notifications are meta too, and they ARE shown.
+      if (rec.isMeta && !isShownMeta(content)) return [];
+      return this.feedUser(content);
+    }
+    if (role === "assistant" && Array.isArray(content)) {
+      // "No response requested." is the harness filling an empty turn — Claude Code shows nothing.
+      if (msg.model === "<synthetic>" && (content as Part[]).every((p) => p?.type === "text" && /^No response requested\.?$/.test(p.text?.trim() ?? ""))) return [];
+      return this.feedAssistant(content as Part[]);
+    }
     return [];
   }
 

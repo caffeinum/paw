@@ -313,3 +313,18 @@ console.log("\nall paw transcript checks passed 🐾");
   for (const l of ["Request timed out", "Please run /login · API Error: 403", "Login expired · Please run /login"]) assert(failureText(l) === l, `failureText recognises: ${l}`);
   console.log("✓ runtime failures");
 }
+
+{
+  const out = feedAll([
+    rec({ type: "user", message: { role: "user", content: "<command-message>dream</command-message>\n<command-name>/dream</command-name>" } }),
+    rec({ type: "user", isMeta: true, message: { role: "user", content: [{ type: "text", text: "Base directory for this skill: /x\n\n# Dream" }] } }),
+    rec({ type: "assistant", message: { role: "assistant", model: "<synthetic>", content: [{ type: "text", text: "No response requested." }] } }),
+    rec({ type: "user", isMeta: true, message: { role: "user", content: '<channel source="cotal" kind="dm" from="queue">x</channel>' } }),
+    rec({ type: "user", message: { role: "user", content: "<command-name>/model</command-name><command-args>opus</command-args>" } }),
+  ]);
+  assert(out.length === 3, `slash/meta: 3 blocks (got ${out.length})`);
+  assert(out[0].kind === "user" && out[0].text === "/dream", "a slash command renders as `/dream`, not its XML");
+  assert(out[1].kind === "wake", "a meta cotal wake is still shown; the skill body and 'No response requested.' are hidden");
+  assert(out[2].kind === "user" && out[2].text === "/model opus", "command args follow the name");
+  console.log("✓ slash commands + meta records");
+}
