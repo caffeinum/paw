@@ -879,6 +879,19 @@ const stillAligned = async (ws: RawWs, label: string, ...setup: Buffer[]): Promi
     assert(jumpScrollTop({ rowTop: 500 }) === 488, "jump: with no measurements it still falls back to a margin, not a crash");
   }
 
+  // ── bare urls become links (operator ask, 2026-09-17) ──────────────────────────────────────────
+  {
+    const { md } = await import("../web/app/md.js");
+    const link = md("run: https://2027.dev/r/1 ok");
+    assert(link.includes('<a href="https://2027.dev/r/1"') && link.includes(">https://2027.dev/r/1</a>"), "url: a bare url becomes a link labelled with itself");
+    const both = md("see [the run](https://2027.dev/r/1) and https://2027.dev/r/2.");
+    assert((both.match(/<a /g) ?? []).length === 2 && both.includes(">the run</a>") && both.endsWith(".</p>"), "url: a markdown link keeps its label, the bare one links too, the full stop stays outside");
+    assert(!md("`https://in-code.example`").includes("<a "), "url: inside a code span is not linked");
+    assert(md("(https://en.wikipedia.org/wiki/Foo_(bar)) x").includes('href="https://en.wikipedia.org/wiki/Foo_(bar)"'), "url: a paren the url opened is kept, the wrapping one is not");
+    assert(!md("plain prose, no links").includes("<a "), "url: prose is untouched");
+    assert(!md("ftp://x.example file:///etc/passwd javascript:alert(1)").includes("<a "), "url: only http(s) is linked");
+  }
+
   // ── source-faithful newlines in the trace (md({gaps:true})) ────────────────────────────────────
   {
     const { md } = await import("../web/app/md.js");
