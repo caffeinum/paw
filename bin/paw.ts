@@ -59,6 +59,8 @@ const NEEDS_MANAGER = new Set(["chat", "open", "attach", "dm", "rename", "rm", "
 /** Raw cotal verbs that drive the control plane — the passthrough must bring the manager up too,
  *  or a cold-machine `paw cotal ps`/`start` dead-ends on a mesh with no manager answering. */
 const COTAL_NEEDS_MANAGER = new Set(["start", "ps", "stop", "attach", "spawn", "despawn"]);
+// cotal verbs that talk to no mesh and reject a --space flag — passed through untouched.
+const COTAL_SPACELESS = new Set(["feedback"]);
 
 /** One-screen help: every registered (non-hidden) command + the raw-cotal passthrough hint. */
 function help(): string {
@@ -93,8 +95,9 @@ try {
       console.log("paw cotal <cmd> — passthrough to the cotal CLI; e.g. `paw cotal console`");
       process.exit(0);
     }
-    const { space } = await ensure({ needMesh: true, needManager: COTAL_NEEDS_MANAGER.has(rest[0]) });
-    const [exec, args] = cotaldViaTsx(withDefaultSpace(rest, space));
+    const spaceless = COTAL_SPACELESS.has(rest[0]);
+    const space = spaceless ? undefined : (await ensure({ needMesh: true, needManager: COTAL_NEEDS_MANAGER.has(rest[0]) })).space;
+    const [exec, args] = cotaldViaTsx(space ? withDefaultSpace(rest, space) : rest);
     const res = spawnSync(exec, args, { stdio: "inherit" });
     process.exit(res.status ?? 1);
   }
