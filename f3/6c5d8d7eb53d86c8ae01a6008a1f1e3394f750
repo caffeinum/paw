@@ -1,0 +1,19 @@
+scripts/check-web.ts
+  s_ed25aaaf9c7e77::t_2d08bb9c9bcf71 882-894
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "f36c5d8d7eb53d86c8ae01a6008a1f1e3394f750",
+  "prompts": {},
+  "sessions": {
+    "s_ed25aaaf9c7e77": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "90dd1251-161e-469a-96db-040d1e555035",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Aleksey Bykhun <theisease@gmail.com>"
+    }
+  }
+}
