@@ -17,7 +17,6 @@ import { join } from "node:path";
 import { registry, type Command } from "@cotal-ai/core";
 import { canonicalDir, ensureAgentSpawned, lookupFolderName, setFolderName } from "./addressing.js";
 import { withManagerControl } from "./control.js";
-import { unstickSweep } from "./keeper.js";
 import { ensure, resolveSpace } from "./lifecycle.js";
 
 /** The always-on agent's fixed mesh name. Exported so other surfaces can reference it without a literal. */
@@ -62,19 +61,12 @@ async function globalUp(argv: string[]): Promise<void> {
   }
   const name = setFolderName(space, folder, GLOBAL_NAME).name; // pin the folder→name mapping to `global`
   const { server } = await ensure({ needMesh: true, needManager: true, space });
-  const { spawned, restarted, interrupted } = await withManagerControl(space, server, async (ctl) => {
-    const r = await ensureAgentSpawned(ctl, { space, name, cwd: folder, brief: GLOBAL_BRIEF });
-    // The keeper tick (launchd, every 60s) is the one periodic heartbeat paw has, so the fleet's
-    // unstick sweep rides it: an agent sitting idle with DMs it never drains is restarted (src/keeper.ts).
-    // It also sends Esc to an agent stuck inside one tool past PAW_UNSTICK_TOOL_MIN — never a restart.
-    const swept = await unstickSweep(space, ctl).catch((e: Error) => {
-      console.error(`paw keeper: sweep failed: ${e.message}`);
-      return { restarted: [] as string[], interrupted: [] as string[] };
-    });
-    return { ...r, ...swept };
-  });
-  if (restarted.length) console.log(`  keeper: restarted ${restarted.join(", ")} (stuck with undrained DMs)`);
-  if (interrupted.length) console.log(`  keeper: interrupted a hung tool in ${interrupted.join(", ")} (Esc — sessions intact)`);
+  const { spawned } = await withManagerControl(space, server, (ctl) =>
+    ensureAgentSpawned(ctl, { space, name, cwd: folder, brief: GLOBAL_BRIEF }),
+  );
+  // No automatic unstick sweep here any more. The keeper pressed Esc on canary-env-52 at a permission
+  // prompt (2026-09-16), rejecting the call; the operator's rule is that nothing touches a live agent
+  // without their go. `paw unstick <name>` is the manual tool.
   console.log(spawned ? `✓ global agent up @${name} — full machine access, cwd ${folder}` : `✓ global agent already live @${name}`);
   console.log(`  DM it: \`paw dm ${name} "…"\`  ·  from a bridge it's in /switch and the /help footer`);
   console.log(`  stays warm (resume-pinned), revived by \`paw restart\`; \`paw stop ${name}\` ends it`);
