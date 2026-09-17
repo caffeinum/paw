@@ -539,10 +539,7 @@ async function chat(argv: string[]): Promise<void> {
   let bang = false;
   /** Messages a filtered session did not show. Counted, never printed — see elsewhereBadge. */
   let hiddenCount = 0;
-  const bangPrompt = (): string => {
-    const folder = curName ? folderForName(space, curName) : undefined;
-    return `${c.yellow("$")} ${c.dim(`runs in ${folder ? folder.replace(homedir(), "~") : curName} → then tells ${curName}`)}${c.yellow(">")} `;
-  };
+  const bangPrompt = (): string => `${c.yellow("$ >")} `;
   const promptFor = (): string => {
     if (bang && curName) return bangPrompt();
     const where = curName ? `${HUMAN_PEER} → ${curName}${filter?.kind === "agent" ? " (only)" : ""}` : `${HUMAN_PEER} → #${room}`;
