@@ -366,7 +366,10 @@ async function chat(argv: string[]): Promise<void> {
       // out instead of being mis-caught as "target isn't a folder" and reinterpreted as a bare name.
       let asFolder: string | undefined;
       try {
-        asFolder = canonicalDir(target);
+        // `@name` is the NAME sigil — never a folder. `paw chat @queue` run from ~/Github/team2027
+        // resolved the folder `queue/` and opened its DEFAULT agent (queue-ea) while the operator was
+        // reading queue's replies, so every line went to the wrong agent (2026-09-17).
+        asFolder = addressed.mode === "agent" ? undefined : canonicalDir(target);
       } catch {
         asFolder = undefined;
       }
