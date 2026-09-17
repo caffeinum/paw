@@ -328,3 +328,13 @@ console.log("\nall paw transcript checks passed 🐾");
   assert(out[2].kind === "user" && out[2].text === "/model opus", "command args follow the name");
   console.log("✓ slash commands + meta records");
 }
+
+{
+  const out = feedAll([
+    rec({ type: "user", message: { role: "user", content: "<bash-input>pwd</bash-input>" } }),
+    rec({ type: "user", message: { role: "user", content: "<bash-stdout>/Users/aleks/Github/team2027/canary-env</bash-stdout><bash-stderr></bash-stderr>" } }),
+  ]);
+  assert(out[0]?.kind === "user" && out[0].text === "! pwd", "a `!cmd` renders as `! pwd`, not <bash-input>");
+  assert(out[1]?.kind === "result" && out[1].lines[0] === "/Users/aleks/Github/team2027/canary-env" && !out[1].isError, "its output lands on the result rail");
+  console.log("✓ bang commands");
+}

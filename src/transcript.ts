@@ -217,6 +217,16 @@ export function slashCommandText(text: string): string | undefined {
 export function userTextBlock(text: string): Block {
   const slash = slashCommandText(text);
   if (slash) return { kind: "user", text: slash };
+  // A `!cmd` typed at the prompt is stored as <bash-input>, its output as <bash-stdout>/<bash-stderr>;
+  // Claude Code shows `! cmd` and the output on the result rail.
+  const bashIn = text.match(/^\s*<bash-input>([\s\S]*?)<\/bash-input>\s*$/)?.[1];
+  if (bashIn !== undefined) return { kind: "user", text: `! ${bashIn.trim()}` };
+  if (/^\s*<bash-(stdout|stderr)>/.test(text)) {
+    const out = text.match(/<bash-stdout>([\s\S]*?)<\/bash-stdout>/)?.[1]?.trim() ?? "";
+    const err = text.match(/<bash-stderr>([\s\S]*?)<\/bash-stderr>/)?.[1]?.trim() ?? "";
+    const lines = [out, err].filter(Boolean).join("\n").split("\n");
+    return { kind: "result", lines: lines.length > 3 ? [...lines.slice(0, 3), `… +${lines.length - 3} lines`] : lines, isError: !out && !!err };
+  }
   const note = parseTaskNotification(text);
   if (note) return note;
   if (text.includes('<channel source="cotal"')) {

@@ -482,6 +482,13 @@ async function chat(argv: string[]): Promise<void> {
   // The current sticky DM target: plain lines go here once set. Undefined => broadcast mode (plain
   // lines multicast to #general). `@name` latches it; a positional target seeds it below.
   let curId: string | undefined;
+  /** Re-read the sticky target's id from the live roster just before a send — a presence event can be
+   *  missed across a reconnect, and the roster is what `@name` resolves against anyway. */
+  const refreshTarget = (): void => {
+    if (!curName) return;
+    const live = findPeer(curName);
+    if (live && live.status !== "offline") curId = live.card.id;
+  };
   let curName: string | undefined;
 
   // If a target was named, resolve it now: spawn the folder's agent, or focus a live agent by name.
@@ -776,6 +783,9 @@ async function chat(argv: string[]): Promise<void> {
   ep.on("presence", (ev) => {
     const card = ev.presence.card;
     if (card.id === me) return;
+    // A restarted agent comes back under a NEW id. Follow it, or every later line goes to the dead id —
+    // the send still succeeds (the DM stream stores it) and nobody ever reads it (benmore-intern, 2026-09-16).
+    if (ev.type !== "offline" && curName && card.name === curName && card.id !== curId) curId = card.id;
     if (!presenceVisible(filter, card.name)) return;
     if (ev.type === "join") emit(`${c.green("→")} ${who(card)} joined ${statusBadge(ev.presence.status)}`);
     else if (ev.type === "offline") emit(c.dim(`← ${who(card)} went offline`));
@@ -1221,7 +1231,8 @@ async function chat(argv: string[]): Promise<void> {
     // One emit for the whole block: emit redraws the prompt after each call, and a 200-line build
     // log emitted line by line is 200 prompt redraws.
     emit(body.split("\n").map((l) => `  ${l}`).join("\n") + (status ? `\n${c.yellow(`  (${status})`)}` : ""), "you");
-    await sent(ep.unicast(curId, bashMessage(result)));
+    refreshTarget();
+    await sent(ep.unicast(curId!, bashMessage(result)));
     markWaiting(curName);
   }
 
@@ -1465,7 +1476,8 @@ async function chat(argv: string[]): Promise<void> {
           await sent(ep.multicast(flush(body, `#${channel}`), { channel }));
         }
       } else if (curId) {
-        await sent(ep.unicast(curId, flush(text, curName))); // sticky target — DM it
+        refreshTarget();
+        await sent(ep.unicast(curId!, flush(text, curName))); // sticky target — DM it
         markWaiting(curName!); // curName is set whenever curId is
       } else {
         await sent(ep.multicast(flush(text, `#${room}`), { channel: room })); // no sticky target — post to the room this session opened
