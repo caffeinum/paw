@@ -468,6 +468,7 @@ type TurnRec = {
   type?: string;
   subtype?: string;
   timestamp?: string;
+  isMeta?: boolean;
   message?: { stop_reason?: string; content?: unknown };
 };
 
@@ -521,6 +522,9 @@ export function turnState(tailText: string): TurnState {
       continue;
     }
     if (rec.type === "user") {
+      // Harness-injected context, not a prompt: a resumed session gets a meta "Continue from where you left
+      // off." that no turn answers. Read as a prompt, evals showed `busy` for 5h after its restart.
+      if (rec.isMeta) continue;
       const content = rec.message?.content;
       // An Esc'd turn ends on claude's own "[Request interrupted by user…]" text record — no turn_duration,
       // no end_turn (measured in the paw unstick e2e). Read as running, an interrupted agent would show

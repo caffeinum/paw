@@ -253,6 +253,9 @@ assert(tailRead(file, 10_000).split("\n")[0] === "AAAAAAAAAA", "a window larger 
   assert(s.tool?.summary.startsWith("for j in a b c; do fly ssh") === true, "turnState: the Bash summary is the command's first line");
   assert(tif(hung) === true, "turnInFlight is unchanged: it is turnState().inFlight");
 
+  const closed = rec({ type: "assistant", message: { role: "assistant", stop_reason: "end_turn", content: [{ type: "text", text: "done" }] } });
+  const metaContinue = rec({ type: "user", isMeta: true, message: { role: "user", content: [{ type: "text", text: "Continue from where you left off." }] } });
+  assert(turnState([prompt, closed, metaContinue].join("\n")).inFlight === false, "turnState: a harness meta record after a finished turn does not open a new one (resumed session reads idle)");
   const answered = [prompt, toolUse("toolu_A", "Bash", { command: "ls" }), toolResult("toolu_A")].join("\n");
   assert(turnState(answered).inFlight === true && turnState(answered).tool === undefined, "turnState: an answered call is not pending (the turn runs, no tool is blocking)");
 
