@@ -87,7 +87,7 @@ import { ensure, resolveSpace, reexecUnderNode } from "./lifecycle.js";
 import { blocksForAgent, chooseTranscriptId } from "./log.js";
 import { meshAgentSession } from "./named.js";
 import { HUMAN_PEER } from "./names.js";
-import { readAgentType, readResumeId } from "./session.js";
+import { readAgentType, readResumeId, transcriptPath } from "./session.js";
 import { searchEntries, searchTranscript, snippet, type MessageHit, type TranscriptHit } from "./search.js";
 import { collectStatus, type AgentStatus } from "./status.js";
 import { dropSharedManagerControl, sharedManagerControl } from "./control.js";
@@ -587,7 +587,8 @@ function transcriptFileFor(space: string, name: string): string | undefined {
   const agentType = existsSync(persona) ? readAgentType(persona) : undefined;
   const dir = claudeProjectDir(folder);
   try {
-    return join(dir, `${chooseTranscriptId(name, dir, pinned, agentType)}.jsonl`);
+    const id = chooseTranscriptId(name, dir, pinned, agentType);
+    return existsSync(join(dir, `${id}.jsonl`)) ? join(dir, `${id}.jsonl`) : (transcriptPath(id) ?? join(dir, `${id}.jsonl`));
   } catch {
     return undefined; // no transcript yet — an agent with nothing to search, not an error
   }

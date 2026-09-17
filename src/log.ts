@@ -20,7 +20,7 @@ import { claudeProjectDir, latestSession } from "./adopt.js";
 import { CodexParser, findCodexSessionFile, resolveCodexRoots } from "./codex-log.js";
 import { meshAgentSession } from "./named.js";
 import { latestOpencodeSession, opencodeBlocks, resolveOpencodeDb } from "./opencode-log.js";
-import { isClaudeHarness, readAgentType, readResumeId } from "./session.js";
+import { isClaudeHarness, readAgentType, readResumeId, transcriptPath } from "./session.js";
 import { resolveSpace } from "./lifecycle.js";
 import { inlineMd, renderMarkdown } from "./markdown.js";
 import { oneLine, tailRead, TranscriptParser, type Block } from "./transcript.js";
@@ -176,7 +176,8 @@ function openClaudeLog(space: string, name: string, folder: string, bytes: numbe
   const pinned = sessionId ?? (existsSync(persona) ? readResumeId(persona) : undefined);
   const agentType = existsSync(persona) ? readAgentType(persona) : undefined;
   const dir = claudeProjectDir(folder);
-  const file = join(dir, `${chooseTranscriptId(name, dir, pinned, agentType)}.jsonl`);
+  const id = chooseTranscriptId(name, dir, pinned, agentType);
+  const file = existsSync(join(dir, `${id}.jsonl`)) ? join(dir, `${id}.jsonl`) : (transcriptPath(id) ?? join(dir, `${id}.jsonl`));
   const parser = new TranscriptParser();
   let offset = 0;
   let partial = "";
@@ -309,7 +310,9 @@ export function chooseTranscriptId(
   agentType?: string,
 ): string {
   if (pinned) {
-    if (existsSync(join(dir, `${pinned}.jsonl`))) return pinned;
+    // The pin may be stored under ANOTHER project dir (claude started in a worktree, then cd'd): the
+    // session id is unique, so any project holding it is this agent's transcript.
+    if (existsSync(join(dir, `${pinned}.jsonl`)) || transcriptPath(pinned)) return pinned;
     throw new Error(`paw: "${name}" is pinned to session ${pinned} but it has no transcript yet (the agent hasn't written a turn) — nothing to show.`);
   }
   if (!isClaudeHarness(agentType)) {
