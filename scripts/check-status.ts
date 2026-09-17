@@ -164,6 +164,11 @@ assert(!inferBusy("idle", true, BUSY_NOW + 5_000, BUSY_NOW), "an mtime in the FU
   assert(!d({}, now - TOOL_UNSTICK_COOLDOWN_MS + 1).interrupt, "keeper: inside the cooldown → wait");
   assert(d({}, now - TOOL_UNSTICK_COOLDOWN_MS - 1).interrupt, "keeper: past the cooldown → eligible again");
   assert(!d({}, undefined, "off").interrupt, "keeper: disabled threshold → never");
+  assert(!d({ mesh: "waiting" }).interrupt, "keeper: waiting on a prompt → never Esc (it would reject the call)");
+  const { paneShowsPrompt, resumePrompt } = await import("../src/unstick.js");
+  assert(paneShowsPrompt(" Bash command\n rm -rf x\n Do you want to proceed?\n ❯ 1. Yes\n   2. No\n"), "pane: a permission dialog is a prompt");
+  assert(!paneShowsPrompt("⏺ Running…\n❯ \n  ⏵⏵ bypass permissions on"), "pane: a running tool is not a prompt");
+  assert(/interrupted/.test(resumePrompt("Bash", 31)) && /inbox/.test(resumePrompt("Bash", 31)), "resume: tells the agent what happened and to read its inbox");
 
   assert(parseToolThreshold(undefined) === UNSTICK_TOOL_DEFAULT_MIN * 60_000 && UNSTICK_TOOL_DEFAULT_MIN === 30, "PAW_UNSTICK_TOOL_MIN: unset → 30 minutes");
   assert(parseToolThreshold("") === 30 * 60_000, "PAW_UNSTICK_TOOL_MIN: blank → default");

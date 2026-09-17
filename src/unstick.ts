@@ -59,7 +59,7 @@ export interface ToolUnstickDecision {
  * `thresholdMs === undefined` is the disabled keeper. Never a restart — Esc only.
  */
 export function toolUnstickDecision(
-  row: Pick<AgentStatus, "live" | "runtime" | "tool">,
+  row: Pick<AgentStatus, "live" | "runtime" | "tool" | "mesh">,
   now: number,
   lastMs: number | undefined,
   thresholdMs: number | undefined,
@@ -69,6 +69,10 @@ export function toolUnstickDecision(
   if (!row.tool) return { interrupt: false, reason: "no tool in flight" };
   if (row.runtime !== "tmux") return { interrupt: false, reason: `runtime ${row.runtime ?? "unknown"} has no pane to send Esc to` };
   if (row.tool.name === "Task" || row.tool.name === "Agent") return { interrupt: false, reason: "a subagent call — its progress isn't visible here" };
+  // `waiting` = claude is asking the operator something (a permission prompt the connector's Notification
+  // hook reported). The call isn't hung, it's blocked on a person — Esc there REJECTS the call and leaves
+  // the session sitting in "what should Claude do instead?" (canary-env-52, 2026-09-16).
+  if (row.mesh === "waiting") return { interrupt: false, reason: "waiting on a prompt — Esc would reject it" };
   if (row.tool.startedMs === undefined) return { interrupt: false, reason: "tool start time unknown" };
   const age = now - row.tool.startedMs;
   if (age < thresholdMs) return { interrupt: false, reason: `tool running ${Math.round(age / 60_000)}m (< ${Math.round(thresholdMs / 60_000)}m)` };
@@ -115,6 +119,40 @@ export function sendEscape(space: string, name: string): void {
   if (res.status !== 0) {
     throw new Error(`paw: can't reach "${name}"'s tmux window (${res.stderr?.toString().trim() || `exit ${res.status}`})`);
   }
+}
+
+/** Pure: does this pane capture show Claude Code asking a question (permission / confirm dialog)?
+ *  Presence can read offline mid-flap, so the pane is the second witness before an Esc. */
+export function paneShowsPrompt(pane: string): boolean {
+  return /Do you want to (proceed|make this edit|create|allow)/i.test(pane) || /Esc to cancel/.test(pane);
+}
+
+/** The visible text of the agent's tmux pane, or undefined when it can't be read. */
+export function capturePane(space: string, name: string): string | undefined {
+  const res = spawnSync("tmux", ["capture-pane", "-p", "-t", tmuxTarget(space, name)], {
+    stdio: ["ignore", "pipe", "ignore"],
+    env: defaultTmuxEnv(process.env),
+    timeout: 5000,
+  });
+  return res.status === 0 ? res.stdout.toString() : undefined;
+}
+
+/** Text typed into the pane after an interrupt. An interrupted claude sits at "what should Claude do
+ *  instead?" and does NOT take a turn for mesh wake-ups (three DMs to canary-env-52 produced none), so
+ *  something has to hand it a turn or the interrupt only trades one stall for another. */
+export function resumePrompt(toolName: string, minutes: number): string {
+  return `paw keeper: your ${toolName} call ran ${minutes}m and looked hung, so it was interrupted (Esc). ` +
+    `Check your cotal inbox, then continue — rerun it differently (shorter timeout, background) if it's still needed.`;
+}
+
+/** Type a line into the agent's pane and submit it. */
+export async function sendPrompt(space: string, name: string, text: string): Promise<void> {
+  const env = defaultTmuxEnv(process.env);
+  const target = tmuxTarget(space, name);
+  const typed = spawnSync("tmux", ["send-keys", "-t", target, "-l", text], { stdio: ["ignore", "ignore", "pipe"], env, timeout: 5000 });
+  if (typed.status !== 0) throw new Error(`paw: can't type into "${name}"'s tmux window (${typed.stderr?.toString().trim() || `exit ${typed.status}`})`);
+  await new Promise((r) => setTimeout(r, 400)); // an Enter in the same burst reads as part of a paste
+  spawnSync("tmux", ["send-keys", "-t", target, "Enter"], { stdio: "ignore", env, timeout: 5000 });
 }
 
 export type InterruptOutcome =

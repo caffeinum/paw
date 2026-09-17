@@ -24,7 +24,7 @@ import { join } from "node:path";
 import { restartAgent } from "./addressing.js";
 import type { ManagerControl } from "./control.js";
 import { collectStatus, inboxStuck, toolLabel, type AgentStatus } from "./status.js";
-import { interruptTool, parseToolThreshold, readLastToolUnstick, toolUnstickDecision, writeLastToolUnstick } from "./unstick.js";
+import { capturePane, interruptTool, paneShowsPrompt, parseToolThreshold, resumePrompt, sendPrompt, readLastToolUnstick, toolUnstickDecision, writeLastToolUnstick } from "./unstick.js";
 
 /** How long the transcript must be silent, with mail waiting, before the agent counts as stuck. */
 export const STUCK_MS = 10 * 60_000;
@@ -90,11 +90,20 @@ export async function unstickSweep(space: string, ctl: ManagerControl, now = Dat
   for (const row of rows) {
     const t = toolUnstickDecision(row, now, readLastToolUnstick(space, row.name), thresholdMs);
     if (t.interrupt && row.tool && row.pin) {
+      const pane = capturePane(space, row.name);
+      if (pane !== undefined && paneShowsPrompt(pane)) {
+        console.error(`paw keeper: "${row.name}" is inside ${row.tool.name} but its pane shows a prompt — not pressing Esc (it would reject the call)`);
+        continue;
+      }
       console.error(`paw keeper: sending Esc to "${row.name}" — ${t.reason} (${toolLabel(row.tool)}, tool_use ${row.tool.id})`);
       writeLastToolUnstick(space, row.name, now); // before acting: a failed Esc is not retried every tick either
       try {
         const out = await interruptTool(space, row.name, row.pin, row.tool);
-        if (out.interrupted) interrupted.push(row.name);
+        if (out.interrupted) {
+          interrupted.push(row.name);
+          const minutes = row.tool.startedMs === undefined ? 0 : Math.round((now - row.tool.startedMs) / 60_000);
+          await sendPrompt(space, row.name, resumePrompt(row.tool.name, minutes));
+        }
         console.error(
           out.interrupted
             ? `paw keeper: "${row.name}" ${row.tool.name} got its result ${Math.round(out.afterMs / 1000)}s after Esc`
