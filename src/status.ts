@@ -239,7 +239,10 @@ function note(r: AgentStatus, now: number): string {
   const hung = hungTool(r, now);
   if (hung !== undefined && r.tool) return `⚠ tool running ${ago(now - hung, now)} (${toolLabel(r.tool)}) — \`paw unstick ${r.name}\``;
   // A refused turn is the most actionable note: the mesh reads "idle" while the agent can't answer.
-  if (r.failure) return `⚠ ${r.failure.text.split(/\s+\/usage|\n/)[0].slice(0, 80)}`;
+  // The cause, not the advice that follows it ("… limit. Run /usage-credits to finish…"). Cutting at
+  // the advice leaves a dangling verb ("limit. Run"), which reads like the line was truncated by
+  // accident — so the orphan goes too.
+  if (r.failure) return `⚠ ${r.failure.text.split(/\s+\/usage|\n/)[0].slice(0, 80).replace(/\s+(Run|Please run)$/, "")}`;
   if (r.conflictPids.length) return `⚠ two writers (pid ${r.conflictPids.join(", ")})`;
   if (inboxStuck(r)) return `⚠ inbox stuck — ${inboxText(r.inbox)}, agent not consuming`;
   if (!r.pin && isClaudeHarness(r.harness)) return "⚠ no pin — resets on restart";
@@ -297,8 +300,85 @@ function pad(value: string, plainLen: number, width: number): string {
   return value + " ".repeat(Math.max(0, width - plainLen));
 }
 
-/** Render the unified status table. Pure (no I/O; `now` injected) so it's unit-testable. */
-export function formatStatus(rows: AgentStatus[], now: number): string {
+/** Keep the END: a folder's tail (`…/evals/sc-entangled-fluxon-080a`) is what distinguishes it, while
+ *  every worktree in the fleet shares the head. Truncating from the right would leave 30 rows reading
+ *  `~/.superconductor/worktre…`, which identifies nothing. */
+export function elideLeft(s: string, max: number): string {
+  return s.length <= max ? s : "…" + s.slice(s.length - (max - 1));
+}
+
+/** Keep the START: a NAME or a note is read from its beginning, and it's the beginning you type. */
+export function elideRight(s: string, max: number): string {
+  return s.length <= max ? s : s.slice(0, max - 1) + "…";
+}
+
+const GAP = 2; // spaces between columns
+/** Below this the columns stop being a table. A terminal narrower than this gets the squeezed layout
+ *  anyway — wrapping is worse than eliding, which is the whole point. */
+const MIN_NAME = 14;
+const MIN_CWD = 18;
+/** An inline note shorter than this says nothing ("⚠ You've reac…"), so it moves to its own line. */
+const MIN_NOTE = 24;
+/** Ceilings for the two columns whose widest value is usually an OUTLIER — see the call site. */
+const NAME_CAP = 28;
+const SESS_CAP = 24;
+
+export interface ColumnPlan {
+  name: number;
+  status: number;
+  rt: number;
+  cwd: number;
+  sess: number;
+  inbox: number;
+  ctx: number;
+  active: number;
+  /** Columns dropped to fit. RUNTIME goes first (it reads `tmux` on every row of this fleet — a column
+   *  whose every cell is identical carries no information), SESSION second (it usually echoes the
+   *  name). Both survive at full width, and `--wide` keeps them at any width. */
+  showRt: boolean;
+  showSess: boolean;
+  /** Room left for a note on the SAME line. 0 ⇒ the note goes on its own indented line rather than
+   *  wrapping the table — a warning that spills mid-column is what made this unreadable. */
+  noteInline: number;
+}
+
+/**
+ * Fit the table to the terminal.
+ *
+ * The old layout padded every column to its widest value and let the terminal wrap, so one 60-char
+ * worktree path pushed CTX and ACTIVE onto a second line and the whole table became a stack of
+ * ragged fragments (reported with a screenshot, 2026-09-17). Nothing here invents room: it drops the
+ * two columns that repeat themselves, elides the two that are long, and moves a note that can't fit
+ * onto its own line. Pure, so `check:status` can assert each step.
+ */
+export function planColumns(nat: Omit<ColumnPlan, "showRt" | "showSess" | "noteInline">, width: number, opts: { wide?: boolean } = {}): ColumnPlan {
+  const p: ColumnPlan = { ...nat, showRt: true, showSess: true, noteInline: 0 };
+  const total = (q: ColumnPlan) => {
+    const cols = [q.name, q.status, q.showRt ? q.rt : -GAP, q.cwd, q.showSess ? q.sess : -GAP, q.inbox, q.ctx, q.active];
+    return cols.reduce((a, b) => a + b + GAP, -GAP);
+  };
+  if (opts.wide || !Number.isFinite(width)) return { ...p, noteInline: Number.POSITIVE_INFINITY };
+
+  // The COLUMNS are fitted first and the note takes whatever is left, never the other way round. A note
+  // belongs to ONE row; sizing the table so a single ⚠ fits would cost every other row a column to buy
+  // space for a warning that has a continuation line available anyway.
+  if (total(p) > width) p.showRt = false;
+  if (total(p) > width) p.showSess = false;
+  if (total(p) > width) p.cwd = Math.max(MIN_CWD, p.cwd - (total(p) - width));
+  if (total(p) > width) p.name = Math.max(MIN_NAME, p.name - (total(p) - width));
+  const left = width - total(p) - GAP;
+  return { ...p, noteInline: left >= MIN_NOTE ? left : 0 };
+}
+
+/** The terminal's width. Not a tty (piped into `grep`/a file) ⇒ no limit: a pipe has no width, and
+ *  eliding there would truncate the very text the reader is grepping for. */
+function termWidth(): number {
+  return process.stdout.isTTY ? (process.stdout.columns ?? 100) : Number.POSITIVE_INFINITY;
+}
+
+/** Render the unified status table. Pure (no I/O; `now` and the terminal width injected) so it's
+ *  unit-testable — `width` defaults to the live terminal, `wide` keeps every column at any width. */
+export function formatStatus(rows: AgentStatus[], now: number, width: number = termWidth(), wide = false): string {
   if (rows.length === 0) return "(no agents registered)";
   /** What the STATUS cell says. `busy` is paw's own inference from transcript activity — deliberately
    *  a different word from the mesh's `working`, so a reader can tell "the agent said so" from
@@ -310,21 +390,30 @@ export function formatStatus(rows: AgentStatus[], now: number): string {
   };
   const cwd = (r: AgentStatus) => (r.folder ? tilde(r.folder) : "—");
   const rtText = (r: AgentStatus) => (r.live && r.runtime ? r.runtime : "—");
-  const w = {
-    name: Math.max(4, ...rows.map((r) => r.name.length)),
-    status: Math.max(6, ...rows.map((r) => statusText(r).length)),
-    rt: Math.max(7, ...rows.map((r) => rtText(r).length)),
-    cwd: Math.max(3, ...rows.map((r) => cwd(r).length)),
-    sess: Math.max(7, ...rows.map((r) => sessionRef(r).length)),
-    inbox: Math.max(5, ...rows.map((r) => inboxText(r.inbox).length)),
-    ctx: Math.max(3, ...rows.map((r) => contextText(r.context).length)),
-  };
-  const header = c.dim(
-    `${"NAME".padEnd(w.name)}  ${"STATUS".padEnd(w.status)}  ${"RUNTIME".padEnd(w.rt)}  ${"CWD".padEnd(w.cwd)}  ${"SESSION".padEnd(w.sess)}  ${"INBOX".padEnd(w.inbox)}  ${"CTX".padEnd(w.ctx)}  ACTIVE`,
+  const notes = new Map(rows.map((r) => [r.name, note(r, now)]));
+  const w = planColumns(
+    {
+      // CAPPED, not simply "as wide as the widest": one 37-char name
+      // (`fix-verifier-retry-connect-unavailable`) otherwise sets the column for all 118 rows and takes
+      // that width out of CWD on every one of them. An outlier elides; the fleet keeps its paths.
+      name: Math.min(NAME_CAP, Math.max(4, ...rows.map((r) => r.name.length))),
+      status: Math.max(6, ...rows.map((r) => statusText(r).length)),
+      rt: Math.max(7, ...rows.map((r) => rtText(r).length)),
+      cwd: Math.max(3, ...rows.map((r) => cwd(r).length)),
+      sess: Math.min(SESS_CAP, Math.max(7, ...rows.map((r) => sessionRef(r).length))),
+      inbox: Math.max(5, ...rows.map((r) => inboxText(r.inbox).length)),
+      ctx: Math.max(3, ...rows.map((r) => contextText(r.context).length)),
+      active: 6,
+    },
+    width,
+    { wide },
   );
-  const lines = rows.map((r) => {
+  const header = c.dim(
+    `${"NAME".padEnd(w.name)}  ${"STATUS".padEnd(w.status)}  ${w.showRt ? `${"RUNTIME".padEnd(w.rt)}  ` : ""}${"CWD".padEnd(w.cwd)}  ${w.showSess ? `${"SESSION".padEnd(w.sess)}  ` : ""}${"INBOX".padEnd(w.inbox)}  ${"CTX".padEnd(w.ctx)}  ACTIVE`,
+  );
+  const lines = rows.flatMap((r) => {
     const rt = rtText(r);
-    const sess = sessionRef(r);
+    const sess = elideRight(sessionRef(r), w.sess);
     const inbox = inboxText(r.inbox);
     const inboxColored = inboxStuck(r) ? c.yellow(inbox) : r.inbox.kind === "error" ? c.red(inbox) : r.inbox.kind === "lag" && inbox === "✓" ? c.green(inbox) : c.dim(inbox);
     const ctx = contextText(r.context);
@@ -332,18 +421,23 @@ export function formatStatus(rows: AgentStatus[], now: number): string {
     // Only a KNOWN share may colour: an unknown window is dim, never amber — the one thing worse than
     // no percentage is a warning colour standing in for one.
     const ctxColored = share === undefined ? c.dim(ctx) : share >= CTX_HIGH ? c.red(ctx) : share >= CTX_WARN ? c.yellow(ctx) : c.dim(ctx);
-    const n = note(r, now);
-    const tail = n ? "  " + (n.startsWith("⚠") ? c.yellow(n) : c.dim(n)) : "";
-    return (
-      `${pad(c.bold(r.name), r.name.length, w.name)}  ` +
+    const n = notes.get(r.name) ?? "";
+    const paint = (s: string) => (n.startsWith("⚠") ? c.yellow(s) : c.dim(s));
+    // A note that fits rides the row; one that doesn't gets its OWN indented line rather than wrapping
+    // through the columns. Nothing is silently dropped — the reason a row is flagged is the point.
+    const inline = n && n.length <= w.noteInline ? "  " + paint(n) : "";
+    const name = elideRight(r.name, w.name);
+    const folder = elideLeft(cwd(r), w.cwd);
+    const row =
+      `${pad(c.bold(name), name.length, w.name)}  ` +
       `${pad(statusColor(statusText(r))(statusText(r)), statusText(r).length, w.status)}  ` +
-      `${pad(r.live ? rt : c.dim(rt), rt.length, w.rt)}  ` +
-      `${pad(c.dim(cwd(r)), cwd(r).length, w.cwd)}  ` +
-      `${pad(sess, sess.length, w.sess)}  ` +
+      (w.showRt ? `${pad(r.live ? rt : c.dim(rt), rt.length, w.rt)}  ` : "") +
+      `${pad(c.dim(folder), folder.length, w.cwd)}  ` +
+      (w.showSess ? `${pad(sess, sess.length, w.sess)}  ` : "") +
       `${pad(inboxColored, inbox.length, w.inbox)}  ` +
       `${pad(ctxColored, ctx.length, w.ctx)}  ` +
-      `${c.dim(ago(r.activeMs, now))}${tail}`
-    );
+      `${c.dim(ago(r.activeMs, now))}${inline}`;
+    return n && !inline ? [row, "  " + paint(elideRight(n, Math.max(MIN_NOTE, width - 2)))] : [row];
   });
   const conflicts = rows.filter((r) => r.conflictPids.length).length;
   const pinless = rows.filter((r) => !r.pin && isClaudeHarness(r.harness) && !r.unregistered).length;
@@ -597,7 +691,9 @@ async function status(argv: string[]): Promise<void> {
     writeJson({ space, rows, errors }); // writeJson, NOT console.log — see src/stdout.ts
     return; // errors ride IN the payload — a consumer must see them, not have them land on stderr only
   }
-  console.log(formatStatus(rows, Date.now()));
+  // `--wide` keeps every column at any terminal width: the squeezed layout drops RUNTIME/SESSION and
+  // elides long paths, which is right for reading and wrong when you need the whole cell.
+  console.log(formatStatus(rows, Date.now(), undefined, argv.includes("--wide")));
   for (const e of errors) console.error(c.red(e));
 }
 
@@ -606,7 +702,7 @@ const statusCommand: Command = {
   name: "status",
   group: "Mesh",
   summary: "the agent roster: status · runtime · cwd · session · inbox lag · last-active · durability (was: ps + status)",
-  usage: "status [--json] [--space s]",
+  usage: "status [--json] [--wide] [--space s]",
   run: (a) => status([...a.raw]),
 };
 

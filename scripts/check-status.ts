@@ -11,7 +11,7 @@ import { join } from "node:path";
 const home = mkdtempSync(join(tmpdir(), "paw-status-home-"));
 process.env.HOME = home;
 
-const { formatStatus, meshStatus, ago, inboxText, inboxStuck, contextText, contextShare } = await import("../src/status.js");
+const { formatStatus, meshStatus, ago, inboxText, inboxStuck, contextText, contextShare, planColumns, elideLeft, elideRight } = await import("../src/status.js");
 type InboxState = import("../src/status.js").InboxState;
 const { foreignWriters } = await import("../src/named.js");
 
@@ -69,6 +69,30 @@ assert(!inboxStuck({ ...stuckBase, busy: true, inbox: lag(0, 1) }), "busy (paw's
 assert(!inboxStuck({ ...stuckBase, mesh: "working", inbox: lag(0, 1) }), "working (agent's own claim) + unread → not stuck");
 assert(!inboxStuck({ ...stuckBase, busy: true, inbox: lag(3, 0) }), "busy + queued → drains when the turn ends");
 assert(inboxStuck({ ...stuckBase, busy: false, inbox: lag(0, 1) }), "idle + unread → STILL the zombie signature the detector exists for");
+
+// ---- planColumns / elide: fitting the table to the terminal (reported unreadable, 2026-09-17) ----
+{
+  const nat = { name: 26, status: 7, rt: 7, cwd: 58, sess: 30, inbox: 5, ctx: 11, active: 6 };
+  const wide = planColumns(nat, 200);
+  assert(wide.showRt && wide.showSess && wide.cwd === 58, "plan: everything fits at 200 cols — nothing is dropped for its own sake");
+  assert(planColumns(nat, 160).showRt === false && planColumns(nat, 160).showSess === true, "plan: RUNTIME goes first (every cell reads `tmux` — a column that never varies says nothing)");
+  assert(planColumns(nat, 120).showSess === false, "plan: SESSION goes second (it usually echoes NAME)");
+  const tight = planColumns(nat, 100);
+  assert(tight.cwd < 58 && tight.cwd >= 18, "plan: CWD is elided next, never below a legible floor");
+  assert(planColumns(nat, 70).name < 26, "plan: NAME shrinks only once the path has nothing left to give");
+  for (const width of [70, 90, 100, 120, 160, 200]) {
+    const p = planColumns(nat, width);
+    const used = p.name + p.status + (p.showRt ? p.rt + 2 : 0) + p.cwd + (p.showSess ? p.sess + 2 : 0) + p.inbox + p.ctx + p.active + 10;
+    assert(used <= width || width < 80, `plan: the row fits in ${width} cols (used ${used})`);
+  }
+  assert(planColumns(nat, 100, { wide: true }).showRt, "plan: --wide keeps every column at any width");
+  assert(planColumns(nat, Number.POSITIVE_INFINITY).showSess, "plan: a pipe has no width — nothing is elided for a reader that is grepping");
+  const path = "~/.superconductor/worktrees/evals/sc-entangled-fluxon-080a";
+  const cut = elideLeft(path, 30);
+  assert(cut.length === 30 && cut.startsWith("…") && path.endsWith(cut.slice(1)), "elideLeft keeps the TAIL — every worktree shares the head, so the end is what identifies it");
+  assert(elideLeft("~/Github/paw", 30) === "~/Github/paw", "elideLeft leaves a path that already fits alone");
+  assert(elideRight("fix-verifier-retry-connect-unavailable", 20).endsWith("…") && elideRight("short", 20) === "short", "elideRight keeps the start, and leaves a short value alone");
+}
 
 // ---- formatStatus: the unified table ----
 assert(formatStatus([], NOW) === "(no agents registered)", "empty → friendly message");
