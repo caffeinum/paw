@@ -1467,6 +1467,7 @@ function focusTarget(target) {
     setMode("chat"); // a channel has no transcript of its own to trace
     void loadChannel(target.slice(1)).then(render);
   }
+  closeNav(); // picking something IS the drawer's purpose — it closes itself, on every path into here
   syncUrl();
   render();
   // Put the caret WHERE YOU JUST AIMED. Choosing a conversation is an unambiguous "I want to talk to
@@ -1491,6 +1492,10 @@ function focusTarget(target) {
  * direction. A click on an agent row lands focus on BODY first, so the ordinary path is unaffected.
  */
 function focusComposer() {
+  // On a touch device this summons the on-screen keyboard, which covers the bottom half of the very
+  // conversation you just opened — so the act of choosing an agent would hide it. A pointer-less
+  // device gets the caret when it taps the box, which is the only moment it actually wants it.
+  if (window.matchMedia("(hover: none)").matches) return;
   const ta = $("input");
   const a = document.activeElement;
   if (!ta || ta.disabled || getComputedStyle(ta).display === "none") return;
@@ -2003,6 +2008,50 @@ setInterval(render, 30000); // keep relative stamps from freezing at whatever th
 // Returning to the tab is the moment you actually look at what is on screen, so it is the moment to
 // mark it read — otherwise mail that arrived while you were away stays unread until something else
 // forces a render.
+/**
+ * The sidebar as a DRAWER on a narrow screen.
+ *
+ * Below the phone breakpoint the sidebar is positioned over the conversation instead of beside it
+ * (see index.html), so it needs a way in and a way out. The way in is the ☰ in the header; the ways
+ * out are the scrim, Escape, and — the one that matters — CHOOSING something, since navigating is the
+ * only reason the drawer was opened. A drawer you must dismiss yourself after every pick is a drawer
+ * you stop using.
+ *
+ * `body.navopen` is the single source of truth: CSS reads it, and the scrim exists only while it is
+ * set, so nothing can leave an invisible overlay swallowing taps.
+ */
+const narrow = () => window.matchMedia("(max-width: 860px)").matches;
+
+function closeNav() {
+  if (!document.body.classList.contains("navopen")) return;
+  document.body.classList.remove("navopen");
+  document.querySelector(".scrim")?.remove();
+  $("menu")?.setAttribute("aria-expanded", "false");
+}
+
+function openNav() {
+  document.body.classList.add("navopen");
+  $("menu")?.setAttribute("aria-expanded", "true");
+  if (!document.querySelector(".scrim")) {
+    const s = document.createElement("div");
+    s.className = "scrim";
+    s.addEventListener("click", closeNav);
+    document.body.appendChild(s);
+  }
+}
+
+(function drawer() {
+  $("menu")?.addEventListener("click", () => (document.body.classList.contains("navopen") ? closeNav() : openNav()));
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") closeNav();
+  });
+  // Widening past the breakpoint makes the sidebar a column again; a leftover `navopen` would then
+  // hold a scrim over a layout that no longer has a drawer.
+  window.addEventListener("resize", () => {
+    if (!narrow()) closeNav();
+  });
+})();
+
 /**
  * Drag the sidebar wider or narrower.
  *

@@ -627,6 +627,69 @@
   .side { scrollbar-color: rgba(255,255,255,.22) transparent; }
   .side::-webkit-scrollbar-thumb { background: rgba(255,255,255,.22); background-clip: content-box; }
   .side::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,.38); background-clip: content-box; }
+</style><style>
+  /* ── narrow viewports: tablet, then phone (operator ask, 2026-09-17) ───────────────────────────
+     The layout was three FIXED columns with no breakpoint, so on a tablet the sidebar, the chat and
+     the task aside each kept their width and simply overlapped — the task list painted on top of the
+     messages and the header title ran through the Chat/Trace tabs (screenshot). Nothing here
+     rearranges the desktop layout; it only says what to give up first as the viewport narrows. */
+
+  /* The drawer button lives in the header at every width and is REVEALED by the phone breakpoint —
+     kept out of the flow otherwise, so the desktop header is unchanged. */
+  .menu { display: none; align-items: center; justify-content: center; width: 30px; height: 30px;
+          margin-left: -4px; background: none; border: 1px solid var(--line); border-radius: 6px;
+          color: var(--txt-dim); cursor: pointer; font-size: 15px; line-height: 1; flex: none; }
+  .menu:hover { color: var(--txt); background: var(--content-alt); }
+
+  /* Tablet: the RIGHT aside goes first. It is the one panel whose content has another home — the
+     same tasks are the Tasks and Board views — so losing it costs a shortcut, not information. */
+  @media (max-width: 1100px) {
+    .body-grid.withaside { grid-template-columns: var(--side-w, 260px) 1fr; }
+    .aside { display: none; }
+  }
+
+  /* Phone / narrow tablet: ONE column. The sidebar becomes a drawer over the conversation rather
+     than a column beside it — at this width a 260px column leaves too little for the messages, and
+     the sidebar is for NAVIGATING, which is a thing you do between readings, not during one. */
+  @media (max-width: 860px) {
+    .body-grid, .body-grid.withaside { grid-template-columns: 1fr; }
+    .grip { display: none; }                      /* nothing to resize when there is one column */
+    .side {
+      position: fixed; inset: 0 auto 0 0; z-index: 30;
+      width: min(86vw, 320px);
+      transform: translateX(-100%);
+      transition: transform .18s ease;
+      box-shadow: 0 0 40px rgba(0,0,0,.45);
+    }
+    body.navopen .side { transform: none; }
+    /* The scrim is what makes the drawer dismissible without hunting for the button again. */
+    .scrim { position: fixed; inset: 0; z-index: 29; background: rgba(0,0,0,.45); border: none; }
+    .menu { display: inline-flex; }
+    /* The header WRAPS instead of overlapping: the topic carries the branch, the failure and the
+       context fill, so squeezing it onto one line is what made the title collide with the tabs. */
+    .chead { height: auto; min-height: 49px; flex-wrap: wrap; padding: 8px 12px; row-gap: 4px; }
+    .chead h1 { font-size: 16px; }
+    .chead .topic { border-left: none; padding-left: 0; margin-left: 0; flex-basis: 100%; }
+    .msgs { padding: 12px 0 8px; }
+    .m { grid-template-columns: 28px 1fr; padding: 8px 12px; gap: 6px; }
+    /* The avatar has to shrink WITH its column — left at 36px in a 28px track it simply overflowed
+       into the text and sat on top of the sender's name. */
+    .av { width: 28px; height: 28px; font-size: 12px; }
+    /* Put the Chat/Trace tabs back on the TITLE row. `.topic` takes a full-width basis to force its
+       own line, which pushed everything after it onto a third row; `order` moves the tabs ahead of it
+       without touching the DOM the desktop layout reads. */
+    .chead .right { order: 1; margin-left: auto; }
+    .chead .topic { order: 2; }
+    .chead h1 { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .comp { padding: 0 12px 10px; }
+    .top { padding: 8px 12px; }
+  }
+
+  /* Touch: a 1px-precise drag handle and hover-only affordances mean nothing without a pointer, and
+     a tap that lands on a resize strip instead of a row reads as the page being broken. */
+  @media (hover: none) {
+    .grip { display: none; }
+  }
 </style>
 
 </head>
@@ -674,6 +737,7 @@
       </div>
       <div id="village" hidden></div>
       <div class="chead">
+        <button class="menu" id="menu" aria-label="Show agents" aria-expanded="false">☰</button>
         <h1 id="title">inbox</h1>
         <span class="pip off" id="pip" style="width:8px;height:8px"></span>
         <span class="topic chat-only" id="topic"></span>
