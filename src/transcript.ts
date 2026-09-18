@@ -358,6 +358,120 @@ export function lastFailure(lines: string[]): { text: string; ts: number } | und
   return undefined;
 }
 
+/**
+ * How full the agent's context window is, read from the transcript — the one place claude records it.
+ *
+ * cotal carries NOTHING about tokens: presence is working/idle and the control rail's ps row is
+ * name/id/lifecycleUid. But every assistant record holds `message.usage`, and the INPUT side of one
+ * request IS the whole conversation as of that turn — so the NEWEST turn's input total is the live
+ * occupancy, the same gauge Claude Code's own `/context` draws.
+ *
+ * `limit` is deliberately OPTIONAL. The window size is not written anywhere in the file, and this
+ * fleet runs both sizes (occupancies of 152k and 927k on the same box), so a hardcoded denominator
+ * would be a fabricated percentage on half the agents. It is set only from evidence — see
+ * {@link inferWindow} — and absent means "tokens known, share unknown", never a guess.
+ */
+export interface ContextUsage {
+  /** input + cache_creation + cache_read of the newest assistant turn = what the model is carrying. */
+  tokens: number;
+  ts: number;
+  /** The context window, when the transcript proves which one this session runs under. */
+  limit?: number;
+  /** Which evidence set `limit`: the session's own autocompact threshold, or an occupancy that only
+   *  the larger window can hold. Absent with `limit`. */
+  limitFrom?: "autocompact" | "observed";
+}
+
+/** The context windows claude actually runs with. Used ONLY to round an observed threshold up to the
+ *  real number — never to pick a default for a session that hasn't shown which one it has. */
+const WINDOWS = [200_000, 1_000_000];
+
+/**
+ * The window this session runs under, or undefined when the transcript doesn't say.
+ *
+ * Two kinds of proof, both from the file itself:
+ * - `autoPre` — the `preTokens` of an AUTO compact_boundary, i.e. the point the harness itself decided
+ *   was full. That lands just under the real window (194701 and 999245 in this fleet's transcripts),
+ *   so the smallest window at or above it IS the window.
+ * - `tokens` — an occupancy larger than the smaller window can physically hold. 927k tokens cannot sit
+ *   in a 200k context, so that session's window is the 1M one.
+ *
+ * A session below 200k with no autocompact yet is genuinely ambiguous (either window fits) and returns
+ * undefined, which is the honest answer — not the smaller window with a scary percentage attached.
+ */
+export function inferWindow(tokens: number, autoPre?: number): { limit: number; limitFrom: "autocompact" | "observed" } | undefined {
+  if (autoPre !== undefined && autoPre > 0) {
+    const w = WINDOWS.find((x) => x >= autoPre);
+    if (w) return { limit: w, limitFrom: "autocompact" };
+  }
+  const bigger = WINDOWS.find((x) => x > tokens);
+  if (bigger && bigger !== WINDOWS[0]) return { limit: bigger, limitFrom: "observed" };
+  return undefined;
+}
+
+/**
+ * The context occupancy this ONE record reports, if it reports one.
+ *
+ * A SIDECHAIN record (a Task subagent's turn) is skipped: it carries its own separate context, so
+ * reading it would report the subagent's fill as the agent's. Records with no `usage` (user turns,
+ * tool results, system markers) yield nothing rather than a zero — an absent measurement is not an
+ * empty context.
+ */
+export function recordUsage(rec: unknown): { tokens: number; ts: number } | undefined {
+  const r = rec as
+    | { type?: string; timestamp?: string; isSidechain?: boolean; message?: { usage?: Record<string, unknown> } }
+    | null;
+  if (!r || typeof r !== "object" || r.type !== "assistant" || r.isSidechain === true) return undefined;
+  const u = r.message?.usage;
+  if (!u || typeof u !== "object") return undefined;
+  const n = (k: string) => (typeof u[k] === "number" ? (u[k] as number) : 0);
+  // OUTPUT is excluded on purpose: this turn's reply becomes the NEXT turn's input, so counting it
+  // here would double it the moment that next turn lands.
+  const tokens = n("input_tokens") + n("cache_creation_input_tokens") + n("cache_read_input_tokens");
+  // A SYNTHETIC failure turn ("You've reached your Fable limit", a login expiry) carries a full usage
+  // block of ZEROS — the model never ran, so it measured nothing. Taken at face value that would draw
+  // an empty context bar on an agent whose context is actually full, i.e. exactly backwards. Zero is
+  // not a measurement here; keep walking to the last turn that really happened (seen live on two
+  // agents, 2026-09-17).
+  if (tokens <= 0) return undefined;
+  const ts = r.timestamp ? Date.parse(r.timestamp) : NaN;
+  return { tokens, ts: Number.isFinite(ts) ? ts : 0 };
+}
+
+/**
+ * The live context fill from a transcript tail: newest assistant turn wins.
+ *
+ * NEWEST-first for the same reason {@link lastFailure} is — this is a GAUGE, not a counter. The
+ * numbers climb within a session and fall off a cliff at each compaction (542k → 156k in this repo's
+ * own transcript), so summing them would report cumulative spend, a different question by an order of
+ * magnitude.
+ */
+export function lastUsage(lines: string[]): ContextUsage | undefined {
+  let found: { tokens: number; ts: number } | undefined;
+  for (let i = lines.length - 1; i >= 0 && !found; i--) {
+    try {
+      found = recordUsage(JSON.parse(lines[i]));
+    } catch {
+      continue; // a truncated tail line, as everywhere else here
+    }
+  }
+  if (!found) return undefined;
+  return { ...found, ...inferWindow(found.tokens, autoCompactPre(lines)) };
+}
+
+/** The newest AUTO compact_boundary's `preTokens` in this tail — the harness's own "full" mark. A
+ *  MANUAL `/compact` says nothing about the window (it fires wherever the operator typed it), so only
+ *  `trigger: "auto"` counts. */
+export function autoCompactPre(lines: string[]): number | undefined {
+  for (let i = lines.length - 1; i >= 0; i--) {
+    let rec: { compactMetadata?: { trigger?: string; preTokens?: number } } | undefined;
+    try { rec = JSON.parse(lines[i]); } catch { continue; }
+    const m = rec?.compactMetadata;
+    if (m?.trigger === "auto" && typeof m.preTokens === "number" && m.preTokens > 0) return m.preTokens;
+  }
+  return undefined;
+}
+
 export class TranscriptParser {
   private pending = new Map<string, { name: string; input: Record<string, unknown> }>();
 

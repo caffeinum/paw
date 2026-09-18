@@ -18,7 +18,7 @@ import { readRuntimeMarker, resolveSpace, type Runtime } from "./lifecycle.js";
 import { writeJson } from "./stdout.js";
 import { liveSessionProcs, nameForSession } from "./named.js";
 import { isClaudeHarness, readAgentType, readResumeId, transcriptExists, transcriptMtime, transcriptPath } from "./session.js";
-import { lastFailure } from "./transcript.js";
+import { lastFailure, lastUsage, type ContextUsage } from "./transcript.js";
 import { tailRead, turnState, type PendingTool, type TurnState } from "./transcript.js";
 import { gitInfoMany, type GitInfo } from "./git.js";
 
@@ -65,6 +65,10 @@ export interface AgentStatus {
    *  model never ran, so the DM that woke it got no reply and the mesh still shows a healthy idle
    *  agent. Read from the transcript (`lastFailure`), the only place claude writes it. */
   failure?: { text: string; ts: number };
+  /** How full the agent's context window is (see {@link ContextUsage}). Read from the transcript —
+   *  cotal carries no token information at all — so it is claude-only and absent for a codex/opencode
+   *  harness, an unpinned agent, or a session that hasn't taken a turn yet. */
+  context?: ContextUsage;
   /** The manager lists this agent but paw's registry does NOT (a `cotal_spawn` / `paw cotal spawn`
    *  peer, 2026-09-09): shown so the dashboard agrees with the mesh, with the harness the manager
    *  reports. No folder, pin, transcript or revival — paw only ever knows what the ps row says. */
@@ -157,6 +161,24 @@ export function transcriptFailure(pin: string): { text: string; ts: number } | u
   }
 }
 
+/**
+ * The agent's context fill, from the pinned transcript's tail.
+ *
+ * 128KB rather than the failure read's 64KB: a failure turn is tiny and by definition the last thing
+ * written, whereas the newest `usage` can sit behind one fat tool_result (a Read of a big file). Still
+ * a tail read, so it stays cheap on the 100s-MB transcripts in this fleet. A tail with no assistant
+ * turn in it yields undefined — unknown, never a zero that would draw an empty context bar.
+ */
+export function transcriptContext(pin: string): ContextUsage | undefined {
+  const file = transcriptPath(pin);
+  if (!file) return undefined;
+  try {
+    return lastUsage(tailRead(file, 128 * 1024).split("\n").filter(Boolean));
+  } catch {
+    return undefined;
+  }
+}
+
 function sessionConflicts(pin: string): number[] {
   const all = liveSessionProcs(pin);
   return (all.length > 1 ? all : all.filter((p) => !p.mesh)).map((p) => p.pid); // one index read, not two
@@ -225,6 +247,28 @@ function note(r: AgentStatus, now: number): string {
   return "";
 }
 
+/**
+ * The CTX cell: `152k`, or `152k/1M 15%` once the transcript has proved which window this session runs
+ * under. Never a bare percentage — the tokens are the measurement, the share is the interpretation, and
+ * on a fleet running both window sizes only one of those is always knowable.
+ */
+export function contextText(u: ContextUsage | undefined): string {
+  if (!u) return "—";
+  const n = (t: number) => (t >= 1_000_000 ? `${(t / 1_000_000).toFixed(t % 1_000_000 === 0 ? 0 : 1)}M` : `${Math.round(t / 1000)}k`);
+  if (u.limit === undefined) return n(u.tokens);
+  return `${n(u.tokens)}/${n(u.limit)} ${Math.round((u.tokens / u.limit) * 100)}%`;
+}
+
+/** At what share of the window the cell starts warning. Autocompact fires near the top, and a compaction
+ *  costs the agent its working memory — so "nearly full" is worth seeing BEFORE it happens. */
+const CTX_WARN = 0.75;
+const CTX_HIGH = 0.9;
+
+/** How full is it, as a fraction — undefined when the window is unknown (no share to report). */
+export function contextShare(u: ContextUsage | undefined): number | undefined {
+  return u?.limit ? u.tokens / u.limit : undefined;
+}
+
 function tilde(p: string): string {
   const home = homedir();
   return p === home ? "~" : p.startsWith(home + "/") ? "~" + p.slice(home.length) : p;
@@ -273,15 +317,21 @@ export function formatStatus(rows: AgentStatus[], now: number): string {
     cwd: Math.max(3, ...rows.map((r) => cwd(r).length)),
     sess: Math.max(7, ...rows.map((r) => sessionRef(r).length)),
     inbox: Math.max(5, ...rows.map((r) => inboxText(r.inbox).length)),
+    ctx: Math.max(3, ...rows.map((r) => contextText(r.context).length)),
   };
   const header = c.dim(
-    `${"NAME".padEnd(w.name)}  ${"STATUS".padEnd(w.status)}  ${"RUNTIME".padEnd(w.rt)}  ${"CWD".padEnd(w.cwd)}  ${"SESSION".padEnd(w.sess)}  ${"INBOX".padEnd(w.inbox)}  ACTIVE`,
+    `${"NAME".padEnd(w.name)}  ${"STATUS".padEnd(w.status)}  ${"RUNTIME".padEnd(w.rt)}  ${"CWD".padEnd(w.cwd)}  ${"SESSION".padEnd(w.sess)}  ${"INBOX".padEnd(w.inbox)}  ${"CTX".padEnd(w.ctx)}  ACTIVE`,
   );
   const lines = rows.map((r) => {
     const rt = rtText(r);
     const sess = sessionRef(r);
     const inbox = inboxText(r.inbox);
     const inboxColored = inboxStuck(r) ? c.yellow(inbox) : r.inbox.kind === "error" ? c.red(inbox) : r.inbox.kind === "lag" && inbox === "✓" ? c.green(inbox) : c.dim(inbox);
+    const ctx = contextText(r.context);
+    const share = contextShare(r.context);
+    // Only a KNOWN share may colour: an unknown window is dim, never amber — the one thing worse than
+    // no percentage is a warning colour standing in for one.
+    const ctxColored = share === undefined ? c.dim(ctx) : share >= CTX_HIGH ? c.red(ctx) : share >= CTX_WARN ? c.yellow(ctx) : c.dim(ctx);
     const n = note(r, now);
     const tail = n ? "  " + (n.startsWith("⚠") ? c.yellow(n) : c.dim(n)) : "";
     return (
@@ -291,6 +341,7 @@ export function formatStatus(rows: AgentStatus[], now: number): string {
       `${pad(c.dim(cwd(r)), cwd(r).length, w.cwd)}  ` +
       `${pad(sess, sess.length, w.sess)}  ` +
       `${pad(inboxColored, inbox.length, w.inbox)}  ` +
+      `${pad(ctxColored, ctx.length, w.ctx)}  ` +
       `${c.dim(ago(r.activeMs, now))}${tail}`
     );
   });
@@ -494,6 +545,7 @@ export async function collectStatus(space: string, ctl?: ManagerControl, opts: {
       durable: pin ? transcriptExists(pin) : false,
       activeMs: pin ? transcriptMtime(pin) : undefined,
       failure: pin ? transcriptFailure(pin) : undefined,
+      context: pin ? transcriptContext(pin) : undefined,
       // A standalone claude on the pin, OR more than one process of any kind (a leftover `<name>_2` mesh
       // duplicate resuming the same session) — both put two writers on one transcript.
       conflictPids: pin ? sessionConflicts(pin) : [],

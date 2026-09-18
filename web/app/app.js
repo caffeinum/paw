@@ -13,6 +13,7 @@ import { md } from "./md.js";
 import { survivingPending } from "./pending.js";
 import { parseInvite } from "./commands.js";
 import { isBangMode, parseBang } from "./bash.js";
+import { contextChip } from "./context.js";
 import { orderTargets, stepTarget, draftKey as keyFor, firstUnreadTs, markScrollTop, recipientLabel, jumpScrollTop } from "./conversation.js";
 import { loadRead, saveRead, isUnread, safeCursor, messageKey } from "./read-state.js";
 import { loadArchive, saveArchive, pruneArchive, partitionRoster } from "./archive.js";
@@ -743,6 +744,12 @@ function headerTopic(row) {
     parts.push(`<span class="fail" title="${esc(`${what} — paw unstick ${row.name}`)}">⚠ in tool ${ago(row.tool.startedMs, Date.now())} · ${esc(row.tool.name)}</span>`);
   } else parts.push(esc(row.busy && row.mesh === "idle" ? "busy" : row.mesh));
   if (row.runtime) parts.push(esc(row.runtime));
+  // The chip's TEXT and colour level are decided in context.js (pure, tested); this only places it.
+  const ctx = contextChip(row.context);
+  if (ctx) {
+    const color = ctx.level === "high" ? "var(--red,#f85149)" : ctx.level === "warn" ? "var(--amber,#d29922)" : "";
+    parts.push(`<span title="${esc(ctx.title)}"${color ? ` style="color:${color}"` : ""}>${esc(ctx.label)}</span>`);
+  }
   return parts.join(" · ");
 }
 

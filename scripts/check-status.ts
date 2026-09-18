@@ -11,7 +11,7 @@ import { join } from "node:path";
 const home = mkdtempSync(join(tmpdir(), "paw-status-home-"));
 process.env.HOME = home;
 
-const { formatStatus, meshStatus, ago, inboxText, inboxStuck } = await import("../src/status.js");
+const { formatStatus, meshStatus, ago, inboxText, inboxStuck, contextText, contextShare } = await import("../src/status.js");
 type InboxState = import("../src/status.js").InboxState;
 const { foreignWriters } = await import("../src/named.js");
 
@@ -49,6 +49,14 @@ assert(inboxText(lag(3, 0)) === "3 queued", "pending-only → N queued");
 assert(inboxText(lag(0, 2)) === "2 unread", "ack-pending-only → N unread");
 assert(inboxText(lag(1, 2)) === "1 queued, 2 unread", "both → queued, unread");
 
+// ---- contextText / contextShare: how full the window is, and when a share may be claimed ----
+assert(contextText(undefined) === "—", "no usage read → em-dash (unknown, never a zero-filled bar)");
+assert(contextText({ tokens: 152_009, ts: NOW }) === "152k", "tokens alone when the window is unknown — no fabricated percentage");
+assert(contextText({ tokens: 928_258, ts: NOW, limit: 1_000_000, limitFrom: "observed" }) === "928k/1M 93%", "tokens, window and share once the window is proved");
+assert(contextText({ tokens: 150_000, ts: NOW, limit: 200_000, limitFrom: "autocompact" }) === "150k/200k 75%", "a 200k window renders in k, not a rounded M");
+assert(contextShare({ tokens: 152_009, ts: NOW }) === undefined, "no window → no share, so nothing can colour it as a warning");
+assert(contextShare({ tokens: 500_000, ts: NOW, limit: 1_000_000 }) === 0.5, "share is tokens/limit");
+
 const stuckBase = { name: "z", folder: "/z", mesh: "idle", live: true, runtime: undefined, pin: "p", sessionName: undefined, durable: true, activeMs: NOW, conflictPids: [] as number[] };
 assert(inboxStuck({ ...stuckBase, inbox: lag(0, 1) }), "live + unread → stuck (the zombie signature)");
 assert(inboxStuck({ ...stuckBase, inbox: lag(1, 0) }), "live + queued-undelivered → stuck (deaf consumer)");
@@ -75,15 +83,15 @@ const out = formatStatus(
   ],
   NOW,
 );
-assert(/NAME\s+STATUS\s+RUNTIME\s+CWD\s+SESSION\s+INBOX\s+ACTIVE/.test(out), "header row present (incl. INBOX)");
-assert(/^paw\s+idle\s+cmux\s+\S+\s+abcd1234…\s+✓\s+2m$/m.test(out), "live durable agent → status + runtime + short id + ✓ inbox + active, no note");
-assert(/^foo\s+offline\s+—\s+\S+\s+—\s+—\s+—\s+⚠ no pin/m.test(out), "pinless offline → runtime — + inbox — + no-pin warning");
+assert(/NAME\s+STATUS\s+RUNTIME\s+CWD\s+SESSION\s+INBOX\s+CTX\s+ACTIVE/.test(out), "header row present (incl. INBOX + CTX)");
+assert(/^paw\s+idle\s+cmux\s+\S+\s+abcd1234…\s+✓\s+—\s+2m$/m.test(out), "live durable agent → status + runtime + short id + ✓ inbox + unknown ctx + active, no note");
+assert(/^foo\s+offline\s+—\s+\S+\s+—\s+—\s+—\s+—\s+⚠ no pin/m.test(out), "pinless offline → runtime — + inbox — + ctx — + no-pin warning");
 {
   const g = formatStatus([{ ...base, name: "g", folder: "/g", mesh: "idle", live: true, runtime: "tmux", durable: false, conflictPids: [], harness: "opencode" }], NOW);
   assert(g.indexOf("no pin") === -1 && !/fresh/.test(g), "pinless opencode → no claude-pin or claude-fresh note");
 }
-assert(/^new\s+starting\s+cmux\s+\S+\s+11112222…\s+✓\s+5s\s+fresh/m.test(out), "pinned-but-no-transcript live → starting + fresh");
-assert(/^bar\s+idle\s+cmux\s+\S+\s+"research"\s+✓\s+1h\s+⚠ two writers \(pid 50812\)/m.test(out), "named session shown; conflict warns with pid");
+assert(/^new\s+starting\s+cmux\s+\S+\s+11112222…\s+✓\s+—\s+5s\s+fresh/m.test(out), "pinned-but-no-transcript live → starting + fresh");
+assert(/^bar\s+idle\s+cmux\s+\S+\s+"research"\s+✓\s+—\s+1h\s+⚠ two writers \(pid 50812\)/m.test(out), "named session shown; conflict warns with pid");
 assert(out.includes("⚠ 1 two-writer conflict(s), 1 unpinned"), "footer summarizes conflicts + unpinned");
 assert(
   formatStatus([{ ...base, name: "ok", folder: "/o", mesh: "idle", live: true, runtime: "pty", pin: "x", durable: true, activeMs: NOW, conflictPids: [] }], NOW).indexOf("⚠") === -1,
@@ -98,8 +106,8 @@ const zombieOut = formatStatus(
   ],
   NOW,
 );
-assert(/^research\s+idle\s+pty\s+\S+\s+aaaa1111…\s+1 queued, 1 unread\s+2h\s+⚠ inbox stuck — 1 queued, 1 unread, agent not consuming$/m.test(zombieOut), "idle zombie → lag in INBOX + stuck warning");
-assert(/^erragent\s+idle\s+pty\s+\S+\s+cccc2222…\s+\?\s+1m$/m.test(zombieOut), "query error → ? in INBOX, no fabricated health, no stuck claim");
+assert(/^research\s+idle\s+pty\s+\S+\s+aaaa1111…\s+1 queued, 1 unread\s+—\s+2h\s+⚠ inbox stuck — 1 queued, 1 unread, agent not consuming$/m.test(zombieOut), "idle zombie → lag in INBOX + stuck warning");
+assert(/^erragent\s+idle\s+pty\s+\S+\s+cccc2222…\s+\?\s+—\s+1m$/m.test(zombieOut), "query error → ? in INBOX, no fabricated health, no stuck claim");
 assert(zombieOut.includes("⚠ 1 stuck inbox(es)"), "footer counts stuck inboxes");
 
 // ---- foreignWriters: standalone (non-mesh) live procs holding a session ----

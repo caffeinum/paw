@@ -892,6 +892,23 @@ const stillAligned = async (ws: RawWs, label: string, ...setup: Buffer[]): Promi
     assert(!md("ftp://x.example file:///etc/passwd javascript:alert(1)").includes("<a "), "url: only http(s) is linked");
   }
 
+  // ── context-window chip (operator ask, 2026-09-17) ─────────────────────────────────────────────
+  {
+    const { contextChip, fmtTokens } = await import("../web/app/context.js");
+    assert(fmtTokens(152_009) === "152k" && fmtTokens(1_000_000) === "1M" && fmtTokens(1_250_000) === "1.3M", "ctx: token counts render at a glance-readable precision");
+    assert(contextChip(undefined) === null && contextChip({ tokens: 0 }) === null, "ctx: nothing measured → no chip (never a 0% bar on an agent whose context may be full)");
+    const unknown = contextChip({ tokens: 152_009 });
+    assert(unknown?.label === "152k ctx" && unknown.level === "unknown", "ctx: an unknown window shows the COUNT and claims no share");
+    assert(unknown!.title.includes("no percentage is claimed"), "ctx: …and says why, rather than leaving a bare number");
+    const ok = contextChip({ tokens: 200_000, limit: 1_000_000, limitFrom: "observed" });
+    assert(ok?.label === "20% ctx" && ok.level === "ok", "ctx: a known window shows the share, uncoloured while there's room");
+    assert(contextChip({ tokens: 800_000, limit: 1_000_000 })?.level === "warn", "ctx: 80% warns — before the compaction, not after");
+    const high = contextChip({ tokens: 928_258, limit: 1_000_000, limitFrom: "observed" });
+    assert(high?.label === "93% ctx" && high.level === "high", "ctx: 93% (the live `evals` row) reads as high");
+    assert(high!.title.startsWith("928,258 / 1,000,000 tokens"), "ctx: the absolute count stays available in the tooltip");
+    assert(contextChip({ tokens: 150_000, limit: 200_000, limitFrom: "autocompact" })!.title.includes("autocompact"), "ctx: the tooltip names which evidence fixed the window");
+  }
+
   // ── source-faithful newlines in the trace (md({gaps:true})) ────────────────────────────────────
   {
     const { md } = await import("../web/app/md.js");

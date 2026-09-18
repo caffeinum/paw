@@ -288,6 +288,42 @@ assert(tailRead(file, 10_000).split("\n")[0] === "AAAAAAAAAA", "a window larger 
   assert(toolResultFor(answered, "toolu_A")?.interrupted === undefined, "toolResultFor: a result without the flag reports it as unknown, not false");
 }
 
+// ── context-window fill (recordUsage / lastUsage / inferWindow) ────────────────────────────────
+{
+  const { recordUsage, lastUsage, inferWindow } = await import("../src/transcript.js");
+  const turn = (read: number, extra: Record<string, unknown> = {}, ts = "2026-09-17T00:00:00Z") =>
+    JSON.stringify({ type: "assistant", timestamp: ts, message: { role: "assistant", model: "claude-opus-5", usage: { input_tokens: 2, cache_creation_input_tokens: 268, cache_read_input_tokens: read, output_tokens: 205 } }, ...extra });
+
+  const u = recordUsage(JSON.parse(turn(151_739)));
+  assert(u?.tokens === 152_009, "occupancy = input + cache_creation + cache_read (output is the NEXT turn's input)");
+  assert(u?.ts === Date.parse("2026-09-17T00:00:00Z"), "the turn's timestamp is kept");
+  assert(recordUsage(JSON.parse(turn(1000, { isSidechain: true }))) === undefined, "a sidechain turn is a SUBAGENT's own context — never reported as the agent's");
+  assert(recordUsage(JSON.parse(JSON.stringify({ type: "user", message: { role: "user", content: "hi" } }))) === undefined, "only assistant turns carry usage");
+  // The shape measured live on two limit-hit agents: a synthetic turn with an all-zero usage block.
+  const synthZero = JSON.stringify({ type: "assistant", timestamp: "2026-09-17T00:00:00Z", message: { role: "assistant", model: "<synthetic>", usage: { input_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, output_tokens: 0 } } });
+  assert(recordUsage(JSON.parse(synthZero)) === undefined, "a synthetic failure turn's zero usage is NOT a measurement of an empty context");
+  assert(lastUsage([turn(500_000), synthZero])?.tokens === 500_270, "the walk skips the zero-usage failure turn and reports the last REAL turn");
+
+  assert(lastUsage([turn(10_000), turn(151_739)])?.tokens === 152_009, "NEWEST turn wins — this is a gauge, not a running total");
+  assert(lastUsage(["not json", ""]) === undefined, "garbage lines are skipped, never a throw");
+  assert(lastUsage([]) === undefined, "no assistant turn in the tail → unknown, not zero");
+
+  // The window is never assumed: both sizes run in this fleet, so a default would be a fabricated share.
+  assert(inferWindow(152_009) === undefined, "under 200k with no autocompact yet: EITHER window fits — no limit claimed");
+  assert(lastUsage([turn(151_739)])?.limit === undefined, "…and lastUsage passes that through as an absent limit");
+  const big = inferWindow(927_834);
+  assert(big?.limit === 1_000_000 && big.limitFrom === "observed", "927k tokens cannot sit in a 200k context — the window is provably the 1M one");
+  // Measured autocompact thresholds from this fleet's transcripts.
+  assert(inferWindow(20_000, 194_701)?.limit === 200_000, "an AUTO compact at 194701 proves a 200k window");
+  assert(inferWindow(20_000, 999_245)?.limit === 1_000_000, "an AUTO compact at 999245 proves a 1M window");
+  assert(inferWindow(20_000, 194_701)?.limitFrom === "autocompact", "the evidence is reported, so a reader can weigh it");
+  const manual = JSON.stringify({ type: "system", compactMetadata: { trigger: "manual", preTokens: 164_102 } });
+  assert(lastUsage([manual, turn(10_000)])?.limit === undefined, "a MANUAL /compact fires wherever the operator typed it — it says nothing about the window");
+  const auto = JSON.stringify({ type: "system", compactMetadata: { trigger: "auto", preTokens: 194_701 } });
+  assert(lastUsage([auto, turn(10_000)])?.limit === 200_000, "an AUTO compact boundary in the tail sets the window");
+  console.log("✓ context window fill");
+}
+
 if (failures > 0) {
   console.error(`\n${failures} paw transcript check(s) failed`);
   process.exit(1);
