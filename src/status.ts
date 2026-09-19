@@ -470,7 +470,7 @@ export function statusTargets(argv: string[]): string[] {
     const a = argv[i];
     if (a === "--space") i++;
     else if (a === "--json" || a === "--wide") continue;
-    else if (a.startsWith("-")) throw new Error(`paw: unknown flag "${a}" — status takes [<name|folder>…] [--json] [--wide]`);
+    else if (a.startsWith("-")) throw new Error(`paw: unknown flag "${a}" — status takes [<name|folder|state>…] [--json] [--wide]`);
     else out.push(a);
   }
   return out;
@@ -490,9 +490,10 @@ const isPathTarget = (t: string) => t === "." || t === ".." || /^(\.{1,2}\/|\/|~
  * silently printed the whole fleet is the bug this replaces. Read-only — `folderAgents` must never
  * mint a registration, which is why it isn't `resolveFolderAgent`.
  */
-export function selectRows<T extends { name: string }>(rows: T[], targets: string[], folderAgents: (target: string) => { folder: string; names: string[] }): T[] {
+export function selectRows<T extends StateFields>(rows: T[], targets: string[], folderAgents: (target: string) => { folder: string; names: string[] }): T[] {
   if (targets.length === 0) return rows;
   const want = new Set<string>();
+  const states = new Set<RowState>();
   for (const t of targets) {
     if (isPathTarget(t)) {
       const { folder, names } = folderAgents(t);
@@ -500,14 +501,71 @@ export function selectRows<T extends { name: string }>(rows: T[], targets: strin
       for (const n of names) want.add(n);
       continue;
     }
+    const state = STATE_WORDS[t];
+    if (state && rows.some((r) => r.name === t)) {
+      // An agent literally named `live` or `busy` would make the word mean two things. Refuse rather
+      // than pick one — the fix is a rename, and choosing silently is how the wrong rows get shown.
+      throw new Error(`paw: "${t}" is both an agent and a status — rename the agent (\`paw rename ${t} <new>\`) to use either`);
+    }
+    if (state) {
+      states.add(state);
+      continue;
+    }
     if (rows.some((r) => r.name === t)) {
       want.add(t);
       continue;
     }
     const near = rows.filter((r) => r.name.includes(t)).map((r) => r.name).slice(0, 5);
-    throw new Error(`paw: no agent "${t}"${near.length ? ` — did you mean ${near.map((n) => `"${n}"`).join(", ")}?` : " (`paw status` lists them)"}`);
+    throw new Error(
+      `paw: no agent "${t}"${near.length ? ` — did you mean ${near.map((n) => `"${n}"`).join(", ")}?` : ""} ` +
+        `(statuses: ${Object.keys(STATE_WORDS).join(" ")})`,
+    );
   }
-  return rows.filter((r) => want.has(r.name));
+  // Two KINDS of selector, two rules: names/folders say WHICH agents (union), states say in WHAT
+  // CONDITION (union among themselves), and the two intersect — `paw status busy .` is the busy agents
+  // in this folder, not every busy agent plus everything here.
+  return rows.filter(
+    (r) => (want.size === 0 || want.has(r.name)) && (states.size === 0 || [...states].some((st) => rowMatches(r, st))),
+  );
+}
+
+type StateFields = { name: string; live?: boolean; mesh?: string; busy?: boolean };
+type RowState = "live" | "offline" | "idle" | "busy" | "starting" | "waiting";
+
+/** The words that filter by STATUS rather than naming an agent. `working` is the mesh's word for what
+ *  paw shows as `busy`, so it's accepted as a synonym rather than as a second, subtly different state. */
+const STATE_WORDS: Record<string, RowState> = {
+  live: "live",
+  online: "live",
+  offline: "offline",
+  idle: "idle",
+  busy: "busy",
+  working: "busy",
+  starting: "starting",
+  waiting: "waiting",
+};
+
+/**
+ * Does this row match a state, judged the way the STATUS column shows it — so what you filter on is
+ * what you see. `busy` covers paw's inference AND the agent's own `working`; `idle` means idle and NOT
+ * busy, since an agent mid-turn with stale `idle` presence is shown as busy; `live` is anything not
+ * offline, which is the one people usually want out of 118 rows mostly asleep.
+ */
+export function rowMatches(r: StateFields, state: RowState): boolean {
+  const busy = r.busy === true || r.mesh === "working";
+  switch (state) {
+    case "live":
+      return r.live === true;
+    case "offline":
+      return r.live !== true;
+    case "busy":
+      return r.live === true && busy;
+    case "idle":
+      return r.live === true && !busy && r.mesh === "idle";
+    case "starting":
+    case "waiting":
+      return r.live === true && r.mesh === state;
+  }
 }
 
 /**
@@ -757,7 +815,7 @@ const statusCommand: Command = {
   name: "status",
   group: "Mesh",
   summary: "the agent roster: status · runtime · cwd · session · inbox lag · last-active · durability (was: ps + status)",
-  usage: "status [<name|folder>…] [--json] [--wide] [--space s]",
+  usage: "status [<name|folder|live|busy|idle|offline|starting|waiting>…] [--json] [--wide] [--space s]",
   run: (a) => status([...a.raw]),
 };
 

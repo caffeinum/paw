@@ -114,10 +114,36 @@ assert(inboxStuck({ ...stuckBase, busy: false, inbox: lag(0, 1) }), "idle + unre
   assert(typo.includes('no agent "canary-env"') && typo.includes('"canary-env-52"') && typo.includes('"canary-env-gog-e2e"'), "select: a near-miss fails loud and names what it might have meant");
   let bare = "";
   try { selectRows(roster, ["zzz"], none); } catch (e) { bare = (e as Error).message; }
-  assert(bare.includes("paw status") && !bare.includes("did you mean"), "select: nothing close → a plain refusal, no invented suggestion");
+  assert(bare.includes('no agent "zzz"') && !bare.includes("did you mean") && bare.includes("statuses: live"), "select: nothing close → a plain refusal that lists the status words, no invented suggestion");
   let empty = "";
   try { selectRows(roster, ["./nowhere"], (t) => ({ folder: "/nowhere", names: [] })); } catch (e) { empty = (e as Error).message; }
   assert(empty.includes("no agent registered for /nowhere"), "select: a folder with no agent fails loud (status never mints one — it's a read)");
+}
+
+// ---- selectRows by STATE: `paw status live|busy|idle|offline|…` ----
+{
+  const none = () => ({ folder: "/x", names: [] as string[] });
+  const rows = [
+    { name: "a", live: true, mesh: "idle", busy: true },   // idle presence, but mid-turn → shown busy
+    { name: "b", live: true, mesh: "working", busy: false }, // the agent's own claim
+    { name: "c", live: true, mesh: "idle", busy: false },
+    { name: "d", live: true, mesh: "starting", busy: false },
+    { name: "e", live: false, mesh: "offline", busy: false },
+  ];
+  const pick = (...t: string[]) => selectRows(rows, t, none).map((r) => r.name).join();
+  assert(pick("live") === "a,b,c,d", "state: live = everything not offline");
+  assert(pick("offline") === "e", "state: offline");
+  assert(pick("busy") === "a,b", "state: busy covers paw's inference AND the agent's own `working`");
+  assert(pick("working") === "a,b", "state: `working` is a synonym, not a subtly different state");
+  assert(pick("idle") === "c", "state: idle excludes an agent whose presence says idle but is mid-turn — matches what STATUS shows");
+  assert(pick("starting") === "d", "state: starting");
+  assert(pick("busy", "starting") === "a,b,d", "state: several states union");
+  const here = (t: string) => ({ folder: "/r", names: t === "." ? ["a", "c", "e"] : [] });
+  assert(selectRows(rows, ["busy", "."], here).map((r) => r.name).join() === "a", "state × folder INTERSECT: `paw status busy .` is the busy agents here, not busy ∪ here");
+  assert(selectRows(rows, ["live", "e"], none).length === 0, "state × name intersect: an offline agent named with `live` shows nothing — the two selectors agree or nothing does");
+  let clash = "";
+  try { selectRows([...rows, { name: "live", live: true, mesh: "idle" }], ["live"], none); } catch (e) { clash = (e as Error).message; }
+  assert(clash.includes("both an agent and a status"), "state: an agent NAMED like a status is refused, never silently resolved one way");
 }
 
 // ---- formatStatus: the unified table ----

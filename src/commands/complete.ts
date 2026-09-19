@@ -84,6 +84,12 @@ function complete(argv: string[]): void {
     emit(commandSurface().map((c) => ({ value: c.name, description: c.summary })), "nofiles");
     return;
   }
+  if (cmdName === "status") {
+    // status also filters by STATE (src/status.ts STATE_WORDS) — offer those alongside the names.
+    const states = ["live", "busy", "idle", "offline", "starting", "waiting"].map((value) => ({ value, description: "status filter" }));
+    emit([...states, ...agentNameItems()], "nofiles");
+    return;
+  }
   if (AGENT_TARGET_COMMANDS.has(cmdName)) {
     emit(agentNameItems(), "nofiles");
     return;
