@@ -11,7 +11,7 @@ import { JetStreamApiCodes, JetStreamApiError, jetstreamManager } from "@nats-io
 import { connect, credsAuthenticator } from "@nats-io/transport-node";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
-import { controlCreds, listAgents, personaFilePath, psRowAlive, type PsRow, wirePrincipal } from "./addressing.js";
+import { agentNamesForFolder, canonicalDir, controlCreds, listAgents, personaFilePath, psRowAlive, type PsRow, wirePrincipal } from "./addressing.js";
 import { withManagerControl, type ManagerControl } from "./control.js";
 import { listForeground } from "./foreground.js";
 import { readRuntimeMarker, resolveSpace, type Runtime } from "./lifecycle.js";
@@ -461,6 +461,55 @@ function parseSpace(argv: string[]): string | undefined {
   return undefined;
 }
 
+/** The positional TARGETS of `paw status [<name|folder>…]`. An unknown flag fails loud — it used to be
+ *  ignored along with every positional, so `paw status canary-env-52` printed all 118 rows and looked
+ *  like it had worked. */
+export function statusTargets(argv: string[]): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === "--space") i++;
+    else if (a === "--json" || a === "--wide") continue;
+    else if (a.startsWith("-")) throw new Error(`paw: unknown flag "${a}" — status takes [<name|folder>…] [--json] [--wide]`);
+    else out.push(a);
+  }
+  return out;
+}
+
+/** A target that names a FOLDER rather than an agent: the same sigils the ambiguity guard exempts.
+ *  A bare word is always a NAME here — reading it as a folder too is the name-vs-folder confusion
+ *  `@queue` → queue-ea was (2026-09-17). */
+const isPathTarget = (t: string) => t === "." || t === ".." || /^(\.{1,2}\/|\/|~)/.test(t);
+
+/**
+ * Narrow the roster to what was asked for, keeping its order (live first, then most recent).
+ *
+ * A NAME must match an agent exactly; a PATH selects every agent registered to that folder (its
+ * default and any extras — `paw status .` answers "what's running here"). Nothing is resolved by
+ * guessing: an unknown name fails loud with the names that CONTAIN it, since a typo'd name that
+ * silently printed the whole fleet is the bug this replaces. Read-only — `folderAgents` must never
+ * mint a registration, which is why it isn't `resolveFolderAgent`.
+ */
+export function selectRows<T extends { name: string }>(rows: T[], targets: string[], folderAgents: (target: string) => { folder: string; names: string[] }): T[] {
+  if (targets.length === 0) return rows;
+  const want = new Set<string>();
+  for (const t of targets) {
+    if (isPathTarget(t)) {
+      const { folder, names } = folderAgents(t);
+      if (names.length === 0) throw new Error(`paw: no agent registered for ${folder} (\`paw chat ${t}\` starts one)`);
+      for (const n of names) want.add(n);
+      continue;
+    }
+    if (rows.some((r) => r.name === t)) {
+      want.add(t);
+      continue;
+    }
+    const near = rows.filter((r) => r.name.includes(t)).map((r) => r.name).slice(0, 5);
+    throw new Error(`paw: no agent "${t}"${near.length ? ` — did you mean ${near.map((n) => `"${n}"`).join(", ")}?` : " (`paw status` lists them)"}`);
+  }
+  return rows.filter((r) => want.has(r.name));
+}
+
 /**
  * Per-agent durable DM-consumer lag, straight from JetStream: `dm_<id>` on `DM_<space>`, where `id`
  * is the nkey the manager minted at spawn (it's in the ps row — the same id in the agent's mesh
@@ -686,7 +735,13 @@ async function status(argv: string[]): Promise<void> {
   // `--json` emits the AgentStatus rows verbatim for other tools to consume (the Raycast extension
   // reads exactly this). Deliberately the SAME rows the table renders, so the two can never disagree.
   const asJson = argv.includes("--json");
-  const { rows, errors } = await collectStatus(space);
+  const targets = statusTargets(argv); // parsed BEFORE the collect, so a bad flag fails in ms, not after a roster read
+  const all = await collectStatus(space);
+  const rows = selectRows(all.rows, targets, (t) => {
+    const folder = canonicalDir(t);
+    return { folder, names: agentNamesForFolder(space, folder) };
+  });
+  const { errors } = all;
   if (asJson) {
     writeJson({ space, rows, errors }); // writeJson, NOT console.log — see src/stdout.ts
     return; // errors ride IN the payload — a consumer must see them, not have them land on stderr only
@@ -702,7 +757,7 @@ const statusCommand: Command = {
   name: "status",
   group: "Mesh",
   summary: "the agent roster: status · runtime · cwd · session · inbox lag · last-active · durability (was: ps + status)",
-  usage: "status [--json] [--wide] [--space s]",
+  usage: "status [<name|folder>…] [--json] [--wide] [--space s]",
   run: (a) => status([...a.raw]),
 };
 

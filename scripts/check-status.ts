@@ -11,7 +11,7 @@ import { join } from "node:path";
 const home = mkdtempSync(join(tmpdir(), "paw-status-home-"));
 process.env.HOME = home;
 
-const { formatStatus, meshStatus, ago, inboxText, inboxStuck, contextText, contextShare, planColumns, elideLeft, elideRight } = await import("../src/status.js");
+const { formatStatus, meshStatus, ago, inboxText, inboxStuck, contextText, contextShare, planColumns, elideLeft, elideRight, statusTargets, selectRows } = await import("../src/status.js");
 type InboxState = import("../src/status.js").InboxState;
 const { foreignWriters } = await import("../src/named.js");
 
@@ -92,6 +92,32 @@ assert(inboxStuck({ ...stuckBase, busy: false, inbox: lag(0, 1) }), "idle + unre
   assert(cut.length === 30 && cut.startsWith("…") && path.endsWith(cut.slice(1)), "elideLeft keeps the TAIL — every worktree shares the head, so the end is what identifies it");
   assert(elideLeft("~/Github/paw", 30) === "~/Github/paw", "elideLeft leaves a path that already fits alone");
   assert(elideRight("fix-verifier-retry-connect-unavailable", 20).endsWith("…") && elideRight("short", 20) === "short", "elideRight keeps the start, and leaves a short value alone");
+}
+
+// ---- statusTargets / selectRows: `paw status <name|folder>…` (it printed all 118 rows, 2026-09-18) ----
+{
+  assert(JSON.stringify(statusTargets(["canary-env-52", "--space", "paw"])) === '["canary-env-52"]', "targets: a name is kept, the injected --space and its value are not");
+  assert(JSON.stringify(statusTargets(["--json", "a", "--wide", "b"])) === '["a","b"]', "targets: flags around positionals are skipped");
+  let threw = "";
+  try { statusTargets(["--nope"]); } catch (e) { threw = (e as Error).message; }
+  assert(threw.includes('unknown flag "--nope"'), "targets: an unknown flag fails loud instead of being ignored with everything else");
+
+  const roster = [{ name: "canary-env-52" }, { name: "evals" }, { name: "canary-env-gog-e2e" }, { name: "queue" }];
+  const none = () => ({ folder: "/x", names: [] as string[] });
+  assert(selectRows(roster, [], none).length === 4, "select: no target → the whole roster, as before");
+  assert(selectRows(roster, ["canary-env-52"], none).map((r) => r.name).join() === "canary-env-52", "select: a name narrows to exactly that agent");
+  assert(selectRows(roster, ["queue", "evals"], none).map((r) => r.name).join() === "evals,queue", "select: several names keep the ROSTER's order (live first), not the argv order");
+  const here = (t: string) => ({ folder: "/repo", names: t === "." ? ["evals", "queue"] : [] });
+  assert(selectRows(roster, ["."], here).map((r) => r.name).join() === "evals,queue", "select: `.` is every agent registered to this folder — default and extras");
+  let typo = "";
+  try { selectRows(roster, ["canary-env"], none); } catch (e) { typo = (e as Error).message; }
+  assert(typo.includes('no agent "canary-env"') && typo.includes('"canary-env-52"') && typo.includes('"canary-env-gog-e2e"'), "select: a near-miss fails loud and names what it might have meant");
+  let bare = "";
+  try { selectRows(roster, ["zzz"], none); } catch (e) { bare = (e as Error).message; }
+  assert(bare.includes("paw status") && !bare.includes("did you mean"), "select: nothing close → a plain refusal, no invented suggestion");
+  let empty = "";
+  try { selectRows(roster, ["./nowhere"], (t) => ({ folder: "/nowhere", names: [] })); } catch (e) { empty = (e as Error).message; }
+  assert(empty.includes("no agent registered for /nowhere"), "select: a folder with no agent fails loud (status never mints one — it's a read)");
 }
 
 // ---- formatStatus: the unified table ----

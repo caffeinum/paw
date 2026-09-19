@@ -30,7 +30,7 @@ const EARLY_VERBS: Array<{ name: string; summary: string }> = [
 ];
 
 /** Commands whose first positional is an agent name (a registered default or extra) —
- *  `start` takes any NUMBER of them, the rest take exactly one. Centralized here rather than a
+ *  `start` and `status` take any NUMBER of them, the rest take exactly one. Centralized here rather than a
  *  `complete` hook per command file: one map, one behavior, easy to extend as commands are added. */
 const AGENT_TARGET_COMMANDS = new Set([
   "dm",
@@ -44,6 +44,7 @@ const AGENT_TARGET_COMMANDS = new Set([
   "log",
   "stop",
   "start",
+  "status",
 ]);
 
 function agentNameItems(): CompletionItem[] {
