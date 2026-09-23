@@ -1,0 +1,25 @@
+scripts/check-chat.ts
+  s_ed25aaaf9c7e77::t_0d5346c6b7fc4d 150-241
+src/chat-views.ts
+  s_ed25aaaf9c7e77::t_648337ab2f1e64 1-219
+src/chat.ts
+  s_ed25aaaf9c7e77::t_9a762702a16102 16,48-49,457-459,474-507,694,754-764,878-885,1072-1076,1078-1081,1086,1102,1124-1168,1171-1183,1219-1225,1229-1232,1344
+src/log.ts
+  s_ed25aaaf9c7e77::t_a1d181ee35f660 65
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "3a4d469e18385feedc62dd1090cc394679791703",
+  "prompts": {},
+  "sessions": {
+    "s_ed25aaaf9c7e77": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "90dd1251-161e-469a-96db-040d1e555035",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Aleksey Bykhun <theisease@gmail.com>"
+    }
+  }
+}
