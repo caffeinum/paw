@@ -147,6 +147,98 @@ assert(!passesFilter(agentF, { kind: "channel", channel: "general" }), "echo: a 
 assert(passesFilter(chanF, { kind: "channel", channel: "team2027" }), "echo: your own post to the filtered channel shows");
 assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltered sessions still show everything");
 
+// ── views: logs · logs + chat · chat, the keys, the hint and the picker window (2026-09-23) ─────
+{
+  const { stepView, navKey, hintFor, pickerWindow, logBlockVisible, showsLogs, showsChat, arrowRun } = await import("../src/chat-views.js");
+  assert(arrowRun("\x1b[B") === 1 && arrowRun("\x1b[A") === -1, "arrows: a single ↓/↑ is one step");
+  assert(arrowRun("\x1b[B".repeat(20)) === 20, "arrows: a held ↓ read as ONE chunk is 20 steps, not typing (the collapse-to-1/1 bug)");
+  assert(arrowRun("\x1b[B\x1b[A\x1b[B") === 1 && arrowRun("\x1bOB\x1bOB") === 2, "arrows: mixed runs net out; SS3 encodings count");
+  assert(arrowRun("\x1b[Ba") === undefined && arrowRun("ab") === undefined && arrowRun("\x1b[D") === undefined, "arrows: anything else in the chunk is typing, not a run");
+  assert(stepView("chat", -1) === "both" && stepView("both", -1) === "logs", "view: ← steps chat → logs+chat → logs");
+  assert(stepView("logs", -1) === "logs" && stepView("chat", 1) === "chat", "view: the ends CLAMP — a wrap would read as the key misfiring");
+  assert(showsLogs("logs") && showsLogs("both") && !showsLogs("chat"), "view: logs and both follow the transcript, chat doesn't");
+  assert(showsChat("both") && showsChat("chat") && !showsChat("logs"), "view: both and chat print the conversation, logs doesn't");
+
+  for (const k of ["\x1b[D", "\x1bOD", "\x1b[1;3D", "\x1b[1;9D", "\x1bb"]) assert(navKey(k) === "left", `keys: ${JSON.stringify(k)} is ← (plain, Option as CSI, Cmd/super, Option as Meta)`);
+  for (const k of ["\x1b[C", "\x1b[1;3C", "\x1b[1;9C", "\x1bf"]) assert(navKey(k) === "right", `keys: ${JSON.stringify(k)} is →`);
+  assert(navKey("\x1b[1;3B") === "down" && navKey("\x1b[B") === "down", "keys: plain and Option+↓ both open the picker");
+  assert(navKey("a") === undefined && navKey("\x1b[A") === undefined, "keys: letters and ↑ are not navigation");
+
+  assert(hintFor({ view: "both", picking: false, hasTarget: true, bang: false }) === "logs + chat  │  ← logs   ↓ mention   chat →", "hint: the middle view offers both ways and names where you are");
+  assert(!hintFor({ view: "logs", picking: false, hasTarget: true, bang: false }).includes("←"), "hint: at the left end there is no ←");
+  assert(!hintFor({ view: "chat", picking: false, hasTarget: true, bang: false }).includes("→"), "hint: at the right end there is no →");
+  assert(hintFor({ view: "chat", picking: false, hasTarget: false, bang: false }) === "↓ mention an agent", "hint: with no target the views don't apply — only the picker is offered");
+  assert(hintFor({ view: "chat", picking: true, hasTarget: true, bang: false }).startsWith("↑↓ select"), "hint: the picker's own keys while it is open");
+
+  assert(JSON.stringify(pickerWindow(5, 2, 12)) === JSON.stringify({ start: 0, end: 5 }), "picker: a short list shows whole");
+  assert(JSON.stringify(pickerWindow(118, 0, 12)) === JSON.stringify({ start: 0, end: 12 }), "picker: the top of a long list");
+  const mid = pickerWindow(118, 60, 12);
+  assert(mid.start <= 60 && 60 < mid.end && mid.end - mid.start === 12, "picker: the SELECTION stays inside the window (the bug: it scrolled off the top)");
+  assert(JSON.stringify(pickerWindow(118, 117, 12)) === JSON.stringify({ start: 106, end: 118 }), "picker: the bottom clamps — no blank rows past the list");
+
+  const reply = { kind: "reply", to: "you", text: "done" } as const;
+  const replyOther = { kind: "reply", to: "evals", text: "hi" } as const;
+  const wakeYou = { kind: "wake", from: "you", via: "dm" } as const;
+  const wakeOther = { kind: "wake", from: "evals", via: "dm" } as const;
+  const tool = { kind: "tool", name: "Bash", display: "Bash", arg: "ls" } as const;
+  assert([reply, wakeYou, tool].every((b) => logBlockVisible("logs", b, "you")), "dedup: the logs view is the raw trace — everything prints");
+  assert(!logBlockVisible("both", reply, "you") && !logBlockVisible("both", wakeYou, "you"), "dedup: in logs + chat, the transcript's copy of YOUR conversation is dropped (the DM and your typed line already show it)");
+  assert(logBlockVisible("both", replyOther, "you") && logBlockVisible("both", wakeOther, "you") && logBlockVisible("both", tool, "you"), "dedup: traffic with OTHER agents and the agent's own work still print — that's what the logs are for");
+  assert(!logBlockVisible("chat", tool, "you"), "dedup: the chat view prints no transcript at all");
+}
+
+// ── LogFollower: the transcript feed behind the logs views ──────────────────────────────────────
+{
+  const { LogFollower } = await import("../src/chat-views.js");
+  type B = import("../src/transcript.js").Block;
+  const render = (b: B) => (b.kind === "tool" ? `TOOL ${b.arg}` : b.kind === "reply" ? `REPLY→${b.to}` : b.kind === "wake" ? `WAKE←${b.from}` : b.kind);
+  const tool = (arg: string): B => ({ kind: "tool", name: "Bash", display: "Bash", arg });
+  const mkSrc = (history: B[]) => {
+    const queue: B[][] = [];
+    return { src: { blocks: (n: number) => history.slice(-n), pull: () => queue.shift() ?? [] }, queue };
+  };
+  const out: string[] = [];
+  const a = mkSrc([...Array.from({ length: 30 }, (_, i) => tool(`old${i}`)), { kind: "reply", to: "you", text: "x" }]);
+  const b = mkSrc([tool("b-history")]);
+  let opens = 0;
+  const f = new LogFollower((n) => { opens++; if (n === "a") return a.src; if (n === "b") return b.src; throw new Error(`paw: ${n} isn't registered to a folder`); }, (t) => out.push(t), render, "you", 5);
+
+  f.pump("a", "both");
+  assert(out.length === 1 && out[0].startsWith("── a · recent activity ──"), "follow: first pump backfills under a divider");
+  assert(out[0].split("\n").length === 6 && out[0].includes("TOOL old29") && !out[0].includes("TOOL old24"), "follow: the backfill is the last N VISIBLE blocks");
+  assert(!out[0].includes("REPLY→you"), "follow: the backfill respects the view's dedup (your own reply isn't doubled in logs + chat)");
+
+  out.length = 0;
+  a.queue.push([tool("n1"), tool("n2"), { kind: "wake", from: "you", via: "dm" }]);
+  f.pump("a", "both");
+  assert(out.length === 1 && out[0] === "TOOL n1\nTOOL n2", "follow: new blocks print as ONE batch (one prompt redraw), deduped");
+  f.pump("a", "both");
+  assert(out.length === 1, "follow: nothing new → nothing printed");
+
+  a.queue.push([{ kind: "reply", to: "you", text: "y" }]);
+  f.pump("a", "logs");
+  assert(out[1] === "REPLY→you", "follow: the logs view prints the reply — it's the only place the answer shows there");
+
+  out.length = 0;
+  f.pump("b", "both");
+  assert(out[0].startsWith("── b · recent activity ──") && out[0].includes("TOOL b-history"), "follow: a target change re-points with a fresh backfill (caught lazily, on the next pump)");
+
+  out.length = 0;
+  f.pump("ghost", "both");
+  f.pump("ghost", "both");
+  f.pump("ghost", "both");
+  assert(out.length === 1 && out[0].includes("no logs for ghost") && !out[0].includes("paw:"), "follow: an agent with no readable log is reported ONCE, not every second");
+
+  out.length = 0;
+  f.pump("a", "chat");
+  assert(out.length === 0, "follow: the chat view prints no transcript");
+  const before = opens;
+  f.pump("a", "both");
+  assert(opens === before + 1 && out[0].startsWith("── a"), "follow: coming back from the chat view re-opens and backfills, rather than dumping everything missed");
+  f.pump(undefined, "both");
+  assert(out.length === 1, "follow: no target → nothing to follow, silently");
+}
+
 rmSync(process.env.PAW_HOME as string, { recursive: true, force: true });
 
 if (failures > 0) {

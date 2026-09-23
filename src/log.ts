@@ -62,7 +62,7 @@ function rail(lines: string[], color: (s: string) => string = c.dim): string {
  * thing that knows about ANSI, and its output is byte-identical to the pre-split renderer — the
  * blocks carry SOURCE (raw markdown, summary lines), never presentation.
  */
-function renderBlock(b: Block): string {
+export function renderBlock(b: Block): string {
   switch (b.kind) {
     case "user":
       return `${c.bold(">")} ${oneLine(b.text, 400)}`;

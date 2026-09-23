@@ -13,6 +13,7 @@
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import * as readline from "node:readline";
+import { stripVTControlCharacters } from "node:util";
 import {
   CotalEndpoint,
   DEFAULT_SERVER,
@@ -44,6 +45,8 @@ import { isAddressHandle, resolveAddress } from "./address.js";
 import { bashMessage, parseBang, runBash } from "./bash.js";
 import { withManagerControl } from "./control.js";
 import { advanceCursor } from "./cursor.js";
+import { arrowRun, hintFor, LogFollower, navKey, pickerWindow, showsChat, showsLogs, stepView, VIEW_LABEL, type ChatView } from "./chat-views.js";
+import { openAgentLog, renderBlock } from "./log.js";
 import {
   ATTACH_ICON,
   attachmentsRide,
@@ -451,7 +454,9 @@ async function chat(argv: string[]): Promise<void> {
     // ERR_USE_AFTER_CLOSE. Still write the message, just skip the prompt redraw.
     if (rl && !closing) {
       readline.cursorTo(process.stdout, 0);
-      readline.clearLine(process.stdout, 0);
+      // clearScreenDown, not clearLine: the hint line sits BELOW the prompt, and a message printed
+      // over the prompt row would otherwise leave a stale hint stranded in the middle of the text.
+      readline.clearScreenDown(process.stdout);
     }
     const gap = !trailingBlank && lastSide !== undefined && side !== lastSide ? "\n" : "";
     // Anything that belongs to the conversation closes with a blank line, because emit ALWAYS redraws
@@ -465,6 +470,40 @@ async function chat(argv: string[]): Promise<void> {
     lastSide = side;
     process.stdout.write(gap + s.split("\n").join(`\n${PAD}`) + "\n" + tail);
     if (rl && !closing) rl.prompt(true);
+  }
+
+  /** Which view the conversation is in (see src/chat-views.ts). `chat` is what `paw chat` always was,
+   *  so nobody's session changes until they press ←. */
+  let view: ChatView = "chat";
+  /** Whether the agent picker is open. Declared up here, not with the rest of the picker, because
+   *  drawHint reads it and readline can prompt before the picker's section of this function runs. */
+  let picking = false;
+
+  /**
+   * Draw the hint line UNDER the input: where ←/↓/→ go from here, and which view you're in.
+   *
+   * Drawn relative to the cursor, never with save/restore: when the prompt sits on the terminal's last
+   * row, the newline that makes room for the hint scrolls the screen, and a SAVED position then points
+   * at the row that just moved — relative moves stay right. readline wipes everything below the line
+   * on its own full refreshes (history, mid-line edits), so this is re-run after every keystroke.
+   *
+   * Gated on `rl`, which is created after all of chat's state: emit() can run during startup, before
+   * `curName`/`bang`/`picking` exist, and touching them then would be a temporal-dead-zone crash.
+   */
+  function drawHint(): void {
+    if (!rl || closing || !process.stdout.isTTY) return;
+    const hint = hintFor({ view, picking, hasTarget: !!curName, bang });
+    const cols = process.stdout.columns || 80;
+    const pos = rl.getCursorPos();
+    const shown = stripVTControlCharacters(promptFor()).length + rl.line.length;
+    const lastRow = Math.floor(Math.max(0, shown - 1) / cols);
+    const down = Math.max(0, lastRow - pos.rows);
+    readline.moveCursor(process.stdout, 0, down);
+    process.stdout.write("\n");
+    readline.clearLine(process.stdout, 0);
+    process.stdout.write(c.dim(hint.length >= cols ? hint.slice(0, cols - 1) : hint));
+    readline.moveCursor(process.stdout, 0, -(down + 1));
+    readline.cursorTo(process.stdout, pos.cols);
   }
   ep.on("error", (e: Error) => emit(c.red("! " + e.message)));
   await startResilient(ep);
@@ -652,6 +691,7 @@ async function chat(argv: string[]): Promise<void> {
         `     ${c.dim("type to message it · !cmd runs in its folder · @name switches target · #channel broadcasts · /who · /ps · /quit")}\n` +
         `     ${c.dim("drag an image in for [Image #1] · paste multiple lines for [Pasted text #1]")}\n` +
         `     ${c.dim("alt+enter (or end a line with \\\\) for a new line, not a send")}\n` +
+        `     ${c.dim("on an empty line: ← → switch logs · logs + chat · chat   ↓ picks an agent")}\n` +
         `     ${c.dim("/imgs · /noimg · /paste · /nopaste")}\n\n`,
     );
   } else {
@@ -711,7 +751,17 @@ async function chat(argv: string[]): Promise<void> {
         took = c.dim(` (${Math.max(1, Math.round((Date.now() - awaiting.at) / 1000))}s)`);
         awaiting = undefined;
       }
-      if (curName && from.toLowerCase() === curName.toLowerCase()) emit(said(`${tag}${c.cyan(from)}${age}${took}${c.dim(":")}`, text), "peer");
+      const fromTarget = !!curName && from.toLowerCase() === curName.toLowerCase();
+      // The transcript is written BEFORE the DM goes out (the tool call is recorded, then it runs), so
+      // the turn that produced this reply is already on disk. Print it first, or the reply would land
+      // above the work that led to it — the live feed is push, the transcript is a 1s poll.
+      if (showsLogs(view)) pumpLogs();
+      // In the logs-only view the target's reply is ALREADY on screen: it is the transcript's `↩ you`
+      // block that pumpLogs just printed. Printing the DM too would say it twice. Other agents' DMs
+      // still print — they appear nowhere in this agent's transcript.
+      if (fromTarget && !showsChat(view)) {
+        /* shown by the transcript's reply block */
+      } else if (fromTarget) emit(said(`${tag}${c.cyan(from)}${age}${took}${c.dim(":")}`, text), "peer");
       else emit(said(`${tag}${c.magenta("(DM)")} ${c.bold(from)}${age}${took}${c.dim(":")}`, text), "peer");
       advanceCursor(space, m.ts); // shown here = seen, so `paw inbox` won't re-surface it as new
       // Follow the conversation: an empty input means you have not started a reply to anyone else, so
@@ -825,6 +875,14 @@ async function chat(argv: string[]): Promise<void> {
     prompt: promptFor(),
     completer,
   });
+  // Every redraw of the prompt redraws the hint beneath it. Wrapping the one method all ~20 call
+  // sites go through beats threading drawHint() through each of them, where the next new call site
+  // would be the one that forgets.
+  const basePrompt = rl.prompt.bind(rl);
+  rl.prompt = (preserveCursor?: boolean) => {
+    basePrompt(preserveCursor);
+    drawHint();
+  };
 
   // A paste is payload, not typing — but readline echoes it line by line and redraws the prompt after
   // every newline, so a 16-line paste painted sixteen `you → x>` lines that looked like sixteen sends
@@ -949,7 +1007,6 @@ async function chat(argv: string[]): Promise<void> {
    * events this needs, and re-implementing editing/history/completion to get one widget is a bad
    * trade. Filtering off `rl.line` costs nothing and keeps every existing key working.
    */
-  let picking = false;
   let picked = 0; // index into the last filtered list
   let drawn = 0; // lines currently occupied by the picker, so a redraw can erase exactly them
   /** The filter, held HERE rather than read back from `rl.line`. readline handles ↑/↓ as
@@ -1012,13 +1069,21 @@ async function chat(argv: string[]): Promise<void> {
     picked = hits.length ? Math.min(picked, hits.length - 1) : 0;
 
     erasePicker();
+    // A WINDOW around the selection, not the whole list: all 118 agents ran off the top of the screen
+    // and took the selection with them (2026-09-23). Sized to leave the prompt, the hint and a little
+    // of the conversation visible — the picker is a detour, not a new screen.
+    const size = Math.max(3, Math.min(12, (process.stdout.rows || 24) - 6));
+    const { start, end } = pickerWindow(hits.length, picked, size);
     const rows = [
-      c.dim(hits.length ? `agents — ↑↓ select · Enter picks · keep typing to filter` : `no agent matches "${pickFilter}"`),
-      ...hits.map((a, i) => {
+      c.dim(hits.length ? `agents ${picked + 1}/${hits.length}` : `no agent matches "${pickFilter}"`),
+      ...(start > 0 ? [c.dim(`    ↑ ${start} more`)] : []),
+      ...hits.slice(start, end).map((a, j) => {
+        const i = start + j;
         const marker = i === picked ? c.green("▸") : " ";
         const name = i === picked ? c.bold(c.cyan(a.name)) : c.cyan(a.name);
         return `  ${marker} ${name} ${a.note}${a.name === curName ? c.dim("  (current)") : ""}`;
       }),
+      ...(end < hits.length ? [c.dim(`    ↓ ${hits.length - end} more`)] : []),
     ];
     readline.cursorTo(process.stdout, 0);
     readline.clearLine(process.stdout, 0);
@@ -1034,7 +1099,7 @@ async function chat(argv: string[]): Promise<void> {
     // Deliberately does NOT consult rl.line: readline has just overwritten it with a history entry.
     const hits = pickerHits();
     if (!hits.length) return;
-    picked = (picked + delta + hits.length) % hits.length;
+    picked = (((picked + delta) % hits.length) + hits.length) % hits.length; // a held ↑ can step past −length
     // Rewrite through readline's own editing ops so the prompt redraws correctly.
     rl.write(null, { ctrl: true, name: "u" });
     rl.write(null, { ctrl: true, name: "k" });
@@ -1056,8 +1121,66 @@ async function chat(argv: string[]): Promise<void> {
     drawPicker();
   };
 
+  // ── views: logs · logs + chat · chat (src/chat-views.ts) ────────────────────────────────────────
+  // The follower's backfill and batch output are dimmed by the caller only where they're chrome (the
+  // divider/notes); transcript lines keep paw log's own colouring so tool calls read as tool calls.
+  const follower = new LogFollower(
+    (name) => {
+      const folder = folderForName(space, name);
+      if (!folder) throw new Error(`${name} isn't registered to a folder`);
+      return openAgentLog(space, name, folder);
+    },
+    (text) => emit(text.startsWith("──") || text.startsWith("(") ? text.replace(/^[^\n]*/, (l) => c.dim(l)) : text),
+    renderBlock,
+    HUMAN_PEER,
+  );
+  let followTimer: ReturnType<typeof setInterval> | undefined;
+  const pumpLogs = (): void => {
+    if (rl && !closing) follower.pump(curName, view);
+  };
+
+  function setView(next: ChatView): void {
+    if (next === view) return;
+    view = next;
+    emit(c.dim(`── view: ${VIEW_LABEL[view]} ──`));
+    if (showsLogs(view)) {
+      if (!followTimer) {
+        followTimer = setInterval(pumpLogs, 1000);
+        followTimer.unref(); // a poll must never be the thing keeping a quit chat alive
+      }
+      pumpLogs(); // backfill now, not a second from now
+    } else {
+      follower.stop();
+      if (followTimer) clearInterval(followTimer);
+      followTimer = undefined;
+    }
+  }
+
+  /** ←/→ on an empty line. At an end of the strip it does nothing — the hint already shows no arrow
+   *  that way. With no target there is no transcript to follow, so it says why instead. */
+  function switchView(dir: -1 | 1): void {
+    if (!curName) {
+      emit(c.dim("(views follow one agent — pick one with ↓ first)"));
+      return;
+    }
+    setView(stepView(view, dir));
+  }
+
   if (process.stdin.isTTY) {
     process.stdout.write(ENABLE_BRACKETED_PASTE);
+    // View navigation (src/chat-views.ts navKey): ←/→ step the view, a MODIFIED ↓ opens the picker
+    // (plain ↓ already does, below). Only on an EMPTY line — mid-edit these keys move the caret and
+    // jump words, and taking them away while someone types would break editing to add navigation.
+    process.stdin.prependListener("data", (chunk: Buffer | string) => {
+      const raw = typeof chunk === "string" ? chunk : chunk.toString("utf8");
+      if (!rl || closing || scanner.pasting || picking || bang || rl.line) return;
+      const k = navKey(raw);
+      if (k === "left" || k === "right") setImmediate(() => rl && !rl.line && switchView(k === "left" ? -1 : 1));
+      else if (k === "down" && arrowRun(raw) === undefined) setImmediate(openPicker); // plain ↓ runs are the picker listener's
+    });
+    // readline repaints the whole input on some edits (history, a mid-line change) and wipes what's
+    // below it — the hint included. Redraw after every keystroke; appended, so it runs after readline.
+    process.stdin.on("data", () => setImmediate(() => rl && !closing && !scanner.pasting && drawHint()));
     process.stdin.prependListener("data", (chunk: Buffer | string) => {
       // Command mode (mirrors the web composer, 2026-09-09): `!` as the FIRST character of a line with
       // an agent targeted flips the prompt to `$ runs in <folder> → then tells <agent>` and is consumed;
@@ -1093,13 +1216,20 @@ async function chat(argv: string[]): Promise<void> {
       if (!rl || closing || scanner.pasting) return;
       // ↓ on a genuinely EMPTY line opens the picker; mid-edit it stays history-next.
       if (!picking) {
-        if (raw === DOWN && !rl.line) setImmediate(openPicker);
+        // A held ↓ arrives as a RUN: open on it too, and spend the rest of the run as movement.
+        const run = arrowRun(raw);
+        if (run !== undefined && run > 0 && !rl.line)
+          setImmediate(() => {
+            openPicker();
+            if (run > 1) movePicker(run - 1);
+          });
         return;
       }
       // While picking: arrows move the selection, Esc closes, anything else re-filters off the
-      // buffer once readline has folded the keystroke in (hence setImmediate).
-      if (raw === DOWN) return void setImmediate(() => movePicker(1));
-      if (raw === UP) return void setImmediate(() => movePicker(-1));
+      // buffer once readline has folded the keystroke in (hence setImmediate). A RUN of arrows in one
+      // chunk (key repeat) is one net step — see arrowRun.
+      const step = arrowRun(raw);
+      if (step !== undefined) return void setImmediate(() => step && movePicker(step));
       if (raw === ESC) return void setImmediate(closePicker);
       setImmediate(() => (syncFilter() ? drawPicker() : closePicker()));
     });
@@ -1211,6 +1341,7 @@ async function chat(argv: string[]): Promise<void> {
   async function shutdown(): Promise<void> {
     if (closing) return;
     closing = true;
+    if (followTimer) clearInterval(followTimer);
     // Leave the terminal as we found it — bracketed paste is a MODE, and a shell that inherits it
     // set without knowing would see raw \e[200~ markers in its own input.
     if (process.stdin.isTTY) process.stdout.write(DISABLE_BRACKETED_PASTE);
