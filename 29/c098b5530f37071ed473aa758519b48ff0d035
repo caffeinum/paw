@@ -1,0 +1,25 @@
+bin/paw.ts
+  s_ed25aaaf9c7e77::t_f05c079dffefa7 48,71-75,88-91
+scripts/check-dispatch.ts
+  s_ed25aaaf9c7e77::t_7451ffaa3defc9 194-210
+src/commands/complete.ts
+  s_ed25aaaf9c7e77::t_8095a51e6f65a4 22,80-82
+src/dispatch.ts
+  s_ed25aaaf9c7e77::t_393f305ed7b64a 60-85
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "29c098b5530f37071ed473aa758519b48ff0d035",
+  "prompts": {},
+  "sessions": {
+    "s_ed25aaaf9c7e77": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "90dd1251-161e-469a-96db-040d1e555035",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Aleksey Bykhun <theisease@gmail.com>"
+    }
+  }
+}
