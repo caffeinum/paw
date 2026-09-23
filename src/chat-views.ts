@@ -257,6 +257,8 @@ export class Painter {
     private readonly human: string,
     private readonly dim: (s: string) => string = (s) => s,
     private readonly pad = "  ",
+    /** `paw log`'s spacing predicate (src/log.ts attachesAbove): true for a `⎿` result rail. */
+    private readonly attachesAbove: (rendered: string) => boolean = () => false,
   ) {}
 
   reset(): void {
@@ -286,8 +288,16 @@ export class Painter {
           .map(this.render)
           .filter(Boolean);
         if (!lines.length) return "";
+        // `paw log`'s rhythm: a blank line before each turn, none before a `⎿` result (it belongs to
+        // the call above). Across batches too — the 1s poll splits a trace at arbitrary points, and the
+        // first turn of a batch still needs its blank when the log was already flowing (`put` adds the
+        // gap itself when the side just changed, so this never doubles it).
+        const continuing = this.lastSide === "log";
+        const body = lines
+          .map((l, i) => ((i > 0 || continuing) && !this.attachesAbove(l) ? `\n${l}` : l))
+          .join("\n");
         const head = e.backfill ? `${this.dim(`── ${e.agent} · ${e.note ?? "earlier"} ──`)}\n` : "";
-        return this.put("log", head + lines.join("\n"), true);
+        return this.put("log", head + body, true);
       }
     }
   }

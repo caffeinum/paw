@@ -44,8 +44,8 @@ export type Block =
   | { kind: "tool"; name: string; display: string; arg: string }
   | { kind: "result"; lines: string[]; isError: boolean }
   /** The agent's OWN outgoing mesh DM — its reply, which is signal, unlike the rest of the plumbing. */
-  | { kind: "reply"; to: string; text: string }
-  | { kind: "channelReply"; channel: string; text: string }
+  | { kind: "reply"; to: string; text: string; full?: string }
+  | { kind: "channelReply"; channel: string; text: string; full?: string }
   /** What a peer actually SAID to this agent — the body of a drained inbox, in full. */
   | { kind: "incoming"; text: string }
   | { kind: "spawn"; name: string };
@@ -248,10 +248,14 @@ export function meshAction(name: string, input: Record<string, unknown>): Block 
   if (mesh === "cotal_spawn") return { kind: "spawn", name: String(input.name ?? "?") };
   if (mesh === "cotal_inbox") return "inbox";
   if (mesh && OUTGOING.has(mesh)) {
-    if (input.channel !== undefined) return { kind: "channelReply", channel: String(input.channel), text: s(input.text) };
-    if (input.to !== undefined) return { kind: "reply", to: String(input.to), text: s(input.text) };
-    if (input.role !== undefined) return { kind: "reply", to: `@${String(input.role)}`, text: s(input.text) };
-    return { kind: "reply", to: "?", text: s(input.text) };
+    // `text` stays the one-line 180-char gist the web trace shows; `full` is the message as SENT —
+    // a DM is the agent's actual answer, and a surface that renders it as a message (paw log, paw
+    // chat's logs view) must not cut it off mid-sentence (operator screenshot, 2026-09-23).
+    const full = String(input.text ?? "");
+    if (input.channel !== undefined) return { kind: "channelReply", channel: String(input.channel), text: s(input.text), full };
+    if (input.to !== undefined) return { kind: "reply", to: String(input.to), text: s(input.text), full };
+    if (input.role !== undefined) return { kind: "reply", to: `@${String(input.role)}`, text: s(input.text), full };
+    return { kind: "reply", to: "?", text: s(input.text), full };
   }
   if (mesh || HIDDEN.has(name)) return "hide";
   return undefined;

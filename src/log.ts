@@ -62,6 +62,12 @@ function rail(lines: string[], color: (s: string) => string = c.dim): string {
  * thing that knows about ANSI, and its output is byte-identical to the pre-split renderer — the
  * blocks carry SOURCE (raw markdown, summary lines), never presentation.
  */
+/** Header + markdown body, as `paw chat` prints a DM (its `said`): one line stays beside the header. */
+function message(header: string, text: string): string {
+  const lines = renderMarkdown(text);
+  return lines.length <= 1 ? `${header} ${lines[0] ?? ""}` : `${header}\n${lines.join("\n")}`;
+}
+
 export function renderBlock(b: Block): string {
   switch (b.kind) {
     case "user":
@@ -94,10 +100,14 @@ export function renderBlock(b: Block): string {
       // and these are two different things (mail arrived / here is the mail).
       return renderMarkdown(b.text).map((l) => `${c.dim("│")} ${l}`).join("\n");
     }
+    // A DM is a MESSAGE, not a tool call: no ● bullet, the whole text, markdown-rendered at full width
+    // — the shape `paw chat` gives a DM (header, then the body; a one-liner stays on the header line).
+    // It used to be a bulleted one-line gist cut at 180 chars, so the agent's actual answer ended in
+    // "…" (operator, 2026-09-23). `full` is absent only on blocks from an older parser — fall back.
     case "reply":
-      return `${BULLET} ${c.green(`↩ ${b.to}`)} ${b.text}`;
+      return message(c.green(`↩ ${b.to}`), b.full ?? b.text);
     case "channelReply":
-      return `${BULLET} ${c.green(`↩ #${b.channel}`)} ${b.text}`;
+      return message(c.green(`↩ #${b.channel}`), b.full ?? b.text);
     case "spawn":
       return c.dim(`  ${PIPE}  ⊕ spawn ${b.name}`);
   }
@@ -340,10 +350,15 @@ function parseArgs(argv: string[]): { space?: string; target?: string; tail: num
   return out;
 }
 
-/** Print a block with Claude-Code spacing: a blank line precedes each `●`/`>` turn for breathing room,
- *  but a `⎿` result rail stays attached to the tool call above it. */
+/** Claude-Code spacing, shared with `paw chat`'s logs views (src/chat-views.ts Painter): a blank line
+ *  precedes each `●`/`>` turn for breathing room, but a `⎿` result rail stays attached to the tool
+ *  call above it. One predicate for both, so the two surfaces can't space the same trace differently. */
+export function attachesAbove(rendered: string): boolean {
+  return rendered.trimStart().startsWith(PIPE);
+}
+
 function emit(b: string): void {
-  if (!b.trimStart().startsWith(PIPE)) console.log("");
+  if (!attachesAbove(b)) console.log("");
   console.log(b);
 }
 

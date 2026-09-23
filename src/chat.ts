@@ -46,7 +46,7 @@ import { bashMessage, parseBang, runBash } from "./bash.js";
 import { withManagerControl } from "./control.js";
 import { advanceCursor } from "./cursor.js";
 import { arrowRun, CLEAR_ALL, displayWidth, fitWidth, entryVisible, hintFor, History, LogFollower, navKey, Painter, type Entry, pickerWindow, showsChat, showsLogs, stepView, VIEW_LABEL, type ChatView } from "./chat-views.js";
-import { openAgentLog, renderBlock } from "./log.js";
+import { attachesAbove, openAgentLog, renderBlock } from "./log.js";
 import {
   ATTACH_ICON,
   attachmentsRide,
@@ -444,7 +444,7 @@ async function chat(argv: string[]): Promise<void> {
   // is spaced exactly like the screen it replaces.
   type Side = "you" | "peer" | "sys";
   const history = new History();
-  const painter = new Painter(renderBlock, HUMAN_PEER, c.dim);
+  const painter = new Painter(renderBlock, HUMAN_PEER, c.dim, "  ", attachesAbove);
   const follower = new LogFollower(
     (name) => {
       const folder = folderForName(space, name);

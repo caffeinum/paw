@@ -303,6 +303,32 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
   const mixed = "4 messages:\n[DM from you] mine\n[#general research] channel post by research\n[#general you] my own post\n[DM from evals] theirs";
   assert(dropSender(mixed, "you") === "[#general research] channel post by research\n[DM from evals] theirs", "drain: MIXED DM + channel items — yours dropped in both forms, theirs kept (the critic's second pass)");
   assert(dropSender("1 message:\n[#general you] only my post", "you") === "", "drain: a channel-only drain is understood too (it used to pass through whole and double your post)");
+  // Log spacing = paw log's: blank before each turn, a ⎿ result stays glued to its call (screenshot, 2026-09-23)
+  {
+    const { Painter: P2 } = await import("../src/chat-views.js");
+    const { attachesAbove } = await import("../src/log.js");
+    const r = (b: import("../src/transcript.js").Block) => (b.kind === "tool" ? `● Bash(${b.arg})` : b.kind === "result" ? `  ⎿  ${b.lines[0]}` : "?");
+    const t = (arg: string) => ({ kind: "tool", name: "Bash", display: "Bash", arg }) as const;
+    const res = (x: string): import("../src/transcript.js").Block => ({ kind: "result", lines: [x], isError: false });
+    const pp = new P2(r, "you", (x) => x, "  ", attachesAbove);
+    const a = pp.paint({ kind: "log", agent: "a", blocks: [t("one"), res("ok"), t("two"), res("ok2")], backfill: false }, "logs");
+    assert(a === "● Bash(one)\n  ⎿  ok\n\n● Bash(two)\n  ⎿  ok2\n", "spacing: a blank line between turns, none between a call and its ⎿ result");
+    const b = pp.paint({ kind: "log", agent: "a", blocks: [t("three")], backfill: false }, "logs");
+    assert(b === "\n● Bash(three)\n", "spacing: the next 1s batch still opens with its blank — the poll splits the trace, not the rhythm");
+    const c2 = pp.paint({ kind: "log", agent: "a", blocks: [res("late")], backfill: false }, "logs");
+    assert(c2 === "  ⎿  late\n", "spacing: a result that lands in the NEXT batch stays glued to its call");
+  }
+  {
+    const { renderBlock } = await import("../src/log.js");
+    const plain = (x: string) => x.replace(/\x1b\[[0-9;]*m/g, "");
+    const one = plain(renderBlock({ kind: "reply", to: "you", text: "done", full: "done" }));
+    assert(one === "↩ you done", "dm render: a one-liner stays on the header line, NO ● bullet");
+    const body = "short answer: no. " + "y".repeat(300) + "\n\n- **point** one\n- point two";
+    const many = plain(renderBlock({ kind: "reply", to: "you", text: "short answer: no. yyy…", full: body }));
+    assert(!many.startsWith("●") && many.startsWith("↩ you\n") && many.includes("y".repeat(300)) && !many.includes("…"), "dm render: a long DM prints in FULL under its header, like paw chat — no bullet, no cut-off");
+    assert(many.includes("point one") && !many.includes("**"), "dm render: …as markdown (bullets, bold rendered)");
+    assert(plain(renderBlock({ kind: "reply", to: "you", text: "gist only" })) === "↩ you gist only", "dm render: an older block with no `full` falls back to the gist");
+  }
   const { fitWidth } = await import("../src/chat-views.js");
   assert(fitWidth("日本語テキスト", 7) === "日本語…" && fitWidth("short", 20) === "short", "width: the hint is cut by display columns, not code units");
   assert(displayWidth("abc") === 3 && displayWidth("日本語") === 6 && displayWidth("🐾") === 2 && displayWidth("\x1b") === 0, "width: CJK and emoji take two columns (the hint sat on wrapped CJK input)");

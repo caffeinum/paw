@@ -54,6 +54,13 @@ const mesh = feedAll([
 ]);
 assert(mesh.length === 1 && mesh[0].kind === "reply", "cotal_* discovery and ToolSearch are hidden; an outgoing DM survives");
 assert(mesh[0].kind === "reply" && mesh[0].to === "helium" && mesh[0].text === "on it", "the reply carries recipient and text");
+{
+  const { meshAction } = await import("../src/transcript.js");
+  const long = "short answer: no. " + "x".repeat(400) + "\n\n- point one\n- point two";
+  const r = meshAction("mcp__cotal__cotal_dm", { to: "you", text: long }) as { kind: string; text: string; full?: string };
+  assert(r.kind === "reply" && r.text.length <= 180 && r.text.endsWith("…"), "reply: `text` is still the one-line gist the web trace shows");
+  assert(r.full === long, "reply: `full` is the message exactly as sent — newlines and all (it was cut at 180 chars)");
+}
 
 // ── the rules must fire on the name agents ACTUALLY call ───────────────────────────────────────
 // An agent never calls a bare `cotal_dm`; it calls `mcp__cotal__cotal_dm`. Keying the mesh rules on a
