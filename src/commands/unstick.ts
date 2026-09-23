@@ -33,27 +33,36 @@ export function parseUnstickArgs(argv: string[]): { space?: string; target: stri
   return { space, target, force };
 }
 
-async function unstick(argv: string[]): Promise<void> {
-  const { space: spaceArg, target, force } = parseUnstickArgs(argv);
-  const space = spaceArg ?? resolveSpace();
-  const name = resolveStopName(space, target);
-
+/**
+ * The agent is live and its terminal is a tmux pane paw can reach — the precondition for anything
+ * that presses keys in it (`paw unstick`, `paw type`). Throws naming why not: a foreground claude
+ * (its terminal is the operator's own window), not live, or a runtime with no reachable pane.
+ */
+export async function requireTmuxPane(space: string, name: string, verb: string, action: string): Promise<void> {
   if (readForeground(space, name)) {
-    throw new Error(`paw: "${name}" runs as a foreground claude in another terminal — press Esc there; paw has no pane to type into`);
+    throw new Error(`paw: "${name}" runs as a foreground claude in another terminal — use that window; paw has no pane to ${action}`);
   }
   const row = await withManagerControl(space, DEFAULT_SERVER, async (ctl) => {
     const ps = await ctl.ps();
     if (!ps.ok) throw new Error(`paw: manager isn't answering (${ps.error ?? "no reply"})`);
     return ((ps.data as PsRow[]) ?? []).find((r) => r.name === name);
   });
-  if (!row || !psRowAlive(row)) throw new Error(`paw: "${name}" isn't live — nothing is running to interrupt (\`paw status\`)`);
+  if (!row || !psRowAlive(row)) throw new Error(`paw: "${name}" isn't live — there is no terminal to ${action} (\`paw status\`)`);
   const runtime = actualManagerRuntime(space);
   if (runtime !== "tmux") {
     throw new Error(
-      `paw: "${name}" runs under the ${runtime ?? "unknown"} runtime — unstick needs tmux, the only runtime with a pane paw can send Esc to ` +
+      `paw: "${name}" runs under the ${runtime ?? "unknown"} runtime — ${verb} needs tmux, the only runtime with a pane paw can ${action} ` +
         `(pty seats have no reachable terminal; cmux tabs belong to the app). \`paw runtime tmux\` switches.`,
     );
   }
+}
+
+async function unstick(argv: string[]): Promise<void> {
+  const { space: spaceArg, target, force } = parseUnstickArgs(argv);
+  const space = spaceArg ?? resolveSpace();
+  const name = resolveStopName(space, target);
+
+  await requireTmuxPane(space, name, "unstick", "send Esc to");
 
   const pin = readResumeId(personaFilePath(space, name));
   const state = pin ? readTurnState(pin) : undefined;

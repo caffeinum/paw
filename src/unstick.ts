@@ -127,6 +127,26 @@ export function paneShowsPrompt(pane: string): boolean {
   return /Do you want to (proceed|make this edit|create|allow)/i.test(pane) || /Esc to cancel/.test(pane);
 }
 
+/**
+ * Claude Code's input box as it appears in a pane capture: the `❯` line between two horizontal rules
+ * (older builds draw `│ > …│`). `visible` false means the box isn't on screen — a menu, a picker or a
+ * dialog has the keyboard, and typed keys would answer IT. `text` is what already sits in the box:
+ * typing then would append to someone's half-written line. Read from the LAST such line, since the
+ * scrollback above can hold quoted `❯` lines from the conversation.
+ */
+export function paneInput(pane: string): { visible: boolean; text: string } {
+  const lines = pane.split("\n");
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const m = lines[i].match(/^\s*(?:│\s*)?[❯>](?: (.*?))?\s*│?\s*$/);
+    if (!m) continue;
+    // The box is fenced by rules; a bare `>` elsewhere (markdown quote, shell prompt) is not the box.
+    const ruled = (j: number) => j >= 0 && j < lines.length && /^[\s─╭╮╰╯│]*─{8,}[\s─╭╮╰╯│]*$/.test(lines[j]);
+    if (!(ruled(i - 1) || ruled(i + 1) || ruled(i + 2))) continue;
+    return { visible: true, text: (m[1] ?? "").trim() };
+  }
+  return { visible: false, text: "" };
+}
+
 /** The visible text of the agent's tmux pane, or undefined when it can't be read. */
 export function capturePane(space: string, name: string): string | undefined {
   const res = spawnSync("tmux", ["capture-pane", "-p", "-t", tmuxTarget(space, name)], {
@@ -153,6 +173,31 @@ export async function sendPrompt(space: string, name: string, text: string): Pro
   if (typed.status !== 0) throw new Error(`paw: can't type into "${name}"'s tmux window (${typed.stderr?.toString().trim() || `exit ${typed.status}`})`);
   await new Promise((r) => setTimeout(r, 400)); // an Enter in the same burst reads as part of a paste
   spawnSync("tmux", ["send-keys", "-t", target, "Enter"], { stdio: "ignore", env, timeout: 5000 });
+}
+
+/** One thing to press: literal text (typed as-is) or a tmux key name (Enter, Down, Escape, C-c…). */
+export type KeyPart = { literal: string } | { key: string };
+
+/**
+ * Press a sequence of literal text and named keys in the agent's pane, in order. A key right after
+ * literal text waits 400ms first — Claude Code reads a burst of text followed at once by Enter as a
+ * PASTE, and a pasted newline is a newline in the box, not a submit (why sendPrompt waits too).
+ */
+export async function sendKeys(space: string, name: string, parts: KeyPart[]): Promise<void> {
+  const env = defaultTmuxEnv(process.env);
+  const target = tmuxTarget(space, name);
+  let afterText = false;
+  for (const p of parts) {
+    if ("key" in p && afterText) await new Promise((r) => setTimeout(r, 400));
+    const args = "literal" in p ? ["send-keys", "-t", target, "-l", p.literal] : ["send-keys", "-t", target, p.key];
+    const res = spawnSync("tmux", args, { stdio: ["ignore", "ignore", "pipe"], env, timeout: 5000 });
+    if (res.status !== 0) throw new Error(`paw: tmux refused ${"key" in p ? `key "${p.key}"` : "the text"} for "${name}" (${res.stderr?.toString().trim() || `exit ${res.status}`})`);
+    afterText = "literal" in p;
+    // Between keys: a short beat lets a menu redraw between arrow presses; after an ENTER, much
+    // longer — Enter usually opens something (`/model x` asks to confirm the switch), and a second
+    // key sent before that dialog has drawn lands on whatever was there before it.
+    if ("key" in p) await new Promise((r) => setTimeout(r, p.key === "Enter" ? 900 : 150));
+  }
 }
 
 export type InterruptOutcome =

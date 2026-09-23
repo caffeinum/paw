@@ -449,6 +449,52 @@ rmSync(unmapped, { recursive: true, force: true });
   assert(body.includes("paw.ts") && body.includes("tsx"), "launcher runs the TS composition root through tsx");
 }
 
+// ── paw type: typing into an agent's terminal (2026-09-23) ──────────────────────────────────────────
+{
+  const { parseTypeArgs, parseTyped, parseKeyNames, paneTail } = await import("../src/commands/type.js");
+  const { paneInput } = await import("../src/unstick.js");
+
+  // targeting: @name / folder / none → this folder; a bare word is TEXT
+  const t1 = parseTypeArgs(["/model", "claude-fable-5", "--space", "paw"]);
+  assert(t1.target === undefined && t1.words.join(" ") === "/model claude-fable-5" && t1.space === "paw", "type: no target → this folder's agent; `/model` is text, not a path; the injected --space is peeled off");
+  const t2 = parseTypeArgs(["@evals", "/compact"]);
+  assert(t2.target === "evals" && t2.words.join(" ") === "/compact", "type: @name targets an agent, like chat's sigil");
+  assert(parseTypeArgs([".", "hi"]).target === "." && parseTypeArgs(["~/x", "hi"]).target === "~/x", "type: a folder sigil targets that folder's agent");
+  const t3 = parseTypeArgs(["evals", "/compact"]);
+  assert(t3.target === undefined && t3.bareFirst === "evals", "type: a bare first word is text — and handed back so the command can ask `did you mean @evals?`");
+  assert(parseTypeArgs(["@a", "/model", "x", "--fast"]).words.join(" ") === "/model x --fast", "type: flags AFTER the text starts belong to the text");
+  assert(parseTypeArgs(["--", "-x"]).words.join(" ") === "-x", "type: `--` lets text start with a dash");
+  assert(parseTypeArgs(["--keys", "Down", "Enter"]).keys, "type: --keys");
+  let e = "";
+  try { parseTypeArgs(["@a"]); } catch (x) { e = (x as Error).message; }
+  assert(e.includes("usage"), "type: nothing to type → usage");
+
+  // line vs keys
+  const line = parseTyped("/model claude-fable-5");
+  assert(!line.exact && JSON.stringify(line.parts) === JSON.stringify([{ literal: "/model claude-fable-5" }, { key: "Enter" }]), "typed: plain text is a LINE — Enter appended");
+  const enter = parseTyped("\\n");
+  assert(enter.exact && JSON.stringify(enter.parts) === JSON.stringify([{ key: "Enter" }]), "typed: `\\n` alone is exactly one Enter (confirm a dialog) — nothing appended");
+  const two = parseTyped("2\\n");
+  assert(two.exact && JSON.stringify(two.parts) === JSON.stringify([{ literal: "2" }, { key: "Enter" }]), "typed: `2\\n` picks option 2");
+  const oneShot = parseTyped("/model claude-fable-5\\n\\n");
+  assert(JSON.stringify(oneShot.parts) === JSON.stringify([{ literal: "/model claude-fable-5" }, { key: "Enter" }, { key: "Enter" }]), "typed: `/model x\\n\\n` = the line, Enter, then Enter to confirm");
+  assert(JSON.stringify(parseTyped("\\e").parts) === JSON.stringify([{ key: "Escape" }]) && JSON.stringify(parseTyped("a\\\\nb").parts) === JSON.stringify([{ literal: "a\\nb" }, { key: "Enter" }]), "typed: `\\e` is Escape; `\\\\n` is a literal backslash-n");
+  assert(JSON.stringify(parseTyped("2\n").parts) === JSON.stringify([{ literal: "2" }, { key: "Enter" }]), "typed: a REAL newline ($'2\\n') is Enter too");
+  assert(JSON.stringify(parseKeyNames(["Down", "C-c", "Enter"])) === JSON.stringify([{ key: "Down" }, { key: "C-c" }, { key: "Enter" }]), "keys: tmux key names");
+  e = "";
+  try { parseKeyNames(["Dwon"]); } catch (x) { e = (x as Error).message; }
+  assert(e.includes('"Dwon"'), "keys: a typo'd key name fails loud instead of being typed as text");
+
+  // the input box, read from a real Claude Code pane (evals, captured 2026-09-23)
+  const rule = "─".repeat(60);
+  const idle = `  That thread is done.\n\n${rule}\n❯ \n\n${rule}\n  🐾 evals [main] (Opus 5) 430k/1m at 43% >\n  ⏵⏵ bypass permissions on`;
+  assert(JSON.stringify(paneInput(idle)) === JSON.stringify({ visible: true, text: "" }), "pane: an idle agent's box is visible and empty → safe to type");
+  assert(paneInput(idle.replace("❯ ", "❯ half written")).text === "half written", "pane: half-written input is seen — typing would append to it");
+  assert(!paneInput(`Do you want to proceed?\n❯ 1. Yes\n  2. No\nEsc to cancel`).visible, "pane: a numbered choice list is NOT the input box (no rules around it)");
+  assert(!paneInput("> quoted markdown\nplain").visible, "pane: a stray `>` line isn't the box");
+  assert(paneTail("a\n\n  b  \nc\n", 2).join("|") === "  b|c", "pane: tail = the last non-blank lines");
+}
+
 if (failures > 0) {
   console.error(`\n${failures} paw command check(s) failed`);
   process.exit(1);

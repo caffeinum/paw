@@ -28,6 +28,7 @@ import "../src/dm.js"; // self-registers the "dm" command (fire-and-forget DM as
 import "../src/mailbox.js"; // self-registers the "mailbox" daemon (persistent "you" presence beacon)
 import "../src/commands/stop.js"; // self-registers the "stop" command (folder-aware control-plane stop)
 import "../src/commands/unstick.js"; // self-registers "unstick" (Esc into a tmux agent stuck inside a tool; self-resolves the manager)
+import "../src/commands/type.js"; // self-registers "type" (type a line / keys into a tmux agent's terminal without attaching; self-resolves the manager)
 import "../src/commands/msg.js"; // self-registers the "msg" command (one-shot channel broadcast)
 import "../src/commands/ask.js"; // self-registers the "ask" command (one-shot role anycast)
 import "../src/commands/who.js"; // self-registers the "who" command (live roster)
