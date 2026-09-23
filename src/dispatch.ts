@@ -57,3 +57,29 @@ export function expandEqFlags(argv: string[]): string[] {
     return [a];
   });
 }
+
+/**
+ * One-letter short forms (`paw a` = `paw attach`), for the verbs typed dozens of times a day.
+ *
+ * An explicit TABLE, not prefix matching. A prefix that's unique today goes ambiguous the day a verb
+ * is added (`paw re` means release until someone adds `rescan`), so a script or a finger that worked
+ * yesterday breaks without anything having changed for it. And `a` isn't a unique prefix anyway —
+ * attach, adopt and ask all start with it — so the letters have to be chosen, and choosing is a table.
+ *
+ * Nothing destructive gets a letter: `rm`, `stop`, `restart`, `down` stay spelled out, one typo from
+ * each other being exactly the case a short form would make worse.
+ */
+export const SHORT_FORMS: Readonly<Record<string, string>> = {
+  a: "attach",
+  c: "chat",
+  s: "status",
+  l: "log",
+  d: "dm",
+  i: "inbox",
+  w: "web",
+};
+
+/** The real verb for `word` — a short form expanded, anything else returned as typed. */
+export function expandShortForm(word: string | undefined): string | undefined {
+  return word !== undefined && Object.hasOwn(SHORT_FORMS, word) ? SHORT_FORMS[word] : word;
+}

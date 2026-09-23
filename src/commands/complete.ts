@@ -19,6 +19,7 @@ import { basename, join } from "node:path";
 import { registry, type Command, type CompletionItem } from "@cotal-ai/core";
 import { listAgents } from "../addressing.js";
 import { resolveSpace } from "../lifecycle.js";
+import { expandShortForm } from "../dispatch.js";
 
 /** Verbs bin/paw.ts handles inline in its own dispatch (cotal/down/help) — NOT registry Commands
  *  (unlike `claude`, which self-registers in src/claude.ts and so is already in commandSurface()
@@ -76,7 +77,9 @@ function complete(argv: string[]): void {
     emit(commandSurface().map((c) => ({ value: c.name, description: c.summary })), "nofiles");
     return;
   }
-  const cmdName = argv[0];
+  // `paw a <TAB>` completes like `paw attach <TAB>`. The word under the cursor (argv.length === 1)
+  // is still being typed, so it's matched as a verb prefix, never expanded.
+  const cmdName = argv.length > 1 ? (expandShortForm(argv[0]) as string) : argv[0];
   const cmd = commandSurface().find((c) => c.name === cmdName);
   // Not (yet) a recognized command word: still offer command names (covers the case where the
   // shell hands us a lone partial word with no trailing empty cursor token).

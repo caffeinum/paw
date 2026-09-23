@@ -45,7 +45,7 @@ import "../src/commands/optimize.js"; // self-registers "optimize" (restart long
 import "../src/commands/top.js"; // self-registers "top" (per-agent memory/cpu/subprocesses + cleanup hints; read-only, self-ensures)
 import "../src/web.js"; // self-registers the "web" command (local http+ws UI over feed/transcript/status)
 import "../src/commands/complete.js"; // self-registers "completion" + the hidden "__complete" dispatcher (shell-completion)
-import { expandEqFlags, stripCotalNamespace, withDefaultSpace } from "../src/dispatch.js";
+import { expandEqFlags, expandShortForm, SHORT_FORMS, stripCotalNamespace, withDefaultSpace } from "../src/dispatch.js";
 import { cotaldViaTsx, ensure, resolveSpace, stop } from "../src/lifecycle.js";
 
 /** Commands that talk to the mesh — they need NATS reachable before they run. */
@@ -68,8 +68,11 @@ function help(): string {
     .all<Command>("command")
     .filter((c) => c.hidden !== true)
     .sort((a, b) => a.name.localeCompare(b.name));
-  const width = Math.max(...commands.map((c) => c.name.length));
-  const lines = commands.map((c) => `  ${c.name.padEnd(width)}  ${c.summary}`);
+  // The short form rides next to its verb (`attach, a`), so the help is where you learn them.
+  const short = Object.fromEntries(Object.entries(SHORT_FORMS).map(([k, v]) => [v, k]));
+  const label = (n: string) => (short[n] ? `${n}, ${short[n]}` : n);
+  const width = Math.max(...commands.map((c) => label(c.name).length));
+  const lines = commands.map((c) => `  ${label(c.name).padEnd(width)}  ${c.summary}`);
   return [
     "paw — warm claude agents on the cotal mesh, one per folder",
     "",
@@ -82,7 +85,10 @@ function help(): string {
   ].join("\n");
 }
 
-const raw = process.argv.slice(2);
+// A short form (`paw a` = `paw attach`) is expanded HERE, before anything reads the verb, so the
+// mesh/manager gating, --space injection and the command lookup all see the real name.
+const raw = [...process.argv.slice(2)];
+if (raw.length) raw[0] = expandShortForm(raw[0]) as string;
 const cmd = raw[0];
 
 try {

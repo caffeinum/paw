@@ -191,6 +191,23 @@ for (const name of ["stop", "msg", "ask", "who", "history", "watch", "runtime", 
   assert(withDefaultSpace(["who"], "paw").join(" ") === "who --space paw", "with no terminator it still appends, as before");
 }
 
+// ── short forms: `paw a` = `paw attach` (2026-09-23) ─────────────────────────────────────────────
+{
+  const { SHORT_FORMS, expandShortForm } = await import("../src/dispatch.js");
+  // Load every module that registers a verb a short form points at, so the check is against the REAL
+  // registry, not a list typed out here that could drift from it.
+  for (const m of ["chat", "open", "status", "log", "dm", "inbox", "web"]) await import(`../src/${m}.js`);
+  const verbs = new Set(registry.all<Command>("command").map((c) => c.name));
+  for (const [k, v] of Object.entries(SHORT_FORMS)) {
+    assert(verbs.has(v), `short: ${k} → ${v} is a registered command (a typo here would be a dead alias)`);
+    assert(!verbs.has(k), `short: "${k}" doesn't shadow a real command`);
+  }
+  for (const v of ["rm", "stop", "restart", "down", "rename"]) assert(!Object.values(SHORT_FORMS).includes(v), `short: destructive "${v}" gets no letter`);
+  assert(expandShortForm("a") === "attach" && expandShortForm("s") === "status", "short: a/s expand");
+  assert(expandShortForm("attach") === "attach" && expandShortForm("ab") === "ab" && expandShortForm(undefined) === undefined, "short: anything else passes through untouched (no prefix guessing)");
+  assert(expandShortForm("constructor") === "constructor" && expandShortForm("toString") === "toString", "short: Object prototype names are not aliases");
+}
+
 if (failures > 0) {
   console.error(`\n${failures} paw dispatch check(s) failed`);
   process.exit(1);
