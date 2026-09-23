@@ -1,0 +1,27 @@
+bin/paw.ts
+  s_ed25aaaf9c7e77::t_c071e7a6dfa711 31
+scripts/check-commands.ts
+  s_ed25aaaf9c7e77::t_c235c353abee49 452-497
+src/commands/type.ts
+  s_ed25aaaf9c7e77::t_619195187126f5 1-234
+src/commands/unstick.ts
+  s_ed25aaaf9c7e77::t_177ea05090634f 36-41,43,50,54,58-65
+src/unstick.ts
+  s_ed25aaaf9c7e77::t_c851418a718aa1 130-149,178-202
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "2a4739a0681add7a4d902364bd34ddf90ae5a490",
+  "prompts": {},
+  "sessions": {
+    "s_ed25aaaf9c7e77": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "90dd1251-161e-469a-96db-040d1e555035",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Aleksey Bykhun <theisease@gmail.com>"
+    }
+  }
+}
