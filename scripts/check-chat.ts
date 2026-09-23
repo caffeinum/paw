@@ -187,56 +187,126 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
   assert(!logBlockVisible("chat", tool, "you"), "dedup: the chat view prints no transcript at all");
 }
 
-// ── LogFollower: the transcript feed behind the logs views ──────────────────────────────────────
+// ── history / painter / follower: the redraw model behind the views (2026-09-23) ────────────────
 {
-  const { LogFollower } = await import("../src/chat-views.js");
+  const { LogFollower, History, Painter, entryVisible, CLEAR_ALL } = await import("../src/chat-views.js");
   type B = import("../src/transcript.js").Block;
+  type E = import("../src/chat-views.js").Entry;
   const render = (b: B) => (b.kind === "tool" ? `TOOL ${b.arg}` : b.kind === "reply" ? `REPLY→${b.to}` : b.kind === "wake" ? `WAKE←${b.from}` : b.kind);
   const tool = (arg: string): B => ({ kind: "tool", name: "Bash", display: "Bash", arg });
+
+  // entryVisible — each view is a filter over one history
+  const dmT: E = { kind: "chat", text: "hi", side: "peer", tight: false, from: "a" };
+  const dmO: E = { kind: "chat", text: "yo", side: "peer", tight: false, from: "other" };
+  const sys: E = { kind: "chat", text: "joined", side: "sys", tight: false };
+  const echo: E = { kind: "echo", text: "you → a> hello" };
+  const logA: E = { kind: "log", agent: "a", blocks: [tool("x")], backfill: false };
+  const logB: E = { kind: "log", agent: "b", blocks: [tool("y")], backfill: false };
+  const note: E = { kind: "chat", text: "(no logs for a)", side: "sys", tight: true, onlyLogs: true };
+  const vis = (e: E, v: "logs" | "both" | "chat", readable = true) => entryVisible(e, v, "a", readable);
+  assert([dmT, dmO, sys, echo].every((e) => vis(e, "chat")) && !vis(logA, "chat"), "visible: chat = the conversation, no transcript");
+  assert([dmT, dmO, sys, echo, logA].every((e) => vis(e, "both")), "visible: logs + chat = both");
+  assert(vis(logA, "logs") && !vis(logB, "logs") && !vis(logB, "both"), "visible: transcript blocks only for the CURRENT target");
+  assert(!vis(echo, "logs"), "visible: logs hides your typed lines (the `wake from you` blocks stand for them)");
+  const err: E = { kind: "chat", text: 'no peer named "nobody"', side: "sys", tight: false };
+  const chan: E = { kind: "chat", text: "#general x: hi", side: "peer", tight: false };
+  assert(vis(sys, "logs") && vis(err, "logs") && vis(chan, "logs"), "visible: logs KEEPS errors, receipts and channel posts — `@nobody hi` used to print nothing at all (critic, reproduced)");
+  assert(vis(dmO, "logs"), "visible: logs keeps ANOTHER agent's DM — it's in no transcript of the target's, hiding it would hide mail");
+  assert(!vis(dmT, "logs") && vis(dmT, "logs", false), "visible: the target's own DM shows in logs only if its transcript can't be read (else the ↩ you block is it)");
+  assert(vis(note, "logs") && vis(note, "both") && !vis(note, "chat"), "visible: a note about the logs stays out of the chat view");
+  assert(entryVisible({ kind: "banner", text: "B\n\n" }, "logs", undefined, false), "visible: the banner shows in every view");
+
+  // Painter — the live path and a redraw must produce the SAME text
+  const P = () => new Painter(render, "you");
+  const seq: E[] = [{ kind: "banner", text: "BANNER\n\n" }, echo, { kind: "chat", text: "⏳ waiting", side: "you", tight: false }, logA, dmT, { kind: "chat", text: "line1\nline2", side: "peer", tight: false }];
+  const live = P();
+  const liveText = seq.map((e) => live.paint(e, "both")).join("");
+  const again = P();
+  assert(seq.map((e) => again.paint(e, "both")).join("") === liveText, "painter: replaying the history reproduces the live screen exactly");
+  assert(liveText.includes("\n  line2"), "painter: continuation lines keep their indent (moved from emit unchanged)");
+  const both = P().paint({ kind: "log", agent: "a", blocks: [{ kind: "reply", to: "you", text: "x" }], backfill: false }, "both");
+  assert(both === "", "painter: a log batch the view filters to nothing prints NOTHING — not a stray blank line");
+  const back = P().paint({ kind: "log", agent: "a", blocks: [tool("z")], backfill: true }, "logs");
+  assert(back.includes("── a · earlier ──") && back.includes("TOOL z"), "painter: a backfill is labelled as earlier activity");
+  const pr = P();
+  pr.paint({ kind: "chat", text: "reply", side: "peer", tight: false }, "chat");
+  assert(pr.paint({ kind: "chat", text: "joined", side: "sys", tight: false }, "chat") === "joined\n", "painter: after a trailing blank, a side change adds no second blank");
+
+  // History — bounded, banner survives
+  const h = new History(3);
+  h.push({ kind: "banner", text: "B" });
+  for (let i = 0; i < 5; i++) h.push({ kind: "chat", text: `m${i}`, side: "sys", tight: true });
+  assert(h.entries.length === 3 && h.entries[0].kind === "banner" && (h.entries[2] as { text: string }).text === "m4", "history: capped, oldest non-banner dropped, the banner kept");
+
+  // LogFollower — hands over RAW blocks as log entries
   const mkSrc = (history: B[]) => {
     const queue: B[][] = [];
     return { src: { blocks: (n: number) => history.slice(-n), pull: () => queue.shift() ?? [] }, queue };
   };
-  const out: string[] = [];
-  const a = mkSrc([...Array.from({ length: 30 }, (_, i) => tool(`old${i}`)), { kind: "reply", to: "you", text: "x" }]);
+  const got: Array<{ agent: string; blocks: B[]; backfill: boolean }> = [];
+  const errs: string[] = [];
+  const a = mkSrc(Array.from({ length: 30 }, (_, i) => tool(`old${i}`)));
   const b = mkSrc([tool("b-history")]);
-  let opens = 0;
-  const f = new LogFollower((n) => { opens++; if (n === "a") return a.src; if (n === "b") return b.src; throw new Error(`paw: ${n} isn't registered to a folder`); }, (t) => out.push(t), render, "you", 5);
+  const f = new LogFollower((n) => { if (n === "a") return a.src; if (n === "b") return b.src; throw new Error(`paw: ${n} isn't registered to a folder`); }, (e) => got.push(e), (n, m) => errs.push(`${n}: ${m}`), 5);
+  assert(f.pump("a") === true && got.length === 1 && got[0].backfill && got[0].blocks.length === 5 && got[0].blocks[4].kind === "tool", "follow: a new target re-points (returns true) and backfills its last N blocks");
+  a.queue.push([tool("n1"), tool("n2")]);
+  assert(f.pump("a") === false && got.length === 2 && !got[1].backfill && got[1].blocks.length === 2, "follow: new blocks arrive as ONE entry, not re-pointed");
+  f.pump("a");
+  assert(got.length === 2, "follow: nothing new → no entry");
+  assert(f.pump("b") === true && got[2].agent === "b" && got[2].backfill, "follow: a target change is caught lazily and reported (the caller redraws)");
+  f.pump("ghost"); f.pump("ghost"); f.pump("ghost");
+  assert(errs.length === 1 && errs[0] === "ghost: ghost isn't registered to a folder", "follow: an unreadable target is reported ONCE, without the `paw:` prefix");
+  assert(!f.readable("ghost") && f.readable("a") && !f.readable(undefined), "follow: readable() says whether the target's trace exists — the logs view's fallback for its DMs");
+  f.pump(undefined);
+  assert(f.readable("ghost"), "follow: dropping the target forgets the failure, so it is retried later");
 
-  f.pump("a", "both");
-  assert(out.length === 1 && out[0].startsWith("── a · recent activity ──"), "follow: first pump backfills under a divider");
-  assert(out[0].split("\n").length === 6 && out[0].includes("TOOL old29") && !out[0].includes("TOOL old24"), "follow: the backfill is the last N VISIBLE blocks");
-  assert(!out[0].includes("REPLY→you"), "follow: the backfill respects the view's dedup (your own reply isn't doubled in logs + chat)");
+  assert(CLEAR_ALL === "\x1b[H\x1b[2J\x1b[3J", "redraw: clears the screen, THEN the scrollback (2J can push into scrollback)");
 
-  out.length = 0;
-  a.queue.push([tool("n1"), tool("n2"), { kind: "wake", from: "you", via: "dm" }]);
-  f.pump("a", "both");
-  assert(out.length === 1 && out[0] === "TOOL n1\nTOOL n2", "follow: new blocks print as ONE batch (one prompt redraw), deduped");
-  f.pump("a", "both");
-  assert(out.length === 1, "follow: nothing new → nothing printed");
+  // Critic findings, each pinned
+  const g = mkSrc([tool("g0")]);
+  const h2 = mkSrc([tool("h0")]);
+  const got2: Array<{ agent: string; blocks: B[]; backfill: boolean }> = [];
+  const f2 = new LogFollower((n) => (n === "g" ? g.src : h2.src), (e) => got2.push(e), () => {}, 5);
+  f2.pump("g"); f2.pump("h");
+  g.queue.push([tool("g-while-away")]);
+  f2.pump("g");
+  assert(got2.filter((e) => e.agent === "g" && e.backfill && !(e as { note?: string }).note).length === 1, "follow: A → B → A backfills A ONCE (it printed every line twice)");
+  const last = got2[got2.length - 1] as { agent: string; blocks: B[]; backfill: boolean; note?: string };
+  assert(last.agent === "g" && last.note === "while you were away" && (last.blocks[0] as { arg: string }).arg === "g-while-away", "follow: …and returning to A pulls only what it wrote while you were away, labelled");
 
-  a.queue.push([{ kind: "reply", to: "you", text: "y" }]);
-  f.pump("a", "logs");
-  assert(out[1] === "REPLY→you", "follow: the logs view prints the reply — it's the only place the answer shows there");
+  // A long absence is capped and says so, rather than a wall of old trace
+  const k = mkSrc([tool("k0")]);
+  const got3: Array<{ blocks: B[]; note?: string }> = [];
+  const f3 = new LogFollower((n) => (n === "k" ? k.src : h2.src), (e) => got3.push(e), () => {}, 5);
+  f3.pump("k"); f3.pump("h");
+  k.queue.push(Array.from({ length: 300 }, (_, i) => tool(`k${i}`)));
+  f3.pump("k");
+  const away = got3[got3.length - 1];
+  assert(away.blocks.length === 5 && (away.blocks[4] as { arg: string }).arg === "k299" && away.note === "while you were away · 295 older skipped (paw log for all)", "follow: 300 blocks missed → the last 5, and a label saying 295 were skipped");
 
-  out.length = 0;
-  f.pump("b", "both");
-  assert(out[0].startsWith("── b · recent activity ──") && out[0].includes("TOOL b-history"), "follow: a target change re-points with a fresh backfill (caught lazily, on the next pump)");
+  // An unreadable agent's note shows once per session, even across A → B → A
+  const errs3: string[] = [];
+  const f4 = new LogFollower((n) => { if (n === "bad") throw new Error("paw: nope"); return h2.src; }, () => {}, (n) => errs3.push(n), 5);
+  f4.pump("bad"); f4.pump("h"); f4.pump("bad"); f4.pump("h"); f4.pump("bad");
+  assert(errs3.length === 1, "follow: the '(no logs for x)' note is shown ONCE per session, not on every return");
+}
+{
+  const { dropSender, logBlockFor, displayWidth } = await import("../src/chat-views.js");
+  const drain = "2 messages:\n[DM from you] do this\n[DM from evals] heads up:\nline two of evals";
+  assert(dropSender(drain, "you") === "[DM from evals] heads up:\nline two of evals", "drain: drop YOUR messages (and the stale count), keep another agent's — multi-line bodies included");
+  assert(dropSender("1 message:\n[DM from you] only mine", "you") === "", "drain: nothing left → empty");
+  assert(dropSender("some format we don't know", "you") === "some format we don't know", "drain: an unknown format is left UNTOUCHED rather than risk eating mail");
+  const inc = (t: string) => ({ kind: "incoming", text: t }) as const;
+  assert(logBlockFor("both", inc("1 message:\n[DM from you] x"), "you") === undefined, "drain: in logs + chat, a drain of only YOUR messages disappears (they're your typed lines)");
+  assert((logBlockFor("both", inc(drain), "you") as { text: string }).text.startsWith("[DM from evals]"), "drain: in logs + chat, agent-to-agent mail to the target now shows (it was dropped whole)");
+  assert(logBlockFor("logs", inc(drain), "you")!.kind === "incoming" && (logBlockFor("logs", inc(drain), "you") as { text: string }).text === drain, "drain: the logs view shows the drain as-is");
+  const mixed = "4 messages:\n[DM from you] mine\n[#general research] channel post by research\n[#general you] my own post\n[DM from evals] theirs";
+  assert(dropSender(mixed, "you") === "[#general research] channel post by research\n[DM from evals] theirs", "drain: MIXED DM + channel items — yours dropped in both forms, theirs kept (the critic's second pass)");
+  assert(dropSender("1 message:\n[#general you] only my post", "you") === "", "drain: a channel-only drain is understood too (it used to pass through whole and double your post)");
+  const { fitWidth } = await import("../src/chat-views.js");
+  assert(fitWidth("日本語テキスト", 7) === "日本語…" && fitWidth("short", 20) === "short", "width: the hint is cut by display columns, not code units");
+  assert(displayWidth("abc") === 3 && displayWidth("日本語") === 6 && displayWidth("🐾") === 2 && displayWidth("\x1b") === 0, "width: CJK and emoji take two columns (the hint sat on wrapped CJK input)");
 
-  out.length = 0;
-  f.pump("ghost", "both");
-  f.pump("ghost", "both");
-  f.pump("ghost", "both");
-  assert(out.length === 1 && out[0].includes("no logs for ghost") && !out[0].includes("paw:"), "follow: an agent with no readable log is reported ONCE, not every second");
-
-  out.length = 0;
-  f.pump("a", "chat");
-  assert(out.length === 0, "follow: the chat view prints no transcript");
-  const before = opens;
-  f.pump("a", "both");
-  assert(opens === before + 1 && out[0].startsWith("── a"), "follow: coming back from the chat view re-opens and backfills, rather than dumping everything missed");
-  f.pump(undefined, "both");
-  assert(out.length === 1, "follow: no target → nothing to follow, silently");
 }
 
 rmSync(process.env.PAW_HOME as string, { recursive: true, force: true });

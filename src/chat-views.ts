@@ -7,10 +7,17 @@
  *   chat   — the conversation only (the default: what `paw chat` always was)
  * ←/→ move between them, ↓ opens the agent picker.
  *
- * APPEND, NOT REPAINT — the operator's choice, made knowing the cost. A full-screen repaint (the
- * alternate screen vim and less use) would kill the terminal's native scrollback: the wheel does
- * nothing and every line you scrolled past is gone. So a view changes what is PRINTED FROM NOW ON,
- * announced by a divider and a short backfill, and everything already on screen stays in scrollback.
+ * REDRAW ON SWITCH, APPEND IN BETWEEN (2026-09-23). Appending a divider and a backfill on a switch was
+ * built first and rejected in use — the operator: "switching between views looks bad, it just appends
+ * a few lines instead of showing different views". A switch now CLEARS THE SCREEN AND THE SCROLLBACK
+ * (`\e[2J\e[3J`) and reprints the new view's whole history, so scrolling up shows that view and only
+ * that view, and the terminal's native scroll and selection keep working. Chosen over the alternate
+ * screen (vim/htop), which would have taken native scroll away entirely. The cost, accepted: whatever
+ * was in the terminal before `paw chat` started is cleared on the first switch.
+ *
+ * That needs ONE ordered history of everything shown — `History` — and one `Painter` that turns an
+ * entry into terminal text, used by BOTH the live path and the reprint, so a redraw can never look
+ * different from what was printed as it happened.
  *
  * Pure: no tty, no readline, no mesh — chat.ts wires these in; check:chat asserts them.
  */
@@ -117,12 +124,52 @@ export function pickerWindow(total: number, picked: number, size: number): { sta
  * are for. `incoming` (the text an inbox drain printed) is the same messages a third time.
  */
 export function logBlockVisible(view: ChatView, b: Block, human: string): boolean {
-  if (view === "chat") return false;
-  if (view === "logs") return true;
-  if (b.kind === "reply" && b.to === human) return false;
-  if (b.kind === "wake" && b.from === human) return false;
-  if (b.kind === "incoming") return false;
-  return true;
+  return logBlockFor(view, b, human) !== undefined;
+}
+
+/**
+ * The block as the view shows it — or undefined when the view hides it. Same rules as
+ * logBlockVisible, plus one TRANSFORM: an inbox drain (`incoming`) in `both` keeps the messages from
+ * OTHER agents and drops only yours. Dropping the whole drain hid agent-to-agent mail to the target,
+ * which appears nowhere else (the critic's finding, 2026-09-23); your own messages are already on
+ * screen as the lines you typed.
+ */
+export function logBlockFor(view: ChatView, b: Block, human: string): Block | undefined {
+  if (view === "chat") return undefined;
+  if (view === "logs") return b;
+  if (b.kind === "reply" && b.to === human) return undefined;
+  if (b.kind === "wake" && b.from === human) return undefined;
+  if (b.kind === "incoming") {
+    const kept = dropSender(b.text, human);
+    return kept ? { kind: "incoming", text: kept } : undefined;
+  }
+  return b;
+}
+
+/**
+ * Remove one sender's messages from an inbox-drain body. The drain prints `N messages:` then each
+ * message under a header — `[DM from <name>]` for a DM, `[#<channel> <name>]` for a channel post; real
+ * drains MIX the two (measured: 224 DM headers and 33 channel headers in one transcript). Continuation
+ * lines belong to the header above them. Recognising only the DM form ate other agents' channel posts
+ * after one of yours and doubled your own (the critic's second pass, 2026-09-23).
+ *
+ * Anything that doesn't parse that way is returned UNTOUCHED: showing a drain twice is a smaller harm
+ * than silently eating mail from a format this doesn't know. Known limit: a message BODY line that
+ * itself begins with a header shape is read as a new message.
+ */
+export function dropSender(text: string, sender: string): string {
+  const lines = text.split("\n");
+  const header = /^\[(?:DM from ([^\]\s]+)|#[^\]\s]+ ([^\]\s]+))\]/;
+  if (!lines.some((l) => header.test(l))) return text;
+  const kept: string[] = [];
+  let keep = true;
+  for (const l of lines) {
+    if (/^\d+ messages?:$/.test(l.trim())) continue; // the count no longer matches what's shown
+    const m = l.match(header);
+    if (m) keep = (m[1] ?? m[2]) !== sender;
+    if (keep) kept.push(l);
+  }
+  return kept.join("\n").trim();
 }
 
 /** What the follower needs from a transcript — `paw log`'s AgentLog satisfies it. */
@@ -132,76 +179,278 @@ export interface FollowSource {
 }
 
 /**
- * Follows the targeted agent's transcript for the logs views.
+ * Everything `paw chat` has shown, in arrival order. A view is a FILTER over it (`entryVisible`), which
+ * is what lets a switch reprint a different view from the same record.
  *
- * Re-points itself LAZILY: the chat's target moves on many paths (@name, the picker, following a
- * reply, a respawn), and checking on each pump catches all of them without hooking any. A switch
- * backfills the new agent's recent activity under a divider; after that only new blocks print, one
- * `out` per batch — a turn can write thirty tool lines at once, and one write per line would be thirty
- * prompt redraws.
+ * - `banner` — the header, shown in every view.
+ * - `chat` — anything emit() printed. `from` is set for an inbound DM, and only then: the logs view
+ *   needs to know whose mail it is (see entryVisible). `onlyLogs` marks a note ABOUT the logs.
+ * - `echo` — a line you typed, exactly as readline echoed it. readline prints it, not emit, so without
+ *   recording it here your own half of the conversation would vanish on the first redraw.
+ * - `log` — a batch of the target's transcript blocks, stored RAW: which blocks show depends on the view
+ *   (logBlockVisible), so filtering happens at paint time, not at capture.
+ */
+export type Entry =
+  | { kind: "banner"; text: string }
+  | { kind: "chat"; text: string; side: "you" | "peer" | "sys"; tight: boolean; from?: string; onlyLogs?: boolean }
+  | { kind: "echo"; text: string }
+  | { kind: "log"; agent: string; blocks: Block[]; backfill: boolean; note?: string };
+
+/**
+ * Is this entry part of `view`, given who the chat is targeting?
  *
- * `open` throws when there is nothing to follow (no folder, a harness `paw log` can't read); that is
- * printed once, dimly, and not retried every second.
+ * `logs` is the target's transcript plus every conversation line EXCEPT what that transcript already
+ * says: the target's own DMs (the `↩ you` blocks — shown as DMs only if the transcript can't be read,
+ * or they'd be shown nowhere) and your typed lines (the `wake from you` blocks). `chat` is everything
+ * but the transcript; `both` is both. Transcript blocks only ever show for the CURRENT target — another agent's, captured before a
+ * switch, would be a trace of the wrong agent.
+ */
+export function entryVisible(e: Entry, view: ChatView, target: string | undefined, logsReadable: boolean): boolean {
+  switch (e.kind) {
+    case "banner":
+      return true;
+    case "log":
+      return showsLogs(view) && e.agent === target;
+    case "echo":
+      return showsChat(view);
+    case "chat":
+      if (e.onlyLogs) return showsLogs(view); // a note about the logs themselves ("no logs for x")
+      if (showsChat(view)) return true;
+      // The logs view hides ONLY what the transcript already shows: the target's own DMs (its `↩ you`
+      // blocks) — and even those only while that transcript can be read. Everything else stays:
+      // errors, receipts, "(now messaging x)", other agents' DMs, channel posts. Hiding all non-DM
+      // lines made `@nobody hi` in the logs view print NOTHING — no error, just a prompt (the critic
+      // reproduced it under a pty, 2026-09-23).
+      return !(e.from !== undefined && e.from === target && logsReadable);
+  }
+}
+
+/** The history's bound. A reprint writes all of it, and a day-long chat must not grow without limit. */
+export const HISTORY_CAP = 3000;
+
+export class History {
+  readonly entries: Entry[] = [];
+  constructor(private readonly cap = HISTORY_CAP) {}
+  push(e: Entry): void {
+    this.entries.push(e);
+    // Drop the oldest NON-banner entry: the banner is what a reprint opens with.
+    if (this.entries.length > this.cap) {
+      const i = this.entries.findIndex((x) => x.kind !== "banner");
+      this.entries.splice(i < 0 ? 0 : i, 1);
+    }
+  }
+}
+
+/**
+ * Entry → terminal text, carrying the "visual rounds" state across entries: a blank line where the
+ * SIDE changes (your message, its receipts and the reply group into one block), conversation closes
+ * with a trailing blank (the air before the prompt), system noise stays tight. Moved here unchanged
+ * from emit() so the live path and a reprint share one implementation — two copies of this is how a
+ * redraw ends up spaced differently from the live screen it replaces.
+ */
+export class Painter {
+  lastSide: "you" | "peer" | "sys" | "log" | undefined;
+  trailingBlank = false;
+
+  constructor(
+    private readonly render: (b: Block) => string,
+    private readonly human: string,
+    private readonly dim: (s: string) => string = (s) => s,
+    private readonly pad = "  ",
+  ) {}
+
+  reset(): void {
+    this.lastSide = undefined;
+    this.trailingBlank = false;
+  }
+
+  /** Text for `e` in `view`, or "" when it renders to nothing (a log batch the view filters empty). */
+  paint(e: Entry, view: ChatView): string {
+    switch (e.kind) {
+      case "banner":
+        this.lastSide = undefined;
+        this.trailingBlank = e.text.endsWith("\n\n");
+        return e.text;
+      case "echo":
+        // Your typed line takes the "you" side, and whatever blank preceded it is no longer adjacent —
+        // the same two facts the line handler has always asserted after readline echoes a line.
+        this.lastSide = "you";
+        this.trailingBlank = false;
+        return e.text + "\n";
+      case "chat":
+        return this.put(e.side, e.text.split("\n").join(`\n${this.pad}`), e.side === "sys" || e.tight);
+      case "log": {
+        const lines = e.blocks
+          .map((b) => logBlockFor(view, b, this.human))
+          .filter((b): b is Block => b !== undefined)
+          .map(this.render)
+          .filter(Boolean);
+        if (!lines.length) return "";
+        const head = e.backfill ? `${this.dim(`── ${e.agent} · ${e.note ?? "earlier"} ──`)}\n` : "";
+        return this.put("log", head + lines.join("\n"), true);
+      }
+    }
+  }
+
+  private put(side: "you" | "peer" | "sys" | "log", body: string, tight: boolean): string {
+    const gap = !this.trailingBlank && this.lastSide !== undefined && side !== this.lastSide ? "\n" : "";
+    const tail = tight ? "" : "\n";
+    this.trailingBlank = tail !== "";
+    this.lastSide = side;
+    return gap + body + "\n" + tail;
+  }
+}
+
+/**
+ * Follows the target's transcript and hands its blocks over RAW, as `log` entries — in every view,
+ * not only the logs ones: the history needs them in arrival order so a switch into `logs + chat` can
+ * interleave them with the conversation truthfully, instead of printing a backlog lump at the end.
+ *
+ * Re-points itself LAZILY: the target moves on many paths (@name, the picker, following a reply, a
+ * respawn), and checking on each pump catches all of them without hooking any. A new target starts
+ * with a backfill of its recent blocks. `open` throws when there is nothing to follow (no folder, a
+ * harness `paw log` can't read); that is reported once through `onError` and not retried every tick.
  */
 export class LogFollower {
   private name: string | undefined;
   private src: FollowSource | undefined;
-  private failed: string | undefined; // the target whose open() failed — don't retry it every tick
+  private failed: string | undefined;
+  /** Every agent followed this session, by name. Going back to one RESUMES its source — pulling what
+   *  it wrote in the meantime — instead of opening it fresh and backfilling again, which printed its
+   *  whole recent history a second time on A → B → A (the critic reproduced every line doubled). */
+  private readonly seen = new Map<string, FollowSource>();
+  /** Agents whose "(no logs …)" note has been shown — once per session, however often you go back. */
+  private readonly reported = new Set<string>();
 
   constructor(
     private readonly open: (name: string) => FollowSource,
-    private readonly out: (text: string) => void,
-    private readonly render: (b: Block) => string,
-    private readonly human: string,
-    private readonly backfill = 12,
+    private readonly out: (e: { kind: "log"; agent: string; blocks: Block[]; backfill: boolean; note?: string }) => void,
+    private readonly onError: (target: string, message: string) => void,
+    private readonly backfill = 40,
   ) {}
 
-  private text(view: ChatView, blocks: Block[]): string {
-    return blocks
-      .filter((b) => logBlockVisible(view, b, this.human))
-      .map(this.render)
-      .filter(Boolean)
-      .join("\n");
+  /** Can the CURRENT target's transcript be read? The logs view needs to know (see entryVisible). */
+  readable(target: string | undefined): boolean {
+    return !!target && target !== this.failed;
   }
 
-  /** Forget the current target (the chat view, or no target). */
   stop(): void {
     this.name = undefined;
     this.src = undefined;
     this.failed = undefined;
   }
 
-  /** Print whatever is new for `target` in `view`, re-pointing (with a backfill) if the target moved. */
-  pump(target: string | undefined, view: ChatView): void {
-    if (!showsLogs(view) || !target) return this.stop();
+  /** Capture whatever is new for `target`, re-pointing when the target moved.
+   *  Returns true when it re-pointed — the caller redraws, since the visible logs just changed agent. */
+  pump(target: string | undefined): boolean {
+    if (!target) {
+      this.stop();
+      return false;
+    }
     if (target !== this.name || !this.src) {
-      if (target === this.failed) return;
+      if (target === this.failed) return false;
       this.name = target;
+      const known = this.seen.get(target);
+      if (known) {
+        this.src = known;
+        this.resume(target);
+        return true;
+      }
       this.src = undefined;
       let recent: Block[];
       try {
         this.src = this.open(target);
-        recent = this.src.blocks(this.backfill * 4); // over-read: the view's dedup drops some
+        recent = this.src.blocks(this.backfill);
       } catch (e) {
         this.failed = target;
-        this.out(`(no logs for ${target} — ${(e as Error).message.replace(/^paw: /, "")})`);
-        return;
+        if (!this.reported.has(target)) {
+          this.reported.add(target);
+          this.onError(target, (e as Error).message.replace(/^paw: /, ""));
+        }
+        return true;
       }
       this.failed = undefined;
-      const shown = recent.filter((b) => logBlockVisible(view, b, this.human)).slice(-this.backfill);
-      this.out(`── ${target} · recent activity ──\n${this.text(view, shown) || "(nothing yet)"}`);
+      this.seen.set(target, this.src);
+      if (recent.length) this.out({ kind: "log", agent: target, blocks: recent, backfill: true });
+      return true;
+    }
+    this.drain(target, false);
+    return false;
+  }
+
+  /**
+   * Back to an agent followed earlier: pull what it wrote while you were on another. After a long
+   * absence that can be hundreds of blocks, so it is CAPPED at the backfill size and LABELLED — an
+   * unlabelled wall of old trace reads as the agent doing all that right now.
+   */
+  private resume(target: string): void {
+    let missed: Block[];
+    try {
+      missed = this.src!.pull();
+    } catch {
       return;
     }
+    if (!missed.length) return;
+    const skipped = Math.max(0, missed.length - this.backfill);
+    this.out({
+      kind: "log",
+      agent: target,
+      blocks: missed.slice(-this.backfill),
+      backfill: true,
+      note: skipped ? `while you were away · ${skipped} older skipped (paw log for all)` : "while you were away",
+    });
+  }
+
+  private drain(target: string, backfill: boolean): void {
     let fresh: Block[];
     try {
-      fresh = this.src.pull();
+      fresh = this.src!.pull();
     } catch {
       return; // mid-rotation or briefly unreadable — the next pump reads it
     }
-    const t = this.text(view, fresh);
-    if (t) this.out(t);
+    if (fresh.length) this.out({ kind: "log", agent: target, blocks: fresh, backfill });
   }
 }
+
+/** Cut `s` to at most `cols` display columns (see displayWidth). */
+export function fitWidth(s: string, cols: number): string {
+  if (displayWidth(s) <= cols) return s;
+  let out = "";
+  for (const ch of s) {
+    if (displayWidth(out + ch) > cols - 1) break;
+    out += ch;
+  }
+  return out + "…";
+}
+
+/**
+ * Terminal display width: wide East Asian characters and emoji take TWO columns. `.length` counted
+ * them as one, so a wrapped line of CJK input put the hint over the input's own last row.
+ */
+export function displayWidth(s: string): number {
+  let w = 0;
+  for (const ch of s) {
+    const cp = ch.codePointAt(0)!;
+    if (cp < 0x20 || (cp >= 0x7f && cp < 0xa0) || (cp >= 0x300 && cp < 0x370) || cp === 0x200d || (cp >= 0xfe00 && cp <= 0xfe0f)) continue;
+    const wide =
+      (cp >= 0x1100 && cp <= 0x115f) ||
+      (cp >= 0x2e80 && cp <= 0xa4cf) ||
+      (cp >= 0xac00 && cp <= 0xd7a3) ||
+      (cp >= 0xf900 && cp <= 0xfaff) ||
+      (cp >= 0xfe30 && cp <= 0xfe4f) ||
+      (cp >= 0xff00 && cp <= 0xff60) ||
+      (cp >= 0xffe0 && cp <= 0xffe6) ||
+      (cp >= 0x1f300 && cp <= 0x1faff) ||
+      (cp >= 0x20000 && cp <= 0x3fffd);
+    w += wide ? 2 : 1;
+  }
+  return w;
+}
+
+/** Clear the visible screen AND the scrollback, cursor home — the start of every redraw. 2J before 3J:
+ *  some terminals push the cleared screen INTO scrollback, which 3J then clears. Verified on tmux 3.5a
+ *  (history 191 → 0); Ghostty/cmux, iTerm2, Terminal.app, kitty and WezTerm implement 3J. */
+export const CLEAR_ALL = "\x1b[H\x1b[2J\x1b[3J";
 
 /**
  * A chunk that is nothing but vertical arrows, as the net selection step (↓ = +1, ↑ = −1), else undefined.

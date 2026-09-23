@@ -45,7 +45,7 @@ import { isAddressHandle, resolveAddress } from "./address.js";
 import { bashMessage, parseBang, runBash } from "./bash.js";
 import { withManagerControl } from "./control.js";
 import { advanceCursor } from "./cursor.js";
-import { arrowRun, hintFor, LogFollower, navKey, pickerWindow, showsChat, showsLogs, stepView, VIEW_LABEL, type ChatView } from "./chat-views.js";
+import { arrowRun, CLEAR_ALL, displayWidth, fitWidth, entryVisible, hintFor, History, LogFollower, navKey, Painter, type Entry, pickerWindow, showsChat, showsLogs, stepView, VIEW_LABEL, type ChatView } from "./chat-views.js";
 import { openAgentLog, renderBlock } from "./log.js";
 import {
   ATTACH_ICON,
@@ -437,39 +437,72 @@ async function chat(argv: string[]): Promise<void> {
   let rl: readline.Interface | undefined;
   let closing = false;
 
-  // Visual rounds: a conversation reads as turns, so the transcript should look like turns. Every
-  // emit declares which SIDE it belongs to, and a blank line is inserted whenever that side changes —
-  // so your message, the ⏳/✓ receipts, and the reply group into one block, with air before the next.
-  // Tracking the side (rather than blank-lining every line) keeps a burst of roster/presence noise
-  // tight instead of double-spacing it.
+  // Everything shown lives in ONE ordered history, and a view is a filter over it — that is what lets
+  // ←/→ REDRAW a different view instead of appending a few lines (src/chat-views.ts). The Painter holds
+  // the "visual rounds" spacing (a blank where the side changes, conversation closes with air before
+  // the prompt, system noise stays tight) and is shared by the live path and every redraw, so a redraw
+  // is spaced exactly like the screen it replaces.
   type Side = "you" | "peer" | "sys";
-  let lastSide: Side | undefined;
-  /** Whether the previous emit already ended in a blank line, so the next one doesn't add a second. */
-  let trailingBlank = false;
-  /** Continuation lines of a multi-line message line up under the first, so a 30-line reply reads as
-   *  one block instead of colliding with the left edge where the next prompt will be. */
-  const PAD = "  ";
-  function emit(s: string, side: Side = "sys", tight = false): void {
+  const history = new History();
+  const painter = new Painter(renderBlock, HUMAN_PEER, c.dim);
+  const follower = new LogFollower(
+    (name) => {
+      const folder = folderForName(space, name);
+      if (!folder) throw new Error(`${name} isn't registered to a folder`);
+      return openAgentLog(space, name, folder);
+    },
+    (e) => show(e),
+    // Only the logs views need to hear that there are no logs; the follower runs in every view, so a
+    // plain emit would put this note in the chat view of every agent paw can't read a trace for.
+    (name, msg) => show({ kind: "chat", text: c.dim(`(no logs for ${name} — ${msg})`), side: "sys", tight: true, onlyLogs: true }),
+  );
+  // Declared up here because emit() reads them to decide visibility, and emit can run during startup
+  // (the endpoint's error handler) before the code that first assigns them.
+  let curId: string | undefined;
+  let curName: string | undefined;
+
+  /** Record `e`; print it now if the current view shows it. Every screen write of conversation goes
+   *  through here — anything that bypassed it would be on screen once and gone after the next redraw. */
+  function show(e: Entry): void {
+    history.push(e);
+    if (!entryVisible(e, view, curName, follower.readable(curName))) return;
+    const text = painter.paint(e, view);
+    if (!text) return;
     // Once we're shutting down (EOF/SIGINT/quit) the readline is closed — touching it throws
     // ERR_USE_AFTER_CLOSE. Still write the message, just skip the prompt redraw.
+    // The picker draws its rows above the prompt and erases them by COUNT; a line printed in between
+    // made it erase the wrong rows and leave stale ones behind. Take it down, print, put it back.
+    if (picking) pickerHooks?.erase();
     if (rl && !closing) {
       readline.cursorTo(process.stdout, 0);
       // clearScreenDown, not clearLine: the hint line sits BELOW the prompt, and a message printed
       // over the prompt row would otherwise leave a stale hint stranded in the middle of the text.
       readline.clearScreenDown(process.stdout);
     }
-    const gap = !trailingBlank && lastSide !== undefined && side !== lastSide ? "\n" : "";
-    // Anything that belongs to the conversation closes with a blank line, because emit ALWAYS redraws
-    // the prompt right after — so this is the air before the prompt. `sys` noise (presence churn,
-    // roster listings) is excluded so a burst of it stays tight instead of double-spaced.
-    // `tight` suppresses the trailing blank for lines that are part of ONE growing thing — the held
-    // lines of a multi-line message. Without it each line became its own airy block and three typed
-    // lines sprawled over eight, which reads as three events rather than one message taking shape.
-    const tail = side === "sys" || tight ? "" : "\n";
-    trailingBlank = tail !== "";
-    lastSide = side;
-    process.stdout.write(gap + s.split("\n").join(`\n${PAD}`) + "\n" + tail);
-    if (rl && !closing) rl.prompt(true);
+    process.stdout.write(text);
+    if (picking && pickerHooks) pickerHooks.draw();
+    else if (rl && !closing) rl.prompt(true);
+  }
+
+  /**
+   * Print a conversation line. `side` drives the spacing (see Painter); `tight` keeps the held lines of
+   * one multi-line message together; `from` marks an INBOUND DM with its sender, which the logs view
+   * needs (another agent's DM stays visible there — hiding it would hide mail).
+   */
+  function emit(s: string, side: Side = "sys", tight = false, from?: string): void {
+    show({ kind: "chat", text: s, side, tight, ...(from !== undefined ? { from } : {}) });
+  }
+
+  /** Redraw the whole current view: clear the screen AND the scrollback, then reprint every entry the
+   *  view shows, through the same Painter the live path uses. */
+  function redraw(): void {
+    if (!rl || closing || !process.stdout.isTTY) return;
+    painter.reset();
+    const readable = follower.readable(curName);
+    let out = CLEAR_ALL;
+    for (const e of history.entries) if (entryVisible(e, view, curName, readable)) out += painter.paint(e, view);
+    process.stdout.write(out);
+    rl.prompt(true);
   }
 
   /** Which view the conversation is in (see src/chat-views.ts). `chat` is what `paw chat` always was,
@@ -478,6 +511,8 @@ async function chat(argv: string[]): Promise<void> {
   /** Whether the agent picker is open. Declared up here, not with the rest of the picker, because
    *  drawHint reads it and readline can prompt before the picker's section of this function runs. */
   let picking = false;
+  /** The picker's erase/draw, registered once its section of this function has run. */
+  let pickerHooks: { erase(): void; draw(): void } | undefined;
 
   /**
    * Draw the hint line UNDER the input: where ←/↓/→ go from here, and which view you're in.
@@ -495,13 +530,13 @@ async function chat(argv: string[]): Promise<void> {
     const hint = hintFor({ view, picking, hasTarget: !!curName, bang });
     const cols = process.stdout.columns || 80;
     const pos = rl.getCursorPos();
-    const shown = stripVTControlCharacters(promptFor()).length + rl.line.length;
+    const shown = displayWidth(stripVTControlCharacters(promptFor())) + displayWidth(rl.line);
     const lastRow = Math.floor(Math.max(0, shown - 1) / cols);
     const down = Math.max(0, lastRow - pos.rows);
     readline.moveCursor(process.stdout, 0, down);
     process.stdout.write("\n");
     readline.clearLine(process.stdout, 0);
-    process.stdout.write(c.dim(hint.length >= cols ? hint.slice(0, cols - 1) : hint));
+    process.stdout.write(c.dim(fitWidth(hint, cols - 1)));
     readline.moveCursor(process.stdout, 0, -(down + 1));
     readline.cursorTo(process.stdout, pos.cols);
   }
@@ -523,7 +558,6 @@ async function chat(argv: string[]): Promise<void> {
 
   // The current sticky DM target: plain lines go here once set. Undefined => broadcast mode (plain
   // lines multicast to #general). `@name` latches it; a positional target seeds it below.
-  let curId: string | undefined;
   /** Re-read the sticky target's id from the live roster just before a send — a presence event can be
    *  missed across a reconnect, and the roster is what `@name` resolves against anyway. */
   const refreshTarget = (): void => {
@@ -531,7 +565,6 @@ async function chat(argv: string[]): Promise<void> {
     const live = findPeer(curName);
     if (live && live.status !== "offline") curId = live.card.id;
   };
-  let curName: string | undefined;
 
   // If a target was named, resolve it now: spawn the folder's agent, or focus a live agent by name.
   // With no target we skip straight to broadcast mode — nothing is spawned.
@@ -674,16 +707,16 @@ async function chat(argv: string[]): Promise<void> {
   if (filter?.kind === "channel") {
     // A channel session says so plainly: what you see, and where a plain line goes, are both this one
     // channel — an operator who thinks they are in the global view would post to the wrong place.
-    process.stdout.write(
+    show({ kind: "banner", text:
       `\n${c.bold("  🐾 paw chat")}\n\n` +
         `     channel: ${c.cyan("#" + room)}  ${c.dim("(subscribed)")}\n` +
         `     showing: ${c.dim("this channel only — DMs stay in `paw inbox`")}\n\n` +
         `     ${c.dim(`type to post to #${room} · @name DMs someone · /who · /ps · /quit`)}\n\n`,
-    );
+    });
   } else if (curName) {
     const where = folder ? c.dim(folder) : c.dim("(by name)");
     const state = spawned ? c.green("spawned a new agent · starting up") : c.green("reusing live agent");
-    process.stdout.write(
+    show({ kind: "banner", text:
       `\n${c.bold("  🐾 paw chat")}\n\n` +
         `     agent:  ${c.cyan(curName)}  ${where}\n` +
         `     status: ${state}\n\n` +
@@ -693,20 +726,20 @@ async function chat(argv: string[]): Promise<void> {
         `     ${c.dim("alt+enter (or end a line with \\\\) for a new line, not a send")}\n` +
         `     ${c.dim("on an empty line: ← → switch logs · logs + chat · chat   ↓ picks an agent")}\n` +
         `     ${c.dim("/imgs · /noimg · /paste · /nopaste")}\n\n`,
-    );
+    });
   } else {
     const live = ep.getRoster().filter((p) => p.card.id !== me);
     const roster = live.length
       ? `${live.length} live: ${live.map((p) => c.cyan(p.card.name)).join(c.dim(" · "))}`
       : c.dim("no agents live yet — `paw chat <folder>` spawns one");
-    process.stdout.write(
+    show({ kind: "banner", text:
       `\n${c.bold("  🐾 paw chat")}  ${c.dim('— joined the mesh as "you"')}\n\n` +
         `     ${roster}\n\n` +
         `     ${c.dim(`type to broadcast to #${ROOM} · @name starts a sticky DM · !cmd runs in its folder · #channel · /who · /ps · /quit`)}\n` +
         `     ${c.dim("drag an image in for [Image #1] · paste multiple lines for [Pasted text #1]")}\n` +
         `     ${c.dim("alt+enter (or end a line with \\\\) for a new line, not a send")}\n` +
         `     ${c.dim("/imgs · /noimg · /paste · /nopaste")}\n\n`,
-    );
+    });
   }
 
   // Incoming traffic. meta.kind is the trustworthy "how was this addressed" signal (from the NATS
@@ -751,23 +784,22 @@ async function chat(argv: string[]): Promise<void> {
         took = c.dim(` (${Math.max(1, Math.round((Date.now() - awaiting.at) / 1000))}s)`);
         awaiting = undefined;
       }
-      const fromTarget = !!curName && from.toLowerCase() === curName.toLowerCase();
       // The transcript is written BEFORE the DM goes out (the tool call is recorded, then it runs), so
-      // the turn that produced this reply is already on disk. Print it first, or the reply would land
+      // the turn that produced this reply is already on disk. Capture it first, or the reply would land
       // above the work that led to it — the live feed is push, the transcript is a 1s poll.
-      if (showsLogs(view)) pumpLogs();
-      // In the logs-only view the target's reply is ALREADY on screen: it is the transcript's `↩ you`
-      // block that pumpLogs just printed. Printing the DM too would say it twice. Other agents' DMs
-      // still print — they appear nowhere in this agent's transcript.
-      if (fromTarget && !showsChat(view)) {
-        /* shown by the transcript's reply block */
-      } else if (fromTarget) emit(said(`${tag}${c.cyan(from)}${age}${took}${c.dim(":")}`, text), "peer");
-      else emit(said(`${tag}${c.magenta("(DM)")} ${c.bold(from)}${age}${took}${c.dim(":")}`, text), "peer");
+      pumpLogs();
+      // `from` tags it as inbound mail: the logs view keeps another agent's DM visible, and shows the
+      // target's as the transcript's `↩ you` block instead (entryVisible).
+      if (curName && from.toLowerCase() === curName.toLowerCase()) emit(said(`${tag}${c.cyan(from)}${age}${took}${c.dim(":")}`, text), "peer", false, from);
+      else emit(said(`${tag}${c.magenta("(DM)")} ${c.bold(from)}${age}${took}${c.dim(":")}`, text), "peer", false, from);
       advanceCursor(space, m.ts); // shown here = seen, so `paw inbox` won't re-surface it as new
       // Follow the conversation: an empty input means you have not started a reply to anyone else, so
       // the next thing you type is almost certainly for whoever just spoke. Announced, never silent —
       // a target that moves without saying so is how a line goes to the wrong agent.
-      if (!filter && shouldFollowDm({ from, curName, typed: rl?.line ?? "", held: held.length, staged: pending.length + pastes.length, historical: !!meta.historical, ageMs: Date.now() - m.ts })) {
+      // Not in a logs view either: there you are WATCHING one agent's trace, the same commitment a
+      // filtered session makes — following a DM there swapped the whole screen to another agent's log
+      // with no visible reason (the critic reproduced it: DM hidden, announcement hidden, trace changed).
+      if (!filter && view === "chat" && shouldFollowDm({ from, curName, typed: rl?.line ?? "", held: held.length, staged: pending.length + pastes.length, historical: !!meta.historical, ageMs: Date.now() - m.ts })) {
         const peer = findPeer(from);
         curId = peer?.card.id ?? m.from.id;
         curName = peer?.card.name ?? from;
@@ -1107,6 +1139,8 @@ async function chat(argv: string[]): Promise<void> {
     drawPicker();
   };
 
+  pickerHooks = { erase: erasePicker, draw: drawPicker };
+
   const openPicker = (): void => {
     if (!rl || closing || picking) return;
     if (!pickerAgents().length) {
@@ -1122,38 +1156,26 @@ async function chat(argv: string[]): Promise<void> {
   };
 
   // ── views: logs · logs + chat · chat (src/chat-views.ts) ────────────────────────────────────────
-  // The follower's backfill and batch output are dimmed by the caller only where they're chrome (the
-  // divider/notes); transcript lines keep paw log's own colouring so tool calls read as tool calls.
-  const follower = new LogFollower(
-    (name) => {
-      const folder = folderForName(space, name);
-      if (!folder) throw new Error(`${name} isn't registered to a folder`);
-      return openAgentLog(space, name, folder);
-    },
-    (text) => emit(text.startsWith("──") || text.startsWith("(") ? text.replace(/^[^\n]*/, (l) => c.dim(l)) : text),
-    renderBlock,
-    HUMAN_PEER,
-  );
-  let followTimer: ReturnType<typeof setInterval> | undefined;
+  /** Capture the target's new transcript blocks into the history (printing them if the view shows
+   *  logs). Runs every second whenever there is a target, in EVERY view — the history needs the blocks
+   *  in arrival order for a later switch into `logs + chat` to interleave them truthfully. */
   const pumpLogs = (): void => {
-    if (rl && !closing) follower.pump(curName, view);
+    if (!rl || closing) return;
+    // A re-point (the target changed) swaps which agent's logs are visible, so what's on screen in a
+    // logs view is now the wrong agent's trace — redraw rather than append the new one below it.
+    if (follower.pump(curName) && showsLogs(view)) redraw();
   };
+
+  // Follow the target's transcript from the start, in every view (pumpLogs says why). unref: a poll must
+  // never be the thing keeping a quit chat alive.
+  const followTimer = setInterval(pumpLogs, 1000);
+  followTimer.unref();
 
   function setView(next: ChatView): void {
     if (next === view) return;
     view = next;
-    emit(c.dim(`── view: ${VIEW_LABEL[view]} ──`));
-    if (showsLogs(view)) {
-      if (!followTimer) {
-        followTimer = setInterval(pumpLogs, 1000);
-        followTimer.unref(); // a poll must never be the thing keeping a quit chat alive
-      }
-      pumpLogs(); // backfill now, not a second from now
-    } else {
-      follower.stop();
-      if (followTimer) clearInterval(followTimer);
-      followTimer = undefined;
-    }
+    if (rl && !closing) follower.pump(curName); // capture anything pending first — and ONE redraw, not two
+    redraw();
   }
 
   /** ←/→ on an empty line. At an end of the strip it does nothing — the hint already shows no arrow
@@ -1371,6 +1393,10 @@ async function chat(argv: string[]): Promise<void> {
   }
 
   rl.on("line", async (rawLine) => {
+    // What readline just printed for this line — its prompt plus what you typed. Captured before
+    // anything below can change the prompt; recorded (once we know it's a real submission) so the
+    // line survives a view redraw.
+    const echoed = rl!.getPrompt() + rawLine;
     let raw = rawLine;
     // A paste in flight owns the next N line events — they're payload readline already consumed, not
     // things you submitted. This MUST precede the trim/empty check below: a blank line inside a paste
@@ -1425,10 +1451,12 @@ async function chat(argv: string[]): Promise<void> {
     // Typing IS taking the "you" side, even though readline echoed the line rather than emit printing
     // it — so claim it here. Without this the first receipt reads as a side CHANGE (peer→you) and
     // opens with a blank, putting air after your own message instead of after the ⏳ receipt.
-    lastSide = "you";
+    // (Recorded as an `echo` entry, so a redraw reproduces your line; the painter asserts both facts.)
+    if (typed) history.push({ kind: "echo", text: echoed });
+    painter.lastSide = "you";
     // And a blank line the previous round ended on is no longer adjacent once a prompt and your typed
     // line sit between it and the next output — leaving the flag set swallowed later gaps entirely.
-    trailingBlank = false;
+    painter.trailingBlank = false;
     if (!typed) {
       if (!closing) rl!.prompt();
       return;
