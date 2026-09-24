@@ -29,7 +29,7 @@ import { withFileLock, withFileLockAsync } from "./lock.js";
 import { liveSessionProcs, meshAgentSession } from "./named.js";
 import { isClaudeHarness, personaValue, readAgentType, readCwd, readResumeId, readShareTools, transcriptMtime } from "./session.js";
 import { defaultTmuxEnv, readRuntimeMarker } from "./lifecycle.js";
-import { nudgeTmuxConfirm } from "./native-attach.js";
+import { nudgeTmuxConfirm, tmuxSplit, tmuxSplitAdvice } from "./native-attach.js";
 import { HOST_RE } from "./url.js";
 import type { ManagerControl, ManagerReply } from "./control.js";
 
@@ -537,10 +537,30 @@ export function wirePrincipal(id: string): string {
  *  by re-splitting the id with `parsePrincipalKey` to find each agent's inbox lag. */
 export type PsRow = { name: string; status?: string; mesh?: string; id?: string; agent?: string; cwd?: string; model?: string };
 
-/** Is this ps row a REACHABLE agent (vs a zombie the manager still lists)? An exited process or a
- *  mesh-offline agent is dead; "absent" (mid-start) counts as alive so a legitimate boot isn't killed. */
+/** Presence an agent publishes only while its process runs: it answers, it is alive. */
+const LIVE_PRESENCE = new Set(["idle", "working", "waiting"]);
+
+/**
+ * Is this ps row a REACHABLE agent (vs a zombie the manager still lists)? "absent" (mid-start) counts
+ * as alive so a legitimate boot isn't killed.
+ *
+ * The agent's own mesh presence OUTRANKS the runtime's `status`. `status` is the manager's view of the
+ * terminal it launched the agent in, and that view can be wrong while the agent is fine: on
+ * 2026-09-23 the tmux socket file was replaced by a second tmux server, every `tmux` call reached the
+ * wrong server, and the manager marked 20 running agents `exited` — while each still published `idle`
+ * and wrote its transcript. Reading `exited` as dead made `paw attach evals` try to RESTART a live
+ * agent (the two-writer guard was the only thing that stopped a second copy), and `paw dm` would have
+ * done the same to any of the 20. A process that is heartbeating on the mesh is not dead.
+ */
 export function psRowAlive(row: PsRow): boolean {
+  if (LIVE_PRESENCE.has(row.mesh ?? "")) return true;
   return row.status !== "exited" && row.mesh !== "offline";
+}
+
+/** The manager says the agent's terminal is gone, but the agent is heartbeating on the mesh — the
+ *  terminal is unreachable, not the agent (see psRowAlive). Worth saying wherever an agent is shown. */
+export function terminalLost(row: PsRow): boolean {
+  return row.status === "exited" && LIVE_PRESENCE.has(row.mesh ?? "");
 }
 
 /** Decide how to bring `name` up given the manager's ps rows: "start" (unmanaged → spawn), "reuse"
@@ -666,6 +686,13 @@ export async function ensureAgentSpawned(
       if (foreign.length) {
         const pids = foreign.map((p) => p.pid).join(", ");
         const mesh = foreign.some((p) => p.mesh);
+        // The usual reason a MESH agent holds this session without the manager knowing: it is this very
+        // agent, running in a tmux server the socket no longer reaches (2026-09-23). Then no duplicate
+        // exists to find — say what actually happened and how to get the terminal back.
+        const split = mesh ? tmuxSplit(foreign.map((p) => p.pid)) : undefined;
+        if (split) {
+          throw new Error(`paw: "${opts.name}" is already running (pid ${pids}) — not starting a second copy.\n${tmuxSplitAdvice(opts.name, split)}`);
+        }
         throw new Error(
           `paw: won't start "${opts.name}" — its session ${pin} is still open in ${mesh ? "a running mesh agent" : "another process"} (pid ${pids}) ${Math.round(SESSION_RELEASE_MS / 1000)}s on; ` +
             `a second copy would put two writers on one transcript and can corrupt it.\n` +

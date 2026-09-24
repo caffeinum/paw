@@ -30,7 +30,8 @@ assert(meshStatus({ name: "x", mesh: "absent" }).text === "starting", "mesh:abse
 assert(meshStatus({ name: "x", mesh: "absent" }).live === true, "starting counts as live");
 assert(meshStatus({ name: "x", mesh: "offline", status: "running" }).text === "offline", "mesh:offline → offline");
 assert(meshStatus({ name: "x", mesh: "idle", status: "running" }).text === "idle", "mesh:idle → idle");
-assert(meshStatus({ name: "x", mesh: "idle", status: "exited" }).live === false, "exited process → not live");
+assert(meshStatus({ name: "x", mesh: "offline", status: "exited" }).live === false, "exited + offline → not live");
+assert(meshStatus({ name: "x", mesh: "idle", status: "exited" }).live === true, "exited but heartbeating idle → LIVE (the manager lost its terminal, not the agent)");
 
 // ---- ago: relative time (now injected) ----
 const NOW = 1_000_000_000_000;

@@ -237,7 +237,19 @@ assert(spawnAction([{ name: "paw", status: "exited", mesh: "offline" }], "paw") 
 assert(spawnAction([{ name: "other", status: "running", mesh: "idle" }], "paw") === "start", "spawnAction: only a DIFFERENT name is live => start ours");
 assert(psRowAlive({ name: "x", status: "running", mesh: "idle" }), "psRowAlive: running+idle is alive");
 assert(!psRowAlive({ name: "x", status: "running", mesh: "offline" }), "psRowAlive: mesh offline is dead");
-assert(!psRowAlive({ name: "x", status: "exited", mesh: "idle" }), "psRowAlive: exited is dead");
+assert(!psRowAlive({ name: "x", status: "exited", mesh: "offline" }), "psRowAlive: exited AND offline is dead");
+// 2026-09-23: a second tmux server took the socket; the manager marked 20 heartbeating agents `exited`
+// and `paw attach evals` tried to restart a live one. The agent's own presence outranks the runtime's view.
+assert(psRowAlive({ name: "x", status: "exited", mesh: "idle" }), "psRowAlive: exited but heartbeating `idle` is ALIVE — the terminal is lost, not the agent");
+assert(psRowAlive({ name: "x", status: "exited", mesh: "working" }), "psRowAlive: exited but `working` is alive");
+assert(spawnAction([{ name: "evals", status: "exited", mesh: "idle" }], "evals") === "reuse", "spawnAction: the split-tmux case REUSES (was: restart a live agent)");
+assert(!psRowAlive({ name: "x", status: "exited", mesh: "absent" }), "psRowAlive: exited and never reached the mesh is dead");
+{
+  const { tmuxSplitAdvice } = await import("../src/native-attach.js");
+  const adv = tmuxSplitAdvice("evals", { agentServer: 30256, socketServer: 57464, socketPath: "/private/tmp/tmux-501/default" });
+  assert(adv.includes("mv /private/tmp/tmux-501/default /private/tmp/tmux-501/default-57464 && kill -USR1 30256"), "split advice: moves the NEWER server's socket aside, then SIGUSR1s the one that lost its own");
+  assert(adv.includes("tmux -S /private/tmp/tmux-501/default-57464 attach"), "split advice: says how to still reach the newer server's agents");
+}
 // `absent` = mid-start, which the PURE gate still calls alive so a legitimate boot is never killed.
 // The BOUND lives in ensureAgentSpawned: an agent that never leaves `starting…` is a failed boot, not
 // a slow one, and reusing it forever is what made `paw chat research` unreachable for 13 hours with no

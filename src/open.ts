@@ -9,10 +9,11 @@
  * Self-registers an "open" command on import; bin/paw.ts ensures the mesh + manager are up first.
  */
 import { DEFAULT_SERVER, registry, type Command } from "@cotal-ai/core";
-import { attachTmux, tmuxSession } from "./native-attach.js";
+import { attachTmux, tmuxSession, tmuxSplit, tmuxSplitAdvice, tmuxWindowExists } from "./native-attach.js";
+import { liveSessionProcs } from "./named.js";
 import { existsSync } from "node:fs";
 import { assertUnambiguousTarget, canonicalDir, ensureAgentSpawned, folderForName, personaFilePath, registerInstance, resolveFolderAgent, setFolderName, type Kind } from "./addressing.js";
-import { readAgentType } from "./session.js";
+import { readAgentType, readResumeId } from "./session.js";
 import { withManagerControl } from "./control.js";
 import { readForeground } from "./foreground.js";
 import { isAddressHandle, resolveAddress } from "./address.js";
@@ -110,8 +111,13 @@ export async function attachResolved(
   // attach path is per-runtime. paw records what runtime it started the manager under; branch on it.
   const runtime = readRuntimeMarker(space);
 
+  // A window for this agent is already open in tmux → attach to IT, without asking the manager first.
+  // Attaching is about a terminal, and the terminal is right there; routing through the manager's
+  // liveness view first is how `paw attach evals` tried to RESTART a running agent when the manager's
+  // view was wrong (2026-09-23 — it had marked evals `exited` while evals heartbeated on the mesh).
+  const windowOpen = runtime === "tmux" && tmuxWindowExists(space, name);
   // One control round-trip: spawn if we resolved a folder. Attaching is per-runtime below.
-  if (folder) {
+  if (folder && !windowOpen) {
     await withManagerControl(space, DEFAULT_SERVER, (ctl) => ensureAgentSpawned(ctl, { space, name, cwd: folder, model, brief, kind }));
   }
 
@@ -121,7 +127,16 @@ export async function attachResolved(
     process.stdout.write(
       `attaching to ${name} (${harness}) in tmux — Ctrl-b d detaches (stays live) · \`paw stop ${name}\` ends it\n`,
     );
-    attachTmux(space, name);
+    try {
+      attachTmux(space, name);
+    } catch (e) {
+      // No window: before "is it running?", check whether it IS running — in a tmux server the socket
+      // no longer reaches (the 2026-09-23 split). Then the fix is a socket, not a restart.
+      const pin = readResumeId(personaFilePath(space, name));
+      const split = pin ? tmuxSplit(liveSessionProcs(pin).map((p) => p.pid)) : undefined;
+      if (split) throw new Error(`paw: can't attach "${name}" — its tmux window is unreachable, not gone.\n${tmuxSplitAdvice(name, split)}`);
+      throw e;
+    }
     return;
   }
   if (runtime === "cmux") {

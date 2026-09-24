@@ -11,7 +11,7 @@ import { JetStreamApiCodes, JetStreamApiError, jetstreamManager } from "@nats-io
 import { connect, credsAuthenticator } from "@nats-io/transport-node";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
-import { agentNamesForFolder, canonicalDir, controlCreds, listAgents, personaFilePath, psRowAlive, type PsRow, wirePrincipal } from "./addressing.js";
+import { agentNamesForFolder, canonicalDir, controlCreds, listAgents, personaFilePath, psRowAlive, terminalLost, type PsRow, wirePrincipal } from "./addressing.js";
 import { withManagerControl, type ManagerControl } from "./control.js";
 import { listForeground } from "./foreground.js";
 import { readRuntimeMarker, resolveSpace, type Runtime } from "./lifecycle.js";
@@ -69,6 +69,9 @@ export interface AgentStatus {
    *  cotal carries no token information at all — so it is claude-only and absent for a codex/opencode
    *  harness, an unpinned agent, or a session that hasn't taken a turn yet. */
   context?: ContextUsage;
+  /** The manager lists the agent's terminal as gone (`exited`) while the agent heartbeats on the mesh —
+   *  it's alive and answers DMs, but nothing can attach or type into it (see psRowAlive). */
+  terminalLost?: boolean;
   /** The manager lists this agent but paw's registry does NOT (a `cotal_spawn` / `paw cotal spawn`
    *  peer, 2026-09-09): shown so the dashboard agrees with the mesh, with the harness the manager
    *  reports. No folder, pin, transcript or revival — paw only ever knows what the ps row says. */
@@ -243,6 +246,7 @@ function note(r: AgentStatus, now: number): string {
   // the advice leaves a dangling verb ("limit. Run"), which reads like the line was truncated by
   // accident — so the orphan goes too.
   if (r.failure) return `⚠ ${r.failure.text.split(/\s+\/usage|\n/)[0].slice(0, 80).replace(/\s+(Run|Please run)$/, "")}`;
+  if (r.terminalLost) return `⚠ terminal lost — live on the mesh, but the manager can't reach its tmux window (\`paw attach ${r.name}\` explains)`;
   if (r.conflictPids.length) return `⚠ two writers (pid ${r.conflictPids.join(", ")})`;
   if (inboxStuck(r)) return `⚠ inbox stuck — ${inboxText(r.inbox)}, agent not consuming`;
   if (!r.pin && isClaudeHarness(r.harness)) return "⚠ no pin — resets on restart";
@@ -746,6 +750,7 @@ export async function collectStatus(space: string, ctl?: ManagerControl, opts: {
       durable: pin ? transcriptExists(pin) : false,
       activeMs: pin ? transcriptMtime(pin) : undefined,
       failure: pin ? transcriptFailure(pin) : undefined,
+      terminalLost: psRow ? terminalLost(psRow) : undefined,
       context: pin ? transcriptContext(pin) : undefined,
       // A standalone claude on the pin, OR more than one process of any kind (a leftover `<name>_2` mesh
       // duplicate resuming the same session) — both put two writers on one transcript.

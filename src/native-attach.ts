@@ -10,6 +10,60 @@
  */
 import { spawnSync, execFileSync } from "node:child_process";
 
+/**
+ * TWO tmux servers on one socket path (2026-09-23): the running server's socket FILE disappeared (cause
+ * not established), and the next `tmux new-session` — the manager spawning an agent — found no server
+ * there and started a SECOND one, which now owns the path. The first server keeps running every agent
+ * it had, but no `tmux` command can reach it: `paw attach` finds no window, the manager marks those
+ * agents `exited`, and they are in fact heartbeating on the mesh. tmux's own remedy is SIGUSR1, which
+ * makes a server recreate its socket — but the path is taken, so the newer server's socket has to be
+ * moved aside first. This returns what `paw attach` needs to say that, or undefined when it isn't the
+ * case (the agent really isn't in any tmux server, or it's in the one the socket reaches).
+ */
+export function tmuxSplit(holderPids: number[]): { agentServer: number; socketServer?: number; socketPath?: string } | undefined {
+  const sh = (cmd: string, args: string[]) => spawnSync(cmd, args, { stdio: ["ignore", "pipe", "ignore"], env: plainTmuxEnv() }).stdout?.toString().trim() ?? "";
+  let agentServer: number | undefined;
+  for (const pid of holderPids) {
+    const ppid = Number(sh("ps", ["-o", "ppid=", "-p", String(pid)]));
+    if (ppid > 1 && /^tmux\b/.test(sh("ps", ["-o", "command=", "-p", String(ppid)]))) {
+      agentServer = ppid;
+      break;
+    }
+  }
+  if (!agentServer) return undefined;
+  const socketServer = Number(sh("tmux", ["display-message", "-p", "#{pid}"])) || undefined;
+  if (socketServer === agentServer) return undefined;
+  const socketPath = sh("tmux", ["display-message", "-p", "#{socket_path}"]) || undefined;
+  return { agentServer, socketServer, socketPath };
+}
+
+/** Does the agent's window exist in the tmux server the socket reaches? Exact name match. */
+export function tmuxWindowExists(space: string, name: string): boolean {
+  const r = spawnSync("tmux", ["list-windows", "-t", `=${tmuxSession(space)}`, "-F", "#{window_name}"], { stdio: ["ignore", "pipe", "ignore"], env: plainTmuxEnv() });
+  return r.status === 0 && (r.stdout?.toString() ?? "").split("\n").includes(name);
+}
+
+/** The recovery, spelled out. Pure, so it's testable; paw never runs it itself — moving sockets under
+ *  a live fleet is the operator's call, and the command is short enough to read before running. */
+export function tmuxSplitAdvice(name: string, split: { agentServer: number; socketServer?: number; socketPath?: string }): string {
+  const path = split.socketPath ?? "/private/tmp/tmux-$(id -u)/default";
+  const aside = `${path}-${split.socketServer ?? "new"}`;
+  return [
+    `  ${name} is still running — in tmux server ${split.agentServer}, which lost its socket: the path now belongs to ${split.socketServer ? `server ${split.socketServer}` : "another server"}, so no tmux command (or paw) can reach it.`,
+    `  every agent that server runs is in the same state: live on the mesh, marked exited by the manager.`,
+    `  recover — move the newer server's socket aside, then have ${split.agentServer} recreate its own:`,
+    `    mv ${path} ${aside} && kill -USR1 ${split.agentServer}`,
+    `  agents started in the newer server stay reachable with:  tmux -S ${aside} attach`,
+  ].join("\n");
+}
+
+function plainTmuxEnv(): NodeJS.ProcessEnv {
+  const env = { ...process.env };
+  delete env.TMUX_TMPDIR;
+  delete env.TMUX;
+  return env;
+}
+
 /** The tmux session the manager opens per space (manager.ts: `cotal-${space}`). */
 export function tmuxSession(space: string): string {
   return `cotal-${space}`;
@@ -43,7 +97,7 @@ export function attachTmux(space: string, name: string): void {
   const sel = spawnSync("tmux", ["select-window", "-t", target], { stdio: ["ignore", "ignore", "pipe"], env });
   if (sel.status !== 0) {
     const why = sel.stderr?.toString().trim() || `no tmux window "${name}" in ${session}`;
-    throw new Error(`paw: can't find "${name}" in tmux (${why}). Is it running? \`paw ps\``);
+    throw new Error(`paw: can't find "${name}" in tmux (${why}). Is it running? \`paw status ${name}\``);
   }
 
   const res = spawnSync("tmux", [verb, "-t", session], { stdio: "inherit", env });

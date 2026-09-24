@@ -31,6 +31,8 @@ import { resolveSpace } from "../lifecycle.js";
 import { readResumeId } from "../session.js";
 import { readTurnState } from "../status.js";
 import { capturePane, paneInput, paneShowsPrompt, sendKeys, tmuxTarget, type KeyPart } from "../unstick.js";
+import { liveSessionProcs } from "../named.js";
+import { tmuxSplit, tmuxSplitAdvice } from "../native-attach.js";
 import { resolveStopName } from "./stop.js";
 import { requireTmuxPane } from "./unstick.js";
 
@@ -175,7 +177,12 @@ async function type(argv: string[]): Promise<void> {
   await requireTmuxPane(space, name, "type", "type into");
 
   const before = capturePane(space, name);
-  if (before === undefined) throw new Error(`paw: can't read "${name}"'s pane (${tmuxTarget(space, name)})`);
+  if (before === undefined) {
+    const pin0 = readResumeId(personaFilePath(space, name));
+    const split = pin0 ? tmuxSplit(liveSessionProcs(pin0).map((p) => p.pid)) : undefined;
+    if (split) throw new Error(`paw: can't type into "${name}" — its tmux window is unreachable, not gone.\n${tmuxSplitAdvice(name, split)}`);
+    throw new Error(`paw: can't read "${name}"'s pane (${tmuxTarget(space, name)})`);
+  }
   if (!exact && !args.force) {
     const box = paneInput(before);
     const refuse = (why: string): never => {
