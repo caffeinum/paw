@@ -534,6 +534,11 @@ async function chat(argv: string[]): Promise<void> {
     const lastRow = Math.floor(Math.max(0, shown - 1) / cols);
     const down = Math.max(0, lastRow - pos.rows);
     readline.moveCursor(process.stdout, 0, down);
+    // The input may have just WRAPPED onto the row the hint occupied, overwriting its start and leaving
+    // the rest ("…png mode · esc or backspace leaves", seen under a pty). readline writes characters, it
+    // doesn't clear to the end of the row — so clear what's right of the input's end before redrawing.
+    readline.cursorTo(process.stdout, shown % cols);
+    readline.clearLine(process.stdout, 1);
     process.stdout.write("\n");
     readline.clearLine(process.stdout, 0);
     process.stdout.write(c.dim(fitWidth(hint, cols - 1)));
@@ -1334,6 +1339,10 @@ async function chat(argv: string[]): Promise<void> {
       setImmediate(() => {
         if (closing || !rl) return;
         if (scanner.pasting || swallow) return; // mid-paste: a path INSIDE a paste isn't a drag
+        // In `!` command mode a path is an ARGUMENT to the shell, not an attachment. Swapping it for
+        // `[Image #1]` handed zsh `ESCALATE=1 [Image #1]` → "bad pattern: [Image" (operator screenshot,
+        // 2026-09-23) and staged a file nobody meant to send.
+        if (bang) return;
         const cur = rl.line;
         if (!cur || !cur.includes("/")) return; // cheap gate: no separator ⇒ no path ⇒ no stat calls
         const peeled = peelLine(cur, undefined, pending.length + 1);
