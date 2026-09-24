@@ -15,6 +15,8 @@
  *
  * Colors are tty-gated at the wrapper, so piping `paw log`/`paw chat` gives clean, ANSI-free text.
  */
+import { displayWidth, sliceWidth } from "./width.js";
+
 const tty = process.stdout.isTTY === true;
 const wrap = (code: string) => (s: string) => (tty ? `\x1b[${code}m${s}\x1b[0m` : s);
 const c = {
@@ -86,11 +88,11 @@ export function parseAlign(line: string | undefined): ("" | "left" | "center" | 
   return cells.map((x) => (x.startsWith(":") && x.endsWith(":") ? "center" : x.endsWith(":") ? "right" : x.startsWith(":") ? "left" : ""));
 }
 
-/** Printable width, ignoring the ANSI a cell picks up from {@link inlineMd}. Padding on `.length`
- *  would count the escape bytes and shift every styled cell — the classic table-alignment bug. */
+/** Printable width in terminal COLUMNS, ignoring the ANSI a cell picks up from {@link inlineMd}.
+ *  Padding on `.length` counted escape bytes (every styled cell shifted) and, the same bug again,
+ *  counted a ✅/❌ as one column when a terminal draws two — see src/width.ts. */
 export function visibleWidth(s: string): number {
-  // eslint-disable-next-line no-control-regex
-  return s.replace(/\u001b\[[0-9;]*m/g, "").length;
+  return displayWidth(s);
 }
 
 /**
@@ -128,14 +130,16 @@ export function fitWidths(natural: number[], budget: number, floor = 8): number[
  * is closed at the end of its line and reopened on the next, so the styling survives the break.
  */
 export function wrapCell(raw: string, width: number): string[] {
-  const plainLen = (x: string) => x.replace(/\*\*|`/g, "").length;
+  const plainLen = (x: string) => displayWidth(x.replace(/\*\*|`/g, ""));
   const lines: string[] = [];
   let cur = "";
   for (let word of raw.split(/\s+/).filter(Boolean)) {
     while (plainLen(word) > width) {
       if (cur) { lines.push(cur); cur = ""; }
-      lines.push(word.slice(0, width));
-      word = word.slice(width);
+      // Split by COLUMNS, not code units — a slice in the middle of a wide char's width would overrun.
+      const head = sliceWidth(word, width) || Array.from(word)[0];
+      lines.push(head);
+      word = word.slice(head.length);
     }
     if (!cur) cur = word;
     else if (plainLen(cur) + 1 + plainLen(word) <= width) cur += ` ${word}`;

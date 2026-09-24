@@ -118,6 +118,25 @@ assert(twoFences[0].includes("a") && twoFences[2].includes("c"), "both fenced bo
   assert(process.stdout.isTTY || renderMarkdown(wide, {}).length === 3, "no width (piped) → no wrapping");
 }
 
+// ── display width: emoji/CJK take two columns (the misaligned ✅/❌ table, 2026-09-23) ─────────────
+{
+  const { displayWidth, sliceWidth, fitWidth } = await import("../src/width.js");
+  for (const [str, want] of [["abc", 3], ["✅", 2], ["❌", 2], ["✓", 1], ["⚠️", 2], ["日本", 4], ["🐾", 2], ["👩‍💻", 2], ["\u001b[1mbold\u001b[0m", 4], ["e\u0301", 1]] as const) {
+    assert(displayWidth(str) === want, `width: ${JSON.stringify(str)} is ${want} column(s)`);
+  }
+  assert(sliceWidth("✅✅✅", 5) === "✅✅", "width: slicing never splits a wide character across the cut");
+  assert(fitWidth("日本語テキスト", 7) === "日本語…", "width: fit cuts by columns");
+  const md = [
+    "| service | official | webkit-cli |",
+    "|---|---|---|",
+    "| e2b | ✅ login (github) | ✅ login (google) ✅ create dialog, ❌ **blocked: no payment method** |",
+    "| google (idp) | ✅ your session | ✅ auth google (headed, password; **no passkeys**) |",
+  ].join("\n");
+  const rows = renderMarkdown(md, { width: 70 }).filter((l) => /[│├]/.test(l));
+  const widths = new Set(rows.map((l) => displayWidth(l)));
+  assert(rows.length > 4 && widths.size === 1, `table: every row (incl. wrapped ones with ✅/❌) is the same width in COLUMNS — got ${[...widths].join(", ")}`);
+}
+
 if (failures > 0) {
   console.error(`\n${failures} markdown check(s) failed`);
   process.exit(1);

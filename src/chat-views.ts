@@ -422,40 +422,9 @@ export class LogFollower {
   }
 }
 
-/** Cut `s` to at most `cols` display columns (see displayWidth). */
-export function fitWidth(s: string, cols: number): string {
-  if (displayWidth(s) <= cols) return s;
-  let out = "";
-  for (const ch of s) {
-    if (displayWidth(out + ch) > cols - 1) break;
-    out += ch;
-  }
-  return out + "…";
-}
-
-/**
- * Terminal display width: wide East Asian characters and emoji take TWO columns. `.length` counted
- * them as one, so a wrapped line of CJK input put the hint over the input's own last row.
- */
-export function displayWidth(s: string): number {
-  let w = 0;
-  for (const ch of s) {
-    const cp = ch.codePointAt(0)!;
-    if (cp < 0x20 || (cp >= 0x7f && cp < 0xa0) || (cp >= 0x300 && cp < 0x370) || cp === 0x200d || (cp >= 0xfe00 && cp <= 0xfe0f)) continue;
-    const wide =
-      (cp >= 0x1100 && cp <= 0x115f) ||
-      (cp >= 0x2e80 && cp <= 0xa4cf) ||
-      (cp >= 0xac00 && cp <= 0xd7a3) ||
-      (cp >= 0xf900 && cp <= 0xfaff) ||
-      (cp >= 0xfe30 && cp <= 0xfe4f) ||
-      (cp >= 0xff00 && cp <= 0xff60) ||
-      (cp >= 0xffe0 && cp <= 0xffe6) ||
-      (cp >= 0x1f300 && cp <= 0x1faff) ||
-      (cp >= 0x20000 && cp <= 0x3fffd);
-    w += wide ? 2 : 1;
-  }
-  return w;
-}
+/** Display width lives in src/width.ts (shared with the markdown tables and `paw status`); re-exported
+ *  here because the chat's hint line and its tests reach for it through this module. */
+export { displayWidth, fitWidth } from "./width.js";
 
 /** Clear the visible screen AND the scrollback, cursor home — the start of every redraw. 2J before 3J:
  *  some terminals push the cleared screen INTO scrollback, which 3J then clears. Verified on tmux 3.5a
