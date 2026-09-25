@@ -335,6 +335,15 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
 
 }
 
+// ── plain `paw chat` connects, never creates (operator, 2026-09-24) ─────────────────────────────────
+{
+  const { noAgentMessage } = await import("../src/chat.js");
+  const m = noAgentMessage("/Users/x/.paw/web/getslash.co", "@getslash.co", ["getslash-co", "evals", "queue"]);
+  assert(m.includes("paw chat --fresh @getslash.co") && m.includes("did you mean @getslash-co"), "no agent: points at --fresh AND at the registered name it looks like");
+  assert(noAgentMessage("/tmp/new", ".", ["evals"]).includes("`paw status` lists your agents"), "no agent: nothing close → points at paw status, no invented suggestion");
+  assert(!noAgentMessage("/tmp/q", "q", ["queue", "queue-ea"]).includes("did you mean"), "no agent: a 1-2 char token suggests nothing (it would match everything)");
+}
+
 rmSync(process.env.PAW_HOME as string, { recursive: true, force: true });
 
 if (failures > 0) {

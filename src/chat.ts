@@ -1,6 +1,6 @@
 /**
  * `paw chat [folder|name]` — the headline. Joins the mesh as a PERSISTENT human peer (named by
- * HUMAN_PEER), auto-spawns the agent for a folder if it isn't already live, and opens an interactive
+ * HUMAN_PEER), wakes the folder's REGISTERED agent if it isn't live (never creates one — that's --fresh), and opens an interactive
  * loop: what you type is direct-messaged to that agent, and its replies (and any other DMs) stream
  * back in real time. This is what closes the human↔agent loop that `paw dm` couldn't — `dm` is
  * fire-and-forget (a throwaway "send" peer that publishes and vanishes), so an agent had nowhere to
@@ -25,6 +25,7 @@ import {
   type PresenceStatus,
 } from "@cotal-ai/core";
 import {
+  agentNamesForFolder,
   assertUnambiguousTarget,
   canonicalDir,
   controlCreds,
@@ -43,6 +44,7 @@ import {
   type Kind,
 } from "./addressing.js";
 import { isAddressHandle, resolveAddress } from "./address.js";
+import { HOST_RE } from "./url.js";
 import { bashMessage, parseBang, runBash } from "./bash.js";
 import { withManagerControl } from "./control.js";
 import { advanceCursor } from "./cursor.js";
@@ -289,6 +291,31 @@ function parseArgs(argv: string[]): ChatArgs {
  * Returns the resolved folder + its freshly-registered name; the caller spawns it (ensureAgentSpawned
  * mints a fresh persona+pin for the new name) and drops into the REPL.
  */
+/**
+ * Plain `paw chat` CONNECTS; it never creates. A folder, URL or dotted name with no agent registered to
+ * it fails here, pointing at `--fresh` (the birth verb) and at registered names that look close.
+ *
+ * It used to mint one on the spot. That is how `paw chat @getslash.co` — a mistyped name for the
+ * operator's `getslash-co` — produced a brand-new agent in a scratch folder, received the image and
+ * the question meant for the real one, and looked like success (2026-09-24). Operator's call: "it
+ * should not auto-create agent at paw chat if not found". Waking a REGISTERED agent that is offline
+ * still works — that's resuming, not creating — and so does `--name`, an explicit ask for an extra.
+ */
+export function noAgentMessage(folder: string, typed: string, registered: string[]): string {
+  const token = typed.replace(/^@/, "").toLowerCase();
+  const key = token.replace(/[^a-z0-9]+/g, "");
+  const near = key.length >= 3 ? registered.filter((n) => n.toLowerCase().replace(/[^a-z0-9]+/g, "").includes(key)).slice(0, 5) : [];
+  return (
+    `paw: no agent for ${folder.replace(homedir(), "~")} — \`paw chat --fresh ${typed}\` creates one` +
+    (near.length ? `; did you mean ${near.map((n) => `@${n}`).join(", ")}?` : " (`paw status` lists your agents)")
+  );
+}
+
+function requireExistingAgent(space: string, folder: string, typed: string): void {
+  if (agentNamesForFolder(space, folder).length) return;
+  throw new Error(noAgentMessage(folder, typed, listAgents(space).map((a) => a.name)));
+}
+
 function freshTarget(space: string, target: string): { folder: string; name: string; brief?: string; kind?: Kind } {
   const addr = resolveAddress(target); // URL/web:/gh:/github:/repo@branch clones/creates; else a folder — throws clearly
   const folder = addr.cwd;
@@ -365,8 +392,14 @@ async function chat(argv: string[]): Promise<void> {
     if (addressed.mode !== "agent" && isAddressHandle(target)) {
       // A URL / web: / gh: / github: / <repo>@<branch> / bare host — resolveAddress clones/creates and
       // returns the cwd + kind + optional brief/name hint (all throw clearly on failure).
+      // A bare dotted word with no agent behind it is almost always a mistyped NAME — refuse BEFORE the
+      // resolver scaffolds a website folder for it (it would leave ~/.paw/web/<word> behind).
+      if (!nameFlag && HOST_RE.test(target) && !existsSync(target) && !registeredAgentFor(space, target)) {
+        throw new Error(noAgentMessage(target, target, listAgents(space).map((a) => a.name)));
+      }
       const addr = resolveAddress(target);
       folder = addr.cwd;
+      if (!nameFlag) requireExistingAgent(space, folder, target);
       // --name pins a 2nd+ EXTRA instance at the resolved folder (its own persona), overriding the address's
       // own name hint and the folder default; otherwise honour the hint, else mint the folder default.
       name = nameFlag
@@ -390,6 +423,7 @@ async function chat(argv: string[]): Promise<void> {
       }
       if (asFolder !== undefined) {
         folder = asFolder;
+        if (!nameFlag) requireExistingAgent(space, folder, target);
         // --name → register a 2nd+ EXTRA agent at this folder (its own persona); no --name → the folder default.
         name = nameFlag ? registerInstance(space, folder, nameFlag) : resolveFolderAgent(space, folder);
       } else {
@@ -1681,7 +1715,7 @@ const chatCommand: Command = {
   kind: "command",
   name: "chat",
   group: "Mesh",
-  summary: "chat with the agent for a folder (auto-spawns it); replies stream back live — --fresh births a NEW one",
+  summary: "chat with an EXISTING agent (by @name or folder; wakes it if offline); replies stream back live — --fresh creates a new one",
   usage: 'chat [<folder>|<name>|@<name>|#<channel>] [--only] [--all] [--name <n>] [--fresh]   (default: "." — this folder\'s agent; --all = every conversation, nothing preselected; --name pins a 2nd+ EXTRA agent at the folder; --fresh births a NEW default agent, fails loud if one already exists)',
   run: (a) => chat([...a.raw]),
 };
