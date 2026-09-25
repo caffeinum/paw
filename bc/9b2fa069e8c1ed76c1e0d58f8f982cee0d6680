@@ -1,0 +1,25 @@
+scripts/check-addressing.ts
+  s_ed25aaaf9c7e77::t_f30d9667c8941a 333-363
+src/address.ts
+  s_ed25aaaf9c7e77::t_c75d5d0ec9de47 19-20,48-49,66-70
+src/addressing.ts
+  s_ed25aaaf9c7e77::t_ce1acde2fc0137 135-159
+src/chat.ts
+  s_ed25aaaf9c7e77::t_f0c6b014c3e69f 34,316,354-365
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "bc9b2fa069e8c1ed76c1e0d58f8f982cee0d6680",
+  "prompts": {},
+  "sessions": {
+    "s_ed25aaaf9c7e77": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "90dd1251-161e-469a-96db-040d1e555035",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Aleksey Bykhun <theisease@gmail.com>"
+    }
+  }
+}
