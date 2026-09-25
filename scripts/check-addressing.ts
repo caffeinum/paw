@@ -330,3 +330,34 @@ function mkdir(parent: string, name: string): string {
   if (isNameHeldRefusal("unknown connector \"x\"") || isNameHeldRefusal(undefined)) throw new Error("isNameHeldRefusal: other refusals must not be retried");
   console.log("  ok  a hard-pinned name collision is recognised for retry; other refusals are not");
 }
+
+// ── registeredAgentFor: a dotted word you already have an agent for is THAT agent (2026-09-24) ─────
+{
+  const { registeredAgentFor, setFolderName: sfn, ensurePersonaFile: epf } = await import("../src/addressing.js");
+  const sp = "dotted";
+  const base = mkdtempSync(join(tmpdir(), "paw-dotted-"));
+  const site = join(base, "caffeinum", "getslash.co");
+  mkdirSync(site, { recursive: true });
+  const { name } = sfn(sp, site, "getslash-co");
+  epf(sp, name);
+  const byFolder = registeredAgentFor(sp, "getslash.co");
+  if (byFolder?.name !== "getslash-co" || byFolder.folder !== site) throw new Error(`registeredAgentFor: \`getslash.co\` must find the agent whose folder is CALLED that (got ${JSON.stringify(byFolder)})`);
+  if (registeredAgentFor(sp, "getslash-co")?.name !== "getslash-co") throw new Error("registeredAgentFor: the exact name resolves");
+  if (registeredAgentFor(sp, "unknown.example") !== undefined) throw new Error("registeredAgentFor: an unregistered dotted word is undefined — the caller may still treat it as a website");
+  // Two folders called `site.dev`, neither agent NAMED `site-dev` → the folder name alone is ambiguous.
+  const a = join(base, "a", "site.dev");
+  const b = join(base, "b", "site.dev");
+  mkdirSync(a, { recursive: true });
+  mkdirSync(b, { recursive: true });
+  epf(sp, sfn(sp, a, "site-alpha").name);
+  epf(sp, sfn(sp, b, "site-beta").name);
+  let threw = "";
+  try { registeredAgentFor(sp, "site.dev"); } catch (e) { threw = (e as Error).message; }
+  if (!threw.includes("say which")) throw new Error("registeredAgentFor: two folders by that basename (no name match) must fail loud, never pick one");
+  // A NAME match is specific and wins: the sanitized `getslash-co` is what paw names that folder's agent.
+  const twin = join(base, "other", "getslash.co");
+  mkdirSync(twin, { recursive: true });
+  epf(sp, sfn(sp, twin, "getslash-co-2").name);
+  if (registeredAgentFor(sp, "getslash.co")?.folder !== site) throw new Error("registeredAgentFor: the sanitized-name match beats a basename twin");
+  console.log("  ok  registeredAgentFor: a dotted word finds the agent by folder name / sanitized name; ambiguity fails loud; unknown stays undefined");
+}

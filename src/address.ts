@@ -16,7 +16,8 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { canonicalDir, type Kind } from "./addressing.js";
+import { canonicalDir, registeredAgentFor, type Kind } from "./addressing.js";
+import { resolveSpace } from "./lifecycle.js";
 import { listBranches, repoDir, resolveGithubTarget, parseGithubHandle } from "./github.js";
 import { HUMAN_PEER } from "./names.js";
 import { canonicalizeWebUrl, HOST_RE, routeUrl, type UrlPlan } from "./url.js";
@@ -44,7 +45,8 @@ function pawHome(): string {
  *   3. gh:<rest>             → github handle (thin alias; @branch → #branch)
  *   4. github:<rest>         → github handle (legacy long form)
  *   5. <repo>@<branch>       → an existing worktree
- *   6. bare host (has a dot, not a local path) → website
+ *   6. bare host (has a dot, not a local path) → an agent you already have by that name/folder
+ *      name (registeredAgentFor), else website
  *   7. else                  → a plain folder (default ".")
  */
 export function resolveAddress(target: string | undefined): ResolvedAddress {
@@ -61,6 +63,11 @@ export function resolveAddress(target: string | undefined): ResolvedAddress {
   if (target.startsWith("github:")) return resolveGithubAddress(target);
   if (target.includes("@")) return { cwd: resolveWorktreeFolder(target), kind: "worktree" };
   if (HOST_RE.test(target) && !existsSync(resolve(process.cwd(), target))) {
+    // A dotted word you already have an agent for is THAT agent, not a website to scaffold — see
+    // registeredAgentFor (`getslash.co` minted `getslash-co-a1d2ac` beside the real `getslash-co`).
+    // `web:getslash.co` still forces the website route.
+    const known = registeredAgentFor(resolveSpace(), target);
+    if (known) return { cwd: known.folder, kind: "folder" };
     return executeUrlPlan(routeUrl("https://" + target));
   }
   return { cwd: canonicalDir(target), kind: "folder" };

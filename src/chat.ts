@@ -31,6 +31,7 @@ import {
   ensureAgentSpawned,
   folderForName,
   folderToName,
+  registeredAgentFor,
   resolveFolderAgent,
   listAgents,
   lookupFolderName,
@@ -312,7 +313,7 @@ async function chat(argv: string[]): Promise<void> {
   // The sigil decides the MODE; the rest of setup then sees a plain target and behaves exactly as
   // before, so `@name` reuses the same spawn/resume path a bare name has always taken.
   const addressed = parseChatTarget(rawTarget);
-  const target = addressed.mode === "channel" ? undefined : addressed.target;
+  let target = addressed.mode === "channel" ? undefined : addressed.target;
   /** What this session shows, reads and (for a channel) sends to. Undefined = every conversation. */
   let filter: { kind: "agent" | "channel"; name: string } | undefined =
     addressed.mode === "agent" ? { kind: "agent", name: addressed.target! } : addressed.mode === "channel" ? { kind: "channel", name: addressed.target! } : undefined;
@@ -350,7 +351,18 @@ async function chat(argv: string[]): Promise<void> {
     folder = canonicalDir(".");
     name = registerInstance(space, folder, nameFlag);
   } else if (target !== undefined) {
-    if (isAddressHandle(target)) {
+    // `@name` names an AGENT — never a website to scaffold, never a folder. A dotted `@getslash.co`
+    // used to fall into the address resolver below and mint a new agent in ~/.paw/web/ (2026-09-24);
+    // resolve it against the registry instead, and fail loud if nothing is registered by that name.
+    if (addressed.mode === "agent" && !/^[A-Za-z0-9_-]+$/.test(target)) {
+      const known = registeredAgentFor(space, target);
+      if (!known) throw new Error(`paw: no agent "${target}" — @ names an agent (\`paw status\` lists them); for a website use \`paw chat web:${target}\``);
+      target = known.name;
+      // The filter was built from what was TYPED; it must compare against the real name, or every DM
+      // from `getslash-co` would be hidden as "not getslash.co".
+      if (filter?.kind === "agent") filter = { kind: "agent", name: known.name };
+    }
+    if (addressed.mode !== "agent" && isAddressHandle(target)) {
       // A URL / web: / gh: / github: / <repo>@<branch> / bare host — resolveAddress clones/creates and
       // returns the cwd + kind + optional brief/name hint (all throw clearly on failure).
       const addr = resolveAddress(target);

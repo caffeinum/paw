@@ -132,6 +132,31 @@ export function folderForName(space: string, name: string): string | undefined {
   return agentRecord(space, name)?.folder;
 }
 
+/**
+ * The registered agent a bare word NAMES, if any — checked BEFORE a dotted word is taken for a website.
+ *
+ * `paw chat @getslash.co` created a brand-new agent `getslash-co-a1d2ac` in a scratch folder
+ * `~/.paw/web/getslash.co`, because any dotted word that isn't a local path routes to "website" —
+ * while the operator's agent `getslash-co` sat at `~/Github/caffeinum/getslash.co`, a folder CALLED
+ * exactly what was typed (2026-09-24). The registry is consulted first now, three ways, most specific
+ * first: the name itself; the name it sanitizes to (`getslash.co` → `getslash-co`, since names can't
+ * hold dots); an agent whose FOLDER has that basename. Several folders by that basename → fail loud
+ * naming them, never a guess. Nothing matching → undefined, and the caller carries on as before.
+ */
+export function registeredAgentFor(space: string, token: string): { name: string; folder: string } | undefined {
+  for (const candidate of [token, sanitizeAgentName(token)]) {
+    const folder = folderForName(space, candidate);
+    if (folder) return { name: candidate, folder };
+  }
+  const folders = [...new Set(listAgents(space).map((a) => a.folder).filter((f) => basename(f) === token))];
+  if (folders.length > 1) {
+    throw new Error(`paw: "${token}" is the folder name of ${folders.length} registered agents' folders — say which: ${folders.join(", ")}`);
+  }
+  if (!folders.length) return undefined;
+  const name = lookupFolderName(space, folders[0]) ?? agentNamesForFolder(space, folders[0])[0];
+  return name ? { name, folder: folders[0] } : undefined;
+}
+
 /** Every agent NAME at `canonical`: its default (if any) first, then its extras. Named
  *  `agentNamesForFolder` (NOT `namesForFolder`, which named.ts already uses for SESSIONS). */
 export function agentNamesForFolder(space: string, canonical: string): string[] {
