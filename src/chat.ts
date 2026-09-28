@@ -963,7 +963,12 @@ async function chat(argv: string[]): Promise<void> {
   // would be the one that forgets.
   const basePrompt = rl.prompt.bind(rl);
   rl.prompt = (preserveCursor?: boolean) => {
-    basePrompt(preserveCursor);
+    // readline's prompt() WITHOUT `true` sets the cursor to column 0 of the line — harmless on an empty
+    // line, wrong on a line you're typing. The line handler is async: it awaits the `!cmd` (or the
+    // send) and re-prompts when that returns, by which time you've started the next message — so the
+    // caret jumped to its start and your next keys landed at the front of it (operator, 2026-09-28).
+    // Whatever called prompt(), text in the buffer keeps its caret.
+    basePrompt(preserveCursor || rl!.line.length > 0);
     drawHint();
   };
 
