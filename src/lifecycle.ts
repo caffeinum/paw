@@ -24,7 +24,7 @@ import {
   writeFileSync,
   readdirSync,
 } from "node:fs";
-import { homedir } from "node:os";
+import { homedir, loadavg } from "node:os";
 import { basename, dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -1252,6 +1252,23 @@ async function ensureManagerUp(space: string, server: string): Promise<void> {
     reapRuntimeUi(space, running, uiNames); // reap the OLD runtime's windows/tabs before revival re-creates them
     previous = running; // keep the known-good runtime so we can roll back if the new one won't boot
   } else {
+    // "Didn't answer ps" is NOT "no manager running". On a starved host (load 80+, deep swap) a live
+    // manager answers late, and this branch used to start a SECOND one beside it — the keeper alone
+    // runs ensure() every 60s. Two processes on one manager instance then fight over its lease and
+    // both keep serving (cotal 0.48–0.58: "Two processes claim manager instance X: stop one of them"),
+    // the registration epoch flips back and forth, and agents read "off mesh" — the recurring
+    // duplicate-manager incident, last seen 2026-10-02 (pid 3414 from Sep 28 vs 58625 from 14:20).
+    // A running manager is checked by SIGNATURE, as everywhere else here; it gets the full readiness
+    // window, and if it still doesn't answer paw fails loud instead of starting a competitor.
+    const running = managerProcs(space);
+    if (running.length) {
+      if (await managerReady(space, server, creds)) return;
+      throw new Error(
+        `paw: a manager for space "${space}" is running (pid ${running.join(", ")}) but not answering — NOT starting a ` +
+          `second one (two managers on one instance fight over its lease). The host may be starved (load ${loadavg()[0].toFixed(0)}). ` +
+          `\`paw restart\` replaces it if it's truly hung.`,
+      );
+    }
     // No manager running → we're about to START one fresh under `runtime`; cmux needs a surface.
     assertRuntimeUsable(runtime);
   }
