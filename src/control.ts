@@ -180,12 +180,31 @@ export class ManagerControl {
     return r;
   }
 
+  /**
+   * An epoch refusal is RETRIED once, here, after re-resolving: the manager re-registered (a broker
+   * reconnect bumps the epoch) between resolving and asking. cotal states the refused command "WAS NOT
+   * RUN - no effect of it exists" (SPEC 13.2), so a retry can't double anything — spawn included. It
+   * used to surface raw: `paw top` printed every agent "⚠ off mesh" and the next run failed outright
+   * with "manager isn't answering … bound to epoch 58" against a healthy manager (2026-10-02). Once
+   * only: a manager flapping between epochs should still fail loud, not spin.
+   */
+  private async dropRail(tier: Tier): Promise<void> {
+    const key = railKey(this.space, tier);
+    const p = this.rails.get(key);
+    this.rails.delete(key);
+    await p?.then((r) => r.nc.drain().catch(() => r.nc.close())).catch(() => {});
+  }
+
   /** Invoke an UNTARGETED command, translating a rail failure into paw's `{ok:false, error}`. */
-  private async invoke(tier: Tier, command: string, args: Record<string, unknown> | undefined, deadlineMs: number): Promise<ManagerReply> {
+  private async invoke(tier: Tier, command: string, args: Record<string, unknown> | undefined, deadlineMs: number, retried = false): Promise<ManagerReply> {
     try {
       const rail = await this.rail(tier);
-      const r = await invokeCommand(rail.nc, this.space, rail.service, command, args, { deadlineMs });
-      return this.noteRefusal(replyOf(r.reply));
+      const r = replyOf((await invokeCommand(rail.nc, this.space, rail.service, command, args, { deadlineMs })).reply);
+      if (!retried && !r.ok && r.error && isStaleRefusal(r.error)) {
+        await this.dropRail(tier);
+        return this.invoke(tier, command, args, deadlineMs, true);
+      }
+      return this.noteRefusal(r);
     } catch (e) {
       this.stale = true;
       return railFailure(e);
@@ -201,19 +220,31 @@ export class ManagerControl {
     name: string,
     args: Record<string, unknown> | undefined,
     deadlineMs: number,
+    retried = false,
   ): Promise<ManagerReply> {
     try {
       const rail = await this.rail(tier);
+      const retry = async (): Promise<ManagerReply> => {
+        await this.dropRail(tier);
+        return this.invokeTargeted(tier, command, name, args, deadlineMs, true);
+      };
       const info = await invokeCommand(rail.nc, this.space, rail.service, "inspect", { name }, { deadlineMs });
       if (info.reply.ok !== true) {
-        const r = this.noteRefusal(replyOf(info.reply));
+        const ir = replyOf(info.reply);
+        if (!retried && ir.error && isStaleRefusal(ir.error)) return retry(); // see dropRail
+        const r = this.noteRefusal(ir);
         return { ...r, error: `could not resolve "${name}": ${r.error ?? "inspect failed"}` };
       }
-      const r = await invokeCommand(rail.nc, this.space, rail.service, command, args, {
-        target: target(rail.caller, info.reply.data as AgentRow),
-        deadlineMs,
-      });
-      return this.noteRefusal(replyOf(r.reply));
+      const res = replyOf(
+        (
+          await invokeCommand(rail.nc, this.space, rail.service, command, args, {
+            target: target(rail.caller, info.reply.data as AgentRow),
+            deadlineMs,
+          })
+        ).reply,
+      );
+      if (!retried && !res.ok && res.error && isStaleRefusal(res.error)) return retry();
+      return this.noteRefusal(res);
     } catch (e) {
       this.stale = true;
       return railFailure(e);
