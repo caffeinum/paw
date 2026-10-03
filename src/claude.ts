@@ -32,6 +32,7 @@ import {
 import { claudeProjectDir, latestSession, pinClaudeArgs, pinSession } from "./adopt.js";
 import { withManagerControl } from "./control.js";
 import { pawConnector } from "./connector.js";
+import { pawCotalRoot } from "./cotal-root.js";
 import { confineAndTrustCwd } from "./cwd.js";
 import { attachResolved } from "./open.js";
 import { readForeground, registerForeground, unregisterForeground } from "./foreground.js";
@@ -255,7 +256,16 @@ export async function runClaude(argv: string[]): Promise<void> {
 
     // (d) Build the mesh-wired launch through paw's connector (mesh MCP, brief, permissions, the pin).
     const configPath = ensurePersonaFile(space, name, { kind: "folder" });
-    const spec = pawConnector.buildLaunch({ space, name, configPath, servers: server, model: resolveModel() });
+    //     workspaceRoot (cotal >= 0.5x): the claude connector refuses to emit events without one —
+    //     it is where the event write-ahead log lives; the manager passes its own root, so do we.
+    const spec = pawConnector.buildLaunch({
+      space,
+      name,
+      configPath,
+      servers: server,
+      model: resolveModel(),
+      workspaceRoot: pawCotalRoot(space),
+    });
 
     // (e) fresh KEEPS the connector's durable session pin; an explicit --continue/--resume strips it + wins.
     const finalArgs = finalLaunchArgs(intent.mode, spec.args, claudeArgs);

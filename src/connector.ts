@@ -159,9 +159,14 @@ function appendSystemPrompt(args: string[], text: string): void {
  * bin/paw.ts also aliases it to the manager's default agent type.
  */
 export const pawConnector: Connector = {
+  // Inherit EVERY capability the claude connector declares (eventChannel, requires, supportsPrompt,
+  // launchHint, …), then override only the name and the launch. cotal ≥0.5x refuses to start a seat
+  // whose connector lacks `eventChannel` ("does not publish an AG-UI event plane") — a hand-copied
+  // subset of fields silently dropped it, and every spawn failed. New upstream capabilities now
+  // travel without paw having to learn their names.
+  ...claudeConnector,
   kind: "connector",
   name: "paw",
-  pluginRoot: claudeConnector.pluginRoot,
   buildLaunch(opts: LaunchOpts): LaunchSpec {
     const spec = claudeConnector.buildLaunch(opts);
     const args = [...spec.args];

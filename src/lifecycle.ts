@@ -1152,6 +1152,56 @@ async function managerReady(space: string, server: string, creds: string | undef
   return false;
 }
 
+/** The slice of {@link ManagerControl} the pre-stop despawn needs (a seam for check:commands). */
+export interface DespawnRail {
+  ps(timeoutMs?: number): Promise<{ ok: boolean; data?: unknown; error?: string }>;
+  despawn(name: string, timeoutMs?: number): Promise<{ ok: boolean; error?: string }>;
+}
+
+/** Despawn every agent the manager lists, in parallel. Returns who went down and who didn't; never
+ *  throws on a per-agent refusal (one stuck seat must not keep the rest up), and says each failure
+ *  out loud — that agent will be SPARED by the signal that follows, i.e. left running unmanaged. */
+export async function despawnManagedAgents(
+  ctl: DespawnRail,
+  opts: { exitWaitMs?: number; isAlive?: (pid: number) => boolean } = {},
+): Promise<{ stopped: string[]; failed: string[]; lingering: number[] }> {
+  const ps = await ctl.ps(4000);
+  if (!ps.ok) throw new Error(`ps refused: ${ps.error ?? "no reason given"}`);
+  const rows = ((ps.data as Array<{ name?: unknown; pid?: unknown }>) ?? []).filter(
+    (r): r is { name: string; pid?: unknown } => typeof r.name === "string" && r.name.length > 0,
+  );
+  const names = rows.map((r) => r.name);
+  // A despawn reply is not exit proof (measured on 0.58: the seat is still alive for a moment after
+  // it). Wait on the pids the rows carry (pty; tmux rows carry none — its session reap follows), so
+  // a revival never starts a second writer on a session the old seat is still closing.
+  const pids = rows.map((r) => r.pid).filter((p): p is number => typeof p === "number" && p > 0);
+  const results = await Promise.all(
+    names.map(async (name) => {
+      try {
+        const r = await ctl.despawn(name, 30_000);
+        return { name, ok: r.ok, why: r.error };
+      } catch (e) {
+        return { name, ok: false, why: (e as Error).message };
+      }
+    }),
+  );
+  const stopped = results.filter((r) => r.ok).map((r) => r.name);
+  const failed = results.filter((r) => !r.ok);
+  if (stopped.length) console.error(`paw: despawned ${stopped.length} agent(s) before stopping the manager`);
+  for (const f of failed) {
+    console.error(`paw: ⚠ couldn't despawn ${f.name} (${f.why ?? "no reason given"}) — it may be left running unmanaged`);
+  }
+  const isAlive = opts.isAlive ?? alive;
+  const deadline = Date.now() + (opts.exitWaitMs ?? 20_000);
+  let lingering = pids.filter(isAlive);
+  while (lingering.length && Date.now() < deadline) {
+    await sleep(100);
+    lingering = lingering.filter(isAlive);
+  }
+  if (lingering.length) console.error(`paw: ⚠ seat pid(s) ${lingering.join(", ")} still running after despawn`);
+  return { stopped, failed: failed.map((f) => f.name), lingering };
+}
+
 /** Stop paw's manager for `space` by COMMAND SIGNATURE (all matching procs — there may be duplicates
  *  from prior churn, plus the tsx wrapper + re-exec child of each), wait until the signature clears
  *  (bounded ~4s), SIGKILL any straggler, then drop the now-secondary pid + runtime markers. A process
@@ -1160,10 +1210,22 @@ async function managerReady(space: string, server: string, creds: string | undef
 async function stopOwnedManager(space: string): Promise<void> {
   const pids = managerProcs(space);
   if (pids.length) {
+    // cotal ≥0.49: a SIGTERM'd manager SPARES its agents — they keep running, stay on the mesh, and
+    // the next manager does NOT adopt them (its ps is empty). paw's restart/down/switch all mean
+    // "the fleet goes down with the manager", and a spared agent is worse than a stopped one: paw
+    // can't see it in ps, and its two-writer guard then REFUSES to revive it (its session is held).
+    // So despawn every managed agent explicitly first. A manager that won't answer falls through to
+    // the signal (and the runtime UI reap) — the old behaviour.
+    await withManagerControl(space, DEFAULT_SERVER, (ctl) => despawnManagedAgents(ctl)).catch((e: Error) =>
+      console.error(`paw: couldn't despawn agents before stopping the manager (${e.message}) — signalling it anyway`),
+    );
     signalProcs(pids, "SIGTERM");
     console.error(`paw: stopped manager (pid ${pids.join(", ")})`);
   }
-  for (let i = 0; i < 40 && managerProcs(space).length > 0; i++) await sleep(100);
+  // 15s, not 4: a 0.5x manager's clean stop deregisters its service instance, releases its lease and
+  // drains its planes (~3s measured idle). SIGKILLing it mid-stop leaves a registration every later
+  // ps has to wait out.
+  for (let i = 0; i < 150 && managerProcs(space).length > 0; i++) await sleep(100);
   signalProcs(managerProcs(space), "SIGKILL"); // any straggler that ignored SIGTERM
   rmSync(managerPidPath(space), { force: true });
   rmSync(managerRuntimePath(space), { force: true });
