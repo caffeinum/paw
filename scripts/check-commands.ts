@@ -547,3 +547,47 @@ console.log("\nall paw command checks passed 🐾");
   ok(v({ folder: "/definitely/not/here" }).act === "stop", "folder deleted + idle past the window → stop (it can never come back there)");
   ok(v({ folder: "/definitely/not/here", busy: true }).act === "skip", "folder deleted but mid-turn → still left alone");
 }
+
+// despawnManagedAgents: cotal ≥0.49 SPARES agents on a manager SIGTERM (measured on 0.58: the seat
+// keeps running, stays on the mesh, the next manager's ps is empty, and paw's two-writer guard then
+// refuses to revive it). paw's restart/down/switch therefore despawn every listed agent FIRST.
+{
+  const { despawnManagedAgents } = await import("../src/lifecycle.js");
+  const asked: string[] = [];
+  const rail = {
+    ps: async () => ({ ok: true, data: [{ name: "a" }, { name: "b" }, { name: "stuck" }, { nope: 1 }] }),
+    despawn: async (name: string) => {
+      asked.push(name);
+      if (name === "stuck") return { ok: false, error: "seat did not exit" };
+      return { ok: true };
+    },
+  };
+  const r = await despawnManagedAgents(rail);
+  assert(asked.sort().join(",") === "a,b,stuck", "despawnManagedAgents: asks the manager to despawn EVERY ps row (nameless rows skipped)");
+  assert(r.stopped.sort().join(",") === "a,b" && r.failed.join(",") === "stuck", "despawnManagedAgents: one refusal doesn't stop the rest, and is reported by name");
+  // A despawn reply is not exit proof: the stop waits for the rows' pids to actually go.
+  let polls = 0;
+  const waited = await despawnManagedAgents(
+    { ps: async () => ({ ok: true, data: [{ name: "p", pid: 4242 }] }), despawn: async () => ({ ok: true }) },
+    { exitWaitMs: 5000, isAlive: () => ++polls < 4 },
+  );
+  assert(polls >= 4 && waited.lingering.length === 0, "despawnManagedAgents: waits for a despawned seat's pid to exit before returning");
+  const stuck = await despawnManagedAgents(
+    { ps: async () => ({ ok: true, data: [{ name: "p", pid: 4242 }] }), despawn: async () => ({ ok: true }) },
+    { exitWaitMs: 200, isAlive: () => true },
+  );
+  assert(stuck.lingering.join(",") === "4242", "despawnManagedAgents: a seat that won't exit is reported (bounded wait), not waited on forever");
+  let refused = false;
+  try {
+    await despawnManagedAgents({ ps: async () => ({ ok: false, error: "no responders" }), despawn: async () => ({ ok: true }) });
+  } catch {
+    refused = true;
+  }
+  assert(refused, "despawnManagedAgents: a refused ps THROWS (the caller logs it and signals anyway) — never 'nothing to stop'");
+  const src = (await import("node:fs")).readFileSync(join(import.meta.dirname, "..", "src", "lifecycle.ts"), "utf8");
+  const body = src.slice(src.indexOf("async function stopOwnedManager"));
+  assert(
+    body.indexOf("despawnManagedAgents(") !== -1 && body.indexOf("despawnManagedAgents(") < body.indexOf('signalProcs(pids, "SIGTERM")'),
+    "stopOwnedManager despawns the agents BEFORE it signals the manager",
+  );
+}

@@ -53,6 +53,17 @@ assert(
   readFileSync(join(import.meta.dirname, "..", "src", "claude.ts"), "utf8").includes("workspaceRoot: pawCotalRoot(space)"),
   "src/claude.ts passes workspaceRoot: pawCotalRoot(space) to buildLaunch",
 );
+// The manager refuses a seat whose connector has no `eventChannel` (cotal ≥0.5x). paw's connector must
+// carry every capability the claude connector declares, not a hand-copied subset.
+{
+  const { claudeConnector } = await import("@cotal-ai/connector-claude-code");
+  for (const k of Object.keys(claudeConnector) as Array<keyof typeof claudeConnector>) {
+    if (k === "name" || k === "buildLaunch") continue;
+    assert(pawConnector[k as keyof typeof pawConnector] === claudeConnector[k], `pawConnector inherits claude's \`${String(k)}\``);
+  }
+  assert(typeof pawConnector.eventChannel === "function", "pawConnector publishes the AG-UI event plane (eventChannel)");
+  assert(pawConnector.name === "paw", "pawConnector keeps its own name");
+}
 const spec = pawConnector.buildLaunch({ space: "demo", workspaceRoot: work, name: "tester" });
 assert(spec.env?.COTAL_WORKSPACE_ROOT === work, "the workspaceRoot reaches the seat env as COTAL_WORKSPACE_ROOT");
 const args = spec.args;
