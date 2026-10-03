@@ -1,0 +1,41 @@
+scripts/check-sleep.ts
+  s_ed25aaaf9c7e77::t_1cd7383a50cdaf 2,9-12,100-101,105,107-155
+scripts/e2e-sleep.ts
+  s_ed25aaaf9c7e77::t_620e0bd83292f7 15,23,96,99,102-107,126-144
+src/addressing.ts
+  s_ed25aaaf9c7e77::t_e1036849256e83 28,699-701,852-854
+src/control.ts
+  s_ed25aaaf9c7e77::t_be99f626cfeff5 99
+src/sleep-state.ts
+  s_ed25aaaf9c7e77::t_44acb1e8374fa9 3,9-10,13-18,30-31,38-43,46-48,66,69,74-76,81-88,90,94,101-131,133,137,144-168,195-198,200,203
+src/sleep.ts
+  s_ed25aaaf9c7e77::t_26baaedb6f294d 23-24,31-33,35,41-45,91,93-98,100,102,104,125-134,136,139-161,191-192,198,204-208,217,229-230,240-255,264-270,278-290,293-294,300,314,321,371,377,381-385,391-392,394,396-397,399,414
+src/status.ts
+  s_ed25aaaf9c7e77::t_6462f3953fc3bc 9,739
+src/sleep-host.ts
+  s_beda0ebdd4439a::t_fc21456cdaa9a9 10-15,17-20,25-26,28-41,44-45,61-94,97-100,125,128,134,162,171-188,191-192,194,196,198,200-209,214,221,223-230,232-235,239-242,249-257,268-289
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "3f4311aa69d4b272d05a1c09e30ece6db058a5c6",
+  "prompts": {},
+  "sessions": {
+    "s_beda0ebdd4439a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-a475510e47b543bfd",
+        "model": "unknown"
+      },
+      "human_author": "Aleksey Bykhun <theisease@gmail.com>"
+    },
+    "s_ed25aaaf9c7e77": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "90dd1251-161e-469a-96db-040d1e555035",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Aleksey Bykhun <theisease@gmail.com>"
+    }
+  }
+}
