@@ -1,0 +1,102 @@
+# cotal dependency
+
+Moved verbatim from CLAUDE.md (2026-10-02 split). Index: [CLAUDE.md](../../CLAUDE.md)
+
+## cotal 0.58
+
+**Bumped 0.48.1 → 0.58.0 on 2026-10-02** (5401a20; all `@cotal-ai/*` pinned EXACT and coherent).
+What broke and how paw answered (details in the commits — cacc445, 5401a20, 802ad0d):
+- **`eventChannel` is inherited, never hand-copied.** 0.5x refuses to start a seat whose connector
+  lacks `eventChannel` ("does not publish an AG-UI event plane"); `pawConnector` used a hand-copied
+  subset of the claude connector's fields, so every spawn failed. It now spreads `...claudeConnector`
+  and overrides only `name` + `buildLaunch` (src/connector.ts), so new upstream capabilities travel.
+  `check:launch` asserts every claude capability is inherited.
+- **`workspaceRoot` is required by `buildLaunch`** (the event write-ahead log's home). The manager
+  passes its own; paw's one direct caller, `paw claude --fg` (src/claude.ts), passes
+  `pawCotalRoot(space)`. A mesh-registry record must also carry `ts`.
+- **Since 0.49 a manager SIGTERM SPARES its agents** — they keep running and stay on the mesh, the
+  next manager's ps is empty (no adoption), and paw's two-writer guard then refuses to revive them.
+  `stopOwnedManager` therefore DESPAWNS every listed agent first (`despawnManagedAgents`, parallel,
+  failures named), waits on the rows' pids (a despawn reply is not exit proof), then signals; the
+  signal wait is 15s because a clean 0.5x stop deregisters its service instance.
+- **`ensure()` never switches the manager's runtime implicitly** (802ad0d): a plain `paw status`
+  during the cutover saw a stray pty manager beside the tmux one, read it as a mismatch and
+  "switched" — despawning all 25 agents. Now a mismatch only WARNS; only `paw runtime <r>` or an
+  explicit `PAW_RUNTIME` restarts into another runtime.
+- `paw sleep` landed on 0.58 — see [sleep.md](sleep.md).
+
+## cotal dependency
+**paw is on cotal 0.48.1 (bumped from 0.25.0 on 2026-09-08, operator's ask).** Type-clean and every
+hermetic suite green on the first try — and, as with 0.25, that proved NOTHING about the wire. What the
+isolated end-to-end (`PAW_HOME=/tmp/… PAW_SPACE=up048 PAW_RELEASE=dev paw dm <folder>`) found:
+- **Every seat exited 1 at launch, silently, under pty.** cotal ≥0.48 hands claude the agent-file
+  persona as `--append-system-prompt-file <tmp>`; paw merged its brief into `--append-system-prompt`;
+  claude refuses the two together ("Cannot use both …"). The pty runtime shows no output and the
+  manager logs only `seat reaped … exit code 1`; the answer came from running the connector's own
+  `LaunchSpec` under node-pty and reading claude's stderr. `appendSystemPrompt` (src/connector.ts) now
+  writes a paw-owned sibling `paw-brief.md` (persona + brief) beside cotal's temp file and re-points the
+  `-file` flag at it — never mutating cotal's file (cotal reaps it), never a second flag. `check:launch`.
+- **`subscribe` must be explicit** (since 0.33): an omitted `subscribe` meant `[general]` and now means
+  NO channel (and `saveAgentFile` refuses a persona without one). `GRANT_LINES` gained
+  `subscribe: [general]`; the per-key self-heal adds it to every existing persona on its next spawn, an
+  explicit narrower list is kept. Verified: a `#general` broadcast reached the 0.48 agent (CHANNELOK).
+- **Seats get a CONSTRUCTED env** (0.31): PATH/HOME/locale + COTAL_* + connector-declared credential
+  names, not the manager's ambient env. paw's connector env (BEADS_DIR, BEADS_ACTOR) still reaches the
+  seat — verified with `ps -E` — and the harness-marker leak is closed upstream too (paw keeps
+  `stripHarnessMarkers` for the daemons themselves).
+- Upstream fixes that retire paw workarounds' CAUSES (keep the workarounds, they're cheap): a stalled
+  presence-KV watch no longer sweeps the roster offline; the manager no longer exits over its lease;
+  channel join-backfill is pull-only (no replay storm); one spawn `--resume` flag preflighted per connector.
+- The control contract is unchanged in shape (`ps`/`inspect`/`spawn`/`despawn`/`attach`, `SPAWN_INPUT_SCHEMA`
+  still carries `agent`, `config`, `cwd`, `shareTools`) — `check:rail` answered from three processes.
+- Standalone `cotal` (get.cotal.ai launcher at `~/.local/bin/cotal`, `~/.local/share/cotal`) was
+  updated the same day via `cotal update --self` + `cotal update` (connectors reconciled to 0.48.1); a
+  stale bun-global `cotal-ai@0.15` that shadowed it on PATH (`~/.bun/bin/cotal`) was removed.
+- NOT verified live on 0.48: codex/opencode seats (`agent:` pin), cmux runtime, PAW_AUTH. The
+  isolated repro dir pattern (`/tmp/paw048`, tmux variant `/tmp/paw048t`) + `removeMesh` teardown is the
+  cheapest way to check a bump before cutting the live fleet over.
+
+**cotal was first PUBLISHED on npm** (`@cotal-ai/{core,cli,workspace,manager,connector-claude-code,tmux,cmux}`,
+currently **v0.11.3**), so paw consumes it via published semver deps (`^0.11.3`) — no local checkout
+required to install (`pnpm install` resolves straight from the registry; switched 2026-06-30).
+**0.11 owner+actor PRINCIPAL grammar (migrated 2026-07-13, the BIG breaking change):** a mesh identity is
+now a two-token `(owner, actor)` **principal**; `AgentCard.id` = its **dot-form `<owner>.<actor>`** (open
+mesh owner = `DEV_OWNER` = `"local"`, actor = the connection nkey) — and that dot-form is what `unicast`/DM
+address, `presence.card.id` carries, and `msg.from.id` stamps. **Tokens must be NATS-safe `[A-Za-z0-9_]`
+— NO dashes.** Three paw fixes: (1) `stableHumanId` minted a dashed `randomUUID()` → rejected on connect
+("invalid owner/actor token"); it now strips dashes (`humanIdToken`) and migrates a legacy `human.id` in
+place. (2) The manager's ps/start reply `id` is the **RAW nkey** (a durable/teardown key), NOT the wire
+principal — paw fed it straight to `unicast` → "not a valid recipient principal". `wirePrincipal(id)`
+(exported, addressing.ts; mirrors the manager's own `managedPrincipal`) derives the dot-form (`local.<nkey>`
+if dashless, pass-through if already dotted); `ensureAgentSpawned` returns it, and `paw status`'s inbox-lag
+`parsePrincipalKey(wirePrincipal(id))`s the ps nkey before `dmDurable(owner, actor)` (the durable is now
+`dm_<owner>-<actor>`, not `dm_<id>`). (3) DM delivery is JetStream in 0.11, and an agent publishes PRESENCE
+**before** it runs `ensureStreams`, so a send right after presence can hit a not-yet-created DM stream
+("jetstream is not enabled"). `paw dm` waits for presence on a fresh spawn (`readyId`) AND retries the send
+on that transient (`unicastResilient`, ~6× 800ms) — cold `paw dm <newfolder>` then delivers. Verified live
+on an isolated 0.11 mesh: cold spawn+dm → agent consumes → replies to the "you" inbox, status inbox-lag ✓.
+**0.9 control-plane breaking change:** the cred **profile** `"manager"` was removed from the `Profile`
+union and split into tiers — `"control-caller-privileged"` (ps/start) and `"control-caller-admin"`
+(stop/attach). The control SUBJECT names are unchanged (`CONTROL_PRIVILEGED === "manager"`,
+`CONTROL_ADMIN === "admin"`), so `requestControl(subject, …)` was untouched; only `mintCreds(…, profile)`
+in `controlCreds`/`probeCreds` moved to `"control-caller-privileged"`. CAVEAT: under `PAW_AUTH=1` a
+cross-agent stop (stopAgent/restartAgent) rides the privileged-tier cred on an ADMIN subject and is
+under-privileged; open mesh (default) is unaffected (undefined creds). Per-tier creds are the follow-up
+if the auth path ever needs stop. paw
+depends on cotal only as *packages* (code-level imports), NOT a binary it shells out to, and is **fully
+fork-free** — the upstream packages are vanilla. The last custom commit, `feat(cli): re-export lifecycle
+helpers` (re-exported `startMeshDetached`/`ensureManager`/`managerUp`), was **dropped 2026-06-29**: paw no
+longer imports any of them — `344afc0` (daemons-via-tsx-bin) made paw DRIVE cotal's registered
+`up`/`supervise` commands instead of importing the helpers, so the shim became dead code (recoverable at
+`86c1b68` if ever needed). The only cotal-`@cotal-ai/cli` import left is `runCli`, a stock upstream
+export — and since the endpoint-native rewrite it lives ONLY in `bin/cotald.ts` (the subprocess-only
+composition root); the `paw` CLI process imports just @cotal-ai/core (+ workspace via addressing). **PR #43 (per-agent cwd) MERGED** 2026-06-25 as `b786fcf`: the manager owns the cwd and passes it
+to `runtime.spawn`, NOT to the connector's `buildLaunch` (no `cwd` on `LaunchOpts`), so paw's cwd
+confine+pre-trust lives in `src/cwd.ts` (spawn site). Was paw's last reason to fork; now upstreamed.
+**v0.8 / #120** split the machine-local workstation layer (auth paths, mesh registry/target, preflight)
+out of `@cotal-ai/core` into a new package **`@cotal-ai/workspace`** — so paw depends on it too and imports
+`authDir`/`findCotalRoot`/`loadSpaceAuth`/`saveSpaceAuth` from there (`mintCreds`/`newIdentity`/
+`createSpaceAuth`/`isReachable` stay in core). **Caveat:** a just-published cotal version can be held for a
+few days by a registry min-release-age policy (supply-chain guard); it's an explicit dep, so override the
+gate or pin to the latest cotal release older than the window. The daemons still run node+tsx
+(`cotalViaTsx`) regardless of how cotal is installed.
