@@ -1,0 +1,37 @@
+scripts/e2e-sleep.ts
+  s_ed25aaaf9c7e77::t_a5771bca0621d6 24,152-169
+src/sleep-host.ts
+  s_ed25aaaf9c7e77::t_e020f2c4cf2c5c 26-27,34,45-59,234-235,238-239,273,282,307-325
+src/sleep.ts
+  s_ed25aaaf9c7e77::t_240538d6525234 33,254-260,300-310
+scripts/check-sleep.ts
+  s_beda0ebdd4439a::t_c3598c5e0ac064 157-192
+src/addressing.ts
+  s_beda0ebdd4439a::t_9bde86e323cae5 665,668,795-805
+src/commands/stop.ts
+  s_beda0ebdd4439a::t_fc59c632183372 24-32,111,113-114
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "65b4d3aa3114bfb238d4431f7668baa90bbdeafd",
+  "prompts": {},
+  "sessions": {
+    "s_beda0ebdd4439a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-a475510e47b543bfd",
+        "model": "unknown"
+      },
+      "human_author": "Aleksey Bykhun <theisease@gmail.com>"
+    },
+    "s_ed25aaaf9c7e77": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "90dd1251-161e-469a-96db-040d1e555035",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Aleksey Bykhun <theisease@gmail.com>"
+    }
+  }
+}
