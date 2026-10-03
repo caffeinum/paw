@@ -1,0 +1,31 @@
+docs/notes/agents.md
+  s_ed25aaaf9c7e77::t_c36df0b4ff838b 166,176-194
+docs/notes/upstream-trust-hook.md
+  s_ed25aaaf9c7e77::t_23b8c278316f25 1-29
+package.json
+  s_ed25aaaf9c7e77::t_788040082b7b11 44-45
+scripts/check-trust.ts
+  s_ed25aaaf9c7e77::t_db97aba1aba23b 1-192
+src/addressing.ts
+  s_ed25aaaf9c7e77::t_4ee79f7f9b4aa2 26,33,665,785-786,788-790,916-917,919-930,932,934-985
+src/cwd.ts
+  s_ed25aaaf9c7e77::t_9299cd28cf3587 91-95,97,118-140
+src/native-attach.ts
+  s_ed25aaaf9c7e77::t_3a5d5325d42dd7 112-143,145,147-149,151-160,162-180,182
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "a05f81d43632feb9dfb03e8d8716dd5c0b249ab6",
+  "prompts": {},
+  "sessions": {
+    "s_ed25aaaf9c7e77": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "90dd1251-161e-469a-96db-040d1e555035",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Aleksey Bykhun <theisease@gmail.com>"
+    }
+  }
+}
