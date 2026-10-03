@@ -1,0 +1,21 @@
+docs/notes/hub.md
+  s_ed25aaaf9c7e77::t_44f33f8ee8110b 34-37
+src/lifecycle.ts
+  s_ed25aaaf9c7e77::t_4a3d96929749f1 1478-1479,1481-1482
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "abe082173aa469900f46657a9f2db38696bd8894",
+  "prompts": {},
+  "sessions": {
+    "s_ed25aaaf9c7e77": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "90dd1251-161e-469a-96db-040d1e555035",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Aleksey Bykhun <theisease@gmail.com>"
+    }
+  }
+}
