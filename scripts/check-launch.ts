@@ -43,7 +43,18 @@ function throws(fn: () => unknown): boolean {
 
 // ---- connector: buildLaunch composition (the connector no longer takes a cwd as of cotal #43) ----
 const work = mkdtempSync(join(tmpdir(), "paw-work-"));
-const spec = pawConnector.buildLaunch({ space: "demo", name: "tester" });
+// cotal >= 0.5x: the claude connector refuses to emit events without a workspaceRoot (the event WAL's
+// home). The manager always passes one; paw's own direct caller (`paw claude --fg`) must too.
+assert(
+  throws(() => pawConnector.buildLaunch({ space: "demo", name: "noroot" })),
+  "buildLaunch without workspaceRoot throws (so `paw claude` must pass pawCotalRoot)",
+);
+assert(
+  readFileSync(join(import.meta.dirname, "..", "src", "claude.ts"), "utf8").includes("workspaceRoot: pawCotalRoot(space)"),
+  "src/claude.ts passes workspaceRoot: pawCotalRoot(space) to buildLaunch",
+);
+const spec = pawConnector.buildLaunch({ space: "demo", workspaceRoot: work, name: "tester" });
+assert(spec.env?.COTAL_WORKSPACE_ROOT === work, "the workspaceRoot reaches the seat env as COTAL_WORKSPACE_ROOT");
 const args = spec.args;
 const joined = args.join(" ");
 const appendIdx = args.indexOf("--append-system-prompt");
@@ -70,7 +81,7 @@ assert(spec.env?.COTAL_NAME === "tester", "COTAL_NAME passed through");
 {
   const persona = join(work, "persona.md");
   writeFileSync(persona, "---\nname: filed\nsubscribe: [general]\nallowSubscribe: [\">\"]\nallowPublish: [\">\"]\n---\nI am the persona body.\n");
-  const withFile = pawConnector.buildLaunch({ space: "demo", name: "filed", configPath: persona }).args;
+  const withFile = pawConnector.buildLaunch({ space: "demo", workspaceRoot: work, name: "filed", configPath: persona }).args;
   const fileIdx = withFile.indexOf("--append-system-prompt-file");
   assert(fileIdx !== -1, "persona launch: cotal emits --append-system-prompt-file");
   assert(withFile.indexOf("--append-system-prompt") === -1, "persona launch: paw adds NO inline --append-system-prompt beside the file flag");
@@ -80,12 +91,12 @@ assert(spec.env?.COTAL_NAME === "tester", "COTAL_NAME passed through");
 
 // PAW_PERMISSION overrides (connector reads it from env; no cwd involved).
 process.env.PAW_PERMISSION = "lol";
-assert(throws(() => pawConnector.buildLaunch({ space: "demo", name: "bad" })), "PAW_PERMISSION with an unknown mode throws");
+assert(throws(() => pawConnector.buildLaunch({ space: "demo", workspaceRoot: work, name: "bad" })), "PAW_PERMISSION with an unknown mode throws");
 process.env.PAW_PERMISSION = "plan";
-const spec2 = pawConnector.buildLaunch({ space: "demo", name: "t2" });
+const spec2 = pawConnector.buildLaunch({ space: "demo", workspaceRoot: work, name: "t2" });
 assert(spec2.args[spec2.args.indexOf("--permission-mode") + 1] === "plan", "PAW_PERMISSION overrides the permission mode");
 process.env.PAW_PERMISSION = "default";
-const spec3 = pawConnector.buildLaunch({ space: "demo", name: "t3" });
+const spec3 = pawConnector.buildLaunch({ space: "demo", workspaceRoot: work, name: "t3" });
 assert(spec3.args.indexOf("--permission-mode") === -1, "PAW_PERMISSION=default emits no permission flag");
 delete process.env.PAW_PERMISSION;
 
@@ -150,7 +161,7 @@ assert(throws(() => readResumeId(agentFile)), "readResumeId throws on a YAML blo
 // dir, so transcriptExists scans an empty projects tree until we plant one.) ----
 const pinId = "11111111-2222-3333-4444-555555555555";
 writeFileSync(agentFile, `---\nname: pin\nresume: ${pinId}\n---\nbody\n`);
-const firstBoot = pawConnector.buildLaunch({ space: "demo", name: "pin", configPath: agentFile }).args;
+const firstBoot = pawConnector.buildLaunch({ space: "demo", workspaceRoot: work, name: "pin", configPath: agentFile }).args;
 assert(
   firstBoot.indexOf("--session-id") !== -1 && firstBoot[firstBoot.indexOf("--session-id") + 1] === pinId,
   "first boot creates the session AT the pinned id (--session-id) so it can be resumed later",
@@ -160,7 +171,7 @@ assert(firstBoot.indexOf("--resume") === -1, "first boot does not --resume (no t
 const projDir = join(home, ".claude", "projects", "-planted-cwd");
 mkdirSync(projDir, { recursive: true });
 writeFileSync(join(projDir, `${pinId}.jsonl`), "");
-const restart = pawConnector.buildLaunch({ space: "demo", name: "pin", configPath: agentFile }).args;
+const restart = pawConnector.buildLaunch({ space: "demo", workspaceRoot: work, name: "pin", configPath: agentFile }).args;
 assert(
   restart.indexOf("--resume") !== -1 && restart[restart.indexOf("--resume") + 1] === pinId,
   "restart RESUMES the pinned id once its transcript exists (--resume) — no amnesia across a bounce",

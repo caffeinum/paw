@@ -214,7 +214,7 @@ process.env.COTAL_HOME = mkdtempSync(join(tmpdir(), "paw-cotal-home-"));
 mkdirSync(join(process.env.COTAL_HOME, "meshes"), { recursive: true });
 writeFileSync(
   join(process.env.COTAL_HOME, "meshes", `space.${Buffer.from("rt", "utf8").toString("hex")}.json`),
-  JSON.stringify({ space: "rt", server: "nats://127.0.0.1:4222", root: "/pinned/root", mode: "open" }),
+  JSON.stringify({ space: "rt", server: "nats://127.0.0.1:4222", root: "/pinned/root", mode: "open", ts: new Date().toISOString() }),
 );
 assert(pawCotalRoot("rt") === "/pinned/root", "pawCotalRoot: reads the space's recorded root from the mesh registry");
 assert(pawCotalRoot("never-started") === homedir(), "pawCotalRoot: a space with no registry entry falls back to homedir (where ~/.cotal lives)");
