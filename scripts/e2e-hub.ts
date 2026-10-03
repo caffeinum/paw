@@ -42,7 +42,6 @@ const nats = spawn("nats-server", ["-js", "-p", String(port), "-a", "127.0.0.1",
 
 const { ManagerControl } = await import("../src/control.js");
 const { ensureAgentSpawned, personaFilePath, setFolderName, waitForPeerId } = await import("../src/addressing.js");
-const { confineAndTrustCwd } = await import("../src/cwd.js");
 const { ensure, stop, hubProcs, managerProcs, mailboxProcs, hubState, formatHubLine } = await import("../src/lifecycle.js");
 const { hubSocketPath } = await import("../src/hub/paths.js");
 const { liveSessionProcs } = await import("../src/named.js");
@@ -96,7 +95,7 @@ try {
     await sleep(100);
   }
   const tsx = join(REPO, "node_modules", "tsx", "dist", "cli.mjs");
-  const cli = (...a: string[]) => spawnSync(process.execPath, [tsx, join(REPO, "bin", "paw.ts"), ...a, "--space", space], { encoding: "utf8", env: process.env, timeout: 300_000 });
+  const cli = (...a: string[]) => spawnSync(process.execPath, [tsx, join(REPO, "bin", "paw.ts"), ...a, "--space", space], { encoding: "utf8", env: process.env, timeout: 900_000 }); // revival paces itself on load (up to 90s per agent)
   const on = cli("hub", "on");
   ok("`paw hub on` (no env var) turns the hub on and starts it", on.status === 0 && /cotal hub: on · hub pid/.test(on.stdout), (on.stdout + on.stderr).split("\n").slice(-3).join(" | "));
   await ensure({ needMesh: true, needManager: true, space });
@@ -107,11 +106,6 @@ try {
     dirs.set(n, d);
     setFolderName(space, d, n);
   }
-  // Pre-trust EVERY folder before the first claude starts. paw trusts a folder just before spawning
-  // it, and a claude already booting rewrites ~/.claude.json from the copy it read at startup — so
-  // h2's trust entry was clobbered by h1's boot, h2 met the trust dialog (default "No, exit") and
-  // quit before reaching MCP. Seen in 3 of 5 runs; a paw race, not a hub one (reported separately).
-  for (const d of dirs.values()) confineAndTrustCwd(d);
   // One at a time: three cold claudes at once on a loaded machine is a boot-time test, not a hub test.
   for (const n of names) await ensureAgentSpawned(ctl, { space, name: n, cwd: dirs.get(n)! });
   ok("three agents spawned", true);
@@ -183,7 +177,7 @@ try {
   await sleepAgent(space, ctl, s, "e2e-hub", { cursorSeq: await dmLastSeq(space), snapshotActiveMs: row.activeMs });
   for (let i = 0; i < 30 && standInHolder(space, s) === undefined; i++) await sleep(1000);
   ok("h3 asleep with a stand-in", isAsleep(space, s) && standInHolder(space, s) !== undefined);
-  await sleep(4000);
+  for (let i = 0; i < 60 && (liveSessionProcs(pin).length > 0 || shims().length !== 2); i++) await sleep(500);
   ok("h3's claude and its shim are gone", liveSessionProcs(pin).length === 0 && shims().length === 2, `${shims().length} shims`);
   const standIn = prober.getRoster().find((p) => p.card.name === s && p.status !== "offline")?.card.id;
   await prober.unicast(standIn!, `Reply to prober with cotal_dm saying exactly WOKE-${s}, nothing else.`);
@@ -195,7 +189,8 @@ try {
   ok("paw status hub line: on, supervised, answering, 3 shims", /on · hub pid \d+ · supervised · socket answers · 3 agents on shims/.test(hubLine), hubLine);
   const hubBefore = hubNodes().map((p) => p.pid).join();
   const rr = cli("restart");
-  ok("paw restart exited 0", rr.status === 0, (rr.stderr ?? "").split("\n").slice(-4).join(" | "));
+  ok("paw restart exited 0", rr.status === 0, `status ${rr.status}`);
+  if (rr.status !== 0) console.log(`  paw restart output:\n${rr.stdout}\n${rr.stderr}`.replace(/\n/g, "\n    "));
   ok("paw restart renewed the hub", hubNodes().length > 0 && hubNodes().map((p) => p.pid).join() !== hubBefore);
   for (const n of names) await waitForPeerId(prober, n, 120_000).catch(() => undefined);
   await sleep(3000);
