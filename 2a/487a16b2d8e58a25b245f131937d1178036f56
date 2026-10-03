@@ -1,0 +1,59 @@
+bin/paw.ts
+  s_ed25aaaf9c7e77::t_e7dc1bd74d1024 40
+docs/notes/hub.md
+  s_16629319d5ff14::t_b05dea7f938a71 1,60-68,93-100
+scripts/check-hub.ts
+  s_ed25aaaf9c7e77::t_d6de0f214cbca9 23,26,48-57,71-77,126-131,140,155,178-188,287-304
+scripts/e2e-hub.ts
+  s_ed25aaaf9c7e77::t_400732e637e2e5 38-39,45-46,98-101,110-114,194-195,197
+src/commands/hub.ts
+  s_eacdf770d99162::t_3edfbeb3a1b925 1-64
+src/commands/launchd.ts
+  s_ed25aaaf9c7e77::t_0bb6ed49933852 180-182
+src/connector.ts
+  s_ed25aaaf9c7e77::t_d7b7cd95814c35 176,178
+src/hub/cotal-shim.c
+  s_ed25aaaf9c7e77::t_5bd4c797b5769b 26,36,38,40,73-75,83-84,89-97,108-110,122-123,125-132,135-141,144,159,161,164,172,193,195-199,201,204,210-211,213,225
+src/hub/daemon.mjs
+  s_ed25aaaf9c7e77::t_677dcbd6a940d6 1,11,36,52-56,96-101,104,107-108,110-114,118,137,154-163,168-171,202-204,219,287-288,308-310
+src/hub/paths.ts
+  s_ed25aaaf9c7e77::t_5dfd2a179ec647 4,10,18-45,48-50,58
+src/lifecycle.ts
+  s_ed25aaaf9c7e77::t_f95c347c15b666 47,1456-1495,1507,1510-1511,1541
+src/release.ts
+  s_ed25aaaf9c7e77::t_36a5d31b0dfb70 193,199-200
+src/status.ts
+  s_ed25aaaf9c7e77::t_4700a322838025 18,811,813,819-820
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "2a487a16b2d8e58a25b245f131937d1178036f56",
+  "prompts": {},
+  "sessions": {
+    "s_16629319d5ff14": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "178efc37-68c6-4170-ba93-827188df0ccd",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Aleksey Bykhun <theisease@gmail.com>"
+    },
+    "s_eacdf770d99162": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "37e46d39-19cd-49f9-831e-7abcb9428a8d",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Aleksey Bykhun <theisease@gmail.com>"
+    },
+    "s_ed25aaaf9c7e77": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "90dd1251-161e-469a-96db-040d1e555035",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Aleksey Bykhun <theisease@gmail.com>"
+    }
+  }
+}
