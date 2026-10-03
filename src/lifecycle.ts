@@ -51,6 +51,10 @@ export interface EnsureOpts {
   needManager?: boolean;
   /** Override the resolved space (defaults to resolveSpace()). */
   space?: string;
+  /** Restart a running manager whose runtime differs from the resolved one. Only `paw runtime <r>` (or
+   *  an explicit PAW_RUNTIME) asks for this: a switch despawns every agent, so a status/dm/keeper ensure()
+   *  that merely notices a mismatch must never do it on its own. */
+  switchRuntime?: boolean;
 }
 
 /** Machine-wide default space. A folder maps to an agent NAME, not a space, so every paw agent
@@ -1266,7 +1270,12 @@ async function stopMailbox(space: string): Promise<void> {
  * throw — so the operator always ends with a working manager. A fresh start (no previous manager) has
  * nothing to roll back to and just throws the readiness-timeout error.
  */
-async function ensureManagerUp(space: string, server: string): Promise<void> {
+/** A running manager's runtime differs from the resolved one: restart only on an explicit ask. */
+export function runtimeMismatchAction(switchRuntime: boolean, envRuntime: string | undefined): "switch" | "warn" {
+  return switchRuntime || envRuntime !== undefined ? "switch" : "warn";
+}
+
+async function ensureManagerUp(space: string, server: string, switchRuntime = false): Promise<void> {
   const runtime = resolveRuntime(space);
   const creds = await probeCreds(space);
   let previous: Runtime | undefined; // the known-good runtime we killed on a switch — the rollback target
@@ -1300,7 +1309,18 @@ async function ensureManagerUp(space: string, server: string): Promise<void> {
       }
       return;
     }
-    // Ours, identified, and it differs → restart into the requested runtime (the point of the knob).
+    // Ours, identified, and it differs. Switching despawns the WHOLE fleet, so only an explicit ask does
+    // it. 2026-10-02: a stray pty manager appeared beside the freshly cut-over tmux one, a plain
+    // `paw status` read the stray's runtime, "switched" pty → tmux, and bounced all 25 agents.
+    const pids = managerProcs(space);
+    if (runtimeMismatchAction(switchRuntime, process.env.PAW_RUNTIME) === "warn") {
+      console.error(
+        `paw: ⚠ the manager is running ${running} but this space prefers ${runtime} (pid ${pids.join(", ")}) — NOT switching ` +
+          `implicitly (it would despawn every agent). \`paw runtime ${runtime}\` switches on purpose; several pids may mean a stray manager.`,
+      );
+      return;
+    }
+    // Explicit switch → restart into the requested runtime (the point of the knob).
     // Assert we CAN start the target BEFORE we kill the known-good manager, else a cmux-no-surface
     // switch would strand us with none.
     assertRuntimeUsable(runtime);
@@ -1402,7 +1422,7 @@ export async function ensure(opts: EnsureOpts = {}): Promise<{ space: string; se
   if (opts.needManager) resolveRuntime(space); // fail loud on a bad PAW_RUNTIME before booting; the cmux-surface gate is in ensureManagerUp (adopt needs no surface)
   await withLock(space, async () => {
     if (opts.needMesh || opts.needManager) await ensureMesh(space, server);
-    if (opts.needManager) await ensureManagerUp(space, server);
+    if (opts.needManager) await ensureManagerUp(space, server, opts.switchRuntime);
     // Any mesh-up context keeps "you" reachable — so a fire-and-forget `paw dm` gets a reply later.
     if (opts.needMesh || opts.needManager) ensureMailbox(space);
   });

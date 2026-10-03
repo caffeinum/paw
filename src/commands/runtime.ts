@@ -151,7 +151,7 @@ async function runtime(argv: string[]): Promise<void> {
   const liveBefore = await liveAgentNames(space); // capture who's up so a switch brings them back
   writeRuntimePreference(space, r);
   // ensure() resolves the NEW preference; ensureManagerUp restarts on a mismatch (with the rollback net).
-  await ensure({ needMesh: true, needManager: true, space });
+  await ensure({ needMesh: true, needManager: true, space, switchRuntime: true });
   console.log(c.green(`✓ runtime set to ${r}`));
   if (before === r) console.log(c.dim(`  manager already running ${r} — no restart`));
   else if (before === undefined) console.log(c.dim(`  manager started (${r})`));

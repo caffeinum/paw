@@ -591,3 +591,14 @@ console.log("\nall paw command checks passed 🐾");
     "stopOwnedManager despawns the agents BEFORE it signals the manager",
   );
 }
+
+{
+  // 2026-10-02: a plain `paw status` saw a stray pty manager beside the tmux one and "switched" runtimes,
+  // despawning all 25 agents. A switch must be asked for.
+  const { runtimeMismatchAction } = await import("../src/lifecycle.js");
+  assert(runtimeMismatchAction(false, undefined) === "warn", "runtime mismatch: an ordinary ensure() warns, never switches");
+  assert(runtimeMismatchAction(true, undefined) === "switch", "runtime mismatch: `paw runtime <r>` switches");
+  assert(runtimeMismatchAction(false, "tmux") === "switch", "runtime mismatch: an explicit PAW_RUNTIME switches");
+  const rt = (await import("node:fs")).readFileSync(join(import.meta.dirname, "..", "src", "commands", "runtime.ts"), "utf8");
+  assert(/switchRuntime: true/.test(rt), "`paw runtime <r>` passes switchRuntime");
+}
