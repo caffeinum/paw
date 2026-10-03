@@ -21,7 +21,7 @@ import { liveSessionProcs } from "../src/named.js";
 import { readResumeId } from "../src/session.js";
 import { collectStatus } from "../src/status.js";
 import { dmLastSeq, extraChannels, readActivity, sleepAgent, sleepDecision } from "../src/sleep.js";
-import { isAsleep, standInHolder } from "../src/sleep-state.js";
+import { isAsleep, readWakingRecord, standInHolder, writeSleepRecord } from "../src/sleep-state.js";
 import { personaValue } from "../src/session.js";
 
 const space = process.env.PAW_SPACE ?? "";
@@ -149,6 +149,24 @@ try {
   ok("sleep record cleared", !isAsleep(space, sleeper) && standInHolder(space, sleeper) === undefined);
   const newProc = liveSessionProcs(pin)[0];
   if (newProc) console.log(`  woken sleeper tree RSS ${treeRssMb(newProc.pid)} MB (resumed the same session ${pin})`);
+  // Follow-up 1: a sleep record beside a LIVE seat (what a late boot / `paw claude` leaves behind). The
+  // host raises a stand-in for it, then its 15s reconcile must notice the live seat and treat it as woken.
+  await sleep(5000);
+  writeSleepRecord(space, { name: caller, folder: callerDir, since: Date.now(), cursorSeq: await dmLastSeq(space), reason: "e2e: record + live seat" });
+  let reconciled = false;
+  for (let i = 0; i < 60 && !reconciled; i++) {
+    await sleep(1000);
+    reconciled = !isAsleep(space, caller) && !readWakingRecord(space, caller) && standInHolder(space, caller) === undefined;
+  }
+  ok("F1 a sleep record beside a live seat is reconciled (stand-in lowered, record cleared)", reconciled);
+  await sleep(2000);
+  let unambiguous = true;
+  try {
+    resolvePeer(prober.getRoster(), caller);
+  } catch {
+    unambiguous = false;
+  }
+  ok("F1 the live seat's name resolves unambiguously afterwards", unambiguous);
   console.log(readFileSync(join(process.env.PAW_HOME!, "spaces", space, "sleep.log"), "utf8"));
 } finally {
   await prober?.stop().catch(() => {});

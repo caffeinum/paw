@@ -662,10 +662,10 @@ export async function ensureAgentSpawned(
       // mesh, it isn't booting, it's stuck — treat it as the dead entry it is and restart. Restarting a
       // merely-slow boot is cheap (it resumes its pinned session); leaving an agent unreachable until a
       // human notices is not.
-      if (await waitForMeshLive(ctl, opts.name, STARTING_GRACE_MS, () => nudgeStartupPrompt(opts.space, opts.name))) return { spawned: false };
+      if (await waitForMeshLive(ctl, opts.name, STARTING_GRACE_MS, () => nudgeStartupPrompt(opts.space, opts.name))) return healSleep(opts.space, opts.name);
       action = "restart";
     }
-    if (action === "reuse") return { spawned: false };
+    if (action === "reuse") return healSleep(opts.space, opts.name);
     if (action === "restart") {
       // The manager still LISTS this agent but it's dead on the mesh (process exited, or mesh offline —
       // a zombie left by a crash/bounce). The old gate reused ANY listed name, so `paw dm`/`paw chat`
@@ -790,6 +790,17 @@ export async function ensureAgentSpawned(
     }
     return { spawned: true, id };
   });
+}
+
+/**
+ * The reuse branch found a LIVE seat. If paw still holds a sleep record for the name (a seat that came
+ * up outside the wake path — a late boot, `paw claude`, `paw cotal spawn`), the stand-in would sit
+ * beside it forever and its backlog would be overwritten by the next sleep. Flip the record to waking:
+ * the sleep host then lowers the stand-in, forwards the backlog to this seat and clears the record.
+ */
+function healSleep(space: string, name: string): { spawned: false } {
+  if (prepareWake(space, name)) console.error(`paw: "${name}" is live but was recorded asleep — handing its backlog over`);
+  return { spawned: false };
 }
 
 /** How long a just-despawned process gets to release its session / name before paw gives up. */

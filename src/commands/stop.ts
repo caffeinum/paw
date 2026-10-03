@@ -21,6 +21,15 @@ import {
 import { withManagerControl } from "../control.js";
 import { readForeground, unregisterForeground } from "../foreground.js";
 import { resolveSpace } from "../lifecycle.js";
+import { sleepState } from "../sleep-state.js";
+
+/** The success line for `paw stop`, or undefined when nothing was stopped. A sleeping agent has no seat
+ *  to stop, but stopping it is real — it no longer wakes on a DM — so say that, not "isn't running". */
+export function stopMessage(name: string, stopped: boolean, wasAsleep: boolean): string | undefined {
+  if (stopped) return `✓ stopped ${name}${wasAsleep ? " (it was also recorded asleep)" : ""}`;
+  if (wasAsleep) return `✓ stopped ${name} — it was asleep; a DM no longer wakes it`;
+  return undefined;
+}
 
 const tty = process.stdout.isTTY === true;
 const wrap = (code: string) => (s: string) => (tty ? `\x1b[${code}m${s}\x1b[0m` : s);
@@ -99,8 +108,10 @@ async function stop(argv: string[]): Promise<void> {
     return;
   }
 
+  const wasAsleep = sleepState(space, name) !== undefined; // read BEFORE stopAgent clears it
   const stopped = await withManagerControl(space, DEFAULT_SERVER, (ctl) => stopAgent(ctl, name));
-  if (stopped) console.log(`✓ stopped ${name}`);
+  const done = stopMessage(name, stopped, wasAsleep);
+  if (done) console.log(done);
   else if (rawName === undefined && !agentRecord(space, name)) {
     // Neither registered nor held by the manager: not an agent at all, most likely a typo.
     throw new Error(`paw: no agent "${name}" — not registered and not running (\`paw status\` for names)`);

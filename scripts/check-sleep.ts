@@ -154,5 +154,41 @@ const backlog = [{ seq: 6 }, { seq: 7 }, { seq: 8 }];
 ok("already-forwarded seqs are skipped on a retry", toForward(backlog, [6, 7]).map((m) => m.seq).join() === "8");
 ok("nothing forwarded yet → all of it", toForward(backlog, undefined).length === 3);
 
+// follow-up 1: a live seat beside a sleep record is treated as woken
+const { reconcileTargets, retryDelayMs } = await import("../src/sleep-host.js");
+const { mergeSleepRecord } = await import("../src/sleep.js");
+const rows1 = [
+  { name: "z1", status: "running", mesh: "idle" },
+  { name: "z2", status: "running", mesh: "absent" },
+  { name: "z3", status: "exited", mesh: "offline" },
+  { name: "z5", status: "running", mesh: "working" },
+];
+ok("F1 a sleeping name with a live idle seat is reconciled", reconcileTargets(["z1"], rows1, new Set()).join() === "z1");
+ok("F1 a working seat is reconciled too", reconcileTargets(["z5"], rows1, new Set()).join() === "z5");
+ok("F1 a mid-boot (absent) seat is left to its own wake", reconcileTargets(["z2"], rows1, new Set()).length === 0);
+ok("F1 a dead seat or no seat is not a wake", reconcileTargets(["z3", "z4"], rows1, new Set()).length === 0);
+ok("F1 a wake already in flight is not doubled", reconcileTargets(["z1"], rows1, new Set(["z1"])).length === 0);
+writeSleepRecord("s", { name: "h", folder: "/x", since: 1, cursorSeq: 3, reason: "t" });
+await stopAgent({ space: "s", ps: async () => ({ ok: true, data: [] }) } as unknown as Parameters<typeof stopAgent>[0], "nobody-else"); // unrelated: untouched
+ok("F1 setup: h asleep", isAsleep("s", "h"));
+const { ensureAgentSpawned } = await import("../src/addressing.js");
+const liveCtl = { space: "s", ps: async () => ({ ok: true, data: [{ name: "h", status: "running", mesh: "idle" }] }) } as unknown as Parameters<typeof ensureAgentSpawned>[0];
+const reused = await ensureAgentSpawned(liveCtl, { space: "s", name: "h", cwd: "/x" });
+ok("F1 ensureAgentSpawned's reuse path heals: record handed to the host as waking", !reused.spawned && !isAsleep("s", "h") && readWakingRecord("s", "h")?.cursorSeq === 3);
+clearSleep("s", "h");
+const merged = mergeSleepRecord({ name: "m", folder: "/x", since: 1, cursorSeq: 4, forwarded: [5], reason: "a" }, { name: "m", folder: "/x", since: 9, cursorSeq: 20, lastId: "local.NEW", reason: "b" });
+ok("F1 a re-sleep over an unreconciled record keeps the earlier cursor and forwarded set", merged.cursorSeq === 4 && merged.forwarded?.join() === "5" && merged.lastId === "local.NEW");
+
+// follow-up 2: stopping a sleeping agent says so
+const { stopMessage } = await import("../src/commands/stop.js");
+ok("F2 stop of a sleeper says it was asleep and is now stopped", /was asleep; a DM no longer wakes it/.test(stopMessage("q", false, true) ?? ""));
+ok("F2 stop of a live agent is unchanged", stopMessage("q", true, false) === "✓ stopped q");
+ok("F2 nothing stopped and not asleep → caller's 'isn't running' path", stopMessage("q", false, false) === undefined);
+
+// follow-up 3: a failed wake is retried on a backoff, not only on the next DM
+ok("F3 no failures → no delay", retryDelayMs(0) === 0);
+ok("F3 backoff doubles from 1m", retryDelayMs(1) === 60_000 && retryDelayMs(2) === 120_000 && retryDelayMs(3) === 240_000);
+ok("F3 backoff caps at 30m", retryDelayMs(20) === 30 * 60_000);
+
 console.log(fails ? `\n${fails} FAILED` : "\nall passed");
 process.exit(fails ? 1 : 0);

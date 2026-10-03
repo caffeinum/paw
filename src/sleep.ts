@@ -30,7 +30,7 @@ import { ensure, resolveSpace } from "./lifecycle.js";
 import { liveSessionProcs } from "./named.js";
 import { personaValue, readResumeId, transcriptMtime, transcriptPath } from "./session.js";
 import { dmsSince } from "./sleep-host.js";
-import { listSleeping, readSleepRecord, scanRecords, sleepLog, sleepState, writeSleepRecord } from "./sleep-state.js";
+import { listSleeping, readSleepRecord, readWakingRecord, scanRecords, sleepLog, sleepState, writeSleepRecord, type SleepRecord } from "./sleep-state.js";
 import { collectStatus, type AgentStatus } from "./status.js";
 import { tailRead } from "./transcript.js";
 
@@ -251,6 +251,13 @@ export function preDespawnCheck(o: { snapshotActiveMs?: number; activeMsNow?: nu
   return undefined;
 }
 
+/** Pure: a new sleep over a record that was never reconciled keeps the earlier cursor (its backlog is
+ *  still owed) and the forwarded set; the old seat id is dropped since the new one supersedes it. */
+export function mergeSleepRecord(prior: SleepRecord | undefined, next: SleepRecord): SleepRecord {
+  if (!prior) return next;
+  return { ...next, cursorSeq: Math.min(prior.cursorSeq, next.cursorSeq), forwarded: prior.forwarded };
+}
+
 /** The DM stream's last sequence — the backlog cursor. */
 export async function dmLastSeq(space: string, server = DEFAULT_SERVER): Promise<number> {
   const nc = await connect({ servers: server });
@@ -290,8 +297,17 @@ export async function sleepAgent(space: string, ctl: ManagerControl, name: strin
   }
   const d = await ctl.despawn(name);
   if (!d.ok) throw new Error(`paw: couldn't despawn "${name}" (${d.error ?? "no reply"})`);
-  writeSleepRecord(space, { name, folder: rec.folder, since: Date.now(), cursorSeq: snap.cursorSeq, lastId, reason });
-  sleepLog(space, `slept ${name} — ${reason} (cursor ${snap.cursorSeq})`);
+  // A record already here (a seat that came up beside it and was never reconciled) still owes its backlog:
+  // keep the EARLIER cursor and what was already forwarded, never overwrite them with this sleep's.
+  const prior = (() => {
+    try {
+      return readSleepRecord(space, name) ?? readWakingRecord(space, name);
+    } catch {
+      return undefined;
+    }
+  })();
+  writeSleepRecord(space, mergeSleepRecord(prior, { name, folder: rec.folder, since: Date.now(), cursorSeq: snap.cursorSeq, lastId, reason }));
+  sleepLog(space, `slept ${name} — ${reason} (cursor ${Math.min(prior?.cursorSeq ?? snap.cursorSeq, snap.cursorSeq)})`);
 }
 
 /** Evaluate every opted-in agent once; put the eligible ones to sleep. Logs each decision for an

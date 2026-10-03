@@ -23,14 +23,15 @@ import { randomUUID } from "node:crypto";
 import { DEFAULT_SERVER, DEV_OWNER, CotalEndpoint, dmStream, parsePrincipalKey, principalKey, unicastRecvFilter, unicastSubject } from "@cotal-ai/core";
 import { connect, type NatsConnection, type Subscription } from "@nats-io/transport-node";
 import { DeliverPolicy, jetstream, jetstreamManager } from "@nats-io/jetstream";
-import { agentRecord, ensureAgentSpawned, wirePrincipal, type PsRow } from "./addressing.js";
-import { withManagerControl } from "./control.js";
+import { agentRecord, ensureAgentSpawned, psRowAlive, wirePrincipal, type PsRow } from "./addressing.js";
+import { sharedManagerControl, withManagerControl } from "./control.js";
 import {
   MAX_WAKE_FAILURES,
   clearSleep,
   clearWaking,
   failWake,
   markStandIn,
+  prepareWake,
   readSleepRecord,
   readWakingRecord,
   scanRecords,
@@ -41,6 +42,21 @@ import {
 } from "./sleep-state.js";
 
 const TICK_MS = 1000;
+/** How often the tick also reconciles against ps and re-checks undelivered backlog. */
+const SWEEP_MS = 15_000;
+
+/** Pure: back-off before retrying a failed wake — 1m, 2m, 4m … capped at 30m. */
+export function retryDelayMs(failures: number): number {
+  return failures <= 0 ? 0 : Math.min(30 * 60_000, 60_000 * 2 ** (failures - 1));
+}
+
+/** Pure: sleeping names that nonetheless have a live seat in the manager's ps (and no wake in flight). */
+export function reconcileTargets(sleeping: string[], rows: PsRow[], inflight: Set<string>): string[] {
+  return sleeping.filter((name) => {
+    const row = rows.find((r) => r.name === name);
+    return !!row && psRowAlive(row) && row.mesh !== "absent" && !inflight.has(name);
+  });
+}
 /** Gap before the second forward pass that catches DMs sent while the stand-in was handing over. */
 const STRAGGLER_MS = 3000;
 
@@ -215,10 +231,12 @@ export async function startSleepHost(space: string, server = DEFAULT_SERVER): Pr
   const finish = async (name: string, why: string) => {
     if (inflight.has(name)) return;
     const last = failedAt.get(name);
-    if (last && Date.now() - last < 60_000) return; // a failed wake is retried once a minute, not every tick
+    const failures = (readWakingRecord(space, name) ?? readSleepRecord(space, name))?.wakeFailures ?? 0;
+    if (last && Date.now() - last < retryDelayMs(failures)) return; // backed off, not every tick
     inflight.add(name);
     try {
-      const rec = readWakingRecord(space, name) ?? readSleepRecord(space, name);
+      prepareWake(space, name); // asleep -> waking, so failures are counted on the waking record
+      const rec = readWakingRecord(space, name);
       if (!rec) return;
       const reg = agentRecord(space, name);
       if (!reg || reg.folder !== rec.folder) {
@@ -252,7 +270,7 @@ export async function startSleepHost(space: string, server = DEFAULT_SERVER): Pr
       sleepLog(
         space,
         backToSleep
-          ? `wake of ${name} FAILED ${failures}× — back to sleep, stand-in kept; a DM retries (last error: ${msg})`
+          ? `wake of ${name} FAILED ${failures}× — back to sleep, stand-in kept; retrying in ${Math.round(retryDelayMs(failures) / 60_000)}m or on the next DM (last error: ${msg})`
           : `wake of ${name} FAILED (${failures}/${MAX_WAKE_FAILURES}) — ${msg}`,
       );
     } finally {
@@ -261,6 +279,7 @@ export async function startSleepHost(space: string, server = DEFAULT_SERVER): Pr
   };
 
   let ticking = false;
+  let lastSweep = 0;
   const tick = async () => {
     if (ticking) return;
     ticking = true;
@@ -284,6 +303,25 @@ export async function startSleepHost(space: string, server = DEFAULT_SERVER): Pr
       for (const rec of waking.records) {
         await yieldName(rec.name).catch(() => {});
         void finish(rec.name, "woken by a paw command");
+      }
+      if (sleeping.records.length && Date.now() - lastSweep >= SWEEP_MS) {
+        lastSweep = Date.now();
+        // A seat that came up for a sleeping name OUTSIDE the wake path (a late boot, `paw claude`,
+        // `paw cotal spawn`): the stand-in beside it would make the name ambiguous forever. Treat it as woken.
+        const ctl = await sharedManagerControl(space, server);
+        const ps = await ctl.ps();
+        if (ps.ok) {
+          for (const name of reconcileTargets(sleeping.records.map((r) => r.name), (ps.data as PsRow[]) ?? [], inflight)) {
+            sleepLog(space, `${name} has a live seat while recorded asleep — treating it as woken`);
+            void finish(name, "a seat came up outside the wake path");
+          }
+        }
+        // A wake that failed leaves its triggering DM unforwarded; retry it without waiting for a new DM.
+        for (const rec of sleeping.records) {
+          if (inflight.has(rec.name)) continue;
+          const pending = toForward(await readBacklog(nc, space, backlogFilters(space, rec), rec.cursorSeq), rec.forwarded);
+          if (pending.length) void finish(rec.name, `${pending.length} DM(s) still waiting`);
+        }
       }
     } catch (e) {
       console.error(`[sleep] tick failed: ${(e as Error).message}`);
