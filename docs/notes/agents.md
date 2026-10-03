@@ -163,7 +163,7 @@ normalises routing arbitrary commands through the one process with full host acc
 start`, tomorrow `run: rm -rf`"). `wake <name>` = one intent, one mapping. The brief tells global —
 which reads the same brief — to validate the name against `paw status` and refuse anything else.
 
-**The tty-prompt trap (`nudgeTmuxConfirm`, src/native-attach.ts).** claude's
+**The tty-prompt trap (`answerStartupPrompt`, src/native-attach.ts; was `nudgeTmuxConfirm`).** claude's
 `--dangerously-load-development-channels` prints a one-time confirmation. cotal's tmux runtime clears
 it (`scheduleConfirm`, gated on the claude connector's `spec.confirm`, which paw preserves via
 `{...spec, args}`) — **but only at 1s…5s after the window opens.** A cold claude on a loaded machine
@@ -173,3 +173,22 @@ pressed Enter, and this is the likeliest explanation for an agent stuck at `star
 nudges Enter again on every poll of `waitForMeshLive` during `STARTING_GRACE_MS` — the window where the
 prompt actually appears. tmux only (pty clears its own; cmux windows aren't paw's to type into),
 best-effort, never throws: a missing window is not a spawn failure.
+
+**The trust race, and why the nudge now READS the window (2026-10-03, `startupWatch` in
+src/addressing.ts, test `check:trust`).** paw pre-trusts a folder in `~/.claude.json` just before the
+spawn, under its own lock — but claude rewrites that file without the lock, and a claude booting just
+before erased the next agent's fresh entry (lost update; 3 of 5 isolated hub e2e runs, entry verified
+missing). The new claude then showed its trust dialog, whose DEFAULT is "No, exit", and the blind
+Enter picked it: against a real claude that is `exit 1`, before MCP — the agent simply vanished
+(tmux), or sat at the dialog as `starting…` forever (pty, where nothing types). Now, every readiness
+poll: (a) re-checks the trust entry and re-writes it if gone — any runtime, saves any claude that
+hasn't read the file yet; (b) on tmux, captures the pane first: Enter ONLY at the dev-channels gate;
+at the trust dialog, "Yes, I trust this folder" (cursor moved, one key per send) ONLY for a folder
+paw's own policy trusts (`pawTrustedFolder` — the `confineAndTrustCwd` rule), after re-writing the
+entry; anything else gets nothing, and an unrecognised prompt is logged with its last lines; (c) the
+readiness-timeout error names what was seen (erased entry / a dialog paw won't answer / the prompt).
+Verified against a real claude in a private tmux server: blind Enter → exit 1; the new answer → idle.
+Live check (read-only, 2026-10-03): 121 of 129 registered folders trusted; the rest are deleted
+worktrees, opencode1, and one extant worktree agent. So established agents rarely hit it — FIRST
+boots of new folders while another claude writes the file do. Upstream ask for pty: docs/notes/
+upstream-trust-hook.md (drafted, not filed).

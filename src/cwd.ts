@@ -88,10 +88,13 @@ export function confineCwd(abs: string): { canonical: string; inRoot: boolean } 
  * written atomically (temp file + rename).
  *
  * Residual limitation: Claude itself rewrites ~/.claude.json on activity without taking this lock,
- * so a paw write racing a live Claude write can still lose; the idempotent check self-heals on the
- * next spawn. Trust is per-folder, so a lost write only re-shows that one folder's dialog.
+ * so a paw write racing a live Claude write can still lose — and does: a claude booting just before
+ * rewrote the file from the copy it read at startup and erased the next agent's fresh entry, which
+ * then met the dialog (3 of 5 isolated runs, 2026-10-03). The spawn's readiness wait therefore
+ * re-checks the entry and re-writes it ({@link isFolderTrusted}), and answers the dialog itself on
+ * tmux (addressing.ts `startupWatch`).
  */
-function pretrustFolder(abs: string): void {
+export function pretrustFolder(abs: string): void {
   const file = join(homedir(), ".claude.json");
   withFileLock(`${file}.paw-lock`, () => {
     const config = existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : {};
@@ -110,6 +113,29 @@ function pretrustFolder(abs: string): void {
     writeFileSync(tmp, JSON.stringify(config, null, 2));
     renameSync(tmp, file);
   });
+}
+
+/** Does ~/.claude.json hold the trust flags for `abs` right now? An unreadable file reads as NOT
+ *  trusted — the caller's response (re-writing the entry) is idempotent, so erring that way is safe. */
+export function isFolderTrusted(abs: string): boolean {
+  try {
+    const config = JSON.parse(readFileSync(join(homedir(), ".claude.json"), "utf8"));
+    return config?.projects?.[abs]?.hasTrustDialogAccepted === true;
+  } catch {
+    return false;
+  }
+}
+
+/** The canonical folder paw's own policy pre-trusts for `cwd` (the rule confineAndTrustCwd applies:
+ *  in PAW_ROOT, or paw-managed), or undefined when paw does NOT trust it — never throws, so a watcher
+ *  can ask without re-litigating confinement. */
+export function pawTrustedFolder(cwd: string): string | undefined {
+  try {
+    const { canonical, inRoot } = confineCwd(realpathSync(cwd));
+    return inRoot ? canonical : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /**

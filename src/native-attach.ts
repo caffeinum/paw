@@ -109,27 +109,75 @@ export function attachTmux(space: string, name: string): void {
   }
 }
 
+/** What a booting claude's terminal is showing, as far as paw may act on it. */
+export type StartupScreen =
+  | { kind: "dev-channels" }
+  /** `keys` moves the cursor onto "Yes, I trust this folder" and confirms; undefined when the
+   *  dialog didn't parse (no cursor, no Yes line) — then paw presses nothing. */
+  | { kind: "trust"; keys?: string[] }
+  | { kind: "other"; prompt: boolean };
+
+const TRUST_YES = /Yes, I trust this folder/;
+const CURSOR = /^\s*[❯>]/;
+
 /**
- * Press Enter in an agent's tmux window — clearing claude's one-time dev-channels confirmation.
- *
- * cotal's tmux runtime already schedules this, but only at 1s…5s after the window opens. A cold claude
- * on a loaded machine does not reach the prompt within five seconds, so every Enter lands BEFORE the
- * question exists and the agent then sits at it indefinitely: `cotal-endpoint-telegram` hung ~90s with
- * no mesh presence until a human pressed Enter, and it reads exactly like a failed spawn (2026-08-17).
- *
- * So paw nudges again while it is ALREADY waiting for the agent to reach the mesh — the window where
- * the prompt actually appears. Harmless if there is no prompt: Enter at an idle claude prompt submits
- * nothing. Best-effort and never throws — a missing window or a tmux that isn't running must not turn
- * a spawn into an error.
+ * Classify a captured pane. Pure; exported for check:trust. The dev-channels gate is claude's
+ * "WARNING: Loading development channels" (the connector's own `confirm` text); the trust dialog is
+ * the "Yes, I trust this folder" menu, whose DEFAULT is "No, exit" — an Enter there quits claude.
+ * `prompt` marks an unrecognised screen that is waiting on a keypress, worth logging.
  */
-export function nudgeTmuxConfirm(space: string, name: string, env: NodeJS.ProcessEnv): void {
-  try {
-    execFileSync("tmux", ["send-keys", "-t", `${tmuxSession(space)}:${name}`, "Enter"], {
-      stdio: "ignore",
-      timeout: 2000,
-      env,
-    });
-  } catch {
-    /* no window, no tmux, no session — none of which is a spawn failure */
+export function classifyStartupScreen(text: string): StartupScreen {
+  if (/Loading development channels/.test(text)) return { kind: "dev-channels" };
+  const lines = text.split("\n");
+  const yes = lines.findIndex((l) => TRUST_YES.test(l));
+  if (yes >= 0) {
+    // The menu's option lines run from the first option to the last; the cursor is the one marked ❯.
+    const cursor = lines.findIndex((l, i) => CURSOR.test(l) && Math.abs(i - yes) <= 6);
+    if (cursor < 0) return { kind: "trust" };
+    const delta = yes - cursor;
+    const move = Array.from({ length: Math.abs(delta) }, () => (delta > 0 ? "Down" : "Up"));
+    return { kind: "trust", keys: [...move, "Enter"] };
   }
+  return { kind: "other", prompt: /Enter to confirm|Esc to cancel|\(y\/n\)|\[Y\/n\]/i.test(text) };
+}
+
+/**
+ * Answer claude's startup prompts in an agent's tmux window — by READING the window first.
+ *
+ * cotal's tmux runtime presses Enter at the dev-channels gate only 1s…5s after the window opens, and a
+ * cold claude on a loaded machine reaches it later, so paw answers while it waits for the agent to
+ * reach the mesh (`cotal-endpoint-telegram` hung ~90s until a human pressed Enter, 2026-08-17).
+ *
+ * This USED to be a blind Enter on every poll, and that was a bug with a body count: when the folder's
+ * trust entry had been erased from ~/.claude.json (a concurrent claude rewrite), claude showed its
+ * trust dialog, whose default is "No, exit" — the blind Enter chose it and the agent quit before it
+ * ever reached MCP (reproduced against a real claude: exit 1). So now:
+ *   - the dev-channels gate → Enter;
+ *   - the trust dialog → ONLY when `trust()` says paw itself trusts this folder (it re-writes the
+ *     entry first), move the cursor to "Yes, I trust this folder" and confirm; otherwise nothing;
+ *   - anything else → nothing.
+ * Returns what it saw (and the screen text) so the caller can name it if the boot never completes.
+ * Best-effort, never throws: a missing window or tmux is not a spawn failure.
+ */
+export function answerStartupPrompt(
+  space: string,
+  name: string,
+  env: NodeJS.ProcessEnv,
+  trust: () => boolean,
+): { screen: StartupScreen; text: string; sent?: string[] } | undefined {
+  const target = `${tmuxSession(space)}:${name}`;
+  const cap = spawnSync("tmux", ["capture-pane", "-p", "-t", target], { encoding: "utf8", timeout: 2000, env });
+  if (cap.status !== 0 || typeof cap.stdout !== "string") return undefined;
+  const text = cap.stdout;
+  const screen = classifyStartupScreen(text);
+  let keys: string[] | undefined;
+  if (screen.kind === "dev-channels") keys = ["Enter"];
+  else if (screen.kind === "trust" && screen.keys && trust()) keys = screen.keys;
+  // One key per send-keys, a beat apart: a menu redraws between keystrokes, and a single burst of
+  // "Down Enter" can reach a TUI as one chunk it doesn't split.
+  for (const [i, k] of (keys ?? []).entries()) {
+    if (i) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 150);
+    spawnSync("tmux", ["send-keys", "-t", target, k], { stdio: "ignore", timeout: 2000, env });
+  }
+  return { screen, text, sent: keys };
 }
