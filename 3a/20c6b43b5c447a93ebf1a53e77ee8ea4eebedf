@@ -1,0 +1,49 @@
+bin/paw.ts
+  s_ed25aaaf9c7e77::t_548345ff9207cb 44
+package.json
+  s_ed25aaaf9c7e77::t_0bc59b7ac196b1 42-43
+scripts/probe-sleep-dm.ts
+  s_ed25aaaf9c7e77::t_47f5686e852643 1-83
+src/addressing.ts
+  s_ed25aaaf9c7e77::t_93842f0ec380cb 28,674-676
+src/global.ts
+  s_ed25aaaf9c7e77::t_1869f9e8548143 21,65-77
+src/mailbox.ts
+  s_ed25aaaf9c7e77::t_40a883fe78c2cb 20,57-62,64
+src/sleep-state.ts
+  s_ed25aaaf9c7e77::t_596e5c91046fda 1-155
+src/sleep.ts
+  s_ed25aaaf9c7e77::t_fe8df83e02e61b 1-342
+src/status.ts
+  s_ed25aaaf9c7e77::t_a4ef96c960c6af 9,738-739
+scripts/check-sleep.ts
+  s_beda0ebdd4439a::t_2495f021eec764 1-109
+scripts/e2e-sleep.ts
+  s_beda0ebdd4439a::t_002f7128552b8c 1-138
+src/sleep-host.ts
+  s_beda0ebdd4439a::t_6d097f2795161b 1-201
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "3a20c6b43b5c447a93ebf1a53e77ee8ea4eebedf",
+  "prompts": {},
+  "sessions": {
+    "s_beda0ebdd4439a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-a475510e47b543bfd",
+        "model": "unknown"
+      },
+      "human_author": "Aleksey Bykhun <theisease@gmail.com>"
+    },
+    "s_ed25aaaf9c7e77": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "90dd1251-161e-469a-96db-040d1e555035",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Aleksey Bykhun <theisease@gmail.com>"
+    }
+  }
+}
