@@ -18,6 +18,7 @@ import { registry, type Command } from "@cotal-ai/core";
 import { canonicalDir, ensureAgentSpawned, lookupFolderName, setFolderName } from "./addressing.js";
 import { withManagerControl } from "./control.js";
 import { ensure, resolveSpace } from "./lifecycle.js";
+import { optedIn, sleepSweep } from "./sleep.js";
 
 /** The always-on agent's fixed mesh name. Exported so other surfaces can reference it without a literal. */
 export const GLOBAL_NAME = "global";
@@ -61,9 +62,19 @@ async function globalUp(argv: string[]): Promise<void> {
   }
   const name = setFolderName(space, folder, GLOBAL_NAME).name; // pin the folder→name mapping to `global`
   const { server } = await ensure({ needMesh: true, needManager: true, space });
-  const { spawned } = await withManagerControl(space, server, (ctl) =>
-    ensureAgentSpawned(ctl, { space, name, cwd: folder, brief: GLOBAL_BRIEF }),
-  );
+  const { spawned } = await withManagerControl(space, server, async (ctl) => {
+    const r = await ensureAgentSpawned(ctl, { space, name, cwd: folder, brief: GLOBAL_BRIEF });
+    // The hibernation sweep rides this 60s keeper tick. It only ever touches agents the operator OPTED IN
+    // (`hibernate:` in the persona, via `paw sleep <name> --after 60m`), logs every sleep to sleep.log, and
+    // costs nothing when nobody has opted in. A sweep failure is logged, never fails the tick.
+    if (optedIn(space).length) {
+      await sleepSweep(space, ctl).then(
+        (s) => s.slept.length && console.error(`paw keeper: put to sleep: ${s.slept.join(", ")}`),
+        (e: Error) => console.error(`paw keeper: sleep sweep failed: ${e.message}`),
+      );
+    }
+    return r;
+  });
   // No automatic unstick sweep here any more. The keeper pressed Esc on canary-env-52 at a permission
   // prompt (2026-09-16), rejecting the call; the operator's rule is that nothing touches a live agent
   // without their go. `paw unstick <name>` is the manual tool.

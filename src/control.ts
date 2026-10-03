@@ -96,7 +96,7 @@ export class ManagerControl {
    * the patient default.
    */
   constructor(
-    private readonly space: string,
+    readonly space: string,
     private readonly server: string,
     private readonly resolveMs: number = RESOLVE_MS,
   ) {}

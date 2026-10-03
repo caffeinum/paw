@@ -17,6 +17,7 @@ import { CotalEndpoint, DEFAULT_SERVER, registry, type Command } from "@cotal-ai
 import { controlCreds, stableHumanId } from "./addressing.js";
 import { resolveSpace } from "./lifecycle.js";
 import { HUMAN_PEER } from "./names.js";
+import { startSleepHost } from "./sleep-host.js";
 
 function parseArgs(argv: string[]): { space?: string; server?: string } {
   const out: { space?: string; server?: string } = {};
@@ -53,7 +54,14 @@ async function mailbox(argv: string[]): Promise<void> {
   await ep.start();
   console.error(`[mailbox] present as "${HUMAN_PEER}" in space "${space}" — keeping you reachable for replies`);
 
+  // The sleep host (src/sleep-host.ts): stand-in presences for hibernated agents + wake on DM. Its own
+  // failure must not take the "you" beacon down with it — log loudly and keep beaconing.
+  const stopSleepHost = await startSleepHost(space, server).catch((e: Error) => {
+    console.error(`[mailbox] sleep host failed to start — sleeping agents are NOT addressable: ${e.message}`);
+    return async () => {};
+  });
   const leave = async () => {
+    await stopSleepHost().catch(() => {});
     await ep.stop().catch(() => {});
     process.exit(0);
   };
