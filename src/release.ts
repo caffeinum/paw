@@ -39,6 +39,7 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildShim, hubEnabled } from "./hub/paths.js";
+import { resolveSpace } from "./space.js";
 
 /** paw's checkout root, anchored at THIS file — not process.argv[1], which may be a launcher shim
  *  outside the repo. When the CLI itself runs from a release dir, this IS that release dir. */
@@ -196,7 +197,7 @@ function buildReleaseShim(staging: string): void {
   try {
     buildShim(staging);
   } catch (e) {
-    if (hubEnabled(process.env.PAW_SPACE?.trim() || "paw")) throw e;
+    if (hubEnabled(resolveSpace())) throw e;
     console.error(`${(e as Error).message} — skipped (hub mode is off).`);
   }
 }

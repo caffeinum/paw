@@ -60,12 +60,24 @@ at all, recovered by ensure()).
 - **The mode is STICKY per space** (`paw hub on|off` writes `spaces/<s>/hub`), like `paw runtime`:
   every process reads the file — the CLI, the manager's connector, a launchd job with a bare env — so
   a reboot or a shell without a variable can't flip the fleet back to `mcp.cjs`. `PAW_COTAL_HUB=1|0`
-  is a transient override for one process tree; launchd jobs forward it (and `PAW_SERVER`) if set at
-  install. The connector reads the mode per spawn, so a switch needs NO manager restart: new spawns
+  overrides it for ONE command only: `daemonEnv` strips it from every daemon (a manager that inherited
+  it would pin the mode for its whole life — its connector reads it per spawn) and launchd never bakes
+  it (in the 60s keeper it would re-assert the hub forever). launchd jobs do forward `PAW_SERVER`. A
+  manager started by an older paw WITH the var is detected (`ps -E`) and `paw status`/`paw hub` say
+  that `paw restart` makes it follow the sticky mode. A garbage/unreadable mode file is reported as
+  such and treated as off. The connector reads the mode per spawn, so a switch needs NO manager restart: new spawns
   follow it, running agents switch at their next restart. Per 802ad0d's rule nothing bounces an
   agent over a mismatch: ensure() starts a hub that should run and never stops one; `paw hub off`
   stops it only once no agent is still on a shim. `paw status` prints a hub line (mode, hub pid,
   supervisor, socket, shim count) when hub mode is on or a hub/shim is still around.
+
+**Known race: `paw hub off` vs a spawn in flight.** The connector decides shim-or-mcp.cjs inside the
+manager's `buildLaunch`, and `paw hub off` stops the hub only when no shim is running. A spawn whose
+launch was built with the hub ON but whose claude hasn't started its shim yet is invisible to that
+count: `off` can stop the hub under it, and that agent comes up with a shim that retries forever and
+no cotal tools (its tool calls get "hub unavailable" errors, never a hang). Recovery: `paw hub on`
+(the shim reconnects within its backoff) or `paw restart <name>` (relaunches on mcp.cjs). Don't
+switch the mode off while agents are being started; not worth a lock across two daemons.
 
 ## What agents see during a hub restart
 

@@ -20,10 +20,11 @@ import { fileURLToPath } from "node:url";
 // Short: the hub socket lives under PAW_HOME and unix socket paths are capped at 103 bytes.
 process.env.PAW_HOME = mkdtempSync("/tmp/pawhubchk-");
 const REPO = fileURLToPath(new URL("..", import.meta.url));
-const { hubEnabled, hubSocketPath, buildShim, writeHubMode, readHubMode, hubModePath } = await import("../src/hub/paths.js");
+const { hubEnabled, hubSocketPath, buildShim, writeHubMode, readHubMode, hubModePath, hubModeFile } = await import("../src/hub/paths.js");
 const { routeCotalToHub } = await import("../src/hub/route.js");
 const { parseHandshake, EXIT_LINE } = await import("../src/hub/daemon.mjs");
-const { hubMatchPattern, formatHubLine } = await import("../src/lifecycle.js");
+const { hubMatchPattern, formatHubLine, daemonEnv } = await import("../src/lifecycle.js");
+const { fleetJob } = await import("../src/commands/launchd.js");
 
 let fails = 0;
 const ok = (label: string, cond: boolean, detail = "") => {
@@ -74,6 +75,18 @@ ok("pgrep signature ignores the mailbox", !re.test("paw.ts mailbox --space ownte
   ok("status line: a dead hub warns", /NOT running.*⚠/.test(formatHubLine({ ...base, hub: [], answers: false }) ?? ""));
   ok("status line: off and gone prints nothing", formatHubLine({ ...base, on: false, source: "default", supervisor: [], hub: [], answers: false, shims: 0 }) === undefined);
   ok("status line: off but still serving says so", /still serving/.test(formatHubLine({ ...base, on: false }) ?? ""));
+  ok("status line: a garbage mode file says so (not '(default)')", /unreadable\/garbage → treated as off/.test(formatHubLine({ ...base, on: false, source: "garbage" }) ?? ""));
+  ok("status line: a manager pinned by the env says `paw restart`", /PAW_COTAL_HUB=1.*paw restart/.test(formatHubLine({ ...base, managerPinned: "1" }) ?? ""));
+}
+{
+  process.env.PAW_COTAL_HUB = "1";
+  ok("daemons never inherit the PAW_COTAL_HUB override (it would outlive the shell)", !("PAW_COTAL_HUB" in daemonEnv()));
+  const job = fleetJob("s", ["a"], { log: "/tmp/x.log", cwd: "/tmp" });
+  ok("launchd jobs never bake PAW_COTAL_HUB (the keeper would re-assert the hub forever)", !("PAW_COTAL_HUB" in job.env));
+  delete process.env.PAW_COTAL_HUB;
+  mkdirSync(join(process.env.PAW_HOME!, "spaces", "m2"), { recursive: true });
+  writeFileSync(hubModePath("m2"), "maybe\n");
+  ok("garbage mode file → off, and identified as garbage", hubEnabled("m2", {}) === false && hubModeFile("m2") === "garbage");
 }
 {
   const args = ["--strict-mcp-config", "--mcp-config", JSON.stringify({ mcpServers: { cotal: { command: "node", args: ["/x/mcp.cjs"] }, other: { command: "o" } } })];
@@ -158,12 +171,16 @@ ok("shim builds with the system cc", spawnSync(shim, [], { stdio: "ignore" }).st
   send({ method: "notifications/initialized" });
   send({ id: "p1", method: "ping" });
   ok("relay: initialize + ping answered through the shim", await waitFor(() => out.some((m) => m.id === 1) && out.some((m) => m.id === "p1")));
-  // a request the hub never answers, then the hub drops the connection
+  // a request claude cancels must free its slot (no error owed for it), then one the hub never
+  // answers, then the hub drops the connection
+  send({ id: 6, method: "slow/never" });
+  send({ method: "notifications/cancelled", params: { requestId: 6, reason: "user" } });
   send({ id: 7, method: "slow/never" });
   await waitFor(() => hubLines[0]!.some((l) => l.includes("slow/never")));
   fake.close(); // stop accepting FIRST, so the shim's immediate reconnect finds nobody
   hubSock!.destroy();
   ok("hub drop: the in-flight request gets an error, not a hang", await waitFor(() => out.some((m) => m.id === 7 && m.error)));
+  ok("a cancelled request's slot was freed (no error owed for it)", !out.some((m) => m.id === 6));
   await sleep(200);
   send({ id: 8, method: "ping" });
   ok("hub down: a new request is answered with an error at once", await waitFor(() => out.some((m) => m.id === 8 && m.error), 2000));

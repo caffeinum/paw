@@ -13,8 +13,8 @@
  * never stops one. `PAW_COTAL_HUB=1|0` stays a transient override for one process tree.
  */
 import { registry, type Command } from "@cotal-ai/core";
-import { ensure, ensureHub, formatHubLine, hubShimProcs, hubState, resolveSpace, stopHub } from "../lifecycle.js";
-import { readHubMode, writeHubMode } from "../hub/paths.js";
+import { ensure, formatHubLine, hubShimProcs, hubState, resolveSpace, stopHub } from "../lifecycle.js";
+import { hubModeFile, writeHubMode } from "../hub/paths.js";
 
 function parse(argv: string[]): { mode?: "on" | "off"; space?: string } {
   const out: { mode?: "on" | "off"; space?: string } = {};
@@ -36,8 +36,7 @@ async function hub(argv: string[]): Promise<void> {
     console.error(`paw: note — PAW_COTAL_HUB=${process.env.PAW_COTAL_HUB} overrides the sticky mode in THIS shell's processes`);
   if (mode === "on") {
     writeHubMode(space, "on");
-    await ensure({ needMesh: true, space });
-    await ensureHub(space);
+    await ensure({ needMesh: true, space }); // starts the hub under the space lock (the mode is on now)
     console.log(`cotal hub ON for space ${space} (sticky). New agents use it; running ones switch at their next restart (\`paw restart <name>\`, or \`paw restart\` for all).`);
   } else if (mode === "off") {
     writeHubMode(space, "off");
@@ -50,7 +49,11 @@ async function hub(argv: string[]): Promise<void> {
     }
   }
   const h = await hubState(space);
-  console.log(formatHubLine(h) ?? `cotal hub: off${readHubMode(space) ? "" : " (default)"} · not running`);
+  const file = hubModeFile(space);
+  console.log(
+    formatHubLine(h) ??
+      `cotal hub: off${file === "garbage" ? " (mode file unreadable/garbage → treated as off)" : file ? "" : " (default)"} · not running`,
+  );
 }
 
 const hubCommand: Command = {

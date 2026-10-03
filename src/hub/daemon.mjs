@@ -152,8 +152,10 @@ export async function runHub({ space, socket: path }) {
     const s = c.session;
     if (s) {
       let done = false;
+      let counted = false;
       const t = setTimeout(() => {
         if (done) return;
+        counted = true;
         leaked++;
         log(`session ${c.name}#${c.id}: close() still running after 5s — its NATS connection may be leaked (${leaked}/${LEAK_BUDGET})`);
         if (leaked > LEAK_BUDGET) {
@@ -168,6 +170,9 @@ export async function runHub({ space, socket: path }) {
         .finally(() => {
           done = true;
           clearTimeout(t);
+          // A slow close that DID finish released its connection: stop counting it, or weeks of
+          // occasional slow closes add up to a spurious restart.
+          if (counted) leaked--;
         });
     }
   };

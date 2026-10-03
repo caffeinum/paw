@@ -44,7 +44,7 @@ import { pawCotalRoot } from "./cotal-root.js";
 import { withManagerControl } from "./control.js";
 import { withFileLock } from "./lock.js";
 import { customServer, pawServer } from "./server.js";
-import { ensureShim, hubEnabled, hubSocketPath, readHubMode } from "./hub/paths.js";
+import { ensureShim, hubEnabled, hubModeFile, hubSocketPath } from "./hub/paths.js";
 
 export interface EnsureOpts {
   /** Bring up (or adopt) the NATS mesh. Commands that talk to the mesh need this. */
@@ -61,13 +61,10 @@ export interface EnsureOpts {
 
 /** Machine-wide default space. A folder maps to an agent NAME, not a space, so every paw agent
  *  shares ONE mesh and can address its peers. PAW_SPACE overrides for an isolated mesh. */
-const DEFAULT_SPACE = "paw";
 
 /** The single space all paw agents share unless explicitly overridden. */
-export function resolveSpace(): string {
-  const override = process.env.PAW_SPACE?.trim();
-  return override && override.length > 0 ? override : DEFAULT_SPACE;
-}
+import { resolveSpace } from "./space.js";
+export { resolveSpace };
 
 /** The manager runtimes bin/cotald.ts registers (pty ships with the manager; tmux/cmux are the
  *  imported integrations). `pty` = headless warm agents (paw's default); `cmux`/`tmux` give each
@@ -686,6 +683,10 @@ export function stripHarnessMarkers(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
 
 export function daemonEnv(extra?: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = stripHarnessMarkers({ ...process.env, ...extra });
+  // PAW_COTAL_HUB overrides the hub mode for THIS command only. A daemon that inherited it (the
+  // manager's connector reads it per spawn) would pin the mode for its whole life and outlive the
+  // shell — `paw hub off` could never take effect. The sticky mode file is the daemons' answer.
+  delete env.PAW_COTAL_HUB;
   const opts = sanitizeNodeOptions(env.NODE_OPTIONS);
   if (opts === undefined) delete env.NODE_OPTIONS;
   else env.NODE_OPTIONS = opts;
@@ -1460,8 +1461,12 @@ export function hubShimProcs(space: string): number[] {
 
 export interface HubState {
   on: boolean;
-  /** Where `on` came from: the PAW_COTAL_HUB override, the space's sticky mode, or the default (off). */
-  source: "env" | "sticky" | "default";
+  /** Where `on` came from: the PAW_COTAL_HUB override, the space's sticky mode, a mode file that says
+   *  neither on nor off (treated as off), or nothing at all (off). */
+  source: "env" | "sticky" | "garbage" | "default";
+  /** A running manager that was started with PAW_COTAL_HUB in its env (by a paw from before daemons
+   *  stopped inheriting it): its connector follows that value, not the sticky mode, until restarted. */
+  managerPinned?: string;
   supervisor: number[];
   hub: number[];
   answers: boolean;
@@ -1470,11 +1475,13 @@ export interface HubState {
 
 export async function hubState(space: string): Promise<HubState> {
   const pids = hubProcs(space);
+  const file = hubModeFile(space);
   const cmd = (pid: number) => spawnSync("ps", ["-o", "command=", "-p", String(pid)], { encoding: "utf8" }).stdout?.trim() ?? "";
   const supervisor = pids.filter((p) => cmd(p).startsWith("/bin/sh"));
   return {
     on: hubEnabled(space),
-    source: process.env.PAW_COTAL_HUB?.trim() ? "env" : readHubMode(space) ? "sticky" : "default",
+    source: process.env.PAW_COTAL_HUB?.trim() ? "env" : file === "garbage" ? "garbage" : file ? "sticky" : "default",
+    managerPinned: managerHubEnv(space),
     supervisor,
     hub: pids.filter((p) => !supervisor.includes(p)),
     answers: pids.length > 0 && (await hubAnswers(hubSocketPath(space))),
@@ -1485,12 +1492,23 @@ export async function hubState(space: string): Promise<HubState> {
 /** The one-line hub summary `paw status` / `paw hub` print. Nothing when the hub is off and gone. Pure. */
 export function formatHubLine(h: HubState): string | undefined {
   if (!h.on && h.hub.length === 0 && h.supervisor.length === 0 && h.shims === 0) return undefined;
-  const mode = `${h.on ? "on" : "off"}${h.source === "env" ? " (PAW_COTAL_HUB override)" : h.source === "default" ? " (default)" : ""}`;
+  const mode = `${h.on ? "on" : "off"}${h.source === "env" ? " (PAW_COTAL_HUB override, this shell only)" : h.source === "garbage" ? " (mode file unreadable/garbage → treated as off)" : h.source === "default" ? " (default)" : ""}`;
   const proc = h.hub.length ? `hub pid ${h.hub.join(",")}` : "hub NOT running";
   const sup = h.supervisor.length ? "supervised" : "NO supervisor";
   const sock = h.answers ? "socket answers" : "socket NOT answering";
   const warn = h.on && (!h.hub.length || !h.answers) ? " ⚠ agents' cotal tools are down until it's back (`paw hub on`)" : !h.on && h.shims ? " — still serving agents launched in hub mode" : "";
-  return `cotal hub: ${mode} · ${proc} · ${sup} · ${sock} · ${h.shims} agent${h.shims === 1 ? "" : "s"} on shims${warn}`;
+  const pinned = h.managerPinned !== undefined ? ` ⚠ the running manager was started with PAW_COTAL_HUB=${h.managerPinned} and follows THAT for new spawns — \`paw restart\` makes it follow the sticky mode` : "";
+  return `cotal hub: ${mode} · ${proc} · ${sup} · ${sock} · ${h.shims} agent${h.shims === 1 ? "" : "s"} on shims${warn}${pinned}`;
+}
+
+/** PAW_COTAL_HUB as seen in the running manager's own environment (`ps -E`), if any. */
+function managerHubEnv(space: string): string | undefined {
+  for (const pid of managerProcs(space)) {
+    const out = spawnSync("ps", ["-E", "-o", "command=", "-p", String(pid)], { encoding: "utf8" }).stdout ?? "";
+    const m = /(?:^|\s)PAW_COTAL_HUB=(\S*)/.exec(out);
+    if (m) return m[1];
+  }
+  return undefined;
 }
 
 /** Socket accepts a connection — the hub's readiness signal (bind happens before it listens). */

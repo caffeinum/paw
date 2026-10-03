@@ -25,19 +25,32 @@ export function hubModePath(space: string): string {
   return join(spaceDir(space), "hub");
 }
 
-/** "on" | "off" from the mode file; an absent or unreadable/garbage file is no choice at all. */
-export function readHubMode(space: string): "on" | "off" | undefined {
+/** The mode file as it stands: "on" | "off", "garbage" when it exists but says neither (or can't be
+ *  read), undefined when there is none. Garbage is treated as off, and said so — never silently. */
+export function hubModeFile(space: string): "on" | "off" | "garbage" | undefined {
+  const p = hubModePath(space);
+  if (!existsSync(p)) return undefined;
   try {
-    const v = readFileSync(hubModePath(space), "utf8").trim();
-    return v === "on" || v === "off" ? v : undefined;
+    const v = readFileSync(p, "utf8").trim();
+    return v === "on" || v === "off" ? v : "garbage";
   } catch {
-    return undefined;
+    return "garbage";
   }
 }
 
+/** "on" | "off" from the mode file; absent or garbage is no choice at all (⇒ off). */
+export function readHubMode(space: string): "on" | "off" | undefined {
+  const m = hubModeFile(space);
+  return m === "on" || m === "off" ? m : undefined;
+}
+
+/** Written atomically (tmp + rename): a reader racing the write sees the old mode or the new one. */
 export function writeHubMode(space: string, mode: "on" | "off"): void {
   mkdirSync(spaceDir(space), { recursive: true });
-  writeFileSync(hubModePath(space), `${mode}\n`);
+  const p = hubModePath(space);
+  const tmp = `${p}.${process.pid}.tmp`;
+  writeFileSync(tmp, `${mode}\n`);
+  renameSync(tmp, p);
 }
 
 /** Is hub mode on for `space`? `PAW_COTAL_HUB` (1/0) is a TRANSIENT override for one process tree;

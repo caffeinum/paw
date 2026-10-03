@@ -177,9 +177,10 @@ function jobEnv(): Record<string, string> {
   const env: Record<string, string> = { PATH: toolDirs().join(":"), HOME: homedir() };
   // The state root + a pinned release are the two things a login shell might carry that the job must
   // agree with; forward them only when the operator actually set them.
-  // PAW_SERVER (a broker of the operator's own) and PAW_COTAL_HUB (the hub override) likewise —
-  // though the durable hub choice is the space's `paw hub on|off` file, which needs no env at all.
-  for (const k of ["PAW_HOME", "PAW_RELEASE", "PAW_RUNTIME", "PAW_SERVER", "PAW_COTAL_HUB"]) if (process.env[k]) env[k] = process.env[k] as string;
+  // PAW_SERVER (a broker of the operator's own) likewise. NOT PAW_COTAL_HUB: it is a one-command
+  // override, and baked into a job (the 60s keeper especially) it would re-assert the hub forever and
+  // make `paw hub off` impossible. The durable hub choice is the space's `paw hub on|off` file.
+  for (const k of ["PAW_HOME", "PAW_RELEASE", "PAW_RUNTIME", "PAW_SERVER"]) if (process.env[k]) env[k] = process.env[k] as string;
   return env;
 }
 

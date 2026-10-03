@@ -73,7 +73,7 @@ static int write_all(int f, const char *p, size_t n) {
 // Returns 1 if found, 0 if absent, -1 if found but longer than outn-1 (never a truncated value).
 // Strings/escapes/nesting are tracked so a nested "id" never matches; every index is bounded by n,
 // so malformed input (an unterminated string, a trailing backslash) can't read past the line.
-static int top_key(const char *s, size_t n, const char *key, char *out, size_t outn) {
+static int key_at(const char *s, size_t n, const char *key, char *out, size_t outn, int want_depth) {
   size_t klen = strlen(key);
   int depth = 0;
   for (size_t i = 0; i < n; i++) {
@@ -82,7 +82,7 @@ static int top_key(const char *s, size_t n, const char *key, char *out, size_t o
       size_t st = i + 1, j = st;
       while (j < n && s[j] != '"') j += (s[j] == '\\') ? 2 : 1;
       if (j >= n) return 0;  // unterminated string: malformed, nothing to find
-      if (depth == 1 && j - st == klen && !memcmp(s + st, key, klen)) {
+      if ((want_depth < 0 ? depth >= 1 : depth == want_depth) && j - st == klen && !memcmp(s + st, key, klen)) {
         size_t k = j + 1;
         while (k < n && (s[k] == ' ' || s[k] == ':')) k++;
         size_t vs = k;
@@ -103,6 +103,10 @@ static int top_key(const char *s, size_t n, const char *key, char *out, size_t o
     else if (c == '}' || c == ']') depth--;
   }
   return 0;
+}
+
+static int top_key(const char *s, size_t n, const char *key, char *out, size_t outn) {
+  return key_at(s, n, key, out, outn, 1);
 }
 
 // Literal-safe append: the length comes from the literal, never a hand-counted number.
@@ -197,6 +201,12 @@ static void on_client_line(char *l, size_t n) {
   if (is_req && has_id < 0) { reply_error("null", "request id too long for the cotal shim"); return; }
   if (m > 0 && !strcmp(method, "\"initialize\"")) { init_line.n = 0; bput(&init_line, l, n); if (has_id > 0) strcpy(init_id, id); }
   if (m > 0 && !strcmp(method, "\"notifications/initialized\"")) { inited_line.n = 0; bput(&inited_line, l, n); }
+  // A cancelled request gets no response, so its slot would never free: drop it here. The id lives in
+  // params.requestId (the only "requestId" key a cancel carries).
+  if (m > 0 && !strcmp(method, "\"notifications/cancelled\"")) {
+    char rid[ID_MAX];
+    if (key_at(l, n, "requestId", rid, sizeof rid, 2) > 0) pend_del(rid);
+  }
   if (fd < 0) {
     if (is_req) reply_error(id, "cotal hub unavailable - retry shortly");
     return;
