@@ -1,0 +1,37 @@
+docs/notes/hub.md
+  s_ed25aaaf9c7e77::t_3bb4d393553ac3 63-68,74-81
+scripts/check-hub.ts
+  s_ed25aaaf9c7e77::t_03738af74daff3 23,26-27,78-89,174-177,183
+src/commands/hub.ts
+  s_ed25aaaf9c7e77::t_2d64559124955a 16-17,39,52-56
+src/commands/launchd.ts
+  s_ed25aaaf9c7e77::t_a18b4560a19a14 180-183
+src/hub/cotal-shim.c
+  s_ed25aaaf9c7e77::t_f2b4170e157ecb 76,85,108-111,204-209
+src/hub/daemon.mjs
+  s_ed25aaaf9c7e77::t_f79cfe5736439e 155,158,173-175
+src/hub/paths.ts
+  s_ed25aaaf9c7e77::t_2cde89bebd1a55 28-32,34-35,37,41-47,50-53
+src/lifecycle.ts
+  s_ed25aaaf9c7e77::t_b2082602c0c8c9 47,66-67,686-689,1464-1469,1478,1483-1484,1495,1500-1511
+src/release.ts
+  s_ed25aaaf9c7e77::t_46013af35a876a 42,200
+src/space.ts
+  s_ed25aaaf9c7e77::t_345a738c840b5c 1-8
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "13c263cf6f72b0cfa8848f794b9036e3b6899723",
+  "prompts": {},
+  "sessions": {
+    "s_ed25aaaf9c7e77": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "90dd1251-161e-469a-96db-040d1e555035",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Aleksey Bykhun <theisease@gmail.com>"
+    }
+  }
+}
