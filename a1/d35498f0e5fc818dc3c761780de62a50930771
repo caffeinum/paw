@@ -1,0 +1,111 @@
+.gitignore
+  s_ed25aaaf9c7e77::t_4ad67e733badad 15
+bin/cotald.ts
+  s_ed25aaaf9c7e77::t_ce5dd483677f15 28-29,53
+docs/notes/hub.md
+  s_ed25aaaf9c7e77::t_778311591f08e5 1-99
+package.json
+  s_ed25aaaf9c7e77::t_e352d49e0c0c36 43-44
+patches/@cotal-ai__connector-claude-code@0.58.0.patch
+  s_ed25aaaf9c7e77::t_d48b75e1ff5906 1-473
+pnpm-lock.yaml
+  s_ed25aaaf9c7e77::t_0915f32e714d05 7-9,22,684
+pnpm-workspace.yaml
+  s_ed25aaaf9c7e77::t_111ee54cb68563 22-28
+scripts/check-hub.ts
+  s_ed25aaaf9c7e77::t_f2944442cf5d4a 1-259
+scripts/check-loop.ts
+  s_ed25aaaf9c7e77::t_c670572912a03e 12,17,29
+scripts/check-rail.ts
+  s_ed25aaaf9c7e77::t_6db6f7e149cf6f 39,85,121,153,175,192
+scripts/e2e-hub.ts
+  s_ed25aaaf9c7e77::t_859c9645a725f4 1-212
+scripts/e2e-sleep.ts
+  s_ed25aaaf9c7e77::t_1f74ba3dcb0d46 15,26,64,76
+scripts/probe-sleep-dm.ts
+  s_ed25aaaf9c7e77::t_f345d027f7c8af 12,19,27,44,51
+src/adopt.ts
+  s_ed25aaaf9c7e77::t_3fdc3471ee4dd2 20,43
+src/chat.ts
+  s_ed25aaaf9c7e77::t_f565bd7ca135c5 83,350
+src/commands/ask.ts
+  s_ed25aaaf9c7e77::t_e26b438de2209b 7,11,43
+src/commands/bind.ts
+  s_ed25aaaf9c7e77::t_5265af407b8191 24,27,108
+src/commands/files.ts
+  s_ed25aaaf9c7e77::t_9199fa14fff6a3 13,19,120
+src/commands/history.ts
+  s_ed25aaaf9c7e77::t_6015e468973645 11,16,98
+src/commands/launchd.ts
+  s_ed25aaaf9c7e77::t_176497df69dbdc 34,43,273
+src/commands/msg.ts
+  s_ed25aaaf9c7e77::t_58382896b87bf2 8,13,46
+src/commands/runtime.ts
+  s_ed25aaaf9c7e77::t_15eee90b3fc76a 13,43,77,100,182
+src/commands/stop.ts
+  s_ed25aaaf9c7e77::t_fc63f9089a12f9 12,25,113
+src/commands/top.ts
+  s_ed25aaaf9c7e77::t_1be66da5a378d2 8,28,65
+src/commands/unstick.ts
+  s_ed25aaaf9c7e77::t_e6237f72a9a39e 8,17,46
+src/commands/watch.ts
+  s_ed25aaaf9c7e77::t_d0b99728755523 17,22,58
+src/commands/who.ts
+  s_ed25aaaf9c7e77::t_f668df2e81deb3 7,11,78
+src/connector.ts
+  s_ed25aaaf9c7e77::t_e013855a0c1c84 8-9,176-179
+src/dm.ts
+  s_ed25aaaf9c7e77::t_af38385d335129 21,39,220
+src/hub/cotal-shim.c
+  s_ed25aaaf9c7e77::t_37f29d26ff280f 1-242
+src/hub/daemon.mjs
+  s_ed25aaaf9c7e77::t_f416e14e445592 1-325
+src/hub/paths.ts
+  s_ed25aaaf9c7e77::t_2d46389aca593f 1-69
+src/hub/route.ts
+  s_ed25aaaf9c7e77::t_75ae31e24a676c 1-29
+src/inbox.ts
+  s_ed25aaaf9c7e77::t_a0f237cdc06707 17,23,131
+src/lifecycle.ts
+  s_ed25aaaf9c7e77::t_1d80a925442ac1 16,46-47,789-791,1066-1075,1238,1428-1506,1515,1519-1520,1539,1560-1562,1592
+src/mailbox.ts
+  s_ed25aaaf9c7e77::t_13ad66f918c8fb 16,21,37
+src/open.ts
+  s_ed25aaaf9c7e77::t_a736600d5df215 11,21,122
+src/release.ts
+  s_ed25aaaf9c7e77::t_793634ddf332d3 41,182,191-203
+src/rename.ts
+  s_ed25aaaf9c7e77::t_de567f292e12d2 8,23,95
+src/rm.ts
+  s_ed25aaaf9c7e77::t_e09a5bc61b9d01 12,20,99
+src/server.ts
+  s_ed25aaaf9c7e77::t_63f95e7b6a54ea 1-22
+src/sleep-host.ts
+  s_ed25aaaf9c7e77::t_50951dab86db5a 23,43,101,140
+src/sleep.ts
+  s_ed25aaaf9c7e77::t_bca68749ce1804 24,36,263
+src/start.ts
+  s_ed25aaaf9c7e77::t_23ac879dcf12e4 14,19
+src/status.ts
+  s_ed25aaaf9c7e77::t_4a84a279903c4f 10,25,705,710,718
+src/web.ts
+  s_ed25aaaf9c7e77::t_4a3b02e0ffc9b9 48,101,1458
+tsconfig.json
+  s_ed25aaaf9c7e77::t_d3268484c39921 14,17
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "a1d35498f0e5fc818dc3c761780de62a50930771",
+  "prompts": {},
+  "sessions": {
+    "s_ed25aaaf9c7e77": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "90dd1251-161e-469a-96db-040d1e555035",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Aleksey Bykhun <theisease@gmail.com>"
+    }
+  }
+}
