@@ -15,7 +15,7 @@ import { homedir } from "node:os";
 import { agentNamesForFolder, canonicalDir, controlCreds, listAgents, personaFilePath, psRowAlive, terminalLost, type PsRow, wirePrincipal } from "./addressing.js";
 import { withManagerControl, type ManagerControl } from "./control.js";
 import { listForeground } from "./foreground.js";
-import { readRuntimeMarker, resolveSpace, type Runtime } from "./lifecycle.js";
+import { formatHubLine, hubState, readRuntimeMarker, resolveSpace, type Runtime } from "./lifecycle.js";
 import { writeJson } from "./stdout.js";
 import { liveSessionProcs, nameForSession } from "./named.js";
 import { isClaudeHarness, readAgentType, readResumeId, transcriptExists, transcriptMtime, transcriptPath } from "./session.js";
@@ -808,13 +808,16 @@ async function status(argv: string[]): Promise<void> {
     return { folder, names: agentNamesForFolder(space, folder) };
   });
   const { errors } = all;
+  const hub = await hubState(space);
   if (asJson) {
-    writeJson({ space, rows, errors }); // writeJson, NOT console.log — see src/stdout.ts
+    writeJson({ space, rows, errors, hub }); // writeJson, NOT console.log — see src/stdout.ts
     return; // errors ride IN the payload — a consumer must see them, not have them land on stderr only
   }
   // `--wide` keeps every column at any terminal width: the squeezed layout drops RUNTIME/SESSION and
   // elides long paths, which is right for reading and wrong when you need the whole cell.
   console.log(formatStatus(rows, Date.now(), undefined, argv.includes("--wide")));
+  const hubLine = formatHubLine(hub);
+  if (hubLine) console.log(hubLine);
   for (const e of errors) console.error(c.red(e));
 }
 

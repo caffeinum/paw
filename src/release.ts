@@ -190,14 +190,14 @@ export function createRelease(opts: { root?: string; force?: boolean } = {}): Re
 
 /** Compile the cotal hub's per-agent shim into the release (src/hub/paths.ts), so the daemons never
  *  build into a tree they're running from. Without a C compiler this fails loud when the hub is on
- *  (PAW_COTAL_HUB=1 — it can't run without one) and otherwise says so and carries on: the default
+ *  (hub mode on — it can't run without one) and otherwise says so and carries on: the default
  *  mode never touches the shim, and the connector builds it on first hub use if one appears later. */
 function buildReleaseShim(staging: string): void {
   try {
     buildShim(staging);
   } catch (e) {
-    if (hubEnabled()) throw e;
-    console.error(`${(e as Error).message} — skipped (PAW_COTAL_HUB is off).`);
+    if (hubEnabled(process.env.PAW_SPACE?.trim() || "paw")) throw e;
+    console.error(`${(e as Error).message} — skipped (hub mode is off).`);
   }
 }
 

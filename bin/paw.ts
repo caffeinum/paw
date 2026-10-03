@@ -37,6 +37,7 @@ import "../src/commands/bind.js"; // self-registers the "bind" command (mint a c
 import "../src/commands/files.js"; // self-registers the "files" command (list files endpoints shared on #files)
 import "../src/commands/watch.js"; // self-registers the "watch" command (live tap of the space)
 import "../src/commands/runtime.js"; // self-registers "runtime" + "restart" (manager runtime preference/bounce)
+import "../src/commands/hub.js"; // self-registers "hub" (sticky cotal-hub mode: one MCP process for every agent; self-ensures)
 import "../src/commands/release.js"; // self-registers "release" (snapshot the checkout the daemons run from); LOCAL — files + a symlink, no mesh
 import "../src/commands/mcp.js"; // self-registers "mcp" (which MCP servers agents get); LOCAL — reads config + personas, no mesh
 import "../src/commands/launchd.js"; // self-registers "launchd" (fleet + web at login); LOCAL — plists + launchctl, self-resolves the manager only to capture the live list

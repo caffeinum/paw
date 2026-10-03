@@ -44,7 +44,7 @@ import { pawCotalRoot } from "./cotal-root.js";
 import { withManagerControl } from "./control.js";
 import { withFileLock } from "./lock.js";
 import { customServer, pawServer } from "./server.js";
-import { ensureShim, hubEnabled, hubSocketPath } from "./hub/paths.js";
+import { ensureShim, hubEnabled, hubSocketPath, readHubMode } from "./hub/paths.js";
 
 export interface EnsureOpts {
   /** Bring up (or adopt) the NATS mesh. Commands that talk to the mesh need this. */
@@ -1453,6 +1453,46 @@ while :; do
   d=$(( d * 2 )); [ "$d" -gt 30 ] && d=30
 done`;
 
+/** Live shims connected to (or retrying) this space's hub — one per claude in hub mode. */
+export function hubShimProcs(space: string): number[] {
+  return pgrepF(`cotal-shim ${escapeRegex(hubSocketPath(space))}$`);
+}
+
+export interface HubState {
+  on: boolean;
+  /** Where `on` came from: the PAW_COTAL_HUB override, the space's sticky mode, or the default (off). */
+  source: "env" | "sticky" | "default";
+  supervisor: number[];
+  hub: number[];
+  answers: boolean;
+  shims: number;
+}
+
+export async function hubState(space: string): Promise<HubState> {
+  const pids = hubProcs(space);
+  const cmd = (pid: number) => spawnSync("ps", ["-o", "command=", "-p", String(pid)], { encoding: "utf8" }).stdout?.trim() ?? "";
+  const supervisor = pids.filter((p) => cmd(p).startsWith("/bin/sh"));
+  return {
+    on: hubEnabled(space),
+    source: process.env.PAW_COTAL_HUB?.trim() ? "env" : readHubMode(space) ? "sticky" : "default",
+    supervisor,
+    hub: pids.filter((p) => !supervisor.includes(p)),
+    answers: pids.length > 0 && (await hubAnswers(hubSocketPath(space))),
+    shims: hubShimProcs(space).length,
+  };
+}
+
+/** The one-line hub summary `paw status` / `paw hub` print. Nothing when the hub is off and gone. Pure. */
+export function formatHubLine(h: HubState): string | undefined {
+  if (!h.on && h.hub.length === 0 && h.supervisor.length === 0 && h.shims === 0) return undefined;
+  const mode = `${h.on ? "on" : "off"}${h.source === "env" ? " (PAW_COTAL_HUB override)" : h.source === "default" ? " (default)" : ""}`;
+  const proc = h.hub.length ? `hub pid ${h.hub.join(",")}` : "hub NOT running";
+  const sup = h.supervisor.length ? "supervised" : "NO supervisor";
+  const sock = h.answers ? "socket answers" : "socket NOT answering";
+  const warn = h.on && (!h.hub.length || !h.answers) ? " ⚠ agents' cotal tools are down until it's back (`paw hub on`)" : !h.on && h.shims ? " — still serving agents launched in hub mode" : "";
+  return `cotal hub: ${mode} · ${proc} · ${sup} · ${sock} · ${h.shims} agent${h.shims === 1 ? "" : "s"} on shims${warn}`;
+}
+
 /** Socket accepts a connection — the hub's readiness signal (bind happens before it listens). */
 function hubAnswers(path: string): Promise<boolean> {
   return new Promise((resolve) => {
@@ -1464,11 +1504,11 @@ function hubAnswers(path: string): Promise<boolean> {
 
 const HUB_READY_MS = 15_000;
 
-/** Start the space's cotal hub under its supervisor, or adopt a running one (PAW_COTAL_HUB=1 only).
+/** Start the space's cotal hub under its supervisor, or adopt a running one (hub mode on only — see hubEnabled).
  *  Fails loud if the shim can't be built or the hub never listens — the connector is about to point
  *  every new agent's MCP server at it. */
-async function ensureHub(space: string): Promise<void> {
-  if (!hubEnabled()) return;
+export async function ensureHub(space: string): Promise<void> {
+  if (!hubEnabled(space)) return;
   const path = hubSocketPath(space);
   if (hubProcs(space).length > 0) return;
   ensureShim(daemonRoot());
@@ -1498,7 +1538,7 @@ async function ensureHub(space: string): Promise<void> {
 
 /** Stop the space's hub + supervisor by signature. Each live session leaves the mesh cleanly on
  *  SIGTERM; their claudes' shims keep retrying until a hub is back (or claude exits). */
-async function stopHub(space: string): Promise<void> {
+export async function stopHub(space: string): Promise<void> {
   const pids = hubProcs(space);
   if (!pids.length) return;
   signalProcs(pids, "SIGTERM");

@@ -35,14 +35,15 @@ const port = await new Promise<number>((r) => {
   });
 });
 process.env.PAW_SERVER = `nats://127.0.0.1:${port}`;
-process.env.PAW_COTAL_HUB = "1";
-process.env.PAW_RUNTIME ??= "pty";
+delete process.env.PAW_COTAL_HUB; // the STICKY mode (`paw hub on`) is what must carry it — no env anywhere
+process.env.PAW_RUNTIME ??= "tmux";
 process.env.PAW_MODEL ??= "haiku";
 const nats = spawn("nats-server", ["-js", "-p", String(port), "-a", "127.0.0.1", "-sd", mkdtempSync(join(tmpdir(), "pawhubjs-"))], { stdio: "ignore" });
 
 const { ManagerControl } = await import("../src/control.js");
 const { ensureAgentSpawned, personaFilePath, setFolderName, waitForPeerId } = await import("../src/addressing.js");
-const { ensure, stop, hubProcs, managerProcs, mailboxProcs } = await import("../src/lifecycle.js");
+const { confineAndTrustCwd } = await import("../src/cwd.js");
+const { ensure, stop, hubProcs, managerProcs, mailboxProcs, hubState, formatHubLine } = await import("../src/lifecycle.js");
 const { hubSocketPath } = await import("../src/hub/paths.js");
 const { liveSessionProcs } = await import("../src/named.js");
 const { readResumeId, personaValue } = await import("../src/session.js");
@@ -94,6 +95,10 @@ try {
     if (r.status === 0) break;
     await sleep(100);
   }
+  const tsx = join(REPO, "node_modules", "tsx", "dist", "cli.mjs");
+  const cli = (...a: string[]) => spawnSync(process.execPath, [tsx, join(REPO, "bin", "paw.ts"), ...a, "--space", space], { encoding: "utf8", env: process.env, timeout: 300_000 });
+  const on = cli("hub", "on");
+  ok("`paw hub on` (no env var) turns the hub on and starts it", on.status === 0 && /cotal hub: on · hub pid/.test(on.stdout), (on.stdout + on.stderr).split("\n").slice(-3).join(" | "));
   await ensure({ needMesh: true, needManager: true, space });
   ok("ensure() started the hub under its supervisor", hubProcs(space).length >= 2, `pids ${hubProcs(space).join(",")}`);
   const dirs = new Map<string, string>();
@@ -102,6 +107,11 @@ try {
     dirs.set(n, d);
     setFolderName(space, d, n);
   }
+  // Pre-trust EVERY folder before the first claude starts. paw trusts a folder just before spawning
+  // it, and a claude already booting rewrites ~/.claude.json from the copy it read at startup — so
+  // h2's trust entry was clobbered by h1's boot, h2 met the trust dialog (default "No, exit") and
+  // quit before reaching MCP. Seen in 3 of 5 runs; a paw race, not a hub one (reported separately).
+  for (const d of dirs.values()) confineAndTrustCwd(d);
   // One at a time: three cold claudes at once on a loaded machine is a boot-time test, not a hub test.
   for (const n of names) await ensureAgentSpawned(ctl, { space, name: n, cwd: dirs.get(n)! });
   ok("three agents spawned", true);
@@ -181,9 +191,10 @@ try {
   ok("woken h3 is back on a shim", shims().length === 3, `${shims().length} shims`);
 
   // ── 8. paw restart (the CLI) ─────────────────────────────────────────────────────────────────
+  const hubLine = formatHubLine(await hubState(space)) ?? "";
+  ok("paw status hub line: on, supervised, answering, 3 shims", /on · hub pid \d+ · supervised · socket answers · 3 agents on shims/.test(hubLine), hubLine);
   const hubBefore = hubNodes().map((p) => p.pid).join();
-  const tsx = join(REPO, "node_modules", "tsx", "dist", "cli.mjs");
-  const rr = spawnSync(process.execPath, [tsx, join(REPO, "bin", "paw.ts"), "restart", "--space", space], { encoding: "utf8", env: process.env, timeout: 300_000 });
+  const rr = cli("restart");
   ok("paw restart exited 0", rr.status === 0, (rr.stderr ?? "").split("\n").slice(-4).join(" | "));
   ok("paw restart renewed the hub", hubNodes().length > 0 && hubNodes().map((p) => p.pid).join() !== hubBefore);
   for (const n of names) await waitForPeerId(prober, n, 120_000).catch(() => undefined);

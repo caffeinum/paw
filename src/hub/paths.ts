@@ -1,13 +1,13 @@
 /**
  * The cotal hub's fixed points: is it on, where its socket lives, where the per-agent shim is.
  *
- * Opt-in (`PAW_COTAL_HUB=1`): every paw claude launches a ~1.4MB C shim as its cotal MCP server
+ * Opt-in per space (`paw hub on`): every paw claude launches a ~1.4MB C shim as its cotal MCP server
  * instead of its own `node mcp.cjs` (~55–90MB each), and ONE hub process per space serves all of
  * those sessions (src/hub/daemon.mjs, handed its socket path on argv). Leaf module — the connector
  * (inside the manager) and lifecycle read the same answers from here, so they cannot disagree.
  */
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, renameSync, rmSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -15,12 +15,39 @@ import { fileURLToPath } from "node:url";
 /** The tree this module runs from — a release dir for the daemons, the checkout for the CLI. */
 const TREE_ROOT = fileURLToPath(new URL("../..", import.meta.url));
 
-/** `PAW_COTAL_HUB=1` turns the hub on; unset/`0` keeps every agent on its own `node mcp.cjs`. */
-export function hubEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+function spaceDir(space: string): string {
+  return join(process.env.PAW_HOME?.trim() || join(homedir(), ".paw"), "spaces", space);
+}
+
+/** The space's STICKY hub mode, set by `paw hub on|off` — what every process (the CLI, the manager's
+ *  connector, a launchd job with a bare env) reads, so no shell can flip the fleet by accident. */
+export function hubModePath(space: string): string {
+  return join(spaceDir(space), "hub");
+}
+
+/** "on" | "off" from the mode file; an absent or unreadable/garbage file is no choice at all. */
+export function readHubMode(space: string): "on" | "off" | undefined {
+  try {
+    const v = readFileSync(hubModePath(space), "utf8").trim();
+    return v === "on" || v === "off" ? v : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export function writeHubMode(space: string, mode: "on" | "off"): void {
+  mkdirSync(spaceDir(space), { recursive: true });
+  writeFileSync(hubModePath(space), `${mode}\n`);
+}
+
+/** Is hub mode on for `space`? `PAW_COTAL_HUB` (1/0) is a TRANSIENT override for one process tree;
+ *  the durable answer is the space's mode file; neither ⇒ off (every agent on its own mcp.cjs). */
+export function hubEnabled(space: string, env: NodeJS.ProcessEnv = process.env): boolean {
   const v = env.PAW_COTAL_HUB?.trim();
-  if (!v || v === "0") return false;
   if (v === "1") return true;
-  throw new Error(`paw: PAW_COTAL_HUB="${v}" — expected 1 (on) or 0 (off)`);
+  if (v === "0") return false;
+  if (v) throw new Error(`paw: PAW_COTAL_HUB="${v}" — expected 1 (on) or 0 (off)`);
+  return readHubMode(space) === "on";
 }
 
 /** macOS `sun_path` is 104 bytes including the NUL; a longer path fails at bind with EINVAL. */
@@ -28,8 +55,7 @@ const SUN_PATH_MAX = 103;
 
 /** The hub's listening socket for `space`, under paw's per-space state dir. */
 export function hubSocketPath(space: string): string {
-  const root = process.env.PAW_HOME?.trim() || join(homedir(), ".paw");
-  const p = join(root, "spaces", space, "hub.sock");
+  const p = join(spaceDir(space), "hub.sock");
   if (Buffer.byteLength(p) > SUN_PATH_MAX)
     throw new Error(`paw: hub socket path is ${Buffer.byteLength(p)} bytes (${p}); unix sockets allow ${SUN_PATH_MAX} — use a shorter PAW_HOME`);
   return p;

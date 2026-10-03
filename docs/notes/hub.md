@@ -1,4 +1,4 @@
-# cotal hub — one MCP process for every agent (PAW_COTAL_HUB=1, opt-in)
+# cotal hub — one MCP process for every agent (`paw hub on`, opt-in)
 
 Index: [CLAUDE.md](../../CLAUDE.md). Source of truth is the code: `src/hub/daemon.mjs`,
 `src/hub/cotal-shim.c`, `src/hub/paths.ts`, `src/hub/route.ts`, the hub section of `src/lifecycle.ts`.
@@ -57,8 +57,15 @@ at all, recovered by ensure()).
   command, and the 60s `paw global` keeper tick — starts it again.
 - The shim is built by `paw release` into `<release>/.build/cotal-shim` (fail loud without `cc` when
   the hub is on; a warning otherwise), and by the connector on first use if a tree lacks it.
-- Turning the hub on/off needs a manager restart (the connector reads `PAW_COTAL_HUB` in the manager
-  process) and `PAW_COTAL_HUB=1` in the env that runs `ensure()`.
+- **The mode is STICKY per space** (`paw hub on|off` writes `spaces/<s>/hub`), like `paw runtime`:
+  every process reads the file — the CLI, the manager's connector, a launchd job with a bare env — so
+  a reboot or a shell without a variable can't flip the fleet back to `mcp.cjs`. `PAW_COTAL_HUB=1|0`
+  is a transient override for one process tree; launchd jobs forward it (and `PAW_SERVER`) if set at
+  install. The connector reads the mode per spawn, so a switch needs NO manager restart: new spawns
+  follow it, running agents switch at their next restart. Per 802ad0d's rule nothing bounces an
+  agent over a mismatch: ensure() starts a hub that should run and never stops one; `paw hub off`
+  stops it only once no agent is still on a shim. `paw status` prints a hub line (mode, hub pid,
+  supervisor, socket, shim count) when hub mode is on or a hub/shim is still around.
 
 ## What agents see during a hub restart
 
@@ -83,7 +90,14 @@ stop (SIGTERM); a crash leaves presence to expire, usually after the hub is alre
 | session table | capped at 512 |
 | throw/rejection inside a session | guarded → that connection closed |
 | escaped uncaught error | logged; >5 in a minute → exit, supervisor restarts |
-| event-loop stall (sync loop, runaway parse) | watchdog THREAD SIGKILLs after 15s (`PAW_HUB_STALL_MS`) |
+| event-loop stall (sync loop, runaway parse) | watchdog THREAD SIGKILLs after 15 of its OWN ticks with no main-loop beat (`PAW_HUB_STALL_MS`) — counted in ticks, not wall-clock, so laptop sleep (both threads frozen) is not a stall (check:hub SIGSTOPs it 6s) |
+| escaped error attribution | AsyncLocalStorage: an uncaught error is logged with the session it came from |
+| socket permissions | `umask 077` before listen — never briefly 0755 |
+| `close()` that never finishes (a hung NATS drain) | counted as a possible leaked connection; more than 5 → exit, the supervisor reclaims them |
+| shim: malformed JSON from claude | bounded top-level scan, never reads past the line; the line is relayed and the hub's transport skips it |
+| shim: request id > 255 chars | refused with a valid JSON error (`"id":null`), never truncated |
+| shim: > 1024 requests in flight | the new one is refused at once, never silently untracked |
+| shim: hub ends the session | reconnect waits ≥500ms (backoff), never in the same instant |
 | heap runaway | `--max-old-space-size=1024` → V8 aborts, supervisor restarts |
 | hub log | append-only `spaces/<s>/hub.log`, one line per session event + a stats line a minute (not rotated — same as manager.log) |
 | broker down / restart | each endpoint reconnects on its own |

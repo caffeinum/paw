@@ -20,10 +20,10 @@ import { fileURLToPath } from "node:url";
 // Short: the hub socket lives under PAW_HOME and unix socket paths are capped at 103 bytes.
 process.env.PAW_HOME = mkdtempSync("/tmp/pawhubchk-");
 const REPO = fileURLToPath(new URL("..", import.meta.url));
-const { hubEnabled, hubSocketPath, buildShim } = await import("../src/hub/paths.js");
+const { hubEnabled, hubSocketPath, buildShim, writeHubMode, readHubMode, hubModePath } = await import("../src/hub/paths.js");
 const { routeCotalToHub } = await import("../src/hub/route.js");
 const { parseHandshake, EXIT_LINE } = await import("../src/hub/daemon.mjs");
-const { hubMatchPattern } = await import("../src/lifecycle.js");
+const { hubMatchPattern, formatHubLine } = await import("../src/lifecycle.js");
 
 let fails = 0;
 const ok = (label: string, cond: boolean, detail = "") => {
@@ -45,10 +45,16 @@ const waitFor = async (cond: () => boolean, ms = 8000) => {
 };
 
 // ── pure parts ──────────────────────────────────────────────────────────────────────────────────
-ok("hub off when unset", hubEnabled({}) === false);
-ok("hub off for 0", hubEnabled({ PAW_COTAL_HUB: "0" }) === false);
-ok("hub on for 1", hubEnabled({ PAW_COTAL_HUB: "1" }) === true);
-ok("garbage flag fails loud", throws(() => hubEnabled({ PAW_COTAL_HUB: "yes" })));
+ok("hub off when unset (no env, no mode file)", hubEnabled("m1", {}) === false);
+ok("env 1 overrides an absent mode", hubEnabled("m1", { PAW_COTAL_HUB: "1" }) === true);
+ok("garbage env fails loud", throws(() => hubEnabled("m1", { PAW_COTAL_HUB: "yes" })));
+writeHubMode("m1", "on");
+ok("sticky mode on ⇒ on with a bare env (a launchd job, the manager)", hubEnabled("m1", {}) === true);
+ok("env 0 overrides a sticky on (transient)", hubEnabled("m1", { PAW_COTAL_HUB: "0" }) === false);
+writeHubMode("m1", "off");
+ok("sticky mode off ⇒ off", hubEnabled("m1", {}) === false && readHubMode("m1") === "off");
+writeFileSync(hubModePath("m1"), "maybe\n");
+ok("a garbage mode file is no choice (off), not a crash", hubEnabled("m1", {}) === false && readHubMode("m1") === undefined);
 ok("socket path under PAW_HOME/spaces/<s>", hubSocketPath("t1") === join(process.env.PAW_HOME!, "spaces", "t1", "hub.sock"));
 {
   const home = process.env.PAW_HOME;
@@ -62,6 +68,13 @@ ok("pgrep signature matches the supervisor shell", re.test("/bin/sh -c d=1 paw-c
 ok("pgrep signature is space-exact", !re.test("/r/src/hub/daemon.mjs --space owntest-11 --socket /h"));
 ok("pgrep signature ignores the mailbox", !re.test("paw.ts mailbox --space owntest-1"));
 
+{
+  const base = { on: true, source: "sticky" as const, supervisor: [1], hub: [2], answers: true, shims: 3 };
+  ok("status line: healthy hub", formatHubLine(base) === "cotal hub: on · hub pid 2 · supervised · socket answers · 3 agents on shims");
+  ok("status line: a dead hub warns", /NOT running.*⚠/.test(formatHubLine({ ...base, hub: [], answers: false }) ?? ""));
+  ok("status line: off and gone prints nothing", formatHubLine({ ...base, on: false, source: "default", supervisor: [], hub: [], answers: false, shims: 0 }) === undefined);
+  ok("status line: off but still serving says so", /still serving/.test(formatHubLine({ ...base, on: false }) ?? ""));
+}
 {
   const args = ["--strict-mcp-config", "--mcp-config", JSON.stringify({ mcpServers: { cotal: { command: "node", args: ["/x/mcp.cjs"] }, other: { command: "o" } } })];
   routeCotalToHub(args, "/s/cotal-shim", "/h/hub.sock");
@@ -110,7 +123,12 @@ ok("shim builds with the system cc", spawnSync(shim, [], { stdio: "ignore" }).st
         const l = b.slice(0, nl);
         b = b.slice(nl + 1);
         lines.push(l);
-        const m = JSON.parse(l);
+        let m: { method?: string; id?: unknown };
+        try {
+          m = JSON.parse(l);
+        } catch {
+          continue; // the shim relays malformed lines as-is; the real hub's transport logs and skips them
+        }
         if (m.method === "initialize") s.write(JSON.stringify({ jsonrpc: "2.0", id: m.id, result: { conn: hubLines.length } }) + "\n");
         if (m.method === "ping") s.write(JSON.stringify({ jsonrpc: "2.0", id: m.id, result: {} }) + "\n");
       }
@@ -119,7 +137,7 @@ ok("shim builds with the system cc", spawnSync(shim, [], { stdio: "ignore" }).st
   });
   await new Promise<void>((r) => fake.listen(sockPath, r));
   const child = spawn(shim, [sockPath], {
-    env: { COTAL_NAME: "alpha", COTAL_SPACE: "s", HOME: "/h", PATH: "/bin", SECRET_TOKEN: "x" },
+    env: { COTAL_NAME: "alpha", COTAL_SPACE: "s", HOME: "/h", TMPDIR: "/t", PATH: "/bin", SECRET_TOKEN: "x" },
     stdio: ["pipe", "pipe", "ignore"],
   });
   const out: Array<Record<string, unknown>> = [];
@@ -134,7 +152,7 @@ ok("shim builds with the system cc", spawnSync(shim, [], { stdio: "ignore" }).st
   const send = (m: Record<string, unknown>) => child.stdin!.write(JSON.stringify({ jsonrpc: "2.0", ...m }) + "\n");
   await waitFor(() => hubLines.length === 1 && hubLines[0]!.length >= 1);
   const hello = JSON.parse(hubLines[0]![0]!);
-  ok("shim handshake carries COTAL_* and HOME", hello.v === 1 && hello.env.COTAL_NAME === "alpha" && hello.env.HOME === "/h");
+  ok("shim handshake carries COTAL_*, HOME and TMPDIR", hello.v === 1 && hello.env.COTAL_NAME === "alpha" && hello.env.HOME === "/h" && hello.env.TMPDIR === "/t");
   ok("shim handshake leaves ambient env behind", !("PATH" in hello.env) && !("SECRET_TOKEN" in hello.env));
   send({ id: 1, method: "initialize", params: { capabilities: {} } });
   send({ method: "notifications/initialized" });
@@ -157,6 +175,17 @@ ok("shim builds with the system cc", spawnSync(shim, [], { stdio: "ignore" }).st
   ok("the replayed initialize's reply is swallowed", out.filter((m) => m.id === 1).length === 1);
   send({ id: "p2", method: "ping" });
   ok("traffic flows again after the reconnect", await waitFor(() => out.some((m) => m.id === "p2" && m.result)));
+  // hostile input from claude's side must never crash the shim or produce invalid JSON
+  child.stdin!.write('{"jsonrpc":"2.0","id":"unterminated\n');
+  child.stdin!.write('{"a":"\\\n');
+  const longId = "x".repeat(300);
+  send({ id: longId, method: "ping" });
+  ok("a request id too long to track is refused with a valid JSON error (id null)", await waitFor(() => out.some((m) => m.id === null && m.error)));
+  for (let i = 0; i < 1030; i++) send({ id: 10_000 + i, method: "slow/never" });
+  ok("past 1024 in-flight requests the shim refuses loudly instead of dropping", await waitFor(() => out.filter((m) => (m.error as { message?: string })?.message?.includes("too many")).length >= 6));
+  send({ id: "p3", method: "ping" });
+  // the table is full of never-answered calls, so p3 is refused too — but answered, at once
+  ok("the shim still answers every request after the hostile input", await waitFor(() => out.some((m) => m.id === "p3")));
   hubSock!.write(EXIT_LINE);
   const code = await new Promise<number | null>((r) => child.once("exit", r));
   ok("the hub's exit line ends the shim cleanly (no reconnect)", code === 0);
@@ -253,6 +282,24 @@ ok("shim builds with the system cc", spawnSync(shim, [], { stdio: "ignore" }).st
   const r = spawnSync(process.execPath, [tsx, f], { encoding: "utf8", timeout: 30000 });
   // tsx runs the script in a child and relays its fate: a SIGKILLed child surfaces as signal or 137.
   ok("a stalled event loop is SIGKILLed by the watchdog", (r.signal === "SIGKILL" || r.status === 137) && !r.stdout.includes("survived"), `signal=${r.signal} status=${r.status}`);
+}
+
+{
+  // Laptop sleep freezes BOTH threads. SIGSTOP is the same thing seen from outside: after SIGCONT
+  // the loop is healthy, and the watchdog must not count the frozen interval as a stall.
+  const tsx = join(REPO, "node_modules", "tsx", "dist", "cli.mjs");
+  const f = join(process.env.PAW_HOME!, "sleep.mts");
+  writeFileSync(f, `const { startWatchdog } = await import(${JSON.stringify(join(REPO, "src", "hub", "daemon.mjs"))}); startWatchdog(2000); setTimeout(() => { console.log("survived"); process.exit(0); }, 9000);`);
+  const p = spawn(process.execPath, [tsx, f], { stdio: ["ignore", "pipe", "pipe"] });
+  let so = "";
+  p.stdout!.on("data", (d) => (so += d));
+  await sleep(2500);
+  const kids = spawnSync("pgrep", ["-P", String(p.pid)], { encoding: "utf8" }).stdout.split("\n").map(Number).filter(Boolean);
+  for (const k of [p.pid!, ...kids]) process.kill(k, "SIGSTOP");
+  await sleep(6000);
+  for (const k of [p.pid!, ...kids]) process.kill(k, "SIGCONT");
+  const code = await new Promise<number | null>((r) => p.once("exit", r));
+  ok("a 6s process freeze (laptop sleep) is not taken for a stall", code === 0 && so.includes("survived"), `exit ${code}`);
 }
 
 console.log(fails ? `\n${fails} FAILED` : "\nall hub checks passed");

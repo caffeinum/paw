@@ -1,3 +1,4 @@
+// @ts-check
 /**
  * The cotal hub — ONE process serving the cotal MCP server for every claude in a space.
  *
@@ -7,7 +8,7 @@
  * cost ~400MB of V8 heap (485MB vs 85MB footprint, same file) — more than the hub saves at 5 agents.
  * So this file is .mjs, type-checked by tsc via allowJs, and imports only node builtins + mcp.cjs.
  *
- * Opt-in (PAW_COTAL_HUB=1). Each agent's claude launches the C shim (src/hub/cotal-shim.c) as its
+ * Opt-in per space (`paw hub on`). Each agent's claude launches the C shim (src/hub/cotal-shim.c) as its
  * cotal MCP server; the shim connects here, sends one handshake line `{"v":1,"pid":…,"env":{COTAL_*…}}`
  * and relays newline-delimited JSON-RPC. Per connection this calls cotal's own
  * `serveClaudeSession` (the export upstreamed in Cotal-AI/Cotal#2401, patched into 0.58.0 until it
@@ -32,6 +33,7 @@ import { dirname } from "node:path";
 import { pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
 import { Worker } from "node:worker_threads";
+import { AsyncLocalStorage } from "node:async_hooks";
 
 const HANDSHAKE_MAX_BYTES = 64 * 1024;
 const HANDSHAKE_DEADLINE_MS = 5_000;
@@ -47,6 +49,11 @@ const MAX_PENDING = 64;
 const STALL_MS = Number(process.env.PAW_HUB_STALL_MS ?? 15_000);
 /** More uncaught errors than this in a minute means the process is no longer trustworthy. */
 const UNCAUGHT_BUDGET = 5;
+/** Sessions whose close() never finished: each may still hold a NATS connection. Past this many the
+ *  process restarts — the only way to reclaim a connection nobody can reach any more. */
+const LEAK_BUDGET = 5;
+/** Which session the code running right now belongs to, so an escaped error names it. */
+const sessionContext = new AsyncLocalStorage();
 /** The line that tells a shim its session is OVER (the manager shut the agent down): exit, don't
  *  reconnect. Not JSON-RPC; the shim intercepts it. */
 export const EXIT_LINE = '{"cotal_hub":"exit"}\n';
@@ -86,24 +93,29 @@ export function parseHandshake(line) {
 }
 
 /** Event-loop stall watchdog on its own thread: the loop it guards can't run its own timer.
- *  Exported for check:hub, which proves it actually kills a stalled process. */
+ *
+ *  Staleness is counted in the WORKER'S OWN TICKS, never wall-clock: the main loop bumps a counter
+ *  each second, and the worker kills only after the counter sat still for stallMs/1000 of its own
+ *  consecutive ticks. A laptop sleep freezes both threads alike, so it can't read as a stall (a
+ *  Date.now() comparison did — it SIGKILLed a healthy hub on every wake from sleep).
+ *  Exported for check:hub. @param {number} [stallMs] */
 export function startWatchdog(stallMs = STALL_MS) {
   const beat = new Int32Array(new SharedArrayBuffer(4));
-  const t0 = Date.now();
-  const tick = () => Atomics.store(beat, 0, Math.floor((Date.now() - t0) / 1000));
-  tick();
-  setInterval(tick, 1000).unref();
+  setInterval(() => Atomics.add(beat, 0, 1), 1000).unref();
   const w = new Worker(
     `const { workerData } = require("node:worker_threads"); const fs = require("node:fs");
-     const { beat, t0, stallMs } = workerData;
+     const { beat, ticks } = workerData;
+     let last = Atomics.load(beat, 0), still = 0;
      setInterval(() => {
-       const ageMs = Date.now() - t0 - Atomics.load(beat, 0) * 1000;
-       if (ageMs > stallMs) {
-         try { fs.writeSync(2, "[cotal-hub] event loop stalled " + ageMs + "ms — exiting for the supervisor to restart\\n"); } catch {}
+       const now = Atomics.load(beat, 0);
+       still = now === last ? still + 1 : 0;
+       last = now;
+       if (still >= ticks) {
+         try { fs.writeSync(2, "[cotal-hub] event loop stalled for " + still + " watchdog ticks — exiting for the supervisor to restart\\n"); } catch {}
          process.kill(process.pid, "SIGKILL");
        }
      }, 1000);`,
-    { eval: true, workerData: { beat, t0, stallMs } },
+    { eval: true, workerData: { beat, ticks: Math.max(2, Math.ceil(stallMs / 1000)) } },
   );
   w.unref();
   w.on("error", (e) => log(`watchdog thread failed: ${e.message} — running WITHOUT stall protection`));
@@ -122,6 +134,7 @@ export async function runHub({ space, socket: path }) {
   /** Not yet handshaken, oldest first. @type {Map<number, import("node:net").Socket>} */
   const pending = new Map();
   let nextId = 1;
+  let leaked = 0;
 
   /** @param {Conn} c @param {string} why */
   const end = (c, why, final = false) => {
@@ -138,12 +151,24 @@ export async function runHub({ space, socket: path }) {
     } else c.sock.destroy();
     const s = c.session;
     if (s) {
-      const t = setTimeout(() => log(`session ${c.name}#${c.id}: close() exceeded 5s — abandoned`), 5000);
+      let done = false;
+      const t = setTimeout(() => {
+        if (done) return;
+        leaked++;
+        log(`session ${c.name}#${c.id}: close() still running after 5s — its NATS connection may be leaked (${leaked}/${LEAK_BUDGET})`);
+        if (leaked > LEAK_BUDGET) {
+          log(`more than ${LEAK_BUDGET} sessions failed to close — exiting so the supervisor reclaims their connections`);
+          process.exit(71);
+        }
+      }, 5000);
       t.unref();
       void s
         .close()
         .catch((/** @type {Error} */ e) => log(`session ${c.name}#${c.id}: close failed: ${e.message}`))
-        .finally(() => clearTimeout(t));
+        .finally(() => {
+          done = true;
+          clearTimeout(t);
+        });
     }
   };
 
@@ -174,7 +199,9 @@ export async function runHub({ space, socket: path }) {
     if (conns.size >= MAX_SESSIONS) return end(c, `${MAX_SESSIONS} sessions live — refusing`);
     conns.set(c.id, c);
     bound(c);
-    serveClaudeSession({
+    // Everything the session schedules from here (timers, socket and NATS callbacks) runs inside this
+    // context, so an error that escapes to the process handlers still names its session.
+    sessionContext.run(`${c.name}#${c.id}`, () => serveClaudeSession({
       env,
       input: c.sock,
       output: c.sock,
@@ -189,7 +216,7 @@ export async function runHub({ space, socket: path }) {
         log(`session ${c.name}#${c.id} serving; ${conns.size} live`);
       },
       (/** @type {Error} */ e) => end(c, `could not start: ${e.message}`),
-    );
+    ));
   };
 
   /** @param {import("node:net").Socket} sock */
@@ -257,7 +284,8 @@ export async function runHub({ space, socket: path }) {
   const uncaught = [];
   /** @param {string} kind @param {unknown} e */
   const contain = (kind, e) => {
-    log(`${kind}: ${/** @type {Error} */ (e)?.stack ?? String(e)}`);
+    const who = sessionContext.getStore();
+    log(`${kind}${who ? ` in session ${who}` : " (no session context)"}: ${/** @type {Error} */ (e)?.stack ?? String(e)}`);
     const now = Date.now();
     uncaught.push(now);
     while (uncaught.length && now - /** @type {number} */ (uncaught[0]) > 60_000) uncaught.shift();
@@ -277,6 +305,9 @@ export async function runHub({ space, socket: path }) {
   process.on("SIGTERM", () => shutdownAll("SIGTERM"));
   process.on("SIGINT", () => shutdownAll("SIGINT"));
 
+  // Private from the first byte: listen() creates the socket with the process umask, and chmod
+  // after the fact leaves a window where it is group/world-connectable.
+  process.umask(0o077);
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   // A live hub already answering on this path means we are a duplicate: leave it alone.
   if (existsSync(path)) {

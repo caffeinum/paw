@@ -23,6 +23,7 @@ extern char **environ;
 
 #define MAX_LINE (16 * 1024 * 1024)
 #define MAX_PENDING 1024
+#define ID_MAX 256  // a JSON-RPC id is a number or short string; longer ones are refused, never truncated
 #define RETRY_MIN_MS 500
 #define RETRY_MAX_MS 10000
 #define STABLE_MS 5000
@@ -32,11 +33,11 @@ typedef struct { char *b; size_t n, cap; } buf_t;
 static const char *sock_path;
 static int fd = -1;
 static buf_t in_b, hub_b, init_line, inited_line;
-static char init_id[64];
+static char init_id[ID_MAX];
 static int swallow_init = 0;  // drop the hub's reply to a REPLAYED initialize
-static char pending[MAX_PENDING][64];
+static char pending[MAX_PENDING][ID_MAX];
 static int npending = 0;
-static long long connected_at = 0, retry_ms = RETRY_MIN_MS;
+static long long connected_at = 0, retry_ms = RETRY_MIN_MS, next_retry = 0;
 
 static void lost_hub(void);
 
@@ -69,7 +70,9 @@ static int write_all(int f, const char *p, size_t n) {
 }
 
 // Minimal top-level scan of one JSON object: copies the raw value of top-level key `key` into out.
-// Returns 1 if found. Strings/escapes/nesting are tracked so a nested "id" never matches.
+// Returns 1 if found, 0 if absent, -1 if found but longer than outn-1 (never a truncated value).
+// Strings/escapes/nesting are tracked so a nested "id" never matches; every index is bounded by n,
+// so malformed input (an unterminated string, a trailing backslash) can't read past the line.
 static int top_key(const char *s, size_t n, const char *key, char *out, size_t outn) {
   size_t klen = strlen(key);
   int depth = 0;
@@ -77,14 +80,21 @@ static int top_key(const char *s, size_t n, const char *key, char *out, size_t o
     char c = s[i];
     if (c == '"') {
       size_t st = i + 1, j = st;
-      while (j < n && s[j] != '"') { if (s[j] == '\\') j++; j++; }
+      while (j < n && s[j] != '"') j += (s[j] == '\\') ? 2 : 1;
+      if (j >= n) return 0;  // unterminated string: malformed, nothing to find
       if (depth == 1 && j - st == klen && !memcmp(s + st, key, klen)) {
         size_t k = j + 1;
         while (k < n && (s[k] == ' ' || s[k] == ':')) k++;
         size_t vs = k;
-        if (k < n && s[k] == '"') { k++; while (k < n && s[k] != '"') { if (s[k] == '\\') k++; k++; } k++; }
-        else while (k < n && s[k] != ',' && s[k] != '}' && s[k] != ' ') k++;
-        size_t vl = k - vs; if (vl >= outn) vl = outn - 1;
+        if (k < n && s[k] == '"') {
+          k++;
+          while (k < n && s[k] != '"') k += (s[k] == '\\') ? 2 : 1;
+          if (k >= n) return 0;
+          k++;
+        } else
+          while (k < n && s[k] != ',' && s[k] != '}' && s[k] != ' ' && s[k] != '\n') k++;
+        size_t vl = k - vs;
+        if (vl >= outn) return -1;
         memcpy(out, s + vs, vl); out[vl] = 0;
         return 1;
       }
@@ -94,6 +104,9 @@ static int top_key(const char *s, size_t n, const char *key, char *out, size_t o
   }
   return 0;
 }
+
+// Literal-safe append: the length comes from the literal, never a hand-counted number.
+#define BPUTS(b, lit) bput((b), (lit), sizeof(lit) - 1)
 
 static void json_str(buf_t *b, const char *s) {
   bput(b, "\"", 1);
@@ -106,16 +119,29 @@ static void json_str(buf_t *b, const char *s) {
   bput(b, "\"", 1);
 }
 
+// One JSON-RPC error to claude. `id` is a raw JSON value we parsed (number or quoted string) or
+// "null"; built dynamically so no id length can produce a truncated, invalid line.
 static void reply_error(const char *id, const char *msg) {
-  char out[512];
-  int n = snprintf(out, sizeof out, "{\"jsonrpc\":\"2.0\",\"id\":%s,\"error\":{\"code\":-32000,\"message\":\"%s\"}}\n", id, msg);
-  write_all(1, out, (size_t)n);
+  buf_t b = {0};
+  BPUTS(&b, "{\"jsonrpc\":\"2.0\",\"id\":");
+  bput(&b, id, strlen(id));
+  BPUTS(&b, ",\"error\":{\"code\":-32000,\"message\":");
+  json_str(&b, msg);
+  BPUTS(&b, "}}\n");
+  write_all(1, b.b, b.n);
+  free(b.b);
 }
 
-static void pend_add(const char *id) { if (npending < MAX_PENDING) strncpy(pending[npending++], id, 63); }
+// False when the table is full: the caller refuses that request rather than forward one whose
+// error on a hub loss could never be delivered (a call claude would wait on forever).
+static int pend_add(const char *id) {
+  if (npending >= MAX_PENDING) return 0;
+  memcpy(pending[npending++], id, strlen(id) + 1);
+  return 1;
+}
 static void pend_del(const char *id) {
   for (int i = 0; i < npending; i++)
-    if (!strcmp(pending[i], id)) { pending[i][63] = 0; memcpy(pending[i], pending[--npending], 64); return; }
+    if (!strcmp(pending[i], id)) { memcpy(pending[i], pending[--npending], ID_MAX); return; }
 }
 static void fail_pending(void) {
   for (int i = 0; i < npending; i++) reply_error(pending[i], "cotal hub restarting - retry shortly");
@@ -130,12 +156,12 @@ static int try_connect(void) {
   strncpy(a.sun_path, sock_path, sizeof a.sun_path - 1);
   if (connect(s, (struct sockaddr *)&a, sizeof a) < 0) { close(s); return -1; }
   buf_t h = {0};
-  bput(&h, "{\"v\":1,\"pid\":", 13);
+  BPUTS(&h, "{\"v\":1,\"pid\":");
   char num[32]; int k = snprintf(num, sizeof num, "%d", (int)getppid()); bput(&h, num, (size_t)k);
-  bput(&h, ",\"env\":{", 8);
+  BPUTS(&h, ",\"env\":{");
   int first = 1;
   for (char **e = environ; *e; e++) {
-    if (strncmp(*e, "COTAL_", 6) && strncmp(*e, "HOME=", 5) && strncmp(*e, "XDG_CONFIG_HOME=", 16)) continue;
+    if (strncmp(*e, "COTAL_", 6) && strncmp(*e, "HOME=", 5) && strncmp(*e, "XDG_CONFIG_HOME=", 16) && strncmp(*e, "TMPDIR=", 7)) continue;
     char *eq = strchr(*e, '='); if (!eq) continue;
     char key[256]; size_t kl = (size_t)(eq - *e); if (kl >= sizeof key) continue;
     memcpy(key, *e, kl); key[kl] = 0;
@@ -143,7 +169,7 @@ static int try_connect(void) {
     first = 0;
     json_str(&h, key); bput(&h, ":", 1); json_str(&h, eq + 1);
   }
-  bput(&h, "}}\n", 3);
+  BPUTS(&h, "}}\n");
   int ok = write_all(s, h.b, h.n);
   free(h.b);
   if (ok < 0) { close(s); return -1; }
@@ -164,25 +190,27 @@ static void connect_and_replay(void) {
 }
 
 static void on_client_line(char *l, size_t n) {
-  char id[64], method[128];
+  char id[ID_MAX], method[128];
   int has_id = top_key(l, n, "id", id, sizeof id);
-  int has_m = top_key(l, n, "method", method, sizeof method);
-  if (has_m && !strcmp(method, "\"initialize\"")) { init_line.n = 0; bput(&init_line, l, n); if (has_id) strcpy(init_id, id); }
-  if (has_m && !strcmp(method, "\"notifications/initialized\"")) { inited_line.n = 0; bput(&inited_line, l, n); }
+  int m = top_key(l, n, "method", method, sizeof method);
+  int has_m = m != 0, is_req = has_m && has_id != 0;
+  if (is_req && has_id < 0) { reply_error("null", "request id too long for the cotal shim"); return; }
+  if (m > 0 && !strcmp(method, "\"initialize\"")) { init_line.n = 0; bput(&init_line, l, n); if (has_id > 0) strcpy(init_id, id); }
+  if (m > 0 && !strcmp(method, "\"notifications/initialized\"")) { inited_line.n = 0; bput(&inited_line, l, n); }
   if (fd < 0) {
-    if (has_m && has_id) reply_error(id, "cotal hub unavailable - retry shortly");
+    if (is_req) reply_error(id, "cotal hub unavailable - retry shortly");
     return;
   }
-  if (has_m && has_id) pend_add(id);
+  if (is_req && !pend_add(id)) { reply_error(id, "too many cotal requests in flight"); return; }
   if (write_all(fd, l, n) < 0) lost_hub();
 }
 
 static void on_hub_line(char *l, size_t n) {
   if (n >= sizeof EXIT_LINE - 1 && !memcmp(l, EXIT_LINE, sizeof EXIT_LINE - 1)) { logm("hub ended this session"); exit(0); }
-  char id[64];
-  int has_id = top_key(l, n, "id", id, sizeof id);
+  char id[ID_MAX];
+  int has_id = top_key(l, n, "id", id, sizeof id) > 0;
   char method[8];
-  int is_resp = has_id && !top_key(l, n, "method", method, sizeof method);
+  int is_resp = has_id && top_key(l, n, "method", method, sizeof method) == 0;
   if (is_resp && swallow_init && !strcmp(id, init_id)) { swallow_init = 0; return; }
   if (is_resp) pend_del(id);
   if (write_all(1, l, n) < 0) exit(0);  // claude gone
@@ -194,6 +222,7 @@ static void on_hub_line(char *l, size_t n) {
 static void lost_hub(void) {
   close(fd); fd = -1; hub_b.n = 0; fail_pending();
   retry_ms = now_ms() - connected_at < STABLE_MS ? (retry_ms * 2 > RETRY_MAX_MS ? RETRY_MAX_MS : retry_ms * 2) : RETRY_MIN_MS;
+  next_retry = now_ms() + retry_ms;  // never reconnect in the same instant the hub dropped us
 }
 
 static int drain(buf_t *b, void (*fn)(char *, size_t)) {
@@ -211,7 +240,6 @@ int main(int argc, char **argv) {
   if (!sock_path || !*sock_path) die("usage: cotal-shim <hub-socket>");
   for (int i = 0; i < 100 && fd < 0; i++) { connect_and_replay(); if (fd < 0) usleep(100000); }
   if (fd < 0) logm("hub not reachable yet; serving errors until it is");
-  long long next_retry = 0;
   char rb[65536];
   for (;;) {
     struct pollfd p[2] = {{0, POLLIN, 0}, {fd, POLLIN, 0}};

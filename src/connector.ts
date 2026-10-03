@@ -173,9 +173,9 @@ export const pawConnector: Connector = {
     const spec = claudeConnector.buildLaunch(opts);
     const args = [...spec.args];
 
-    // PAW_COTAL_HUB=1: the cotal MCP server is the hub's C shim, not a node process per agent
+    // Hub mode (`paw hub on`, read per spawn): the cotal MCP server is the hub's C shim, not a node process per agent
     // (src/hub/). ensure() starts the hub; the shim is built here on first use if the tree lacks one.
-    if (hubEnabled()) routeCotalToHub(args, ensureShim(), hubSocketPath(opts.space));
+    if (hubEnabled(opts.space)) routeCotalToHub(args, ensureShim(), hubSocketPath(opts.space));
 
     // KEEP cotal's `--dangerously-load-development-channels server:cotal` intact. It is NOT a no-op:
     // it is the channel-REGISTRATION gate that lets claude 2.1.x honour cotal's
