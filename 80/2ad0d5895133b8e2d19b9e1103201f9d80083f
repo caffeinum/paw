@@ -1,0 +1,23 @@
+scripts/check-commands.ts
+  s_ed25aaaf9c7e77::t_6846f2e8931754 594-604
+src/commands/runtime.ts
+  s_ed25aaaf9c7e77::t_31adee0b6ffb1e 154
+src/lifecycle.ts
+  s_ed25aaaf9c7e77::t_7f3f2538303442 54-57,1273-1278,1312-1323,1425
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "802ad0d5895133b8e2d19b9e1103201f9d80083f",
+  "prompts": {},
+  "sessions": {
+    "s_ed25aaaf9c7e77": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "90dd1251-161e-469a-96db-040d1e555035",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Aleksey Bykhun <theisease@gmail.com>"
+    }
+  }
+}
