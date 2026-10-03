@@ -23,14 +23,14 @@ import {
 // auth-path helpers moved to @cotal-ai/workspace in cotal v0.8 (#120).
 import { authDir, loadSpaceAuth } from "@cotal-ai/workspace";
 import { pawCotalRoot } from "./cotal-root.js";
-import { confineAndTrustCwd } from "./cwd.js";
+import { confineAndTrustCwd, isFolderTrusted, pawTrustedFolder, pretrustFolder } from "./cwd.js";
 import { readForeground } from "./foreground.js";
 import { clearSleep, prepareWake, sleepLog } from "./sleep-state.js";
 import { withFileLock, withFileLockAsync } from "./lock.js";
 import { liveSessionProcs, meshAgentSession } from "./named.js";
 import { isClaudeHarness, personaValue, readAgentType, readCwd, readResumeId, readShareTools, transcriptMtime } from "./session.js";
 import { defaultTmuxEnv, readRuntimeMarker } from "./lifecycle.js";
-import { nudgeTmuxConfirm, tmuxSplit, tmuxSplitAdvice } from "./native-attach.js";
+import { answerStartupPrompt, tmuxSplit, tmuxSplitAdvice, type StartupScreen } from "./native-attach.js";
 import { HOST_RE } from "./url.js";
 import type { ManagerControl, ManagerReply } from "./control.js";
 
@@ -662,7 +662,7 @@ export async function ensureAgentSpawned(
       // mesh, it isn't booting, it's stuck — treat it as the dead entry it is and restart. Restarting a
       // merely-slow boot is cheap (it resumes its pinned session); leaving an agent unreachable until a
       // human notices is not.
-      if (await waitForMeshLive(ctl, opts.name, STARTING_GRACE_MS, () => nudgeStartupPrompt(opts.space, opts.name))) return healSleep(opts.space, opts.name);
+      if (await waitForMeshLive(ctl, opts.name, STARTING_GRACE_MS, startupWatch(opts.space, opts.name, opts.cwd).poll)) return healSleep(opts.space, opts.name);
       action = "restart";
     }
     if (action === "reuse") return healSleep(opts.space, opts.name);
@@ -782,10 +782,12 @@ export async function ensureAgentSpawned(
     // failed reply; now it would surface as a caller timing out somewhere later with no idea why. So
     // paw does the readiness wait itself — which it must anyway, because this is the window where the
     // tmux dev-channels prompt appears and paw's Enter nudge is the only thing that clears it.
-    if (!(await waitForMeshLive(ctl, opts.name, SPAWN_READY_MS, () => nudgeStartupPrompt(opts.space, opts.name)))) {
+    const watch = startupWatch(opts.space, opts.name, cwd);
+    if (!(await waitForMeshLive(ctl, opts.name, SPAWN_READY_MS, watch.poll))) {
       throw new Error(
-        `paw: the manager accepted "${opts.name}" but it never reached the mesh within ${Math.round(SPAWN_READY_MS / 1000)}s — ` +
-          `it is probably still booting or stuck at a prompt. \`paw status\` to see its row, \`paw log ${opts.name}\` for what it did.`,
+        `paw: the manager accepted "${opts.name}" but it never reached the mesh within ${Math.round(SPAWN_READY_MS / 1000)}s` +
+          (watch.cause() || ` — it is probably still booting or stuck at a prompt`) +
+          `. \`paw status\` to see its row, \`paw log ${opts.name}\` for what it did.`,
       );
     }
     return { spawned: true, id };
@@ -911,20 +913,76 @@ export async function waitForMeshLive(
 }
 
 /**
- * Clear claude's one-time dev-channels prompt for an agent that hasn't reached the mesh yet.
+ * What paw does while a just-spawned claude boots, once per readiness poll — and what it can say if
+ * the boot never completes.
  *
- * cotal's tmux runtime already sends Enter, but only at 1s…5s after the window opens — and a cold
- * claude on a loaded machine reaches the prompt well after that, so every keypress lands before the
- * question exists and the agent then waits at it forever. That is indistinguishable from a failed
- * spawn: `cotal-endpoint-telegram` sat ~90s with no presence until a human pressed Enter, and it is
- * the likeliest explanation for an agent stuck at `starting…` (2026-08-17).
+ * (a) TRUST, any runtime. paw pre-trusted the folder before the spawn, but claude rewrites
+ *     ~/.claude.json without paw's lock, and a claude booting just before this one erased the fresh
+ *     entry (3 of 5 isolated runs, 2026-10-03): the new claude then met its trust dialog. So the
+ *     entry is re-checked every poll and re-written when it's gone — that saves every boot that
+ *     hasn't READ the file yet, under pty too, where nothing can type into the terminal.
+ * (b) PROMPTS, tmux only. The window is read before anything is typed (answerStartupPrompt): Enter
+ *     only at the dev-channels gate; at the trust dialog only "Yes, I trust this folder", and only
+ *     for a folder paw's own policy trusts (pawTrustedFolder — the confineAndTrustCwd rule), after
+ *     re-writing the entry; anything else, nothing. The old blind Enter picked the dialog's default
+ *     "No, exit" and the agent quit.
+ * (c) `cause()` names what was seen, for the readiness timeout: an erased trust entry, a trust
+ *     dialog paw would not answer, or an unrecognised prompt (its last lines).
  *
- * Only tmux: the pty runtime clears its own prompt, and cmux windows are not paw's to type into.
- * Best-effort — a missing window must never turn a spawn into an error.
+ * `deps` exist for check:trust (a private tmux server, a fixed runtime, a captured log).
  */
-function nudgeStartupPrompt(space: string, name: string): void {
-  if (readRuntimeMarker(space) !== "tmux") return;
-  nudgeTmuxConfirm(space, name, defaultTmuxEnv(process.env));
+export function startupWatch(
+  space: string,
+  name: string,
+  cwd: string,
+  deps: { runtime?: string; tmuxEnv?: NodeJS.ProcessEnv; log?: (line: string) => void } = {},
+): { poll: () => void; cause: () => string } {
+  const log = deps.log ?? ((line: string) => console.error(line));
+  const folder = pawTrustedFolder(cwd);
+  let erased = 0;
+  let last: StartupScreen | undefined;
+  let lastText = "";
+  const logged = new Set<string>();
+  const once = (key: string, line: string) => {
+    if (logged.has(key)) return;
+    logged.add(key);
+    log(line);
+  };
+  const tail = (t: string) => t.split("\n").map((l) => l.trim()).filter(Boolean).slice(-4).join(" ⏎ ").slice(0, 300);
+  return {
+    poll: () => {
+      try {
+        if (folder && !isFolderTrusted(folder)) {
+          erased++;
+          pretrustFolder(folder);
+          once("erased", `paw: "${name}": ~/.claude.json had lost the trust entry for ${folder} (a concurrent claude rewrite) — re-wrote it`);
+        }
+        if ((deps.runtime ?? readRuntimeMarker(space)) !== "tmux") return;
+        const seen = answerStartupPrompt(space, name, deps.tmuxEnv ?? defaultTmuxEnv(process.env), () => {
+          if (!folder) return false;
+          pretrustFolder(folder);
+          return true;
+        });
+        if (!seen) return;
+        last = seen.screen;
+        lastText = seen.text;
+        if (seen.screen.kind === "trust" && seen.sent) once("trust-yes", `paw: "${name}": claude showed its folder-trust dialog — paw trusts ${folder}, answered "Yes, I trust this folder"`);
+        else if (seen.screen.kind === "trust")
+          once("trust-no", `paw: "${name}": claude is at its folder-trust dialog for a folder paw does NOT pre-trust (${cwd}) — left for a human`);
+        else if (seen.screen.kind === "other" && seen.screen.prompt) once(`other:${tail(seen.text)}`, `paw: "${name}": unrecognised prompt, sent nothing — «${tail(seen.text)}»`);
+      } catch (e) {
+        once("err", `paw: "${name}": startup watch failed (${(e as Error).message}) — carrying on`);
+      }
+    },
+    cause: () => {
+      const bits: string[] = [];
+      if (erased) bits.push(`its ~/.claude.json trust entry was erased ${erased}× during the boot (a concurrent claude rewrite; paw re-wrote it)`);
+      if (last?.kind === "trust" && !folder) bits.push(`it is at claude's folder-trust dialog and paw does not pre-trust ${cwd} (outside PAW_ROOT)`);
+      else if (last?.kind === "trust") bits.push(`it was still at claude's folder-trust dialog`);
+      else if (last?.kind === "other" && last.prompt) bits.push(`it is waiting at an unrecognised prompt: «${tail(lastText)}»`);
+      return bits.length ? ` — ${bits.join("; ")}` : "";
+    },
+  };
 }
 
 /**
