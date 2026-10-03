@@ -25,7 +25,7 @@ import { authDir, loadSpaceAuth } from "@cotal-ai/workspace";
 import { pawCotalRoot } from "./cotal-root.js";
 import { confineAndTrustCwd } from "./cwd.js";
 import { readForeground } from "./foreground.js";
-import { prepareWake } from "./sleep-state.js";
+import { clearSleep, prepareWake, sleepLog } from "./sleep-state.js";
 import { withFileLock, withFileLockAsync } from "./lock.js";
 import { liveSessionProcs, meshAgentSession } from "./named.js";
 import { isClaudeHarness, personaValue, readAgentType, readCwd, readResumeId, readShareTools, transcriptMtime } from "./session.js";
@@ -696,9 +696,9 @@ export async function ensureAgentSpawned(
     // (cotal's per-agent model override) is forwarded when set. Confine the cwd to PAW_ROOT and
     // pre-trust the folder HERE (the connector no longer sees the cwd — the manager owns it as of
     // cotal #43), passing the canonical path so the dir claude runs in matches the trust key.
-    // A HIBERNATED agent (`paw sleep`) holds its name through a stand-in presence; take it down first,
-    // or the stand-in and the real agent would share the name and every `cotal_dm` to it would throw.
-    if (await prepareWake(opts.space, opts.name)) console.error(`paw: waking "${opts.name}" from sleep`);
+    // A HIBERNATED agent (`paw sleep`): flip it to waking; the sleep host keeps its stand-in up until this
+    // seat is on the mesh, then hands it the DMs that arrived while it slept.
+    if (prepareWake(opts.space, opts.name)) console.error(`paw: waking "${opts.name}" from sleep`);
     const config = ensurePersonaFile(opts.space, opts.name, { brief: opts.brief, kind: opts.kind });
     // Two-writer guard: if the agent's pinned session is open in a standalone claude (a hand-run
     // TUI, not a mesh agent), resuming it would put two writers on one transcript and can corrupt
@@ -849,6 +849,9 @@ export async function restartAgent(
  *  Returns whether a live agent was stopped. Used to retire an agent under an old name when adopt
  *  renames it. */
 export async function stopAgent(ctl: ManagerControl, name: string): Promise<boolean> {
+  // stop / rm / rename all come through here. A sleeping agent must not be resurrected by a later DM
+  // (a removed one would come back pinless, a renamed one under its old name), so its sleep state goes.
+  if (clearSleep(ctl.space, name)) sleepLog(ctl.space, `cleared sleep state for ${name} (stopped/removed/renamed) — a DM no longer wakes it`);
   const ps = await ctl.ps();
   if (!ps.ok) return false;
   const live = ((ps.data as Array<{ name: string }>) ?? []).some((a) => a.name === name);

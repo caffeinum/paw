@@ -20,23 +20,29 @@
  * and is re-delivered to it once it is on the mesh. See src/sleep-state.ts for why the stand-in is needed.
  */
 import { execFileSync } from "node:child_process";
-import { createReadStream, existsSync } from "node:fs";
-import { createInterface } from "node:readline";
-import { registry, DEFAULT_SERVER, dmStream, type Command } from "@cotal-ai/core";
+import { existsSync } from "node:fs";
+import { registry, DEFAULT_SERVER, dmStream, parsePrincipalKey, unicastRecvFilter, type Command } from "@cotal-ai/core";
 import { connect } from "@nats-io/transport-node";
 import { jetstreamManager } from "@nats-io/jetstream";
 import { agentRecord, listAgents, personaFilePath, setPersonaKeys, wirePrincipal, type PsRow } from "./addressing.js";
 import { withManagerControl, type ManagerControl } from "./control.js";
 import { ensure, resolveSpace } from "./lifecycle.js";
 import { liveSessionProcs } from "./named.js";
-import { personaValue, transcriptPath } from "./session.js";
-import { listSleeping, readSleepRecord, sleepLog, writeSleepRecord } from "./sleep-state.js";
+import { personaValue, readResumeId, transcriptMtime, transcriptPath } from "./session.js";
+import { dmsSince } from "./sleep-host.js";
+import { listSleeping, readSleepRecord, scanRecords, sleepLog, sleepState, writeSleepRecord } from "./sleep-state.js";
 import { collectStatus, type AgentStatus } from "./status.js";
+import { tailRead } from "./transcript.js";
 
 /** The prompt cache TTL: below it a sleep would make the wake pay a cold cache. */
 export const MIN_HIBERNATE_MS = 60 * 60_000;
 /** Never put the always-on wake authority to sleep (and its 60s keeper tick would wake it anyway). */
 const NEVER_SLEEP = new Set(["global"]);
+/** The transcript lines that can open or close background work or change channel membership. */
+const MARKERS = "backgroundTaskId|async_launched|Monitor started|task-notification|TaskStop|cotal_join|cotal_leave";
+const MARKER_RE = new RegExp(MARKERS);
+/** Fallback read when ripgrep is missing: the transcript's last 16MB. */
+const TAIL_BYTES = 16 * 1024 * 1024;
 
 /** `60m` | `2h` → ms; `off` → "off". Garbage or a value under an hour throws — a sleep that would pay a
  *  cold cache on every wake is a misconfiguration, not a preference to honour quietly. */
@@ -82,18 +88,20 @@ export function extraChannels(subscribe: string | undefined): string[] {
 }
 
 /**
- * Background work still running in a claude session, from its transcript lines (pure).
+ * Background work and runtime channel joins in a claude session, from its transcript lines (pure).
  *
- * Starts: a Bash `run_in_background` result (`toolUseResult.backgroundTaskId`), an async agent/workflow
- * launch (`toolUseResult.status: "async_launched"` + `taskId`), and a Monitor (`Monitor started (task X,
- * timeout Nms)` — a monitor with a timeout ends by itself at start+timeout). Ends: a `<task-notification>`
- * with a terminal `<status>` (completed/failed/killed/stopped), or a `TaskStop` call. Lines before
- * `sinceMs` (the running process's start) are skipped: a task from a previous incarnation died with it.
+ * Tasks open on: a Bash `run_in_background` result (`toolUseResult.backgroundTaskId`), an async
+ * agent/workflow launch (`toolUseResult.status: "async_launched"` + `taskId`), a Monitor (`Monitor started
+ * (task X, timeout Nms)` — one with a timeout ends by itself at start+timeout). They close on a
+ * `<task-notification>` with a terminal `<status>` or a `TaskStop` call. Channels: every `cotal_join` tool
+ * call minus `cotal_leave`, #general excluded. Lines before `sinceMs` (the running process's start) are
+ * skipped: a task from a previous incarnation died with it, and its joins were not carried over.
  */
-export function openBackgroundTasks(lines: Iterable<string>, sinceMs: number, now: number): string[] {
+export function scanActivity(lines: Iterable<string>, sinceMs: number, now: number): { tasks: string[]; joined: string[] } {
   const open = new Map<string, number | undefined>(); // id → deadline (ms) when the task ends by itself
+  const joined = new Set<string>();
   for (const line of lines) {
-    if (!/backgroundTaskId|async_launched|Monitor started|task-notification|TaskStop/.test(line)) continue;
+    if (!MARKER_RE.test(line)) continue;
     let rec: Record<string, unknown>;
     try {
       rec = JSON.parse(line);
@@ -114,17 +122,43 @@ export function openBackgroundTasks(lines: Iterable<string>, sinceMs: number, no
       const status = /<status>([a-z_]+)<\/status>/.exec(body)?.[1];
       if (id && status && /^(completed|failed|killed|stopped)$/.test(status)) open.delete(id);
     }
-    for (const m of line.matchAll(/"name":"TaskStop","input":\{"task_id":"(\w+)"/g)) open.delete(m[1]);
+    const content = (rec.message as { content?: unknown } | undefined)?.content;
+    if (rec.type === "assistant" && Array.isArray(content)) {
+      for (const part of content as Array<{ type?: string; name?: string; input?: Record<string, unknown> }>) {
+        if (part.type !== "tool_use" || typeof part.name !== "string") continue;
+        const ch = typeof part.input?.channel === "string" ? part.input.channel : undefined;
+        if (part.name === "TaskStop" && typeof part.input?.task_id === "string") open.delete(part.input.task_id);
+        if (/(^|__)cotal_join$/.test(part.name) && ch && ch !== "general") joined.add(ch);
+        if (/(^|__)cotal_leave$/.test(part.name) && ch) joined.delete(ch);
+      }
+    }
   }
-  return [...open].filter(([, deadline]) => deadline === undefined || deadline > now).map(([id]) => id);
+  return { tasks: [...open].filter(([, deadline]) => deadline === undefined || deadline > now).map(([id]) => id), joined: [...joined] };
 }
 
-/** Read a whole transcript line by line (cheap prefilter inside openBackgroundTasks keeps it fast). */
-async function transcriptLines(file: string): Promise<string[]> {
-  const out: string[] = [];
-  const rl = createInterface({ input: createReadStream(file), crlfDelay: Infinity });
-  for await (const l of rl) if (/backgroundTaskId|async_launched|Monitor started|task-notification|TaskStop/.test(l)) out.push(l);
-  return out;
+/** Kept for readability at call sites that only care about tasks. */
+export function openBackgroundTasks(lines: Iterable<string>, sinceMs: number, now: number): string[] {
+  return scanActivity(lines, sinceMs, now).tasks;
+}
+
+/**
+ * The marker lines of a transcript since `sinceMs`, BOUNDED in cost: ripgrep pulls only lines carrying a
+ * marker (cheap on a 300MB transcript). Without ripgrep, the last 16MB — and if that window does not
+ * reach back to the process start, the answer is "unknown" (which blocks the sleep), never a guess.
+ */
+export function markerLines(file: string, sinceMs: number): { lines: string[]; unknown?: string } {
+  try {
+    const out = execFileSync("rg", ["--no-messages", "-N", "-e", MARKERS, "--", file], { encoding: "utf8", maxBuffer: 256 * 1024 * 1024 });
+    return { lines: out.split("\n") };
+  } catch (e) {
+    const err = e as NodeJS.ErrnoException & { status?: number };
+    if (err.status === 1) return { lines: [] }; // rg: no match
+    if (err.code !== "ENOENT") return { lines: [], unknown: `transcript scan failed (${err.message.split("\n")[0]})` };
+  }
+  const tail = tailRead(file, TAIL_BYTES).split("\n");
+  const firstTs = tail.map((l) => /"timestamp":"([^"]+)"/.exec(l)?.[1]).find(Boolean);
+  if (firstTs && Date.parse(firstTs) > sinceMs) return { lines: [], unknown: "no ripgrep, and the transcript's last 16MB doesn't reach back to the process start" };
+  return { lines: tail };
 }
 
 /** Shell processes under `pid` — a background Bash or a Monitor's command runs as one. MCP servers
@@ -154,19 +188,24 @@ export interface Activity {
   tasks: string[];
   /** Shell processes under the agent's claude. */
   shells: string[];
+  /** Non-general channels the agent joined at runtime (cotal_join) since its process started. */
+  joined?: string[];
   /** Why activity could not be read — reported, and blocks the sleep (unknown is not "nothing"). */
   unknown?: string;
 }
 
 /** What is running inside `pin`'s live claude, from both the transcript and the process tree. */
-export async function readActivity(pin: string, now = Date.now()): Promise<Activity> {
+export function readActivity(pin: string, now = Date.now()): Activity {
   const procs = liveSessionProcs(pin);
   if (procs.length !== 1) return { tasks: [], shells: [], unknown: `${procs.length} live processes hold the session` };
   const proc = procs[0];
   const file = transcriptPath(pin);
   if (!file) return { tasks: [], shells: [], unknown: "no transcript" };
-  const since = typeof proc.startedAt === "number" ? proc.startedAt : 0;
-  return { tasks: openBackgroundTasks(await transcriptLines(file), since, now), shells: shellDescendants(proc.pid) };
+  if (typeof proc.startedAt !== "number") return { tasks: [], shells: [], unknown: "the session's process start time is unknown" };
+  const { lines, unknown } = markerLines(file, proc.startedAt);
+  if (unknown) return { tasks: [], shells: [], unknown };
+  const { tasks, joined } = scanActivity(lines, proc.startedAt, now);
+  return { tasks, joined, shells: shellDescendants(proc.pid) };
 }
 
 export interface SleepDecision {
@@ -175,13 +214,7 @@ export interface SleepDecision {
 }
 
 /** Pure: may this agent go to sleep now? Every refusal names its reason (the sweep logs them). */
-export function sleepDecision(
-  row: AgentStatus,
-  hibernateMs: number,
-  now: number,
-  activity: Activity,
-  channels: string[],
-): SleepDecision {
+export function sleepDecision(row: AgentStatus, hibernateMs: number, now: number, activity: Activity, channels: string[]): SleepDecision {
   const no = (reason: string) => ({ sleep: false, reason });
   if (NEVER_SLEEP.has(row.name)) return no("the global agent never sleeps");
   if (!row.live) return no("not live");
@@ -193,7 +226,8 @@ export function sleepDecision(
   if (row.inbox.kind === "error") return no("inbox lag unknown");
   if (row.inbox.kind === "lag" && row.inbox.queued + row.inbox.unread > 0) return no(`inbox not drained (${row.inbox.queued} queued, ${row.inbox.unread} unread)`);
   if (row.conflictPids.length) return no(`session held by more than one process (${row.conflictPids.join(", ")})`);
-  if (channels.length) return no(`subscribed to ${channels.map((c) => "#" + c).join(", ")} — channel replay is 1h, traffic there would be lost asleep (v1)`);
+  const allChannels = [...new Set([...channels, ...(activity.joined ?? [])])];
+  if (allChannels.length) return no(`in ${allChannels.map((c) => "#" + c).join(", ")} — channel replay is 1h, traffic there would be lost asleep (v1)`);
   if (activity.unknown) return no(`can't tell what is running (${activity.unknown})`);
   if (activity.tasks.length) return no(`background task(s) running: ${activity.tasks.join(", ")}`);
   if (activity.shells.length) return no(`shell process(es) running under claude: ${activity.shells.join("; ")}`);
@@ -203,8 +237,22 @@ export function sleepDecision(
   return { sleep: true, reason: `idle ${Math.round(idle / 60_000)}m ≥ ${Math.round(hibernateMs / 60_000)}m, nothing running` };
 }
 
-/** The DM stream's last sequence — the backlog cursor captured before a despawn. */
-async function dmLastSeq(space: string, server: string): Promise<number> {
+/**
+ * Pure: the last gate before the despawn. The decision was made on a snapshot taken AFTER `cursorSeq`
+ * was captured; anything that moved since — the transcript was written, the agent left idle, or a DM
+ * reached its subject after the cursor — means a turn may be starting, so the sleep is ABORTED rather
+ * than killing it. This is also what keeps a DM the old seat already consumed from being re-delivered on
+ * wake: a DM after the cursor aborts the sleep, one before it is never forwarded.
+ */
+export function preDespawnCheck(o: { snapshotActiveMs?: number; activeMsNow?: number; meshNow?: string; dmsSinceCursor: number }): string | undefined {
+  if (o.activeMsNow !== o.snapshotActiveMs) return "its transcript was written after the decision";
+  if (o.meshNow !== "idle") return `it is ${o.meshNow ?? "gone"} now`;
+  if (o.dmsSinceCursor > 0) return `${o.dmsSinceCursor} DM(s) reached it after the decision`;
+  return undefined;
+}
+
+/** The DM stream's last sequence — the backlog cursor. */
+export async function dmLastSeq(space: string, server = DEFAULT_SERVER): Promise<number> {
   const nc = await connect({ servers: server });
   try {
     return (await (await jetstreamManager(nc)).streams.info(dmStream(space))).state.last_seq;
@@ -213,10 +261,13 @@ async function dmLastSeq(space: string, server: string): Promise<number> {
   }
 }
 
-/** Despawn `name` and record it asleep (the sleep host then raises its stand-in). Refuses under
- *  PAW_AUTH: re-delivering the backlog re-publishes each DM under its original sender, which only an
- *  open mesh permits. */
-export async function sleepAgent(space: string, ctl: ManagerControl, name: string, reason: string): Promise<void> {
+/**
+ * Despawn `name` and record it asleep (the sleep host then raises its stand-in). `cursorSeq` and
+ * `snapshotActiveMs` come from BEFORE the decision; the agent is re-checked against them right before the
+ * despawn (see {@link preDespawnCheck}). Refuses under PAW_AUTH: re-delivering the backlog re-publishes
+ * each DM under its original sender, which only an open mesh permits.
+ */
+export async function sleepAgent(space: string, ctl: ManagerControl, name: string, reason: string, snap: { cursorSeq: number; snapshotActiveMs?: number; force?: boolean }): Promise<void> {
   if (process.env.PAW_AUTH === "1") throw new Error("paw: `paw sleep` is open-mesh only (v1) — waking re-delivers DMs under their original sender, which an authed mesh forbids");
   const rec = agentRecord(space, name);
   if (!rec) throw new Error(`paw: "${name}" is not a registered agent`);
@@ -224,16 +275,29 @@ export async function sleepAgent(space: string, ctl: ManagerControl, name: strin
   if (!ps.ok) throw new Error(`paw: manager isn't answering (${ps.error ?? "no reply"})`);
   const row = ((ps.data as PsRow[]) ?? []).find((r) => r.name === name);
   if (!row) throw new Error(`paw: "${name}" is not running`);
-  const cursorSeq = await dmLastSeq(space, DEFAULT_SERVER);
+  const lastId = row.id ? wirePrincipal(row.id) : undefined;
+  if (!snap.force) {
+    const old = lastId ? parsePrincipalKey(lastId) : undefined;
+    if (!old) throw new Error(`paw: not sleeping "${name}" — its ps row carries no principal, so its DMs can't be checked`);
+    const pin = readResumeId(personaFilePath(space, name));
+    const why = preDespawnCheck({
+      snapshotActiveMs: snap.snapshotActiveMs,
+      activeMsNow: pin ? transcriptMtime(pin) : undefined,
+      meshNow: row.mesh,
+      dmsSinceCursor: await dmsSince(space, [unicastRecvFilter(space, old.owner, old.actor)], snap.cursorSeq),
+    });
+    if (why) throw new Error(`paw: not sleeping "${name}" — ${why}`);
+  }
   const d = await ctl.despawn(name);
   if (!d.ok) throw new Error(`paw: couldn't despawn "${name}" (${d.error ?? "no reply"})`);
-  writeSleepRecord(space, { name, folder: rec.folder, since: Date.now(), cursorSeq, lastId: row.id ? wirePrincipal(row.id) : undefined, reason });
-  sleepLog(space, `slept ${name} — ${reason} (cursor ${cursorSeq})`);
+  writeSleepRecord(space, { name, folder: rec.folder, since: Date.now(), cursorSeq: snap.cursorSeq, lastId, reason });
+  sleepLog(space, `slept ${name} — ${reason} (cursor ${snap.cursorSeq})`);
 }
 
 /** Evaluate every opted-in agent once; put the eligible ones to sleep. Logs each decision for an
  *  opted-in agent so a "why didn't it sleep" question has an answer in the log. */
 export async function sleepSweep(space: string, ctl: ManagerControl, now = Date.now()): Promise<{ slept: string[]; skipped: Array<{ name: string; reason: string }> }> {
+  const cursorSeq = await dmLastSeq(space); // FIRST: anything after this is news the decision didn't see
   const { rows } = await collectStatus(space, ctl, { git: false });
   const slept: string[] = [];
   const skipped: Array<{ name: string; reason: string }> = [];
@@ -247,14 +311,14 @@ export async function sleepSweep(space: string, ctl: ManagerControl, now = Date.
     }
     if (hibernateMs === undefined || !row.live) continue;
     const file = personaFilePath(space, row.name);
-    const activity = row.pin ? await readActivity(row.pin, now) : { tasks: [], shells: [], unknown: "no resume pin" };
+    const activity = row.pin ? readActivity(row.pin, now) : { tasks: [], shells: [], unknown: "no resume pin" };
     const d = sleepDecision(row, hibernateMs, now, activity, extraChannels(personaValue(file, "subscribe")));
     if (!d.sleep) {
       skipped.push({ name: row.name, reason: d.reason });
       continue;
     }
     try {
-      await sleepAgent(space, ctl, row.name, d.reason);
+      await sleepAgent(space, ctl, row.name, d.reason, { cursorSeq, snapshotActiveMs: row.activeMs });
       slept.push(row.name);
     } catch (e) {
       skipped.push({ name: row.name, reason: (e as Error).message });
@@ -304,28 +368,35 @@ async function sleepCmd(argv: string[]): Promise<void> {
         console.log(r.slept.length ? `slept: ${r.slept.join(", ")}` : "nobody slept");
         return;
       }
+      const cursorSeq = await dmLastSeq(space, server);
       const { rows } = await collectStatus(space, ctl, { git: false });
       for (const name of o.names) {
         const row = rows.find((r) => r.name === name);
         if (!row) throw new Error(`paw sleep: "${name}" is not a registered agent`);
         const file = personaFilePath(space, name);
-        const activity = row.pin ? await readActivity(row.pin) : { tasks: [], shells: [], unknown: "no resume pin" };
+        const activity = row.pin ? readActivity(row.pin) : { tasks: [], shells: [], unknown: "no resume pin" };
         // --now waives the idle threshold (the operator is asking), never the "nothing running" rule unless --force.
         const d = sleepDecision(row, 0, Date.now(), activity, extraChannels(personaValue(file, "subscribe")));
         if (!d.sleep && !o.force) throw new Error(`paw sleep: not sleeping "${name}" — ${d.reason} (--force to override)`);
-        await sleepAgent(space, ctl, name, o.force && !d.sleep ? `forced by operator (${d.reason})` : "requested by operator");
+        await sleepAgent(space, ctl, name, o.force && !d.sleep ? `forced by operator (${d.reason})` : "requested by operator", {
+          cursorSeq,
+          snapshotActiveMs: row.activeMs,
+          force: o.force,
+        });
         console.log(`${name}: asleep — a DM to it wakes it`);
       }
     });
     return;
   }
-  // No action: list opted-in and sleeping agents.
-  const asleep = new Map(listSleeping(space).map((r) => [r.name, r]));
+  // No action: list sleeping agents (and any named ones), plus unreadable records.
+  const { bad } = scanRecords(space, ".json");
   const lines: string[] = [];
-  for (const name of new Set([...asleep.keys(), ...o.names])) {
+  for (const name of new Set([...listSleeping(space).map((r) => r.name), ...o.names])) {
     const r = readSleepRecord(space, name);
-    lines.push(r ? `${name}: asleep since ${new Date(r.since).toLocaleString()} — ${r.reason}` : `${name}: awake`);
+    const state = sleepState(space, name) ?? "awake";
+    lines.push(r ? `${name}: ${state} since ${new Date(r.since).toLocaleString()} — ${r.reason}${r.lastError ? ` (last wake error: ${r.lastError})` : ""}` : `${name}: ${state}`);
   }
+  for (const b of bad) lines.push(`⚠ unreadable sleep record ${b}`);
   console.log(lines.length ? lines.join("\n") : "no agent is asleep (opt in: paw sleep <name> --after 60m)");
   console.log("note: an asleep agent misses channel traffic older than the 1h replay window; DMs are queued and delivered on wake");
 }
@@ -340,3 +411,4 @@ const sleepCommand: Command = {
 };
 
 registry.register(sleepCommand);
+

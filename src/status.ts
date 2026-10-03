@@ -6,7 +6,7 @@
  * mtime), and durability/two-writer warnings. `ps` was a native reimpl of the manager's ps (still at
  * `paw cotal ps` for the raw view); status now carries the liveness column too, so there's one command.
  */
-import { isAsleep } from "./sleep-state.js";
+import { sleepState } from "./sleep-state.js";
 import { CotalEndpoint, DEFAULT_SERVER, dmDurable, dmStream, parsePrincipalKey, type Command, registry } from "@cotal-ai/core";
 import { JetStreamApiCodes, JetStreamApiError, jetstreamManager } from "@nats-io/jetstream";
 import { connect, credsAuthenticator } from "@nats-io/transport-node";
@@ -736,7 +736,7 @@ export async function collectStatus(space: string, ctl?: ManagerControl, opts: {
     } else {
       const s = meshStatus(psRow);
       // A hibernated agent (`paw sleep`) is offline on purpose and a DM wakes it — say so, not "offline".
-      mesh = !s.live && isAsleep(space, name) ? "asleep" : s.text;
+      mesh = (!s.live && sleepState(space, name)) || s.text;
       live = s.live;
       rowRuntime = live ? runtime : undefined;
     }

@@ -1,12 +1,15 @@
 /** Hermetic checks for `paw sleep`'s pure parts (no mesh, no claude). */
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 process.env.PAW_HOME = mkdtempSync(join(tmpdir(), "pawsleepchk-"));
 const { parseHibernate, extraChannels, openBackgroundTasks, shellDescendants, sleepDecision } = await import("../src/sleep.js");
 const { backlogFilters, dmSender } = await import("../src/sleep-host.js");
-const { standInActor, writeSleepRecord, prepareWake, isAsleep, readWakingRecord, markStandIn, standInHolder } = await import("../src/sleep-state.js");
+const { standInActor, writeSleepRecord, prepareWake, isAsleep, readWakingRecord, markStandIn, standInHolder, scanRecords, listSleeping, sleepState, failWake, clearSleep, sleepDir, MAX_WAKE_FAILURES } = await import("../src/sleep-state.js");
+const { scanActivity, preDespawnCheck } = await import("../src/sleep.js");
+const { effectiveCursor, toForward } = await import("../src/sleep-host.js");
+const { stopAgent } = await import("../src/addressing.js");
 
 let fails = 0;
 const ok = (label: string, cond: boolean, detail = "") => {
@@ -94,16 +97,62 @@ ok("stand-in actor is stable and NATS-safe", actor === standInActor("s", "a") &&
 const f = backlogFilters("s", { name: "a", folder: "/x", since: 0, cursorSeq: 5, lastId: "local.OLD", reason: "" });
 ok("backlog covers the stand-in AND the despawned seat", f.length === 2 && f[0].includes(actor) && f[1].includes(".OLD."), f.join(" "));
 
-// state: prepareWake flips the record and waits for the stand-in to drop
+
+// state: prepareWake flips the record but leaves the stand-in up (it stays until the seat is live)
 writeSleepRecord("s", { name: "a", folder: "/x", since: 1, cursorSeq: 5, reason: "t" });
 markStandIn("s", "a", true);
 ok("stand-in holder is this process", standInHolder("s", "a") === process.pid);
-setTimeout(() => markStandIn("s", "a", false), 400);
-const t0 = Date.now();
-const woke = await prepareWake("s", "a", 5000);
-ok("prepareWake waited for the stand-in to drop", woke && Date.now() - t0 >= 350 && standInHolder("s", "a") === undefined);
+ok("prepareWake reports a wake in progress", prepareWake("s", "a"));
 ok("record flipped to waking", !isAsleep("s", "a") && readWakingRecord("s", "a")?.cursorSeq === 5);
-ok("prepareWake on an awake agent is a no-op", !(await prepareWake("s", "nobody")));
+ok("#3 stand-in is NOT dropped by prepareWake (name stays addressable through the boot)", standInHolder("s", "a") === process.pid);
+ok("status reads waking", sleepState("s", "a") === "waking");
+ok("prepareWake on an awake agent is a no-op", !prepareWake("s", "nobody"));
+markStandIn("s", "a", false);
+
+// #6 a wake that keeps failing goes back to sleep with its error visible
+const f1 = failWake("s", "a", "two writers");
+ok("#6 first failure stays waking, shown as wake failed", !f1.backToSleep && sleepState("s", "a") === "wake failed" && readWakingRecord("s", "a")?.wakeFailures === 1);
+for (let i = 1; i < MAX_WAKE_FAILURES - 1; i++) failWake("s", "a", "two writers");
+const fN = failWake("s", "a", "folder gone");
+ok("#6 after MAX failures it is asleep again (stand-in re-raised by the host)", fN.backToSleep && isAsleep("s", "a") && !readWakingRecord("s", "a"));
+ok("#6 the error stays on the record", sleepState("s", "a") === "wake failed");
+
+// #1 one corrupt record never throws out of the scan
+writeFileSync(join(sleepDir("s"), "broken.json"), "{not json");
+const scan = scanRecords("s", ".json");
+ok("#1 corrupt record reported, good ones still returned", scan.bad.length === 1 && scan.bad[0].startsWith("broken.json") && scan.records.some((r) => r.name === "a"));
+ok("#1 listSleeping does not throw on a corrupt file", listSleeping("s").length === 1);
+ok("#1 status says the record is corrupt instead of throwing", sleepState("s", "broken") === "sleep record corrupt");
+
+// #4 stop/rm/rename (all through stopAgent) clear the sleep state
+const fakeCtl = { space: "s", ps: async () => ({ ok: true, data: [] }) } as unknown as Parameters<typeof stopAgent>[0];
+await stopAgent(fakeCtl, "a");
+ok("#4 stopAgent drops the sleep record, so a DM can't resurrect it", !isAsleep("s", "a") && sleepState("s", "a") === undefined);
+ok("#4 clearSleep reports when there was nothing", !clearSleep("s", "a"));
+
+// #5 runtime channel joins since the process started
+const join1 = t("2026-10-02T10:00:00Z", { type: "assistant", message: { content: [{ type: "tool_use", name: "mcp__cotal__cotal_join", input: { channel: "team2027" } }] } });
+const joinGen = t("2026-10-02T10:00:00Z", { type: "assistant", message: { content: [{ type: "tool_use", name: "mcp__cotal__cotal_join", input: { channel: "general" } }] } });
+const leave1 = t("2026-10-02T10:10:00Z", { type: "assistant", message: { content: [{ type: "tool_use", name: "mcp__cotal__cotal_leave", input: { channel: "team2027" } }] } });
+const now5 = at("2026-10-02T11:00:00Z");
+ok("#5 a runtime cotal_join is found", scanActivity([join1], since, now5).joined.join() === "team2027");
+ok("#5 #general is not a blocker", scanActivity([joinGen], since, now5).joined.length === 0);
+ok("#5 a later cotal_leave cancels it", scanActivity([join1, leave1], since, now5).joined.length === 0);
+ok("#5 a join from a previous incarnation is ignored", scanActivity([join1], at("2026-10-02T10:30:00Z"), now5).joined.length === 0);
+ok("#5 a joined channel blocks the sleep", !sleepDecision(base, H, at("2026-10-02T12:00:00Z"), { tasks: [], shells: [], joined: ["team2027"] }, []).sleep);
+
+// #2/#7 the last gate before despawn
+ok("#2 nothing moved → despawn allowed", preDespawnCheck({ snapshotActiveMs: 5, activeMsNow: 5, meshNow: "idle", dmsSinceCursor: 0 }) === undefined);
+ok("#2 transcript written since the decision → abort", !!preDespawnCheck({ snapshotActiveMs: 5, activeMsNow: 9, meshNow: "idle", dmsSinceCursor: 0 }));
+ok("#2 agent left idle → abort", !!preDespawnCheck({ snapshotActiveMs: 5, activeMsNow: 5, meshNow: "working", dmsSinceCursor: 0 }));
+ok("#2/#7 a DM after the cursor → abort (it may be waking a turn; never forwarded twice)", !!preDespawnCheck({ snapshotActiveMs: 5, activeMsNow: 5, meshNow: "idle", dmsSinceCursor: 1 }));
+
+// LOW: cursor sanity + idempotent forward
+ok("cursor within the stream is kept", effectiveCursor(5, 9) === 5);
+ok("cursor past the stream's end (reset) forwards everything", effectiveCursor(12, 3) === 0);
+const backlog = [{ seq: 6 }, { seq: 7 }, { seq: 8 }];
+ok("already-forwarded seqs are skipped on a retry", toForward(backlog, [6, 7]).map((m) => m.seq).join() === "8");
+ok("nothing forwarded yet → all of it", toForward(backlog, undefined).length === 3);
 
 console.log(fails ? `\n${fails} FAILED` : "\nall passed");
 process.exit(fails ? 1 : 0);

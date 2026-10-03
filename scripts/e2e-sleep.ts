@@ -12,7 +12,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CotalEndpoint, DEFAULT_SERVER } from "@cotal-ai/core";
+import { CotalEndpoint, DEFAULT_SERVER, resolvePeer } from "@cotal-ai/core";
 import { removeMesh } from "@cotal-ai/workspace";
 import { ManagerControl } from "../src/control.js";
 import { ensureAgentSpawned, personaFilePath, setFolderName, waitForPeerId } from "../src/addressing.js";
@@ -20,7 +20,7 @@ import { ensure, stop } from "../src/lifecycle.js";
 import { liveSessionProcs } from "../src/named.js";
 import { readResumeId } from "../src/session.js";
 import { collectStatus } from "../src/status.js";
-import { extraChannels, readActivity, sleepAgent, sleepDecision } from "../src/sleep.js";
+import { dmLastSeq, extraChannels, readActivity, sleepAgent, sleepDecision } from "../src/sleep.js";
 import { isAsleep, standInHolder } from "../src/sleep-state.js";
 import { personaValue } from "../src/session.js";
 
@@ -93,12 +93,18 @@ try {
   const freeBefore = vmFreeMb();
   console.log(`  sleeper claude pid ${proc.pid}, tree RSS ${rssBefore} MB, system free ${freeBefore} MB`);
 
+  const cursorSeq = await dmLastSeq(space);
   const { rows } = await collectStatus(space, ctl, { git: false });
   const row = rows.find((r) => r.name === sleeper)!;
-  const activity = await readActivity(pin);
+  const activity = readActivity(pin);
   const d = sleepDecision(row, 0, Date.now(), activity, extraChannels(personaValue(personaFilePath(space, sleeper), "subscribe")));
   ok("sleep gate passes for an idle agent with nothing running", d.sleep, d.reason);
-  await sleepAgent(space, ctl, sleeper, "e2e");
+  const stale = await sleepAgent(space, ctl, sleeper, "e2e", { cursorSeq, snapshotActiveMs: (row.activeMs ?? 0) - 1 }).then(
+    () => "slept",
+    (e: Error) => e.message,
+  );
+  ok("#2 a snapshot the transcript moved past aborts the despawn", stale.includes("written after the decision"), stale);
+  await sleepAgent(space, ctl, sleeper, "e2e", { cursorSeq, snapshotActiveMs: row.activeMs });
   ok("record written", isAsleep(space, sleeper));
   for (let i = 0; i < 30 && standInHolder(space, sleeper) === undefined; i++) await sleep(1000);
   ok("stand-in raised by the mailbox's sleep host", standInHolder(space, sleeper) !== undefined);
@@ -117,7 +123,25 @@ try {
     `Use your cotal_dm tool to send the agent named "sleeper" this exact message: "Reply to prober with cotal_dm saying exactly ${token}, nothing else." Then reply to prober with cotal_dm saying SENT (or the exact error if the DM failed).`,
   );
   const t0 = Date.now();
-  for (let i = 0; i < 300 && !inbox.some((m) => m.text.includes(token)); i++) await sleep(1000);
+  // #3: watch the name through the wake — it must never be missing from the roster during the boot.
+  let deadMs = 0;
+  let ambiguousMs = 0;
+  for (let i = 0; i < 1200 && !inbox.some((m) => m.text.includes(token)); i++) {
+    // Exactly the lookup a sender's cotal_dm does: undefined = "no peer", a throw = ambiguous.
+    try {
+      if (!resolvePeer(prober.getRoster(), sleeper)) deadMs += 250;
+    } catch {
+      ambiguousMs += 250;
+    }
+    await sleep(250);
+  }
+  console.log(`  during the wake: name unresolvable ~${deadMs}ms, ambiguous ~${ambiguousMs}ms (250ms sampling)`);
+  // "no peer" never happens. A brief AMBIGUOUS window is inherent while the stand-in yields the name
+  // (offline) for the hard-pinned spawn: a watcher that saw the old seat leave still holds it offline too
+  // (core marks a deleted presence key offline, never removes it), so two offline rows share the name
+  // until the new seat goes live. Loud (AmbiguousPeerError to the sender), never a silent loss — bounded here.
+  ok("#3 the name never went missing during the wake", deadMs === 0, `dead ${deadMs}ms`);
+  ok("#3 the ambiguous window is bounded to the boot", ambiguousMs < 15_000, `ambiguous ${ambiguousMs}ms`);
   const callerSaid = inbox.filter((m) => m.from === caller).map((m) => m.text);
   console.log(`  caller said: ${JSON.stringify(callerSaid)}`);
   const answer = inbox.find((m) => m.text.includes(token));
