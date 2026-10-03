@@ -31,7 +31,10 @@ Every other paw daemon runs under tsx. The hub can't: tsx's require hook turned 
 `mcp.cjs` into ~400MB of V8 heap (same file, 485MB footprint under tsx vs 85MB under plain node; a
 hub with 0 sessions measured 586MB under tsx). So the daemon is `src/hub/daemon.mjs` — plain ESM with
 JSDoc types, type-checked by `tsc` via `allowJs`, importing only node builtins and `mcp.cjs` — and the
-supervisor runs it with `node --max-old-space-size=1024` directly. The same tsx tax very likely sits
+supervisor runs it with `node --optimize-for-size --max-semi-space-size=1 --max-old-space-size=1024`
+directly. The two size flags (from Cotal-AI/Cotal#2403) took 25 synthetic sessions from 226MB to
+118MB footprint (0 sessions: 119 → 90MB). Never `--lite-mode`/`--jitless`: they remove WebAssembly,
+which node's fetch (undici) needs. The same tsx tax very likely sits
 on the manager / mailbox / `paw web` today (141 / 96 / 305MB live); not addressed here.
 
 ## Identity across a hub restart (the must-have)

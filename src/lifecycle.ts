@@ -1475,8 +1475,11 @@ async function ensureHub(space: string): Promise<void> {
   const out = openSync(hubLogPath(space), "a");
   try {
     // Plain node, never tsx: see src/hub/daemon.mjs (tsx's require hook costs ~400MB on mcp.cjs).
+    // V8 sized for an I/O-bound server (measured, 25 sessions: 226MB → 118MB phys_footprint). NOT
+    // --lite-mode/--jitless: those drop WebAssembly, and node's fetch (undici) needs it.
     const entry = daemonEntry("src", "hub", "daemon.mjs");
-    const child = spawn("/bin/sh", ["-c", HUB_SUPERVISOR, "paw-cotal-hub", nodeBin(), "--max-old-space-size=1024", entry, "--space", space, "--socket", path], {
+    const v8 = ["--optimize-for-size", "--max-semi-space-size=1", "--max-old-space-size=1024"];
+    const child = spawn("/bin/sh", ["-c", HUB_SUPERVISOR, "paw-cotal-hub", nodeBin(), ...v8, entry, "--space", space, "--socket", path], {
       detached: true,
       stdio: ["ignore", out, out],
       env: daemonEnv(),
