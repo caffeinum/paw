@@ -25,6 +25,7 @@ import { authDir, loadSpaceAuth } from "@cotal-ai/workspace";
 import { pawCotalRoot } from "./cotal-root.js";
 import { confineAndTrustCwd } from "./cwd.js";
 import { readForeground } from "./foreground.js";
+import { prepareWake } from "./sleep-state.js";
 import { withFileLock, withFileLockAsync } from "./lock.js";
 import { liveSessionProcs, meshAgentSession } from "./named.js";
 import { isClaudeHarness, personaValue, readAgentType, readCwd, readResumeId, readShareTools, transcriptMtime } from "./session.js";
@@ -695,6 +696,9 @@ export async function ensureAgentSpawned(
     // (cotal's per-agent model override) is forwarded when set. Confine the cwd to PAW_ROOT and
     // pre-trust the folder HERE (the connector no longer sees the cwd — the manager owns it as of
     // cotal #43), passing the canonical path so the dir claude runs in matches the trust key.
+    // A HIBERNATED agent (`paw sleep`) holds its name through a stand-in presence; take it down first,
+    // or the stand-in and the real agent would share the name and every `cotal_dm` to it would throw.
+    if (await prepareWake(opts.space, opts.name)) console.error(`paw: waking "${opts.name}" from sleep`);
     const config = ensurePersonaFile(opts.space, opts.name, { brief: opts.brief, kind: opts.kind });
     // Two-writer guard: if the agent's pinned session is open in a standalone claude (a hand-run
     // TUI, not a mesh agent), resuming it would put two writers on one transcript and can corrupt

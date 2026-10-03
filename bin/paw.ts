@@ -41,6 +41,7 @@ import "../src/commands/release.js"; // self-registers "release" (snapshot the c
 import "../src/commands/mcp.js"; // self-registers "mcp" (which MCP servers agents get); LOCAL — reads config + personas, no mesh
 import "../src/commands/launchd.js"; // self-registers "launchd" (fleet + web at login); LOCAL — plists + launchctl, self-resolves the manager only to capture the live list
 import "../src/global.js"; // self-registers the "global" command (bring up the always-on $HOME machine agent)
+import "../src/sleep.js"; // self-registers "sleep" (opt-in hibernation of idle agents; self-ensures)
 import "../src/start.js"; // self-registers the "start" command (cold-start the whole registered fleet)
 import "../src/commands/optimize.js"; // self-registers "optimize" (restart long-running idle agents, one at a time, verified)
 import "../src/commands/top.js"; // self-registers "top" (per-agent memory/cpu/subprocesses + cleanup hints; read-only, self-ensures)
