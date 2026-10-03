@@ -38,6 +38,7 @@ import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, readlinkSync,
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { buildShim, hubEnabled } from "./hub/paths.js";
 
 /** paw's checkout root, anchored at THIS file — not process.argv[1], which may be a launcher shim
  *  outside the repo. When the CLI itself runs from a release dir, this IS that release dir. */
@@ -178,12 +179,26 @@ export function createRelease(opts: { root?: string; force?: boolean } = {}): Re
   try {
     for (const item of PAYLOAD) cpSync(join(root, item), join(staging, item), { recursive: true });
     cloneNodeModules(root, staging);
+    buildReleaseShim(staging);
     rmSync(dest, { recursive: true, force: true }); // only reached under --force, or a torn prior run
     renameSync(staging, dest);
   } finally {
     rmSync(staging, { recursive: true, force: true });
   }
   return { id, path: dest, createdAt: statSync(dest).mtimeMs };
+}
+
+/** Compile the cotal hub's per-agent shim into the release (src/hub/paths.ts), so the daemons never
+ *  build into a tree they're running from. Without a C compiler this fails loud when the hub is on
+ *  (PAW_COTAL_HUB=1 — it can't run without one) and otherwise says so and carries on: the default
+ *  mode never touches the shim, and the connector builds it on first hub use if one appears later. */
+function buildReleaseShim(staging: string): void {
+  try {
+    buildShim(staging);
+  } catch (e) {
+    if (hubEnabled()) throw e;
+    console.error(`${(e as Error).message} — skipped (PAW_COTAL_HUB is off).`);
+  }
 }
 
 /**

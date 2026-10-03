@@ -5,11 +5,12 @@
  * the endpoint carries `channels: [channel]` only for the send, registerPresence:false (the mailbox
  * beacon holds "you" present) and consume:false (never touches "you"'s durable inbox slot).
  */
-import { CotalEndpoint, DEFAULT_SERVER, assertValidChannel, registry, type Command } from "@cotal-ai/core";
+import { CotalEndpoint, assertValidChannel, registry, type Command } from "@cotal-ai/core";
 import { controlCreds, stableHumanId } from "../addressing.js";
 import { resolveSpace } from "../lifecycle.js";
 import { HUMAN_PEER } from "../names.js";
 import { stripChannel } from "./history.js";
+import { pawServer } from "../server.js";
 
 const tty = process.stdout.isTTY === true;
 const wrap = (code: string) => (s: string) => (tty ? `\x1b[${code}m${s}\x1b[0m` : s);
@@ -42,7 +43,7 @@ async function msg(argv: string[]): Promise<void> {
   const { channel, text, space: spaceArg, server: serverArg } = parseArgs(argv);
   if (!channel || !text) throw new Error('paw: usage — msg <#channel> "<text>"');
   const space = spaceArg ?? resolveSpace();
-  const server = serverArg ?? DEFAULT_SERVER;
+  const server = serverArg ?? pawServer();
   assertValidChannel(channel);
 
   // One-shot sender as the stable "you" (mirrors src/dm.ts's endpoint shape): no presence, no

@@ -11,7 +11,8 @@
     "rootDir": ".",
     "esModuleInterop": true,
     "skipLibCheck": true,
+    "allowJs": true,
     "forceConsistentCasingInFileNames": true
   },
-  "include": ["bin/**/*.ts", "src/**/*.ts", "scripts/**/*.ts"]
+  "include": ["bin/**/*.ts", "src/**/*.ts", "src/hub/*.mjs", "scripts/**/*.ts"]
 }

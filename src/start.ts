@@ -11,11 +11,12 @@
  * failures (e.g. the two-writer guard) are reported per-agent, never fatal to the rest.
  */
 import { existsSync } from "node:fs";
-import { DEFAULT_SERVER, registry, type Command } from "@cotal-ai/core";
+import { registry, type Command } from "@cotal-ai/core";
 import { ensureAgentSpawned, folderForName, listAgents, psRowAlive, type PsRow } from "./addressing.js";
 import { withManagerControl } from "./control.js";
 import { ensure, resolveSpace } from "./lifecycle.js";
 import { awaitSpawnHeadroom } from "./pacing.js";
+import { pawServer } from "./server.js";
 
 function parseArgs(argv: string[]): { space?: string; names: string[] } {
   const out: { space?: string; names: string[] } = { names: [] };

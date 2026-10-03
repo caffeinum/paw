@@ -12,7 +12,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CotalEndpoint, DEFAULT_SERVER, resolvePeer } from "@cotal-ai/core";
+import { CotalEndpoint, resolvePeer } from "@cotal-ai/core";
 import { removeMesh } from "@cotal-ai/workspace";
 import { ManagerControl } from "../src/control.js";
 import { ensureAgentSpawned, personaFilePath, setFolderName, waitForPeerId } from "../src/addressing.js";
@@ -23,6 +23,7 @@ import { collectStatus } from "../src/status.js";
 import { dmLastSeq, extraChannels, readActivity, sleepAgent, sleepDecision } from "../src/sleep.js";
 import { isAsleep, readWakingRecord, standInHolder, writeSleepRecord } from "../src/sleep-state.js";
 import { personaValue } from "../src/session.js";
+import { pawServer } from "../src/server.js";
 
 const space = process.env.PAW_SPACE ?? "";
 if (!process.env.PAW_HOME || !space.startsWith("sleeptest") || process.env.PAW_RELEASE !== "dev" || !process.env.PAW_COTAL_ROOT) {
@@ -60,7 +61,7 @@ const vmFreeMb = () => {
   return Math.round(((n("Pages free") + n("Pages speculative")) * page) / 1048576);
 };
 
-const ctl = new ManagerControl(space, DEFAULT_SERVER);
+const ctl = new ManagerControl(space, pawServer());
 let prober: CotalEndpoint | undefined;
 try {
   await ensure({ needMesh: true, needManager: true, space });
@@ -72,7 +73,7 @@ try {
   await Promise.all([ensureAgentSpawned(ctl, { space, name: sleeper, cwd: sleeperDir }), ensureAgentSpawned(ctl, { space, name: caller, cwd: callerDir })]);
   ok("both agents spawned", true);
 
-  prober = new CotalEndpoint({ space, servers: DEFAULT_SERVER, channels: [], consume: true, registerPresence: true, watchPresence: true, card: { name: "prober", kind: "endpoint" } });
+  prober = new CotalEndpoint({ space, servers: pawServer(), channels: [], consume: true, registerPresence: true, watchPresence: true, card: { name: "prober", kind: "endpoint" } });
   prober.on("error", () => {});
   const inbox: Array<{ from: string; text: string }> = [];
   prober.on("message", (m: { from?: { name?: string }; parts?: Array<{ kind: string; text?: string }> }) =>

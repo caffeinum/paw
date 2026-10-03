@@ -10,7 +10,7 @@
  * NEEDS_MANAGER/NEEDS_MESH gating — pre-ensuring would boot the manager under the STALE runtime and
  * defeat the switch. `paw runtime` (no arg) is a pure local read; it needs no mesh at all.
  */
-import { DEFAULT_SERVER, registry, type Command } from "@cotal-ai/core";
+import { registry, type Command } from "@cotal-ai/core";
 import { existsSync } from "node:fs";
 import {
   agentRecord,
@@ -40,6 +40,7 @@ import {
   spawnDetachedRestart,
   writeRuntimePreference,
 } from "../lifecycle.js";
+import { pawServer } from "../server.js";
 
 const tty = process.stdout.isTTY === true;
 const wrap = (code: string) => (s: string) => (tty ? `\x1b[${code}m${s}\x1b[0m` : s);
@@ -73,7 +74,7 @@ function parseArgs(argv: string[], verb: string): { space?: string; runtime?: Ru
  *  revive" — so `paw restart` from a cold state STARTS a manager rather than aborting here. */
 async function liveAgentNames(space: string): Promise<string[]> {
   try {
-    return await withManagerControl(space, DEFAULT_SERVER, async (ctl) => {
+    return await withManagerControl(space, pawServer(), async (ctl) => {
       const ps = await ctl.ps();
       if (!ps.ok) return [];
       // A live agent paw never spawned (`cotal_spawn`) is registered from its ps row NOW, while its
@@ -96,7 +97,7 @@ async function reviveAgents(space: string, names: string[]): Promise<{ revived: 
   const revived: string[] = [];
   const skipped: string[] = [];
   if (!names.length) return { revived, skipped };
-  await withManagerControl(space, DEFAULT_SERVER, async (ctl) => {
+  await withManagerControl(space, pawServer(), async (ctl) => {
     for (const name of names) {
       const folder = folderForName(space, name);
       if (!folder || !existsSync(folder)) {
@@ -178,7 +179,7 @@ async function restart(argv: string[]): Promise<void> {
       throw new Error(`paw: "${agent}" is neither a runtime (${RUNTIMES.join(", ")}) nor a known agent — \`paw status\` lists the agents`);
     }
     await ensure({ needMesh: true, needManager: true, space });
-    await withManagerControl(space, DEFAULT_SERVER, async (ctl) => {
+    await withManagerControl(space, pawServer(), async (ctl) => {
       const folder = await resolveAgentFolder(ctl, space, agent); // a live cotal_spawn peer counts too
       if (!folder)
         throw new Error(

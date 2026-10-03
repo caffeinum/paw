@@ -13,6 +13,7 @@
  * daemons — never the operator's hand-run mesh.
  */
 import { spawn, spawnSync } from "node:child_process";
+import { createConnection } from "node:net";
 import {
   closeSync,
   existsSync,
@@ -29,7 +30,6 @@ import { basename, dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   CotalEndpoint,
-  DEFAULT_SERVER,
   createSpaceAuth,
   isReachable,
   mintCreds,
@@ -43,6 +43,8 @@ import { daemonRoot } from "./release.js";
 import { pawCotalRoot } from "./cotal-root.js";
 import { withManagerControl } from "./control.js";
 import { withFileLock } from "./lock.js";
+import { customServer, pawServer } from "./server.js";
+import { ensureShim, hubEnabled, hubSocketPath } from "./hub/paths.js";
 
 export interface EnsureOpts {
   /** Bring up (or adopt) the NATS mesh. Commands that talk to the mesh need this. */
@@ -784,6 +786,9 @@ async function ensureMesh(space: string, server: string): Promise<void> {
     );
   }
 
+  if (customServer())
+    throw new Error(`paw: PAW_SERVER=${server} is unreachable — paw only starts the default mesh; start that broker yourself (e.g. \`nats-server -js -p <port>\`).`);
+
   const recorded = readPid(meshPidPath(space));
   if (recorded !== undefined && alive(recorded)) {
     // Alive but unreachable: a hung server holding the port. SIGTERM once, wait briefly, respawn ONCE.
@@ -1058,6 +1063,16 @@ export function managerMatchPattern(space: string): string {
 export function mailboxMatchPattern(space: string): string {
   return `paw\\.ts mailbox --space ${escapeRegex(space)}( |$)`;
 }
+/** The pgrep -f regex for paw's cotal hub of exactly `space`: matches BOTH the supervisor shell (its
+ *  argv carries the hub's whole command line) and the hub process under it. Same space-exact anchor
+ *  as the mailbox's. Exported for hermetic unit coverage. */
+export function hubMatchPattern(space: string): string {
+  return `hub/daemon\\.mjs --space ${escapeRegex(space)} --socket`;
+}
+/** All live pids of paw's cotal hub for `space` — supervisor shell and hub alike. */
+export function hubProcs(space: string): number[] {
+  return pgrepF(hubMatchPattern(space));
+}
 /** All live pids of paw's manager daemon for `space` (tsx wrapper + its re-exec child, plus any
  *  duplicates left by prior churn). The signature-based source of truth for stop/restart ownership. */
 export function managerProcs(space: string): number[] {
@@ -1220,7 +1235,7 @@ async function stopOwnedManager(space: string): Promise<void> {
     // can't see it in ps, and its two-writer guard then REFUSES to revive it (its session is held).
     // So despawn every managed agent explicitly first. A manager that won't answer falls through to
     // the signal (and the runtime UI reap) — the old behaviour.
-    await withManagerControl(space, DEFAULT_SERVER, (ctl) => despawnManagedAgents(ctl)).catch((e: Error) =>
+    await withManagerControl(space, pawServer(), (ctl) => despawnManagedAgents(ctl)).catch((e: Error) =>
       console.error(`paw: couldn't despawn agents before stopping the manager (${e.message}) — signalling it anyway`),
     );
     signalProcs(pids, "SIGTERM");
@@ -1410,6 +1425,85 @@ function ensureMailbox(space: string): void {
   }
 }
 
+function hubLogPath(space: string): string {
+  return join(pawDir(space), "hub.log");
+}
+
+/**
+ * The hub's supervisor: a POSIX shell loop (~1MB, no runtime of its own to crash) that restarts the
+ * hub whenever it exits — the watchdog's SIGKILL on a stalled loop, a crash, an uncaught-error burst.
+ * Backoff doubles to 30s while it keeps dying young and resets after a run of a minute, so a hub that
+ * cannot start costs one attempt per 30s rather than a spin. `$@` is the hub command line, so the
+ * shell's own argv carries it and {@link hubMatchPattern} finds (and `paw down` kills) both.
+ *
+ * Chosen over launchd KeepAlive: per space (an isolated test space gets its own and leaves no
+ * login item behind), portable, owned and torn down by the same pgrep signature as the manager and
+ * mailbox, and restarting in seconds rather than at launchd's 10s throttle. If the supervisor
+ * itself dies, the next ensure() — every paw command, and the 60s `paw global` keeper tick — starts
+ * it again; meanwhile the shims answer tool calls with "hub unavailable" and keep reconnecting.
+ */
+export const HUB_SUPERVISOR = `d=1
+while :; do
+  t=$(date +%s)
+  "$@"
+  rc=$?
+  echo "[cotal-hub-supervisor] $(date -u +%FT%TZ) hub exited $rc — restarting in \${d}s"
+  [ $(( $(date +%s) - t )) -ge 60 ] && d=1
+  sleep "$d"
+  d=$(( d * 2 )); [ "$d" -gt 30 ] && d=30
+done`;
+
+/** Socket accepts a connection — the hub's readiness signal (bind happens before it listens). */
+function hubAnswers(path: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    const s = createConnection(path);
+    s.once("connect", () => (s.destroy(), resolve(true)));
+    s.once("error", () => resolve(false));
+  });
+}
+
+const HUB_READY_MS = 15_000;
+
+/** Start the space's cotal hub under its supervisor, or adopt a running one (PAW_COTAL_HUB=1 only).
+ *  Fails loud if the shim can't be built or the hub never listens — the connector is about to point
+ *  every new agent's MCP server at it. */
+async function ensureHub(space: string): Promise<void> {
+  if (!hubEnabled()) return;
+  const path = hubSocketPath(space);
+  if (hubProcs(space).length > 0) return;
+  ensureShim(daemonRoot());
+  const out = openSync(hubLogPath(space), "a");
+  try {
+    // Plain node, never tsx: see src/hub/daemon.mjs (tsx's require hook costs ~400MB on mcp.cjs).
+    const entry = daemonEntry("src", "hub", "daemon.mjs");
+    const child = spawn("/bin/sh", ["-c", HUB_SUPERVISOR, "paw-cotal-hub", nodeBin(), "--max-old-space-size=1024", entry, "--space", space, "--socket", path], {
+      detached: true,
+      stdio: ["ignore", out, out],
+      env: daemonEnv(),
+      cwd: pawCotalRoot(space),
+    });
+    child.unref();
+  } finally {
+    closeSync(out);
+  }
+  for (let waited = 0; waited < HUB_READY_MS; waited += 200) {
+    if (await hubAnswers(path)) return;
+    await sleep(200);
+  }
+  throw new Error(`paw: the cotal hub did not start listening on ${path} within ${HUB_READY_MS / 1000}s — see ${hubLogPath(space)}:\n${tail(hubLogPath(space), 8)}`);
+}
+
+/** Stop the space's hub + supervisor by signature. Each live session leaves the mesh cleanly on
+ *  SIGTERM; their claudes' shims keep retrying until a hub is back (or claude exits). */
+async function stopHub(space: string): Promise<void> {
+  const pids = hubProcs(space);
+  if (!pids.length) return;
+  signalProcs(pids, "SIGTERM");
+  console.error(`paw: stopped cotal hub (pid ${pids.join(", ")})`);
+  for (let i = 0; i < 30 && hubProcs(space).length > 0; i++) await sleep(100);
+  signalProcs(hubProcs(space), "SIGKILL");
+}
+
 /**
  * Ensure paw's daemons are up for this invocation. Serialized under paw's per-space lock so two
  * paw commands racing don't each boot a mesh/manager. start-once-per-invocation: on failure the
@@ -1418,10 +1512,12 @@ function ensureMailbox(space: string): void {
  */
 export async function ensure(opts: EnsureOpts = {}): Promise<{ space: string; server: string }> {
   const space = opts.space ?? resolveSpace();
-  const server = DEFAULT_SERVER;
+  const server = pawServer();
   if (opts.needManager) resolveRuntime(space); // fail loud on a bad PAW_RUNTIME before booting; the cmux-surface gate is in ensureManagerUp (adopt needs no surface)
   await withLock(space, async () => {
     if (opts.needMesh || opts.needManager) await ensureMesh(space, server);
+    // The hub before the manager: the connector points every agent the manager spawns at it.
+    if (opts.needMesh || opts.needManager) await ensureHub(space);
     if (opts.needManager) await ensureManagerUp(space, server, opts.switchRuntime);
     // Any mesh-up context keeps "you" reachable — so a fire-and-forget `paw dm` gets a reply later.
     if (opts.needMesh || opts.needManager) ensureMailbox(space);
@@ -1440,7 +1536,7 @@ export async function ensure(opts: EnsureOpts = {}): Promise<{ space: string; se
  */
 export async function restartManager(opts: { space?: string } = {}): Promise<void> {
   const space = opts.space ?? resolveSpace();
-  const server = DEFAULT_SERVER;
+  const server = pawServer();
   assertRuntimeUsable(resolveRuntime(space)); // fail loud BEFORE stopping the manager (else a cmux-no-surface restart strands us)
   await withLock(space, async () => {
     await ensureMesh(space, server);
@@ -1461,6 +1557,9 @@ export async function restartManager(opts: { space?: string } = {}): Promise<voi
       await stopOwnedManager(space);
       reapRuntimeUi(space, running, uiNames); // old UI gone before ensureManagerUp + revival create the new
     }
+    // A restart renews the hub too, so it runs the code the new manager's connector expects.
+    await stopHub(space);
+    await ensureHub(space);
     await ensureManagerUp(space, server);
     // Refresh the beacon too — a restart renews the whole daemon set. A STALE beacon (old paw code or
     // an old @cotal-ai in its long-lived memory) can hold "you" under a mismatched id (e.g. a
@@ -1490,6 +1589,7 @@ export async function stop(opts: { space?: string } = {}): Promise<void> {
     // the shared helper (tmux → kill-session; cmux → no-op here with no agent names; pty → nothing).
     reapRuntimeUi(space, runtime);
     await stopMailbox(space);
+    await stopHub(space);
     killOwned(meshPidPath(space), "mesh");
   });
 }

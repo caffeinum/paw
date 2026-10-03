@@ -5,7 +5,7 @@
  * processes an agent left behind (orphans) and a hint per row for cleaning up. It never acts — every
  * hint is a command that exists, for the operator to run. The same table is `paw optimize --dry-run`.
  */
-import { DEFAULT_SERVER, registry, type Command } from "@cotal-ai/core";
+import { registry, type Command } from "@cotal-ai/core";
 import { withManagerControl } from "../control.js";
 import { resolveSpace } from "../lifecycle.js";
 import { ago, collectStatus } from "../status.js";
@@ -25,6 +25,7 @@ import {
   type Item,
 } from "../fleet.js";
 import { optimizeVerdict } from "./optimize.js";
+import { pawServer } from "../server.js";
 
 const DAY = 86_400_000;
 
@@ -61,7 +62,7 @@ async function top(argv: string[]): Promise<void> {
   const space = args.space ?? resolveSpace();
   // Read-only: it never boots daemons (a dead manager fails loud below), which also skips ensure's own ps round-trip.
   const [status, fleet] = await Promise.all([
-    withManagerControl(space, DEFAULT_SERVER, (ctl) => collectStatus(space, ctl, { git: false })),
+    withManagerControl(space, pawServer(), (ctl) => collectStatus(space, ctl, { git: false })),
     snapshotFleet(space, { all: args.all }),
   ]);
   const now = Date.now();

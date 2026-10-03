@@ -14,12 +14,13 @@
  *   - --watch  — a live foreground tail (poll, like `log --follow`): print DMs as they arrive and
  *                advance the shared cursor past each. Ctrl-C to exit. Still a pure reader (no durable bind).
  */
-import { DEFAULT_SERVER, registry, type Command } from "@cotal-ai/core";
+import { registry, type Command } from "@cotal-ai/core";
 import { advanceCursor, readCursor } from "./cursor.js";
 import { observerEndpoint, pollLoop, readConversation, type Entry } from "./feed.js";
 import { resolveSpace } from "./lifecycle.js";
 import { HUMAN_PEER } from "./names.js";
 import { writeJson } from "./stdout.js";
+import { pawServer } from "./server.js";
 
 const tty = process.stdout.isTTY === true;
 const wrap = (code: string) => (s: string) => (tty ? `\x1b[${code}m${s}\x1b[0m` : s);
@@ -127,7 +128,7 @@ async function readInbox(space: string, server: string, withSent = false): Promi
 async function inbox(argv: string[]): Promise<void> {
   const { space: spaceArg, server: serverArg, history, limit, watch, json, markRead, sent } = parseArgs(argv);
   const space = spaceArg ?? resolveSpace();
-  const server = serverArg ?? DEFAULT_SERVER;
+  const server = serverArg ?? pawServer();
 
   // --watch is a live tail; --history is a one-shot backlog dump. They contradict each other — fail loud.
   if (watch && history) {

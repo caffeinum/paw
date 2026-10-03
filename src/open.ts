@@ -8,7 +8,7 @@
  * work on cotal 0.25 and says so — see {@link attachResolved}.
  * Self-registers an "open" command on import; bin/paw.ts ensures the mesh + manager are up first.
  */
-import { DEFAULT_SERVER, registry, type Command } from "@cotal-ai/core";
+import { registry, type Command } from "@cotal-ai/core";
 import { attachTmux, tmuxSession, tmuxSplit, tmuxSplitAdvice, tmuxWindowExists } from "./native-attach.js";
 import { liveSessionProcs } from "./named.js";
 import { existsSync } from "node:fs";
@@ -18,6 +18,7 @@ import { withManagerControl } from "./control.js";
 import { readForeground } from "./foreground.js";
 import { isAddressHandle, resolveAddress } from "./address.js";
 import { readRuntimeMarker, resolveSpace } from "./lifecycle.js";
+import { pawServer } from "./server.js";
 
 function parseArgs(argv: string[]): { space?: string; target?: string; model?: string; name?: string } {
   const out: { space?: string; target?: string; model?: string; name?: string } = {};
@@ -118,7 +119,7 @@ export async function attachResolved(
   const windowOpen = runtime === "tmux" && tmuxWindowExists(space, name);
   // One control round-trip: spawn if we resolved a folder. Attaching is per-runtime below.
   if (folder && !windowOpen) {
-    await withManagerControl(space, DEFAULT_SERVER, (ctl) => ensureAgentSpawned(ctl, { space, name, cwd: folder, model, brief, kind }));
+    await withManagerControl(space, pawServer(), (ctl) => ensureAgentSpawned(ctl, { space, name, cwd: folder, model, brief, kind }));
   }
 
   if (runtime === "tmux") {

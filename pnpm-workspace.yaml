@@ -19,4 +19,11 @@ packages:
   - "."
 allowBuilds:
   esbuild: false
+# patchedDependencies — TEMPORARY. The cotal hub (src/hub.ts, PAW_COTAL_HUB=1) needs
+#   `serveClaudeSession` from `@cotal-ai/connector-claude-code/mcp`, upstreamed in
+#   https://github.com/Cotal-AI/Cotal/pull/2401. The patch is that PR rebuilt onto the 0.58.0
+#   sources (dist/mcp.cjs + mcp.d.ts + the `./mcp` subpath export); `node dist/mcp.cjs` behaves
+#   as published. DELETE this entry and patches/ when a cotal release carrying #2401 lands.
+patchedDependencies:
+  '@cotal-ai/connector-claude-code@0.58.0': patches/@cotal-ai__connector-claude-code@0.58.0.patch
 verifyDepsBeforeRun: false

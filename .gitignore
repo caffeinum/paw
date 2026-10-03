@@ -12,3 +12,4 @@ raycast/raycast-env.d.ts
 # cotal-extension build artifacts (dist/ carries the machine-specific paw-root stamp)
 plugin/node_modules
 plugin/dist
+.build/

@@ -9,7 +9,7 @@
  * agents paw's registry doesn't know (an auto-numbered duplicate like `web-2`, a raw
  * `paw cotal start`), and those must stay stoppable.
  */
-import { DEFAULT_SERVER, registry, type Command } from "@cotal-ai/core";
+import { registry, type Command } from "@cotal-ai/core";
 import {
   agentRecord,
   assertUnambiguousTarget,
@@ -22,6 +22,7 @@ import { withManagerControl } from "../control.js";
 import { readForeground, unregisterForeground } from "../foreground.js";
 import { resolveSpace } from "../lifecycle.js";
 import { sleepState } from "../sleep-state.js";
+import { pawServer } from "../server.js";
 
 /** The success line for `paw stop`, or undefined when nothing was stopped. A sleeping agent has no seat
  *  to stop, but stopping it is real — it no longer wakes on a DM — so say that, not "isn't running". */
@@ -109,7 +110,7 @@ async function stop(argv: string[]): Promise<void> {
   }
 
   const wasAsleep = sleepState(space, name) !== undefined; // read BEFORE stopAgent clears it
-  const stopped = await withManagerControl(space, DEFAULT_SERVER, (ctl) => stopAgent(ctl, name));
+  const stopped = await withManagerControl(space, pawServer(), (ctl) => stopAgent(ctl, name));
   const done = stopMessage(name, stopped, wasAsleep);
   if (done) console.log(done);
   else if (rawName === undefined && !agentRecord(space, name)) {

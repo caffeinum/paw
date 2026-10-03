@@ -5,6 +5,8 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { HUMAN_PEER } from "./names.js";
 import { readClaudeArgs, readResumeId, transcriptExists } from "./session.js";
+import { ensureShim, hubEnabled, hubSocketPath } from "./hub/paths.js";
+import { routeCotalToHub } from "./hub/route.js";
 
 /** Claude Code's permission modes — PAW_PERMISSION must be one of these (fail loud otherwise). */
 const PERMISSION_MODES = ["default", "acceptEdits", "bypassPermissions", "plan"] as const;
@@ -170,6 +172,10 @@ export const pawConnector: Connector = {
   buildLaunch(opts: LaunchOpts): LaunchSpec {
     const spec = claudeConnector.buildLaunch(opts);
     const args = [...spec.args];
+
+    // PAW_COTAL_HUB=1: the cotal MCP server is the hub's C shim, not a node process per agent
+    // (src/hub/). ensure() starts the hub; the shim is built here on first use if the tree lacks one.
+    if (hubEnabled()) routeCotalToHub(args, ensureShim(), hubSocketPath(opts.space));
 
     // KEEP cotal's `--dangerously-load-development-channels server:cotal` intact. It is NOT a no-op:
     // it is the channel-REGISTRATION gate that lets claude 2.1.x honour cotal's

@@ -16,7 +16,6 @@ import * as readline from "node:readline";
 import { stripVTControlCharacters } from "node:util";
 import {
   CotalEndpoint,
-  DEFAULT_SERVER,
   registry,
   type Command,
   type CotalMessage,
@@ -81,6 +80,7 @@ import {
   submittedLineCount,
   type PasteBlock,
 } from "./paste.js";
+import { pawServer } from "./server.js";
 
 /** Tiny ANSI helpers — kept local so chat doesn't reach into cotal's CLI internals. */
 const tty = process.stdout.isTTY === true;
@@ -347,7 +347,7 @@ async function chat(argv: string[]): Promise<void> {
   /** Where a plain line broadcasts when there's no sticky target — the channel you opened, else #general. */
   const room = addressed.mode === "channel" ? addressed.target! : ROOM;
   const space = spaceArg ?? resolveSpace();
-  const server = serverArg ?? DEFAULT_SERVER;
+  const server = serverArg ?? pawServer();
   if (!fresh) assertUnambiguousTarget(space, target); // a bare token that's BOTH a known name and a folder → fail loud (skipped under --fresh: the only interpretation there is a folder)
 
   // No target (only `--all` gets here) => start in broadcast mode: plain lines go to #general, and @name latches a sticky DM

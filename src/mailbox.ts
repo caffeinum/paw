@@ -13,11 +13,12 @@
  * "you" presences (this beacon + a live `paw chat`) share one stable id and coexist: only the consumer
  * (chat) binds the durable inbox; the beacon never does.
  */
-import { CotalEndpoint, DEFAULT_SERVER, registry, type Command } from "@cotal-ai/core";
+import { CotalEndpoint, registry, type Command } from "@cotal-ai/core";
 import { controlCreds, stableHumanId } from "./addressing.js";
 import { resolveSpace } from "./lifecycle.js";
 import { HUMAN_PEER } from "./names.js";
 import { startSleepHost } from "./sleep-host.js";
+import { pawServer } from "./server.js";
 
 function parseArgs(argv: string[]): { space?: string; server?: string } {
   const out: { space?: string; server?: string } = {};
@@ -33,7 +34,7 @@ function parseArgs(argv: string[]): { space?: string; server?: string } {
 async function mailbox(argv: string[]): Promise<void> {
   const { space: spaceArg, server: serverArg } = parseArgs(argv);
   const space = spaceArg ?? resolveSpace();
-  const server = serverArg ?? DEFAULT_SERVER;
+  const server = serverArg ?? pawServer();
 
   const creds = await controlCreds(space);
   const card = creds

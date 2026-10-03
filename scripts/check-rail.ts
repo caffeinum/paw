@@ -33,10 +33,10 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { DEFAULT_SERVER } from "@cotal-ai/core";
 import { removeMesh } from "@cotal-ai/workspace";
 import { ManagerControl, withManagerControl } from "../src/control.js";
 import { ensure, stop } from "../src/lifecycle.js";
+import { pawServer } from "../src/server.js";
 
 const SETTLE_MS = 3_000; // let the manager finish registering its service before a stranger asks
 const PROBE_DEADLINE_MS = 20_000; // generous; the dead rail's symptom was NO reply at all
@@ -82,7 +82,7 @@ const failures: string[] = [];
 if (process.argv[2] === "--probe") {
   const space = process.env.PAW_SPACE!;
   const t0 = Date.now();
-  const reply = await withManagerControl(space, DEFAULT_SERVER, (ctl) => ctl.ps(PROBE_DEADLINE_MS));
+  const reply = await withManagerControl(space, pawServer(), (ctl) => ctl.ps(PROBE_DEADLINE_MS));
   const rows = Array.isArray(reply.data) ? (reply.data as Array<{ name?: string }>) : [];
   process.stdout.write(
     JSON.stringify({ ok: reply.ok, error: reply.error, ms: Date.now() - t0, names: rows.map((r) => r.name) }) + "\n",
@@ -118,7 +118,7 @@ function probe(): { ok: boolean; error?: string; ms: number; names: string[] } {
 }
 
 try {
-  console.log(`space=${space} server=${DEFAULT_SERVER} runtime=${process.env.PAW_RUNTIME}`);
+  console.log(`space=${space} server=${pawServer()} runtime=${process.env.PAW_RUNTIME}`);
 
   // 1. Bring up mesh + MANAGER. `ensure` gates on a control call of its own (`managerAnswers`), so a
   //    dead rail can also fail here — that is fine and it is the same bug; the probe below is what
@@ -150,7 +150,7 @@ try {
   // 5. A REFUSAL must come back as a refusal, promptly — not as silence. This is the half of the rail
   //    that the old one got wrong in the most expensive way: `requestControl` against a subject nobody
   //    served sat until its timeout, so "nobody is there" was indistinguishable from "still thinking".
-  await withManagerControl(space, DEFAULT_SERVER, async (ctl) => {
+  await withManagerControl(space, pawServer(), async (ctl) => {
     const t = Date.now();
     const r = await ctl.inspect("no-such-agent-here");
     const ms = Date.now() - t;
@@ -172,7 +172,7 @@ try {
     const name = setFolderName(space, agentFolder, "railagent").name;
     console.log(`spawning a real agent "${name}" in ${agentFolder} (up to ${SPAWN_READY_MS / 1000}s)…`);
     const t = Date.now();
-    const ctl = new ManagerControl(space, DEFAULT_SERVER);
+    const ctl = new ManagerControl(space, pawServer());
     try {
       const r = await ensureAgentSpawned(ctl, { space, name, cwd: agentFolder });
       ok("spawn over the rail brings a real agent to the mesh", r.spawned, `spawned=${r.spawned} id=${r.id ?? "—"} in ${Date.now() - t}ms`);
@@ -189,7 +189,7 @@ try {
       withAgent.ms >= 0 ? `answered in ${withAgent.ms}ms with [${withAgent.names.join(", ")}]` : `NO ANSWER (${withAgent.error})`,
     );
 
-    await withManagerControl(space, DEFAULT_SERVER, async (c2) => {
+    await withManagerControl(space, pawServer(), async (c2) => {
       const d = await c2.despawn(name);
       ok("despawn over the rail stops a real agent", d.ok, d.ok ? "stopped" : `failed: ${d.error}`);
     });

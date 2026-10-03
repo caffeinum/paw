@@ -21,9 +21,10 @@
  * ephemeral durable self-retires). Imports ONLY @cotal-ai/core.
  */
 import { randomUUID } from "node:crypto";
-import { CotalEndpoint, DEFAULT_SERVER, registry, type Command, type CotalMessage, type Delivery, type MessageMeta } from "@cotal-ai/core";
+import { CotalEndpoint, registry, type Command, type CotalMessage, type Delivery, type MessageMeta } from "@cotal-ai/core";
 import { controlCreds, startResilient } from "../addressing.js";
 import { resolveSpace } from "../lifecycle.js";
+import { pawServer } from "../server.js";
 
 /** The reserved bind protocol — re-declared locally so this module imports only @cotal-ai/core (the
  *  wire is the contract, not a shared type). Kept byte-identical to endpoint-core/src/bind.ts. */
@@ -104,7 +105,7 @@ const REPLY_MS = 10_000; // how long to wait for the minted code to come back
 async function bind(argv: string[]): Promise<void> {
   const { peer, space: spaceArg, server: serverArg } = parseArgs(argv);
   const space = spaceArg ?? resolveSpace();
-  const server = serverArg ?? DEFAULT_SERVER;
+  const server = serverArg ?? pawServer();
 
   // A DISTINCT, EPHEMERAL consuming peer — never HUMAN_PEER. Its own random name + minted id means
   // consume:true binds ITS OWN short-lived DM durable, so the reply-receipt never contends with the

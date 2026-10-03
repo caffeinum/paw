@@ -9,7 +9,7 @@
  * NEEDS_MANAGER so the mesh+manager are up to stop a live agent (a no-op if it's already offline).
  */
 import { existsSync, rmSync } from "node:fs";
-import { DEFAULT_SERVER, registry, type Command } from "@cotal-ai/core";
+import { registry, type Command } from "@cotal-ai/core";
 import { agentNamesForFolder, assertUnambiguousTarget, canonicalDir, folderForName, listAgents, lookupFolderName, personaFilePath, stopAgent } from "./addressing.js";
 import { withManagerControl } from "./control.js";
 import { readForeground, unregisterForeground } from "./foreground.js";
@@ -17,6 +17,7 @@ import { parseGithubHandle, repoDir } from "./github.js";
 import { resolveSpace } from "./lifecycle.js";
 import { readResumeId } from "./session.js";
 import { parseWorktreeRef, resolveWorktreeFolder } from "./worktree.js";
+import { pawServer } from "./server.js";
 
 function parseArgs(argv: string[]): { space?: string; target?: string } {
   const out: { space?: string; target?: string } = {};
@@ -95,7 +96,7 @@ async function rm(argv: string[]): Promise<void> {
     unregisterForeground(space, name);
     stopped = true;
   } else {
-    stopped = await withManagerControl(space, DEFAULT_SERVER, (ctl) => stopAgent(ctl, name)); // no-op if offline
+    stopped = await withManagerControl(space, pawServer(), (ctl) => stopAgent(ctl, name)); // no-op if offline
   }
   rmSync(persona, { force: true }); // the persona IS the registration — deleting it forgets the agent
 

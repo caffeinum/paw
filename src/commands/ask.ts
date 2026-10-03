@@ -4,10 +4,11 @@
  * ANY ONE live holder of the role. Sends under the stable "you" identity (same as `paw dm`) so the
  * answering agent's reply is addressed to your durable inbox — read it with `paw inbox`.
  */
-import { CotalEndpoint, DEFAULT_SERVER, registry, type Command } from "@cotal-ai/core";
+import { CotalEndpoint, registry, type Command } from "@cotal-ai/core";
 import { controlCreds, stableHumanId } from "../addressing.js";
 import { resolveSpace } from "../lifecycle.js";
 import { HUMAN_PEER } from "../names.js";
+import { pawServer } from "../server.js";
 
 const tty = process.stdout.isTTY === true;
 const wrap = (code: string) => (s: string) => (tty ? `\x1b[${code}m${s}\x1b[0m` : s);
@@ -39,7 +40,7 @@ async function ask(argv: string[]): Promise<void> {
   const { role, text, space: spaceArg, server: serverArg } = parseArgs(argv);
   if (!role || !text) throw new Error('paw: usage — ask <role> "<text>"');
   const space = spaceArg ?? resolveSpace();
-  const server = serverArg ?? DEFAULT_SERVER;
+  const server = serverArg ?? pawServer();
 
   // One-shot sender as the stable "you" (mirrors src/dm.ts's endpoint shape): no presence, no
   // durable consumer, no roster watch — connect, anycast to the role, disconnect.

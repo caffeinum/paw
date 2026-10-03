@@ -9,11 +9,12 @@
 import { rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { CotalEndpoint, DEFAULT_SERVER, type CotalMessage, type Delivery, type MessageMeta } from "@cotal-ai/core";
+import { CotalEndpoint, type CotalMessage, type Delivery, type MessageMeta } from "@cotal-ai/core";
 import { controlCreds, stableHumanId, waitForPeerId } from "../src/addressing.js";
 import { removeMesh } from "@cotal-ai/workspace";
 import { ensure, stop } from "../src/lifecycle.js";
 import { HUMAN_PEER } from "../src/names.js";
+import { pawServer } from "../src/server.js";
 
 const space = "pawloopprobe";
 process.env.PAW_SPACE = space;
@@ -25,7 +26,7 @@ const spaceDir = join(process.env.PAW_HOME?.trim() || join(homedir(), ".paw"), "
 const text = (m: CotalMessage) => m.parts.map((p) => (p.kind === "text" ? p.text : "")).join("");
 
 await ensure({ needMesh: true, space });
-const server = DEFAULT_SERVER;
+const server = pawServer();
 
 const creds = await controlCreds(space);
 const you = new CotalEndpoint({

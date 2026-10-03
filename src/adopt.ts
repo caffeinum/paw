@@ -17,7 +17,7 @@
 import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { DEFAULT_SERVER, registry, type Command } from "@cotal-ai/core";
+import { registry, type Command } from "@cotal-ai/core";
 import {
   assertUnambiguousTarget,
   ensureAgentSpawned,
@@ -40,6 +40,7 @@ import { tailRead } from "./transcript.js";
 import { resolveExistingFolderArg } from "./address.js";
 import { gitToplevel, listWorktrees } from "./worktree.js";
 import { attachResolved } from "./open.js";
+import { pawServer } from "./server.js";
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 

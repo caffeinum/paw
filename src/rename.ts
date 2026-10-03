@@ -5,7 +5,7 @@
  * --fresh = new, adopt = resume a past session, rename = relabel an existing agent.
  */
 import { readFileSync, renameSync, writeFileSync } from "node:fs";
-import { DEFAULT_SERVER, registry, type Command } from "@cotal-ai/core";
+import { registry, type Command } from "@cotal-ai/core";
 import {
   agentRecord,
   assertUnambiguousTarget,
@@ -20,6 +20,7 @@ import {
 import { withManagerControl } from "./control.js";
 import { resolveSpace } from "./lifecycle.js";
 import { resolveExistingFolderArg } from "./address.js";
+import { pawServer } from "./server.js";
 
 function parseArgs(argv: string[]): { space?: string; target?: string; newName?: string } {
   const out: { space?: string; target?: string; newName?: string } = {};
@@ -91,7 +92,7 @@ async function rename(argv: string[]): Promise<void> {
 
   // If the agent is live under the old name, retire it and respawn under the new one — it resumes
   // via the moved persona pin. The mesh + manager are already up (rename is in NEEDS_MANAGER).
-  const restarted = await withManagerControl(space, DEFAULT_SERVER, async (ctl) => {
+  const restarted = await withManagerControl(space, pawServer(), async (ctl) => {
     const wasLive = await stopAgent(ctl, from);
     if (wasLive) await ensureAgentSpawned(ctl, { space, name: to, cwd: canonical });
     return wasLive;

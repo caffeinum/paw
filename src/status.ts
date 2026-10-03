@@ -7,7 +7,7 @@
  * `paw cotal ps` for the raw view); status now carries the liveness column too, so there's one command.
  */
 import { sleepState } from "./sleep-state.js";
-import { CotalEndpoint, DEFAULT_SERVER, dmDurable, dmStream, parsePrincipalKey, type Command, registry } from "@cotal-ai/core";
+import { CotalEndpoint, dmDurable, dmStream, parsePrincipalKey, type Command, registry } from "@cotal-ai/core";
 import { JetStreamApiCodes, JetStreamApiError, jetstreamManager } from "@nats-io/jetstream";
 import { connect, credsAuthenticator } from "@nats-io/transport-node";
 import { existsSync } from "node:fs";
@@ -22,6 +22,7 @@ import { isClaudeHarness, readAgentType, readResumeId, transcriptExists, transcr
 import { lastFailure, lastUsage, type ContextUsage } from "./transcript.js";
 import { tailRead, turnState, type PendingTool, type TurnState } from "./transcript.js";
 import { gitInfoMany, type GitInfo } from "./git.js";
+import { pawServer } from "./server.js";
 
 const tty = process.stdout.isTTY === true;
 const wrap = (code: string) => (s: string) => (tty ? `\x1b[${code}m${s}\x1b[0m` : s);
@@ -701,12 +702,12 @@ export async function collectStatus(space: string, ctl?: ManagerControl, opts: {
     return new Map(((ps.data as PsRow[]) ?? []).map((r) => [r.name, r]));
   };
   // A caller that polls (paw web) passes its long-lived handle; a one-shot CLI opens and closes one.
-  const psByName = ctl ? await readPs(ctl) : await withManagerControl(space, DEFAULT_SERVER, readPs);
+  const psByName = ctl ? await readPs(ctl) : await withManagerControl(space, pawServer(), readPs);
   // Foreground `paw claude` agents (live in a terminal, not under the manager). A registered agent that's
   // ABSENT from ps but present here is LIVE — its mesh status + card.id come from the roster, not ps.
   const fgByName = new Map(listForeground(space).map((e) => [e.name, e]));
   const fgOnly = agents.map(({ name }) => name).filter((name) => !psByName.has(name) && fgByName.has(name));
-  const rosterByName = await fetchRoster(space, DEFAULT_SERVER, new Set(fgOnly));
+  const rosterByName = await fetchRoster(space, pawServer(), new Set(fgOnly));
   // Inbox lag needs the agent's mesh id: a ps-listed agent's nkey (minted at spawn), or a foreground
   // agent's roster card.id. A registered-but-unlisted, non-foreground agent has no consumer → "—".
   const withIds = agents
@@ -714,7 +715,7 @@ export async function collectStatus(space: string, ctl?: ManagerControl, opts: {
     .concat([...psByName.values()].filter((r) => !agents.some((a) => a.name === r.name)).map((r) => ({ name: r.name, id: r.id })))
     .filter((a): a is { name: string; id: string } => typeof a.id === "string" && a.id.length > 0);
   const inboxErrors: string[] = [];
-  const inboxByName = await fetchInboxLag(space, DEFAULT_SERVER, withIds, inboxErrors);
+  const inboxByName = await fetchInboxLag(space, pawServer(), withIds, inboxErrors);
   // One CONCURRENT pass over every folder before the rows are built. Serially, 54 agents × 5 git
   // processes was 2.5s of a 3.9s collect — what the Raycast roster sat on showing "Reading the roster…".
   const gitByFolder = opts.git === false ? new Map<string, GitInfo>() : await gitInfoMany(agents.map(({ folder }) => folder));

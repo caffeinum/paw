@@ -10,12 +10,13 @@
  * consume:false + watchPresence:false — it never binds a durable consumer, never appears in the
  * roster, just reads the channel backlog and exits.
  */
-import { CotalEndpoint, DEFAULT_SERVER, assertValidChannel, registry, type Command, type CotalMessage } from "@cotal-ai/core";
+import { CotalEndpoint, assertValidChannel, registry, type Command, type CotalMessage } from "@cotal-ai/core";
 import { controlCreds, stableHumanId } from "../addressing.js";
 import { resolveSpace } from "../lifecycle.js";
 import { HUMAN_PEER } from "../names.js";
 import { formatWhen } from "./history.js";
 import { ago } from "../status.js";
+import { pawServer } from "../server.js";
 
 /** How deep to read the channel backlog. cotal's channelHistory returns the OLDEST N, so to surface
  *  the NEWEST we fetch up to this many and take the tail (same cap + reason as src/history.ts). */
@@ -116,7 +117,7 @@ function parseArgs(argv: string[]): Args {
 async function files(argv: string[]): Promise<void> {
   const { channel: channelArg, limit, space: spaceArg, server: serverArg, pathOnly, json } = parseArgs(argv);
   const space = spaceArg ?? resolveSpace();
-  const server = serverArg ?? DEFAULT_SERVER;
+  const server = serverArg ?? pawServer();
   const channel = channelArg ?? DEFAULT_FILES_CHANNEL;
   assertValidChannel(channel);
 

@@ -21,7 +21,7 @@
  */
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { registry, DEFAULT_SERVER, dmStream, parsePrincipalKey, unicastRecvFilter, type Command } from "@cotal-ai/core";
+import { registry, dmStream, parsePrincipalKey, unicastRecvFilter, type Command } from "@cotal-ai/core";
 import { connect } from "@nats-io/transport-node";
 import { jetstreamManager } from "@nats-io/jetstream";
 import { agentRecord, listAgents, personaFilePath, setPersonaKeys, wirePrincipal, type PsRow } from "./addressing.js";
@@ -33,6 +33,7 @@ import { dmsSince } from "./sleep-host.js";
 import { listSleeping, readSleepRecord, readWakingRecord, scanRecords, sleepLog, sleepState, writeSleepRecord, type SleepRecord } from "./sleep-state.js";
 import { collectStatus, type AgentStatus } from "./status.js";
 import { tailRead } from "./transcript.js";
+import { pawServer } from "./server.js";
 
 /** The prompt cache TTL: below it a sleep would make the wake pay a cold cache. */
 export const MIN_HIBERNATE_MS = 60 * 60_000;
@@ -259,7 +260,7 @@ export function mergeSleepRecord(prior: SleepRecord | undefined, next: SleepReco
 }
 
 /** The DM stream's last sequence — the backlog cursor. */
-export async function dmLastSeq(space: string, server = DEFAULT_SERVER): Promise<number> {
+export async function dmLastSeq(space: string, server = pawServer()): Promise<number> {
   const nc = await connect({ servers: server });
   try {
     return (await (await jetstreamManager(nc)).streams.info(dmStream(space))).state.last_seq;

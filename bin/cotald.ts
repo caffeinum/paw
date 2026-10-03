@@ -25,7 +25,8 @@ import "@cotal-ai/tmux"; // self-registers the `tmux` runtime (manager ships onl
 import "@cotal-ai/cmux"; // self-registers the `cmux` runtime + terminal-layout providers
 import "@cotal-ai/connector-codex"; // self-registers the `codex` connector (host-mode peer over codex app-server)
 import "@cotal-ai/connector-opencode"; // self-registers the `opencode` connector (in-process plugin)
-import { DEFAULT_SERVER, isReachable, registry } from "@cotal-ai/core";
+import { isReachable, registry } from "@cotal-ai/core";
+import { pawServer } from "../src/server.js";
 import { pawConnector } from "../src/connector.js"; // importing this self-registers the VANILLA `claude` connector (0.12) + paw's `paw`
 
 // Replace the vanilla `claude` connector (just self-registered by the connector-claude-code import) with
@@ -49,7 +50,7 @@ async function supervise(argv: string[]): Promise<void> {
   };
   const space = flag("--space");
   if (!space) throw new Error("cotald: supervise needs --space <s>");
-  const server = flag("--server") ?? DEFAULT_SERVER;
+  const server = flag("--server") ?? pawServer();
   const runtime = flag("--runtime") ?? "pty"; // paw's default; tmux/cmux resolve from the imported runtime exts
   if (!(await isReachable(server))) throw new Error(`cotald: can't reach NATS at ${server} — run \`cotal up\` first`);
 

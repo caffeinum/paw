@@ -45,7 +45,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { Socket } from "node:net";
 import { extname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { DEFAULT_SERVER, registry, type Command, type CotalEndpoint, type CotalMessage } from "@cotal-ai/core";
+import { registry, type Command, type CotalEndpoint, type CotalMessage } from "@cotal-ai/core";
 import { controlCreds, folderForName, personaFilePath } from "./addressing.js";
 import { claudeProjectDir } from "./adopt.js";
 import { advanceCursor, cursorPath, readCursor } from "./cursor.js";
@@ -98,6 +98,7 @@ import { randomBytes } from "node:crypto";
 import { imagesDir } from "./images.js";
 import { prInfo, prInfoMany } from "./git.js";
 import { bashMessage, runBash } from "./bash.js";
+import { pawServer } from "./server.js";
 
 /** 7788, NOT 7799 — `cotal web` owns 7799 and running both at once is the normal case, not a clash. */
 const DEFAULT_PORT = 7788;
@@ -1454,7 +1455,7 @@ async function web(argv: string[]): Promise<void> {
   // Self-ensuring (like `paw start`/`paw global`) rather than sitting in bin's NEEDS_* gating: this is
   // a long-lived server and it needs BOTH — the mesh for the observer, the manager for the roster.
   const { server: ensured } = await ensure({ needMesh: true, needManager: true, space });
-  const server = serverArg ?? ensured ?? DEFAULT_SERVER;
+  const server = serverArg ?? ensured ?? pawServer();
 
   // watchPresence:true only to name DM RECIPIENTS: a unicast carries the sender's name but the
   // recipient's bare id. Still never registers presence and never consumes — see src/feed.ts.

@@ -4,6 +4,9 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
+patchedDependencies:
+  '@cotal-ai/connector-claude-code@0.58.0': 7e15e8d02d7574783bcf38782ab453ec559547016e8ede0f0ccc772ce5e0e4f9
+
 importers:
 
   .:
@@ -16,7 +19,7 @@ importers:
         version: 0.58.0(@cotal-ai/core@0.58.0)
       '@cotal-ai/connector-claude-code':
         specifier: 0.58.0
-        version: 0.58.0(@cotal-ai/core@0.58.0)
+        version: 0.58.0(patch_hash=7e15e8d02d7574783bcf38782ab453ec559547016e8ede0f0ccc772ce5e0e4f9)(@cotal-ai/core@0.58.0)
       '@cotal-ai/connector-codex':
         specifier: 0.58.0
         version: 0.58.0(@cotal-ai/core@0.58.0)
@@ -678,7 +681,7 @@ snapshots:
     dependencies:
       '@cotal-ai/core': 0.58.0
 
-  '@cotal-ai/connector-claude-code@0.58.0(@cotal-ai/core@0.58.0)':
+  '@cotal-ai/connector-claude-code@0.58.0(patch_hash=7e15e8d02d7574783bcf38782ab453ec559547016e8ede0f0ccc772ce5e0e4f9)(@cotal-ai/core@0.58.0)':
     dependencies:
       '@cotal-ai/core': 0.58.0
 

@@ -4,10 +4,11 @@
  * consume:false, watchPresence:true so presence beats populate the roster; polls briefly for the
  * beats to settle (presence rides a heartbeat, so an instant read would race an empty roster).
  */
-import { CotalEndpoint, DEFAULT_SERVER, registry, type Command, type Presence, type PresenceStatus } from "@cotal-ai/core";
+import { CotalEndpoint, registry, type Command, type Presence, type PresenceStatus } from "@cotal-ai/core";
 import { controlCreds, stableHumanId } from "../addressing.js";
 import { resolveSpace } from "../lifecycle.js";
 import { HUMAN_PEER } from "../names.js";
+import { pawServer } from "../server.js";
 
 const tty = process.stdout.isTTY === true;
 const wrap = (code: string) => (s: string) => (tty ? `\x1b[${code}m${s}\x1b[0m` : s);
@@ -74,7 +75,7 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 async function who(argv: string[]): Promise<void> {
   const { space: spaceArg, server: serverArg } = parseArgs(argv);
   const space = spaceArg ?? resolveSpace();
-  const server = serverArg ?? DEFAULT_SERVER;
+  const server = serverArg ?? pawServer();
 
   // Observer endpoint (mirrors src/dm.ts's creds/card shape): watchPresence:true is the point —
   // the roster is built from presence beats; we never register our own presence (the mailbox

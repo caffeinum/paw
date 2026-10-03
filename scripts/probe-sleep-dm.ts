@@ -9,13 +9,14 @@
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CotalEndpoint, DEFAULT_SERVER, dmStream } from "@cotal-ai/core";
+import { CotalEndpoint, dmStream } from "@cotal-ai/core";
 import { removeMesh } from "@cotal-ai/workspace";
 import { connect } from "@nats-io/transport-node";
 import { jetstreamManager } from "@nats-io/jetstream";
 import { ManagerControl } from "../src/control.js";
 import { ensureAgentSpawned, setFolderName } from "../src/addressing.js";
 import { ensure, stop } from "../src/lifecycle.js";
+import { pawServer } from "../src/server.js";
 
 const space = process.env.PAW_SPACE!;
 if (!process.env.PAW_HOME || !space || space === "paw" || !space.startsWith("sleeptest")) throw new Error("isolated PAW_HOME + PAW_SPACE=sleeptest-* required");
@@ -23,7 +24,7 @@ process.env.PAW_RUNTIME ??= "pty";
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 async function consumers(): Promise<Array<{ name: string; pending: number; ackPending: number; delivered: number; optStart?: number; filter?: string }>> {
-  const nc = await connect({ servers: DEFAULT_SERVER });
+  const nc = await connect({ servers: pawServer() });
   try {
     const jsm = await jetstreamManager(nc);
     const out = [];
@@ -40,14 +41,14 @@ async function consumers(): Promise<Array<{ name: string; pending: number; ackPe
 
 const folder = mkdtempSync(join(tmpdir(), "pawsleep-"));
 let ep: CotalEndpoint | undefined;
-const ctl = new ManagerControl(space, DEFAULT_SERVER);
+const ctl = new ManagerControl(space, pawServer());
 try {
   await ensure({ needMesh: true, needManager: true, space });
   await sleep(3000);
   const name = setFolderName(space, folder, "sleeper").name;
   const r1 = await ensureAgentSpawned(ctl, { space, name, cwd: folder });
   console.log(`spawned #1 id=${r1.id}`);
-  ep = new CotalEndpoint({ space, servers: DEFAULT_SERVER, channels: [], consume: true, registerPresence: true, watchPresence: true, card: { name: "prober", kind: "endpoint" } });
+  ep = new CotalEndpoint({ space, servers: pawServer(), channels: [], consume: true, registerPresence: true, watchPresence: true, card: { name: "prober", kind: "endpoint" } });
   ep.on("error", () => {});
   await ep.start();
   await sleep(2500);

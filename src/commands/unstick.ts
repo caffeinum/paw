@@ -5,7 +5,7 @@
  * call still running (`--force` sends the Esc anyway), prints the evidence before acting, and reports
  * what the transcript shows afterwards — interrupted, or still stuck.
  */
-import { DEFAULT_SERVER, registry, type Command } from "@cotal-ai/core";
+import { registry, type Command } from "@cotal-ai/core";
 import { personaFilePath, psRowAlive, type PsRow } from "../addressing.js";
 import { withManagerControl } from "../control.js";
 import { readForeground } from "../foreground.js";
@@ -14,6 +14,7 @@ import { readResumeId } from "../session.js";
 import { ago, readTurnState, toolLabel } from "../status.js";
 import { interruptTool, sendEscape } from "../unstick.js";
 import { resolveStopName } from "./stop.js";
+import { pawServer } from "../server.js";
 
 export function parseUnstickArgs(argv: string[]): { space?: string; target: string; force: boolean } {
   let space: string | undefined;
@@ -42,7 +43,7 @@ export async function requireTmuxPane(space: string, name: string, verb: string,
   if (readForeground(space, name)) {
     throw new Error(`paw: "${name}" runs as a foreground claude in another terminal — use that window; paw has no pane to ${action}`);
   }
-  const row = await withManagerControl(space, DEFAULT_SERVER, async (ctl) => {
+  const row = await withManagerControl(space, pawServer(), async (ctl) => {
     const ps = await ctl.ps();
     if (!ps.ok) throw new Error(`paw: manager isn't answering (${ps.error ?? "no reply"})`);
     return ((ps.data as PsRow[]) ?? []).find((r) => r.name === name);

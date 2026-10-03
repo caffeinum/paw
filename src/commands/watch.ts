@@ -14,11 +14,12 @@
  * wildcard — an observer cred's sub.allow covers only chat (DMs/anycast stay confidential), and
  * the space-wide subscribe would be denied and kill the feed.
  */
-import { CotalEndpoint, DEFAULT_SERVER, chatWildcard, registry, type Command, type CotalMessage } from "@cotal-ai/core";
+import { CotalEndpoint, chatWildcard, registry, type Command, type CotalMessage } from "@cotal-ai/core";
 import { controlCreds, stableHumanId } from "../addressing.js";
 import { resolveSpace } from "../lifecycle.js";
 import { HUMAN_PEER } from "../names.js";
 import { messageText as textOf } from "../feed.js";
+import { pawServer } from "../server.js";
 
 const tty = process.stdout.isTTY === true;
 const wrap = (code: string) => (s: string) => (tty ? `\x1b[${code}m${s}\x1b[0m` : s);
@@ -54,7 +55,7 @@ function parseArgs(argv: string[]): Args {
 async function watch(argv: string[]): Promise<void> {
   const { space: spaceArg, server: serverArg } = parseArgs(argv);
   const space = spaceArg ?? resolveSpace();
-  const server = serverArg ?? DEFAULT_SERVER;
+  const server = serverArg ?? pawServer();
 
   // Pure observer (mirrors src/inbox.ts's endpoint shape); watchPresence:true only to name DM
   // recipients — a unicast carries the sender's name but just the recipient's instance id.

@@ -31,7 +31,7 @@
  *
  * LOCAL — it writes plists and talks to launchctl; out of bin/paw.ts's NEEDS_* gating.
  */
-import { DEFAULT_SERVER, registry, type Command } from "@cotal-ai/core";
+import { registry, type Command } from "@cotal-ai/core";
 import { execFileSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -40,6 +40,7 @@ import { psRowAlive, type PsRow } from "../addressing.js";
 import { withManagerControl } from "../control.js";
 import { nodeBin, resolveSpace, toolDirs } from "../lifecycle.js";
 import { REPO_ROOT } from "../release.js";
+import { pawServer } from "../server.js";
 
 export const FLEET_LABEL = "dev.cotal.paw";
 export const WEB_LABEL = "dev.cotal.paw-web";
@@ -269,7 +270,7 @@ function unloadJob(label: string): boolean {
 /** Who's live right now — the default install list. Empty when the manager's down. */
 async function liveNames(space: string): Promise<string[]> {
   try {
-    return await withManagerControl(space, DEFAULT_SERVER, async (ctl) => {
+    return await withManagerControl(space, pawServer(), async (ctl) => {
       const ps = await ctl.ps();
       return ps.ok ? ((ps.data as PsRow[]) ?? []).filter(psRowAlive).map((r) => r.name) : [];
     });

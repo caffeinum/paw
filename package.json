@@ -40,7 +40,8 @@
     "check:mcp": "tsx scripts/check-mcp.ts",
     "check:bash-tty": "tsx scripts/check-bash-tty.ts",
     "check:top": "tsx scripts/check-top.ts",
-    "check:sleep": "tsx scripts/check-sleep.ts"
+    "check:sleep": "tsx scripts/check-sleep.ts",
+    "check:hub": "tsx scripts/check-hub.ts"
   },
   "dependencies": {
     "@cotal-ai/cli": "0.58.0",

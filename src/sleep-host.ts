@@ -20,7 +20,7 @@
  * agent whose registry entry vanished or moved is NOT woken — its record is dropped, loudly.
  */
 import { randomUUID } from "node:crypto";
-import { DEFAULT_SERVER, DEV_OWNER, CotalEndpoint, dmStream, parsePrincipalKey, principalKey, unicastRecvFilter, unicastSubject } from "@cotal-ai/core";
+import { DEV_OWNER, CotalEndpoint, dmStream, parsePrincipalKey, principalKey, unicastRecvFilter, unicastSubject } from "@cotal-ai/core";
 import { connect, type NatsConnection, type Subscription } from "@nats-io/transport-node";
 import { DeliverPolicy, jetstream, jetstreamManager } from "@nats-io/jetstream";
 import { agentRecord, ensureAgentSpawned, psRowAlive, wirePrincipal, type PsRow } from "./addressing.js";
@@ -40,6 +40,7 @@ import {
   writeWakingRecord,
   type SleepRecord,
 } from "./sleep-state.js";
+import { pawServer } from "./server.js";
 
 const TICK_MS = 1000;
 /** How often the tick also reconciles against ps and re-checks undelivered backlog. */
@@ -97,7 +98,7 @@ async function withNc<T>(server: string, fn: (nc: NatsConnection) => Promise<T>)
 }
 
 /** How many DMs are stored on `filters` after `cursorSeq` (an ordered consumer's pending count). */
-export async function dmsSince(space: string, filters: string[], cursorSeq: number, server = DEFAULT_SERVER): Promise<number> {
+export async function dmsSince(space: string, filters: string[], cursorSeq: number, server = pawServer()): Promise<number> {
   return withNc(server, async (nc) => {
     const c = await jetstream(nc).consumers.get(dmStream(space), { filter_subjects: filters, deliver_policy: DeliverPolicy.StartSequence, opt_start_seq: cursorSeq + 1 });
     try {
@@ -136,7 +137,7 @@ async function readBacklog(nc: NatsConnection, space: string, filters: string[],
   return out;
 }
 
-export async function startSleepHost(space: string, server = DEFAULT_SERVER): Promise<() => Promise<void>> {
+export async function startSleepHost(space: string, server = pawServer()): Promise<() => Promise<void>> {
   const nc = await connect({ servers: server });
   const standIns = new Map<string, { ep: CotalEndpoint; subs: Subscription[] }>();
   const inflight = new Set<string>();

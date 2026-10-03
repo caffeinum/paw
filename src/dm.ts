@@ -18,7 +18,7 @@
  * combined with a bare agent NAME (a name already IS one agent; an extra is minted against a directory).
  * Mirrors `paw chat`/`paw open` so the same handle form addresses the extra you created there.
  */
-import { CotalEndpoint, DEFAULT_SERVER, registry, type Command } from "@cotal-ai/core";
+import { CotalEndpoint, registry, type Command } from "@cotal-ai/core";
 import {
   assertUnambiguousTarget,
   canonicalDir,
@@ -36,6 +36,7 @@ import { withManagerControl } from "./control.js";
 import { composeMessage, peelWords, stageAttachment } from "./images.js";
 import { resolveSpace } from "./lifecycle.js";
 import { HUMAN_PEER } from "./names.js";
+import { pawServer } from "./server.js";
 
 const tty = process.stdout.isTTY === true;
 const wrap = (code: string) => (s: string) => (tty ? `\x1b[${code}m${s}\x1b[0m` : s);
@@ -216,7 +217,7 @@ async function readStdin(): Promise<string> {
 async function dm(argv: string[]): Promise<void> {
   const { target, words, space: spaceArg, server: serverArg, model, name: nameFlag } = parseArgs(argv);
   const space = spaceArg ?? resolveSpace();
-  const server = serverArg ?? DEFAULT_SERVER;
+  const server = serverArg ?? pawServer();
 
   // `paw dm <target> -` takes the message on STDIN. It exists for producers that hand text to a command
   // rather than building an argv — voice dictation being the one that prompted it. Two reasons it isn't
