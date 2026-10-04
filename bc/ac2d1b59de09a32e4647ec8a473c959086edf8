@@ -1,0 +1,43 @@
+docs/notes/company-mock-a.html
+  s_ed25aaaf9c7e77::t_12a458f22917e0 1-455
+docs/notes/company-mock-b.html
+  s_ed25aaaf9c7e77::t_3fc13aa13c862a 1-428
+docs/notes/company-mock-c.html
+  s_ed25aaaf9c7e77::t_769e39382e67c2 1-440
+docs/notes/company-mock.html
+  s_ed25aaaf9c7e77::t_48c4a99859f380 1-704
+scripts/check-rename.ts
+  s_ed25aaaf9c7e77::t_688212161addea 128-170
+src/company-service.ts
+  s_ed25aaaf9c7e77::t_1d8e24e4275d0c 9-10,65-78,83-84,88-89
+src/company.ts
+  s_ed25aaaf9c7e77::t_c49d06c69e4d47 75-83
+src/rename.ts
+  s_ed25aaaf9c7e77::t_ae497cc88c027a 25-26,105-122,125-126
+src/tasks.ts
+  s_ed25aaaf9c7e77::t_4715525583d45e 275-285,304-326
+src/web.ts
+  s_ed25aaaf9c7e77::t_fb661c6b98e4a8 1659-1660
+web/app/app.js
+  s_ed25aaaf9c7e77::t_0de6f18ce7ef30 1237,1245-1247,1404
+web/app/company.d.ts
+  s_ed25aaaf9c7e77::t_c47d44d15f2f7f 9,24
+web/app/company.js
+  s_ed25aaaf9c7e77::t_324b96f454476c 105-107,179,481,500-501,757
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "bcac2d1b59de09a32e4647ec8a473c959086edf8",
+  "prompts": {},
+  "sessions": {
+    "s_ed25aaaf9c7e77": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "90dd1251-161e-469a-96db-040d1e555035",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Aleksey Bykhun <theisease@gmail.com>"
+    }
+  }
+}
