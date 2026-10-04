@@ -1,0 +1,428 @@
+<!doctype html>
+<html lang="en" data-screen="work">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Company B — Console</title>
+<!-- Company B — "Console": a dense operator console. Monospace everywhere, one row per issue,
+     roster + goals on the left, a log tail on the right, an inspector that replaces the log.
+     Built for scanning 100 rows and acting from the keyboard. Static mock, fake data; same data +
+     flows as A and C (docs/notes/company-spec.md). -->
+<style>
+  :root {
+    --bg:#F3F2EC; --panel:#FBFAF6; --row:#FFFFFF; --hl:#E9F3EE; --line:#D9D6CA; --txt:#1E2321; --dim:#6A6F69; --faint:#9CA19A;
+    --acc:#0F7B4F; --amber:#A86A00; --red:#C23B3B; --blue:#2463B5; --sel:#0F7B4F;
+    --mono:"JetBrains Mono","SF Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+    --bg:#0B0E0D; --panel:#101513; --row:#0E1211; --hl:#13221B; --line:#1F2A26; --txt:#C9D6CF; --dim:#6B7F76; --faint:#45534D;
+    --acc:#5EF2A0; --amber:#F5B83D; --red:#FF6B6B; --blue:#6CB6FF; --sel:#5EF2A0; } }
+  :root[data-theme="dark"] {
+    --bg:#0B0E0D; --panel:#101513; --row:#0E1211; --hl:#13221B; --line:#1F2A26; --txt:#C9D6CF; --dim:#6B7F76; --faint:#45534D;
+    --acc:#5EF2A0; --amber:#F5B83D; --red:#FF6B6B; --blue:#6CB6FF; --sel:#5EF2A0; }
+  * { box-sizing:border-box; }
+  html, body { margin:0; height:100%; background:var(--bg); color:var(--txt); }
+  body { font-family:var(--mono); font-size:12.5px; line-height:1.45; overflow:hidden; }
+  button, input, select, textarea { font:inherit; color:inherit; }
+  :focus-visible { outline:1px solid var(--acc); outline-offset:1px; }
+  .d { color:var(--dim); } .f { color:var(--faint); } .a { color:var(--acc); } .am { color:var(--amber); } .r { color:var(--red); } .b { color:var(--blue); }
+  .screen { display:none; height:100%; }
+  html[data-screen="work"] #work, html[data-screen="new"] #new { display:grid; }
+
+  #work, #new { grid-template-rows:auto auto 1fr auto; }
+  .bar { display:flex; align-items:center; gap:14px; padding:6px 12px; border-bottom:1px solid var(--line); background:var(--panel); white-space:nowrap; overflow:hidden; }
+  .bar .crumbs b { color:var(--acc); }
+  .bar .stats { display:flex; gap:12px; }
+  .bar .sp { flex:1; }
+  .tabs { display:flex; gap:0; }
+  .tabs button { border:1px solid var(--line); background:none; padding:1px 10px; cursor:pointer; color:var(--dim); margin-left:-1px; }
+  .tabs button[aria-pressed="true"] { color:var(--bg); background:var(--acc); border-color:var(--acc); }
+  .cmd { display:flex; gap:8px; align-items:center; padding:5px 12px; border-bottom:1px solid var(--line); }
+  .cmd span { color:var(--acc); }
+  .cmd input { flex:1; border:0; background:none; outline:none; }
+  .cmd input::placeholder { color:var(--faint); }
+  .theme button { border:0; background:none; padding:0 4px; cursor:pointer; color:var(--faint); }
+  .theme button[aria-pressed="true"] { color:var(--acc); }
+
+  .grid { display:grid; grid-template-columns:240px minmax(0,1fr) 340px; min-height:0; }
+  .pane { overflow:auto; min-height:0; border-right:1px solid var(--line); }
+  .pane:last-child { border-right:0; }
+  .ph { position:sticky; top:0; background:var(--panel); padding:4px 10px; border-bottom:1px solid var(--line); color:var(--dim); text-transform:uppercase; letter-spacing:.08em; font-size:11px; display:flex; gap:8px; z-index:1; }
+  .ph .sp { flex:1; }
+
+  /* roster */
+  .ag { display:grid; grid-template-columns:12px 1fr auto; gap:6px; padding:4px 10px; cursor:pointer; }
+  .ag:hover { background:var(--hl); }
+  .ag .nm { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .ag .sub { grid-column:2 / 4; color:var(--dim); font-size:11px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .lv.on { color:var(--acc); } .lv.busy { color:var(--amber); } .lv.asleep { color:var(--faint); }
+  /* goals with ascii bars */
+  .gr { padding:4px 10px; cursor:pointer; }
+  .gr:hover { background:var(--hl); }
+  .gr.sel { box-shadow:inset 2px 0 0 var(--acc); background:var(--hl); }
+  .gr .gt { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .gr .gb { color:var(--dim); font-size:11.5px; white-space:pre; }
+  .gr.kid { padding-left:22px; }
+
+  /* table */
+  table { width:100%; border-collapse:collapse; table-layout:fixed; }
+  th { position:sticky; top:0; background:var(--panel); text-align:left; font-weight:400; color:var(--dim); font-size:11px; text-transform:uppercase; letter-spacing:.06em; padding:4px 8px; border-bottom:1px solid var(--line); z-index:1; }
+  td { padding:3px 8px; border-bottom:1px solid var(--line); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; vertical-align:top; }
+  tr.it { cursor:pointer; background:var(--row); }
+  tr.it:hover { background:var(--hl); }
+  tr.it.sel { background:var(--hl); box-shadow:inset 3px 0 0 var(--sel); }
+  tr.it.done td { color:var(--faint); text-decoration:line-through; }
+  tr.grp td { background:var(--bg); color:var(--dim); padding-top:9px; font-size:11.5px; border-bottom:1px solid var(--line); }
+  tr.grp td b { color:var(--txt); }
+  tr.grp.needs td { color:var(--amber); }
+  tr.grp.needs td b { color:var(--amber); }
+  tr.need td:first-child { box-shadow:inset 3px 0 0 var(--amber); }
+  tr.fold td { color:var(--dim); font-size:11.5px; cursor:pointer; }
+  tr.add td { color:var(--faint); font-size:11.5px; }
+  .stc { cursor:pointer; user-select:none; text-align:center; }
+  .stc.prog { color:var(--amber); } .stc.blocked { color:var(--red); } .stc.closed { color:var(--acc); } .stc.open { color:var(--dim); }
+  .col-st { width:30px; } .col-id { width:58px; } .col-goal { width:120px; } .col-dep { width:66px; } .col-sub { width:44px; } .col-cm { width:36px; } .col-age { width:46px; text-align:right; }
+  td.age { text-align:right; color:var(--dim); }
+
+  /* log */
+  .log { padding:4px 0; }
+  .ln { display:grid; grid-template-columns:40px 1fr; gap:6px; padding:2px 10px; }
+  .ln .t { color:var(--faint); }
+  .ln .q { color:var(--dim); white-space:normal; }
+  .ln .ref { color:var(--blue); cursor:pointer; }
+  .ln.day { color:var(--faint); padding-top:8px; display:block; }
+
+  /* inspector replaces the log */
+  .insp { display:none; padding:0 0 10px; }
+  .insp.on { display:block; }
+  .insp .ih { padding:8px 12px; border-bottom:1px solid var(--line); }
+  .insp .ttl { font-size:14px; color:var(--txt); font-weight:600; margin:2px 0 6px; outline:none; white-space:normal; }
+  .insp .sts { display:flex; gap:4px; flex-wrap:wrap; }
+  .insp .sts button { border:1px solid var(--line); background:none; padding:0 6px; cursor:pointer; color:var(--dim); }
+  .insp .sts button[aria-pressed="true"] { border-color:var(--acc); color:var(--acc); }
+  .kv { display:grid; grid-template-columns:84px 1fr; gap:2px 8px; padding:8px 12px; border-bottom:1px solid var(--line); }
+  .kv .k { color:var(--dim); }
+  .insp .desc { padding:8px 12px; white-space:pre-wrap; border-bottom:1px solid var(--line); }
+  .insp .subs { padding:6px 12px; border-bottom:1px solid var(--line); }
+  .insp .th { padding:6px 12px; }
+  .insp .m { padding:3px 0; white-space:normal; }
+  .insp .m .src { border:1px solid var(--line); padding:0 3px; font-size:10.5px; color:var(--dim); }
+  .insp .m .src.ch { color:var(--blue); border-color:var(--blue); }
+  .insp .m.sys { color:var(--faint); }
+  .insp textarea { width:calc(100% - 24px); margin:6px 12px 0; border:1px solid var(--line); background:var(--row); resize:none; padding:6px; outline:none; }
+  .insp textarea:focus { border-color:var(--acc); }
+  .insp .crow { display:flex; gap:10px; padding:4px 12px; color:var(--dim); font-size:11.5px; align-items:center; }
+  .k { display:inline-block; border:1px solid var(--line); padding:0 4px; border-radius:2px; color:var(--dim); font-size:11px; }
+  .btn { border:1px solid var(--acc); background:var(--acc); color:var(--bg); padding:2px 10px; cursor:pointer; }
+  .btn.ghost { background:none; color:var(--dim); border-color:var(--line); }
+  .btn:disabled { opacity:.4; cursor:not-allowed; }
+
+  .foot { display:flex; gap:14px; padding:4px 12px; border-top:1px solid var(--line); background:var(--panel); color:var(--dim); font-size:11px; white-space:nowrap; overflow:hidden; }
+
+  /* /new — the form is the commands it will run */
+  .nw { overflow:auto; padding:16px 18px 30px; display:grid; grid-template-columns:minmax(0,1fr) minmax(0,420px); gap:18px; align-content:start; }
+  .fs { border:1px solid var(--line); background:var(--panel); }
+  .fs .ph { position:static; }
+  .fl { display:grid; grid-template-columns:90px 1fr; gap:8px; align-items:center; padding:6px 10px; border-bottom:1px solid var(--line); }
+  .fl:last-child { border-bottom:0; }
+  .fl label { color:var(--dim); }
+  .fl input { border:1px solid var(--line); background:var(--row); padding:3px 6px; outline:none; width:100%; }
+  .fl input:focus { border-color:var(--acc); }
+  .fl .hint { grid-column:2; color:var(--dim); font-size:11.5px; margin-top:-4px; }
+  .fl .hint.err { color:var(--red); }
+  .pk td { padding:3px 8px; }
+  .pk tr { cursor:pointer; }
+  .pk tr:hover td { background:var(--hl); }
+  .pk tr.on td { background:var(--hl); }
+  .pk input[type=text] { border:1px solid var(--line); background:var(--row); padding:1px 5px; width:100%; outline:none; }
+  .pk select { border:1px solid var(--line); background:var(--row); padding:0 2px; width:100%; }
+  pre.plan { margin:0; padding:10px 12px; white-space:pre-wrap; word-break:break-all; color:var(--dim); font-size:12px; line-height:1.6; }
+  pre.plan .c { color:var(--txt); } pre.plan .p { color:var(--acc); }
+
+  @media (max-width:1100px) {
+    .grid { grid-template-columns:200px minmax(0,1fr); }
+    .grid > .pane:last-child { display:none; }
+    .grid.inspecting > .pane:last-child { display:block; position:fixed; right:0; top:0; bottom:0; width:min(420px,100%); background:var(--panel); border-left:1px solid var(--line); z-index:5; }
+  }
+  @media (max-width:700px) {
+    body { overflow:auto; font-size:12px; }
+    #work, #new { height:auto; }
+    .bar .stats .hide-s, .bar .crumbs .hide-s { display:none; }
+    .grid { display:block; }
+    .grid > .pane { border-right:0; overflow:visible; }
+    .grid > .pane:first-child { display:block; }
+    .roster { display:flex; overflow-x:auto; gap:0; border-bottom:1px solid var(--line); }
+    .roster .ag { flex:none; grid-template-columns:12px auto; border-right:1px solid var(--line); }
+    .roster .ag .sub, .roster .ag .cnt { display:none; }
+    .goalsP { display:none; }
+    #work colgroup { display:none; } #work table { table-layout:auto; }
+    th.goal, th.dep, th.sub, th.cm, td.goal, td.dep, td.sub, td.cm { display:none; }
+    td.title { width:100%; }
+    #work td { white-space:normal; overflow-wrap:anywhere; }
+    #work tr.it td:nth-child(2), #work td.age { white-space:nowrap; overflow-wrap:normal; }
+    #work table { width:100%; max-width:100vw; }
+    .bar { flex-wrap:wrap; row-gap:4px; }
+    .theme { display:none; }
+    td.title { white-space:normal; }
+    .foot { display:none; }
+    .nw { grid-template-columns:1fr; padding:10px; }
+  }
+</style>
+</head>
+<body>
+<div id="work" class="screen">
+  <div class="bar">
+    <span class="crumbs"><span class="d hide-s">paw ▸ companies ▸ </span><b>vibeos</b> <span class="d hide-s">#vibeos · epic v1b</span></span>
+    <span class="stats"><span><span class="am">●</span>3 busy</span><span class="hide-s">14 open</span><span class="r">1 blocked</span><span class="am">3 need you</span></span>
+    <span class="sp"></span>
+    <span class="tabs"><button aria-pressed="true">1 work</button><button>2 org</button><button>3 log</button></span>
+    <span class="theme"><button data-set="light">☀</button><button data-set="system" aria-pressed="true">◐</button><button data-set="dark">☾</button></span>
+  </div>
+  <div class="cmd"><span>:</span><input placeholder="filter · goal:beta · @vibeos-pm · is:blocked · new <title> · assign k2q pm" value="goal:beta"></div>
+  <div class="grid" id="grid">
+    <div class="pane">
+      <div class="ph">roster <span class="sp"></span><span>5</span></div>
+      <div class="roster" id="roster"></div>
+      <div class="goalsP"><div class="ph">goals <span class="sp"></span><span>+g</span></div><div id="goals"></div>
+      <div class="ph" style="margin-top:6px">also</div>
+      <div class="gr am">⚠ 2 unlabelled · label</div><div class="gr d">… 17 untriaged · file</div></div>
+    </div>
+    <div class="pane">
+      <table>
+        <colgroup><col class="col-st"><col class="col-id"><col><col class="col-goal"><col class="col-dep"><col class="col-sub"><col class="col-cm"><col class="col-age"></colgroup>
+        <thead><tr><th>st</th><th>id</th><th>title</th><th class="goal">goal</th><th class="dep">dep</th><th class="sub">sub</th><th class="cm">💬</th><th style="text-align:right">age</th></tr></thead>
+        <tbody id="rows"></tbody>
+      </table>
+    </div>
+    <div class="pane">
+      <div id="logwrap"><div class="ph">log · #vibeos + beads <span class="sp"></span><span>all issues chat</span></div><div class="log" id="log"></div></div>
+      <div class="insp" id="insp"></div>
+    </div>
+  </div>
+  <div class="foot"><span><span class="k">j</span><span class="k">k</span> row</span><span><span class="k">⏎</span> inspect</span><span><span class="k">s</span> status</span><span><span class="k">a</span> assign</span><span><span class="k">c</span> new</span><span><span class="k">:</span> command</span><span><span class="k">g</span> group: agent</span><span><span class="k">esc</span> close</span><span style="margin-left:auto">build mock-b · bd ok 0.9s · mesh ok</span></div>
+</div>
+
+<div id="new" class="screen">
+  <div class="bar"><span class="crumbs"><span class="d">paw ▸ companies ▸ </span><b>new</b></span><span class="sp"></span><span class="theme"><button data-set="light">☀</button><button data-set="system" aria-pressed="true">◐</button><button data-set="dark">☾</button></span></div>
+  <div class="cmd"><span>:</span><input placeholder="new company — fill the fields, the plan on the right is exactly what runs"></div>
+  <div class="nw">
+    <div>
+      <div class="fs">
+        <div class="ph">company</div>
+        <div class="fl"><label for="dname">name</label><input id="dname" value="Acme Labs"></div>
+        <div class="fl"><label for="slug">slug</label><input id="slug" value="acme-labs"><div class="hint" id="slughint"></div></div>
+        <div class="fl"><label for="mission">mission</label><input id="mission" placeholder="what is it for?"></div>
+      </div>
+      <div class="fs" style="margin-top:14px">
+        <div class="ph">crew <span class="sp"></span><span>space toggle · ↑↓</span></div>
+        <div class="cmd" style="border-bottom:1px solid var(--line)"><span>/</span><input placeholder="filter agents"></div>
+        <table class="pk"><colgroup><col style="width:36px"><col style="width:18px"><col><col style="width:120px"><col style="width:60px"><col style="width:120px"></colgroup>
+          <thead><tr><th></th><th></th><th>agent</th><th>role</th><th>lead</th><th>reports to</th></tr></thead><tbody id="pool"></tbody></table>
+      </div>
+    </div>
+    <div>
+      <div class="fs"><div class="ph">plan · runs in order, stops at the first bd failure</div><pre class="plan" id="plan"></pre></div>
+      <div style="display:flex;gap:8px;margin-top:10px;align-items:center"><button class="btn" id="create">run plan</button><button class="btn ghost">cancel</button><span class="d" style="margin-left:auto"><span class="k">⌘⏎</span> run · <span class="k">esc</span> back</span></div>
+    </div>
+  </div>
+  <div class="foot"><span>nothing is written until you run the plan</span></div>
+</div>
+
+<script>const D = {
+  company: { name: "vibeOS", slug: "vibeos", epic: "beads-v1b", mission: "ship vibeOS so a builder can hand an AI a real computer in one click" },
+  agents: [
+    { name: "vibeos-ceo", role: "lead · briefs, reviews, merges", live: "busy", chan: "joined", lead: true, now: "beads-c1a", done: 3 },
+    { name: "vibeos-pm", role: "product · onboarding, research", live: "on", chan: "joined", reportsTo: "vibeos-ceo", now: null, done: 1 },
+    { name: "vibeos-vercel", role: "deploys vibeos.sh/app", live: "busy", chan: "joined", reportsTo: "vibeos-ceo", now: "beads-k2q", done: 4 },
+    { name: "vibeos-docker", role: "self-hosted image", live: "asleep", chan: "invited", now: null, done: 2 },
+    { name: "vibeos-hexclave", role: "sandbox infra", live: "on", chan: "joined", reportsTo: "vibeos-pm", now: "beads-q2d", done: 0 },
+  ],
+  goals: [
+    { id: "beads-g01", title: "Ship vibeos.sh/app public beta", done: 9, prog: 4, blocked: 1, total: 20, kids: [
+      { id: "beads-g01a", title: "Self-hosted docker image matches the site", done: 4, prog: 1, blocked: 0, total: 5 },
+      { id: "beads-g01b", title: "Onboarding works without a call", done: 1, prog: 2, blocked: 1, total: 5 },
+    ] },
+    { id: "beads-g02", title: "10 builders paying for agent sandboxes", done: 1, prog: 3, blocked: 0, total: 10, kids: [] },
+    { id: "beads-g03", title: "Kill the dead kernel/crypto code", done: 3, prog: 0, blocked: 0, total: 3, kids: [] },
+  ],
+  issues: [
+    { id: "beads-p0x", title: "Decide pricing page copy for the beta", st: "open", who: null, goal: "Public beta", age: "5h" },
+    { id: "beads-t3v", title: "Waitlist export → 3-question email", st: "open", who: null, goal: "10 builders", age: "1d" },
+    { id: "beads-c1a", title: "Triage: what blocks the beta?", st: "prog", who: "vibeos-ceo", goal: "Public beta", sub: "1/4", age: "20m" },
+    { id: "beads-c9e", title: "Review PR #212 once r7m lands", st: "open", who: "vibeos-ceo", goal: "Onboarding", blk: "r7m", age: "3h" },
+    { id: "beads-r7m", title: "API key flow: paste, validate, store encrypted", st: "blocked", who: "vibeos-pm", goal: "Onboarding", blk: "q2d", cm: 2, age: "1h" },
+    { id: "beads-m4n", title: "Five onboarding interviews, 15 min each", st: "open", who: "vibeos-pm", goal: "Onboarding", age: "2d" },
+    { id: "beads-ws6", title: "In-app research ask on the thank-you screen", st: "open", who: "vibeos-pm", goal: "10 builders", cm: 3, age: "2d" },
+    { id: "beads-k2q", title: "Onboarding step 5: adapters never actually connect", st: "prog", who: "vibeos-vercel", goal: "Onboarding", sub: "2/3", pr: "#212", cm: 4, age: "3h" },
+    { id: "beads-v8d", title: "Preview deploys for every PR", st: "open", who: "vibeos-vercel", goal: "Public beta", age: "1d" },
+    { id: "beads-d2k", title: "Image digest pinned in the README", st: "prog", who: "vibeos-docker", goal: "Docker image", age: "2d", stale: true },
+    { id: "beads-q2d", title: "e2b vs daytona cold-start numbers", st: "prog", who: "vibeos-hexclave", goal: "10 builders", age: "40m" },
+    { id: "beads-n0w", title: "Sandbox pricing per minute vs per seat", st: "open", who: "vibeos-hexclave", goal: "10 builders", age: "now", nudged: true },
+    { id: "beads-x1y", title: "Landing hero copy v3", st: "open", who: "vibeos-landing", goal: "Public beta", age: "6d" },
+  ],
+  staleMore: 8,
+  untriaged: 17,
+  unlabelled: 2,
+  needs: [
+    { id: "beads-z32", title: "Decide: hosted AI or bring-your-own-key for the beta?", st: "open", why: "assigned to you · vibeos-ceo asked 2h ago", hot: true },
+    { id: "beads-r7m", title: "API key flow: paste, validate, store encrypted", st: "blocked", why: "blocked on q2d · vibeos-pm · 1h" },
+    { id: "beads-d2k", title: "Image digest pinned in the README", st: "prog", why: "in progress, silent 2d · vibeos-docker" },
+  ],
+  events: [
+    { day: "Today" },
+    { who: "aleks", verb: "commented on", ref: "beads-k2q", t: "12m", q: "@vibeos-ceo can someone unblock r7m today?" },
+    { who: "vibeos-ceo", verb: "claimed", ref: "beads-c1a", t: "20m" },
+    { who: "vibeos-hexclave", verb: "in #vibeos", t: "35m", q: "cold start: e2b 1.9s p50, daytona 0.8s p50 — writing it up on beads-q2d" },
+    { who: "vibeos-pm", verb: "marked blocked", ref: "beads-r7m", t: "1h", q: "waiting on q2d — which sandbox stores the key" },
+    { who: "vibeos-vercel", verb: "opened PR #212 for", ref: "beads-k2q", t: "3h" },
+    { who: "vibeos-docker", verb: "closed", ref: "beads-d1f", t: "5h", q: "digest matches site build 00:43 UTC" },
+    { day: "Yesterday" },
+    { who: "vibeos-pm", verb: "filed", ref: "beads-k2q", t: "1d" },
+    { who: "vibeos-ceo", verb: "added goal", t: "1d", q: "10 builders paying for agent sandboxes" },
+  ],
+  detail: {
+    id: "beads-k2q", crumb: "vibeOS › Public beta › Onboarding works without a call",
+    desc: "Step 4 validates key formats with a regex and never calls the backend. Done = a real connection test on step 5, and the wizard refuses to finish without one.",
+    blockedBy: "beads-r7m", createdBy: "vibeos-pm", created: "2d ago",
+    subs: [["closed", "call /adapters/test from step 4"], ["closed", "persist connectedProviders"], ["prog", "block launch until a provider is connected"]],
+    thread: [
+      { sys: true, text: "vibeos-pm filed it under Onboarding works without a call", t: "2d" },
+      { who: "vibeos-pm", src: "bead", t: "2d", text: "repro: fresh account, paste any sk-ant-… string, wizard says connected." },
+      { sys: true, text: "vibeos-vercel claimed it", t: "1d" },
+      { who: "vibeos-vercel", src: "#vibeos", t: "3h", text: "beads-k2q: test endpoint is in, PR #212 green. last bit needs the key flow from beads-r7m first." },
+      { who: "aleks", src: "bead", t: "12m", text: "@vibeos-ceo can someone unblock r7m today?" },
+    ],
+  },
+  pool: [
+    { name: "vibeos-ceo", cwd: "~/Github/vibeos-landing", live: "busy", in: "vibeos" },
+    { name: "vibeos-pm", cwd: "~/Github/vibeos", live: "on", in: "vibeos" },
+    { name: "research", cwd: "~/Github/research", live: "on" },
+    { name: "mail", cwd: "~/Github/caffeinum/mail", live: "busy" },
+    { name: "paw-folder", cwd: "~/Github/paw", live: "on" },
+    { name: "supertelegram", cwd: "~/Github/supertelegram", live: "asleep" },
+    { name: "team2027-queue", cwd: "~/Github/team2027/queue", live: "on" },
+  ],
+  picked: [{ name: "research", role: "research", lead: true }, { name: "mail", role: "", reportsTo: "research" }],
+};
+const ST = { open: "○", prog: "◐", blocked: "⊘", closed: "✓" };
+const STN = { open: "open", prog: "in progress", blocked: "blocked", closed: "done" };
+const ORDER = { prog: 0, blocked: 1, open: 2, closed: 3 };
+const hue = (n) => { let h = 0; for (const c of n) h = (h * 31 + c.charCodeAt(0)) % 360; return h; };
+const byWho = (w) => D.issues.filter((i) => i.who === w).sort((a, b) => ORDER[a.st] - ORDER[b.st]);
+const issue = (id) => D.issues.find((i) => i.id === id);
+const short = (id) => id.replace("beads-", "");
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+if (location.hash === "#new") { document.documentElement.dataset.screen = "new"; addEventListener("load", () => scrollTo(0, 0)); }
+if (location.hash === "#dark") document.documentElement.dataset.theme = "dark";
+function wireTheme(root = document) {
+  for (const b of root.querySelectorAll("[data-set]")) b.addEventListener("click", () => {
+    for (const x of root.querySelectorAll("[data-set]")) x.setAttribute("aria-pressed", String(x === b));
+    if (b.dataset.set === "system") document.documentElement.removeAttribute("data-theme");
+    else document.documentElement.dataset.theme = b.dataset.set;
+  });
+  const t = document.documentElement.dataset.theme;
+  if (t) for (const x of root.querySelectorAll("[data-set]")) x.setAttribute("aria-pressed", String(x.dataset.set === t));
+}
+function wireKeys({ cards, open, close, cycle }) {
+  let cur = null;
+  const sel = (c) => { if (!c) return; cur?.classList.remove("sel"); cur = c; c.classList.add("sel"); c.scrollIntoView({ block: "nearest", inline: "nearest" }); };
+  document.addEventListener("keydown", (e) => {
+    if (e.target.closest("input,textarea,select,[contenteditable]")) { if (e.key === "Escape") e.target.blur(); return; }
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    const list = [...document.querySelectorAll(cards)];
+    if (e.key === "Escape") { if (close()) return; cur?.classList.remove("sel"); cur = null; return; }
+    if (!cur) { if ("jk".includes(e.key)) sel(list[0]); return; }
+    const i = list.indexOf(cur);
+    if (e.key === "j") sel(list[i + 1]);
+    if (e.key === "k") sel(list[i - 1]);
+    if (e.key === "Enter") open(cur.dataset.id);
+    if (e.key === "s") cycle(cur);
+  });
+  return sel;
+}
+const NEXT = { open: "prog", prog: "closed", closed: "open", blocked: "open" };
+</script>
+<script>
+const lvg = { on: "●", busy: "●", asleep: "○" };
+document.getElementById("roster").innerHTML = D.agents.map((a) => `<div class="ag"><span class="lv ${a.live}">${lvg[a.live]}</span><span class="nm">${a.name}${a.lead ? ' <span class="am">★</span>' : ""}</span><span class="d cnt">${byWho(a.name).length}</span>
+  <span class="sub">${a.now ? '<span class="am">◐</span> ' + short(a.now) + " " + esc(issue(a.now).title) : a.live === "asleep" ? "asleep" : "idle"}${a.chan === "invited" ? ' · <span class="am">invited</span>' : ""}</span></div>`).join("");
+const ascii = (g, w = 18) => { const d = Math.round(g.done / g.total * w), p = Math.round(g.prog / g.total * w), b = Math.round(g.blocked / g.total * w); return `<span class="a">${"█".repeat(d)}</span><span class="am">${"▓".repeat(p)}</span><span class="r">${"▓".repeat(b)}</span><span class="f">${"░".repeat(Math.max(0, w - d - p - b))}</span> ${String(g.done).padStart(2)}/${g.total}`; };
+document.getElementById("goals").innerHTML = D.goals.map((g, i) => `<div class="gr ${i === 0 ? "sel" : ""}"><div class="gt">${esc(g.title)}</div><div class="gb">${ascii(g)}</div></div>` + g.kids.map((k) => `<div class="gr kid d"><div class="gt">${esc(k.title)}</div><div class="gb">${ascii(k, 14)}</div></div>`).join("")).join("");
+
+const row = (i, cls = "") => `<tr class="it ${cls} ${i.st === "closed" ? "done" : ""}" data-id="${i.id}"><td class="stc ${i.st}">${ST[i.st]}</td><td class="d">${short(i.id)}</td><td class="title">${esc(i.title)}${i.pr ? ` <span class="a">pr${i.pr}✓</span>` : ""}${i.nudged ? ' <span class="a">nudged✓</span>' : ""}${i.why ? ` <span class="${i.hot ? "am" : "d"}">— ${i.why}</span>` : ""}</td><td class="goal d">${i.goal || ""}</td><td class="dep r">${i.blk ? "⛓" + i.blk : ""}</td><td class="sub d">${i.sub || ""}</td><td class="cm d">${i.cm || ""}</td><td class="age">${i.age || ""}</td></tr>`;
+const grp = (html, cls = "") => `<tr class="grp ${cls}"><td colspan="8">${html}</td></tr>`;
+let rows = grp(`<b>▾ needs you</b> · ${D.needs.length}`, "needs") + D.needs.map((n) => row(n, "need")).join("");
+rows += grp(`<b>▾ unassigned</b> · ${D.issues.filter((i) => !i.who).length} <span class="f">— assign = DM</span>`) + D.issues.filter((i) => !i.who).map((i) => row(i)).join("");
+for (const a of D.agents) {
+  rows += grp(`<b>▾ ${a.name}</b>${a.lead ? ' <span class="am">★ lead</span>' : ""} <span class="lv ${a.live}">${lvg[a.live]} ${a.live}</span> · ${a.role} · <span class="${a.chan === "invited" ? "am" : "f"}">${a.chan}</span>`);
+  rows += byWho(a.name).map((i) => row(i)).join("");
+  if (a.done) rows += `<tr class="fold"><td></td><td colspan="7">▸ ${a.done} closed this week</td></tr>`;
+}
+rows += grp(`<b class="am">▾ ⚠ vibeos-landing</b> <span class="am">no such agent · 9</span> <span class="f">— :assign landing &lt;agent&gt;</span>`) + byWho("vibeos-landing").map((i) => row(i)).join("") + `<tr class="fold"><td></td><td colspan="7">▸ 8 more</td></tr>`;
+rows += grp(`<b>▸ untriaged</b> · ${D.untriaged} <span class="f">— members' beads outside the company · :file all</span>`);
+document.getElementById("rows").innerHTML = rows;
+
+document.getElementById("log").innerHTML = D.events.map((e) => e.day ? `<div class="ln day">── ${e.day.toLowerCase()} ──</div>` :
+  `<div class="ln"><span class="t">${e.t}</span><span><span class="${e.who === "aleks" ? "a" : ""}">${e.who}</span> <span class="d">${e.verb}</span> ${e.ref ? `<span class="ref" data-open="${e.ref}">${short(e.ref)}</span>` : ""}${e.q ? `<div class="q">› ${esc(e.q)}</div>` : ""}</span></div>`).join("");
+
+const insp = document.getElementById("insp"), logwrap = document.getElementById("logwrap"), grid = document.getElementById("grid");
+function openInsp(id) {
+  const i = issue(id) || D.needs.find((n) => n.id === id), d = D.detail, rich = id === d.id;
+  insp.innerHTML = `<div class="ph">inspect ${id} <span class="sp"></span><span style="cursor:pointer" data-close>esc ✕</span></div>
+   <div class="ih"><div class="d">${rich ? d.crumb : "vibeOS"}</div><div class="ttl" contenteditable>${esc(i.title)}</div>
+   <div class="sts">${Object.keys(ST).map((k) => `<button aria-pressed="${k === i.st}">${ST[k]} ${STN[k]}</button>`).join("")}</div></div>
+   <div class="kv"><span class="k">assignee</span><span>${i.who || "—"} <span class="f">[a]</span></span><span class="k">goal</span><span>${i.goal || "—"} <span class="f">[p]</span></span>
+   ${rich ? `<span class="k">blocked by</span><span class="r">⛓ ${d.blockedBy}</span><span class="k">pr</span><span class="a">caffeinum/vibeos#212 ✓</span><span class="k">created</span><span class="d">${d.createdBy} · ${d.created}</span>` : ""}</div>
+   ${rich ? `<div class="desc">${d.desc}</div><div class="subs"><span class="d">children 2/3</span>${d.subs.map(([s, t]) => `<div><span class="stc ${s}">${ST[s]}</span> ${t}</div>`).join("")}</div>
+   <div class="th"><span class="d">thread · bead + #vibeos</span>${d.thread.map((m) => m.sys ? `<div class="m sys">· ${m.t} ${m.text}</div>` : `<div class="m"><span class="f">${m.t}</span> <b>${m.who}</b> <span class="src ${m.src.startsWith("#") ? "ch" : ""}">${m.src}</span> ${esc(m.text)}</div>`).join("")}</div>` : `<div class="desc d">no description</div>`}
+   <textarea rows="2" placeholder="comment · @agent pings"></textarea><div class="crow"><label><input type="checkbox"> +#vibeos</label><span>⏎ send</span><button class="btn" style="margin-left:auto">comment</button></div>`;
+  insp.classList.add("on"); logwrap.style.display = "none"; grid.classList.add("inspecting");
+}
+function closeInsp() { const was = insp.classList.contains("on"); insp.classList.remove("on"); logwrap.style.display = ""; grid.classList.remove("inspecting"); return was; }
+function cycle(tr) { const s = tr.querySelector(".stc"); const cur = Object.keys(ST).find((k) => s.classList.contains(k)); const nx = NEXT[cur]; s.classList.replace(cur, nx); s.textContent = ST[nx]; tr.classList.toggle("done", nx === "closed"); }
+const select = wireKeys({ cards: "#rows tr.it", open: openInsp, close: closeInsp, cycle });
+document.addEventListener("click", (e) => {
+  if (e.target.closest("[data-close]")) return closeInsp();
+  const s = e.target.closest("tr.it .stc"); if (s) return cycle(s.closest("tr"));
+  const t = e.target.closest("tr.it"); if (t) { select(t); return openInsp(t.dataset.id); }
+  const o = e.target.closest("[data-open]"); if (o) return openInsp(o.dataset.open);
+});
+
+// /new
+const picked = new Map(D.picked.map((p) => [p.name, p]));
+let slugTouched = false;
+function renderNew() {
+  document.getElementById("pool").innerHTML = D.pool.map((a) => { const p = picked.get(a.name); return `<tr class="${p ? "on" : ""}" data-pick="${a.name}"><td>${p ? "[x]" : "[ ]"}</td><td class="lv ${a.live}">${lvg[a.live]}</td><td>${a.name} <span class="f">${a.cwd}${a.in ? " · in " + a.in : ""}</span></td>
+    <td>${p ? `<input type="text" value="${p.role}" placeholder="role">` : ""}</td><td>${p ? `<label><input type="radio" name="lead" ${p.lead ? "checked" : ""}>★</label>` : ""}</td><td>${p && !p.lead ? `<select><option>${p.reportsTo || "lead"}</option></select>` : ""}</td></tr>`; }).join("");
+  const slug = document.getElementById("slug").value, ok = /^[a-z0-9][a-z0-9-]{0,40}$/.test(slug), taken = slug === "vibeos";
+  const h = document.getElementById("slughint"); h.className = "hint" + (ok && !taken ? "" : " err");
+  h.textContent = !ok ? "error: [a-z0-9-] only" : taken ? "error: #vibeos exists → :open vibeos" : `→ #${slug} · /company/${slug}`;
+  const ps = [...picked.values()], lead = ps.find((p) => p.lead);
+  const org = Object.fromEntries(ps.map((p) => [p.name, p.lead ? { role: p.role || undefined } : { role: p.role || undefined, reportsTo: p.reportsTo || lead?.name }]));
+  const mission = document.getElementById("mission").value || "";
+  document.getElementById("plan").innerHTML =
+`<span class="p">1</span> <span class="c">bd create "${esc(document.getElementById("dname").value)}" -t epic -a ${lead?.name || "?"} -l company:${slug}</span>
+    ${mission ? `-d "${esc(mission)}" ` : ""}--metadata '${esc(JSON.stringify({ company: slug, org }))}'
+<span class="p">2</span> <span class="c">cotal channels set ${slug}</span> --desc "${esc(mission || "—")}" --instructions &lt;company brief&gt;
+<span class="p">3</span> <span class="c">invite</span> ${ps.map((p) => "@" + p.name).join(" ") || "—"}  <span class="f"># one DM each, sequential</span>
+<span class="p">4</span> <span class="c">post #${slug}</span> &lt;kickoff: mission, crew, how to file work&gt;
+<span class="p">→</span> open /company/${slug}`;
+  document.getElementById("create").disabled = !ok || taken || !ps.length || !lead;
+}
+document.getElementById("new").addEventListener("input", (e) => {
+  if (e.target.id === "slug") slugTouched = true;
+  if (e.target.id === "dname" && !slugTouched) document.getElementById("slug").value = e.target.value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+  if (e.target.closest("#pool")) { const r = e.target.closest("[data-pick]"); const p = picked.get(r.dataset.pick); if (e.target.type === "text") p.role = e.target.value; }
+  renderNew();
+});
+document.getElementById("pool").addEventListener("click", (e) => {
+  if (e.target.closest("input,select,label")) return;
+  const r = e.target.closest("[data-pick]"); if (!r) return;
+  picked.has(r.dataset.pick) ? picked.delete(r.dataset.pick) : picked.set(r.dataset.pick, { name: r.dataset.pick, role: "", lead: !picked.size });
+  renderNew();
+});
+renderNew();
+for (const s of document.querySelectorAll(".screen")) wireTheme(s);
+</script>
+</body>
+</html>

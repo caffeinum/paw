@@ -212,6 +212,17 @@ export async function updateTask(id: string, fields: { title?: string; descripti
   cache = undefined;
 }
 
+/** Move every OPEN task (bd's default filter: open, in_progress, blocked) from assignee `from` to `to`;
+ *  returns the ids moved. Closed work keeps its historical assignee. For `paw rename`: without it the
+ *  renamed agent stopped seeing its own queue (9 open beads stayed on vibeos-landing, 2026-10-03). */
+export async function reassignOpenTasks(from: string, to: string): Promise<string[]> {
+  const ids = parseTasks(await bd(["list", "-n", "0", "-a", from, "--json"]))
+    .filter((t) => isOpen(t) && t.assignee === from)
+    .map((t) => t.id);
+  for (const id of ids) await updateTask(id, { assignee: to });
+  return ids;
+}
+
 /** Attach a comment to a bead — durable, part of the task's record (`bd show`/`bd comments`), unlike
  *  a DM which only the recipient sees. */
 export async function commentTask(id: string, text: string): Promise<void> {

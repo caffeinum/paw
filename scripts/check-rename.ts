@@ -125,6 +125,36 @@ assert(renameAgentOnDisk(SPACE, FOLDER, "api2", "queue2").from === "api", "a for
   }
 }
 
+// The renamed agent keeps its queue: open beads move to the new name, closed ones keep their history.
+// bd's db follows HOME here (bdEnv pins $HOME/.beads), so a temp HOME isolates it from the real one.
+{
+  const { execFileSync } = await import("node:child_process");
+  const realHome = process.env.HOME;
+  const home = mkdtempSync(join(tmpdir(), "paw-beads-home-"));
+  process.env.HOME = home;
+  try {
+    const env = { ...process.env, HOME: home, BEADS_DIR: join(home, ".beads") };
+    execFileSync("bd", ["init", "--quiet"], { cwd: home, env, stdio: "ignore" });
+    const mk = (title: string, assignee: string) =>
+      execFileSync("bd", ["create", title, "-a", assignee, "--silent"], { cwd: home, env, encoding: "utf8" }).trim();
+    const open1 = mk("one", "old-name");
+    const open2 = mk("two", "old-name");
+    const done = mk("three", "old-name");
+    const other = mk("four", "someone-else");
+    execFileSync("bd", ["close", done], { cwd: home, env, stdio: "ignore" });
+    const { reassignOpenTasks } = await import("../src/tasks.ts");
+    const moved = await reassignOpenTasks("old-name", "new-name");
+    assert(moved.sort().join(",") === [open1, open2].sort().join(","), "beads: exactly the old name's OPEN beads move");
+    const who = (id: string) =>
+      (JSON.parse(execFileSync("bd", ["show", id, "--json"], { cwd: home, env, encoding: "utf8" })) as Array<{ assignee?: string }>)[0]?.assignee;
+    assert(who(open1) === "new-name" && who(open2) === "new-name", "beads: moved beads now belong to the new name");
+    assert(who(done) === "old-name", "beads: a closed bead keeps its historical assignee");
+    assert(who(other) === "someone-else", "beads: another agent's bead is untouched");
+  } finally {
+    process.env.HOME = realHome;
+  }
+}
+
 if (failures > 0) {
   console.error(`\n${failures} paw rename check(s) failed`);
   process.exit(1);

@@ -22,6 +22,7 @@ import { resolveSpace } from "./lifecycle.ts";
 import { resolveExistingFolderArg } from "./address.ts";
 import { pawServer } from "./server.ts";
 import { renameInFleetJob } from "./commands/launchd.ts";
+import { reassignOpenTasks } from "./tasks.ts";
 
 function parseArgs(argv: string[]): { space?: string; target?: string; newName?: string } {
   const out: { space?: string; target?: string; newName?: string } = {};
@@ -100,8 +101,18 @@ async function rename(argv: string[]): Promise<void> {
   });
 
   const fleetPlist = renameInFleetJob(space, from, to);
+  // The agent's queue follows it: open beads assigned to the old name would otherwise be orphaned.
+  // The rename itself already happened, so a bd failure is reported loud with the fix, not swallowed.
+  let moved: string[] = [];
+  try {
+    moved = await reassignOpenTasks(from, to);
+  } catch (e) {
+    process.exitCode = 1;
+    console.error(`paw: ⚠ renamed, but couldn't move "${from}"'s open beads (${(e as Error).message}) — run: bd list -a ${from}  then  bd update <id> -a ${to}`);
+  }
 
   console.log(`✓ renamed "${from}" → "${to}"`);
+  if (moved.length) console.log(`  moved ${moved.length} open bead(s) to "${to}": ${moved.join(", ")}`);
   if (fleetPlist) console.log(`  login fleet job now starts "${to}" (${fleetPlist}; takes effect at next login)`);
   console.log(
     restarted

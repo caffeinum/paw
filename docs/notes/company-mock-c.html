@@ -1,0 +1,440 @@
+<!doctype html>
+<html lang="en" data-screen="work">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Company C — Studio</title>
+<!-- Company C — "Studio": spatial. The company is a room: every agent has a desk, work is sticky
+     notes tinted by the goal they serve, goals are rings you can light up, "needs you" is a tray
+     that floats over the room. Static mock, fake data; same data + flows as A and B
+     (docs/notes/company-spec.md). -->
+<style>
+  :root {
+    --room:#ECEEF4; --dotc:#D3D7E3; --desk:#FFFFFF; --deskline:#E1E4EE; --txt:#1B1E2B; --dim:#6B7085; --faint:#A3A8BA;
+    --acc:#6C4CF5; --acc-ink:#FFFFFF; --on:#22B07D; --busy:#F2A93B; --off:#B5B9C9; --red:#E5484D;
+    --g1:#FF7A59; --g1b:#FFE6DE; --g2:#2EC4B6; --g2b:#D9F6F3; --g3:#FFC93C; --g3b:#FFF3CF; --g4:#7B8CFF; --g4b:#E3E7FF; --g5:#A0A4B8; --g5b:#ECEDF2;
+    --shadow:0 1px 2px rgba(27,30,43,.06), 0 6px 18px rgba(27,30,43,.07);
+    --font:"Avenir Next","Futura","Century Gothic","Trebuchet MS",system-ui,sans-serif;
+  }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+    --room:#10121A; --dotc:#22263A; --desk:#1A1D29; --deskline:#2A2E40; --txt:#E8EAF4; --dim:#9CA1B8; --faint:#5D6278;
+    --acc:#8F7BFF; --g1b:#3A2420; --g2b:#14302E; --g3b:#352D16; --g4b:#22264A; --g5b:#24263A;
+    --shadow:0 1px 2px rgba(0,0,0,.4), 0 8px 24px rgba(0,0,0,.35); } }
+  :root[data-theme="dark"] {
+    --room:#10121A; --dotc:#22263A; --desk:#1A1D29; --deskline:#2A2E40; --txt:#E8EAF4; --dim:#9CA1B8; --faint:#5D6278;
+    --acc:#8F7BFF; --g1b:#3A2420; --g2b:#14302E; --g3b:#352D16; --g4b:#22264A; --g5b:#24263A;
+    --shadow:0 1px 2px rgba(0,0,0,.4), 0 8px 24px rgba(0,0,0,.35); }
+  * { box-sizing:border-box; }
+  html, body { margin:0; min-height:100%; }
+  body { font-family:var(--font); font-size:14px; line-height:1.4; color:var(--txt); background:var(--room);
+         background-image:radial-gradient(var(--dotc) 1.2px, transparent 1.3px); background-size:22px 22px; }
+  button, input, select, textarea { font:inherit; color:inherit; }
+  :focus-visible { outline:3px solid var(--acc); outline-offset:2px; }
+  .screen { display:none; }
+  html[data-screen="work"] #work, html[data-screen="new"] #new { display:block; }
+
+  /* floating top dock */
+  .dock { position:sticky; top:12px; z-index:6; margin:12px 16px 0; display:flex; align-items:center; gap:10px; padding:8px 10px 8px 14px; background:var(--desk); border-radius:18px; box-shadow:var(--shadow); }
+  .logo { width:28px; height:28px; border-radius:9px; background:var(--acc); color:var(--acc-ink); display:grid; place-items:center; font-weight:800; }
+  .dock h1 { margin:0; font-size:18px; font-weight:800; letter-spacing:-.01em; }
+  .dock .mission { color:var(--dim); font-size:13px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; min-width:0; flex:1; }
+  .pills { display:flex; gap:4px; background:var(--room); border-radius:12px; padding:3px; }
+  .pills button { border:0; background:none; border-radius:9px; padding:4px 12px; cursor:pointer; color:var(--dim); font-weight:600; }
+  .pills button[aria-pressed="true"] { background:var(--desk); color:var(--txt); box-shadow:var(--shadow); }
+  .round { border:0; background:var(--room); border-radius:10px; padding:5px 10px; cursor:pointer; color:var(--dim); font-weight:600; white-space:nowrap; }
+  .round.acc { background:var(--acc); color:var(--acc-ink); }
+  .theme { display:flex; gap:2px; }
+  .theme button { border:0; background:none; cursor:pointer; color:var(--faint); padding:2px 5px; border-radius:6px; }
+  .theme button[aria-pressed="true"] { color:var(--acc); background:var(--room); }
+
+  /* goal rings */
+  .rings { display:flex; gap:12px; padding:18px 16px 4px; overflow-x:auto; scrollbar-width:none; }
+  .ring { flex:none; display:flex; align-items:center; gap:10px; padding:8px 14px 8px 8px; background:var(--desk); border-radius:999px; box-shadow:var(--shadow); cursor:pointer; border:2px solid transparent; }
+  .ring.sel { border-color:var(--gc); }
+  .ring .donut { width:38px; height:38px; border-radius:50%; display:grid; place-items:center; font-size:11px; font-weight:800; }
+  .ring .donut span { width:28px; height:28px; border-radius:50%; background:var(--desk); display:grid; place-items:center; }
+  .ring b { display:block; font-size:13px; max-width:210px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .ring small { color:var(--dim); font-size:11.5px; }
+  .ring.add { color:var(--dim); padding:8px 16px; font-weight:700; }
+  .hintline { padding:6px 18px 0; color:var(--dim); font-size:12px; display:flex; gap:12px; flex-wrap:wrap; }
+  .hintline .warn { color:var(--busy); font-weight:600; }
+
+  /* the room: desks wrap, never scroll sideways */
+  .room { display:grid; grid-template-columns:repeat(auto-fill, minmax(290px, 1fr)); gap:18px; padding:16px 16px 120px; align-items:start; }
+  .desk { background:var(--desk); border-radius:22px; box-shadow:var(--shadow); padding:14px; border:1px solid var(--deskline); }
+  .desk.dimmed .note:not(.match) { opacity:.25; }
+  .who { display:flex; align-items:center; gap:10px; }
+  .face { width:44px; height:44px; border-radius:50%; display:grid; place-items:center; color:#fff; font-weight:800; font-size:17px; position:relative; flex:none; }
+  .face::after { content:""; position:absolute; inset:-4px; border-radius:50%; border:3px solid var(--ring, transparent); }
+  .face.on { --ring:var(--on); } .face.busy { --ring:var(--busy); } .face.asleep { --ring:var(--off); filter:grayscale(.6); }
+  .who b { font-size:15px; font-weight:800; display:flex; gap:6px; align-items:center; }
+  .who .crown { font-size:13px; }
+  .who small { display:block; color:var(--dim); font-size:12px; }
+  .who .count { margin-left:auto; background:var(--room); border-radius:999px; padding:1px 9px; font-weight:700; color:var(--dim); font-size:12px; }
+  .chan { font-size:11px; font-weight:700; border-radius:6px; padding:0 6px; background:var(--room); color:var(--dim); }
+  .chan.invited { color:var(--busy); }
+  /* "now" is the big note pinned to the desk */
+  .now { margin:12px 0 10px; border-radius:14px; padding:12px 12px 10px; background:var(--gb, var(--room)); border-left:6px solid var(--gc, var(--faint)); cursor:pointer; }
+  .now .lbl { font-size:10.5px; font-weight:800; letter-spacing:.12em; text-transform:uppercase; color:var(--dim); }
+  .now .t { font-size:15px; font-weight:700; line-height:1.3; margin-top:2px; }
+  .now.idle { background:repeating-linear-gradient(135deg, var(--room) 0 8px, transparent 8px 16px); border-left-color:var(--faint); }
+  .now.idle .t { color:var(--dim); font-weight:600; }
+  .notes { display:flex; flex-wrap:wrap; gap:8px; }
+  .note { width:calc(50% - 4px); min-height:74px; border-radius:12px; padding:9px 10px 8px; background:var(--gb); border-top:5px solid var(--gc); cursor:pointer; display:flex; flex-direction:column; gap:4px; transition:transform .12s, box-shadow .12s; }
+  .note:hover { transform:translateY(-2px) rotate(-.4deg); box-shadow:var(--shadow); }
+  .note.sel { outline:3px solid var(--acc); outline-offset:1px; }
+  .note .t { font-size:12.5px; font-weight:700; line-height:1.3; display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; overflow:hidden; }
+  .note .m { margin-top:auto; display:flex; gap:6px; align-items:center; font-size:10.5px; color:var(--dim); font-weight:600; }
+  .note .st { font-size:13px; cursor:pointer; }
+  .st.prog { color:var(--busy); } .st.blocked { color:var(--red); } .st.closed { color:var(--on); } .st.open { color:var(--dim); }
+  .note .bl { color:var(--red); } .note .ng { color:var(--on); }
+  .note.done .t { text-decoration:line-through; opacity:.55; }
+  .note.plus { background:transparent; border:2px dashed var(--deskline); color:var(--dim); align-items:center; justify-content:center; font-weight:700; }
+  .deskfoot { margin-top:10px; font-size:12px; color:var(--dim); font-weight:600; display:flex; gap:10px; }
+  .desk.ghost { background:transparent; box-shadow:none; border:2px dashed var(--deskline); }
+  .desk.warn { border:2px solid var(--busy); }
+  .g1 { --gc:var(--g1); --gb:var(--g1b); } .g2 { --gc:var(--g2); --gb:var(--g2b); } .g3 { --gc:var(--g3); --gb:var(--g3b); } .g4 { --gc:var(--g4); --gb:var(--g4b); } .g5 { --gc:var(--g5); --gb:var(--g5b); }
+
+  /* tray: needs you, floating */
+  .tray { position:fixed; right:18px; bottom:18px; width:340px; background:var(--txt); color:var(--room); border-radius:20px; padding:12px; z-index:7; box-shadow:0 16px 40px rgba(0,0,0,.3); }
+  .feed .tray { position:static; width:auto; margin-bottom:14px; }
+  .tray h3 { margin:0 0 8px; font-size:13px; display:flex; align-items:center; gap:8px; }
+  .tray h3 .n { background:var(--red); color:#fff; border-radius:999px; padding:0 8px; }
+  .tray .r { display:flex; gap:8px; padding:7px 8px; border-radius:12px; cursor:pointer; }
+  .tray .r:hover { background:rgba(255,255,255,.08); }
+  .tray .r small { display:block; opacity:.65; font-size:11.5px; }
+  .tray .r small.hot { color:var(--g1); opacity:1; }
+  .tray .r .t { font-weight:700; font-size:13px; line-height:1.3; }
+
+  /* activity — a timeline strip down the right of the room on wide screens */
+  .withfeed { display:grid; grid-template-columns:minmax(0,1fr) 300px; }
+  .feed { padding:16px 16px 120px 0; }
+  .feed > div { position:sticky; top:84px; }
+  .feedcard { background:var(--desk); border-radius:22px; box-shadow:var(--shadow); padding:14px 16px; max-height:calc(100vh - 420px); overflow:auto; }
+  .feedcard h3 { margin:0 0 6px; font-size:13px; text-transform:uppercase; letter-spacing:.1em; color:var(--dim); }
+  .ev { display:grid; grid-template-columns:26px 1fr; gap:8px; padding:7px 0; position:relative; font-size:13px; }
+  .ev .mini { width:26px; height:26px; border-radius:50%; display:grid; place-items:center; color:#fff; font-size:11px; font-weight:800; }
+  .ev .v { color:var(--dim); }
+  .ev .ref { color:var(--acc); font-weight:700; cursor:pointer; }
+  .ev .q { background:var(--room); border-radius:10px; padding:5px 8px; margin-top:3px; font-size:12.5px; }
+  .ev .tm { color:var(--faint); font-size:11px; }
+  .dayl { font-size:11px; font-weight:800; letter-spacing:.12em; text-transform:uppercase; color:var(--faint); margin:10px 0 2px; }
+
+  /* issue sheet — a floating card over the room */
+  .sheet { position:fixed; top:12px; right:12px; bottom:12px; width:min(500px, calc(100% - 24px)); background:var(--desk); border-radius:24px; box-shadow:0 24px 60px rgba(0,0,0,.28); z-index:9; display:none; flex-direction:column; overflow:hidden; }
+  .sheet.on { display:flex; }
+  .sheet .top { padding:16px 18px 12px; background:var(--gb, var(--room)); border-bottom:6px solid var(--gc, var(--faint)); }
+  .sheet .top .crumb { font-size:12px; color:var(--dim); display:flex; gap:8px; align-items:center; }
+  .sheet .top .x { margin-left:auto; border:0; background:var(--desk); border-radius:10px; padding:3px 10px; cursor:pointer; font-weight:700; }
+  .sheet h4 { font-size:22px; font-weight:800; margin:8px 0 10px; line-height:1.2; outline:none; }
+  .chips { display:flex; gap:6px; flex-wrap:wrap; }
+  .chips button { border:0; background:var(--desk); border-radius:999px; padding:3px 11px; cursor:pointer; font-weight:700; font-size:12.5px; color:var(--dim); }
+  .chips button[aria-pressed="true"] { background:var(--acc); color:var(--acc-ink); }
+  .sheet .body { padding:14px 18px; overflow:auto; flex:1; }
+  .props { display:grid; grid-template-columns:repeat(2, minmax(0,1fr)); gap:8px; margin-bottom:14px; }
+  .prop { background:var(--room); border-radius:12px; padding:7px 10px; font-size:13px; }
+  .prop small { display:block; color:var(--dim); font-size:10.5px; font-weight:800; letter-spacing:.1em; text-transform:uppercase; }
+  .prop.bad { color:var(--red); }
+  .sheet .desc { font-size:14.5px; line-height:1.5; margin:0 0 12px; }
+  .sheet .sec { font-size:11px; font-weight:800; letter-spacing:.12em; text-transform:uppercase; color:var(--dim); margin:14px 0 6px; }
+  .bubble { display:grid; grid-template-columns:30px 1fr; gap:8px; margin:8px 0; }
+  .bubble .mini { width:30px; height:30px; border-radius:50%; display:grid; place-items:center; color:#fff; font-size:12px; font-weight:800; }
+  .bubble .bb { background:var(--room); border-radius:4px 14px 14px 14px; padding:7px 10px; font-size:13.5px; }
+  .bubble .bh { font-size:11.5px; color:var(--dim); margin-bottom:2px; }
+  .bubble .bh b { color:var(--txt); }
+  .tag { border-radius:6px; padding:0 6px; font-size:10.5px; font-weight:800; background:var(--desk); }
+  .tag.ch { color:var(--acc); }
+  .sysl { text-align:center; font-size:11.5px; color:var(--faint); margin:8px 0; }
+  .compose { padding:10px 14px 14px; border-top:1px solid var(--deskline); }
+  .compose textarea { width:100%; border:0; background:var(--room); border-radius:14px; padding:10px 12px; resize:none; outline:none; }
+  .compose .crow { display:flex; align-items:center; gap:10px; margin-top:8px; font-size:12px; color:var(--dim); }
+  .compose .crow .round { margin-left:auto; }
+
+  /* /new — assemble the crew */
+  .assemble { max-width:980px; margin:0 auto; padding:26px 16px 140px; }
+  .bigname { width:100%; border:0; background:transparent; font-size:44px; font-weight:800; letter-spacing:-.02em; outline:none; padding:0; }
+  .bigname::placeholder { color:var(--faint); }
+  .slugline { display:flex; align-items:center; gap:6px; color:var(--dim); font-size:13px; margin:2px 0 14px; flex-wrap:wrap; }
+  .slugline input { border:0; background:var(--desk); border-radius:8px; padding:3px 8px; width:160px; font-weight:700; box-shadow:var(--shadow); outline:none; }
+  .slugline .err { color:var(--red); font-weight:600; }
+  .missionbox { width:100%; border:0; background:var(--desk); border-radius:16px; padding:12px 14px; font-size:16px; box-shadow:var(--shadow); outline:none; }
+  .h2 { font-size:12px; font-weight:800; letter-spacing:.12em; text-transform:uppercase; color:var(--dim); margin:24px 0 10px; display:flex; gap:10px; align-items:center; }
+  .h2 input { margin-left:auto; border:0; background:var(--desk); border-radius:10px; padding:5px 10px; font-size:13px; text-transform:none; letter-spacing:0; font-weight:500; box-shadow:var(--shadow); outline:none; width:200px; }
+  .tiles { display:grid; grid-template-columns:repeat(auto-fill, minmax(150px, 1fr)); gap:12px; }
+  .tile { background:var(--desk); border-radius:18px; padding:14px 10px 12px; text-align:center; cursor:pointer; box-shadow:var(--shadow); border:3px solid transparent; position:relative; }
+  .tile.on { border-color:var(--acc); }
+  .tile .face { margin:0 auto 6px; }
+  .tile b { display:block; font-size:13.5px; }
+  .tile small { display:block; color:var(--dim); font-size:11px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .tile .chk { position:absolute; top:8px; right:10px; width:20px; height:20px; border-radius:50%; background:var(--acc); color:#fff; font-size:12px; display:grid; place-items:center; }
+  .crew { display:flex; flex-direction:column; gap:8px; }
+  .crewrow { display:grid; grid-template-columns:44px 1fr 170px 110px 160px; gap:10px; align-items:center; background:var(--desk); border-radius:16px; padding:8px 10px; box-shadow:var(--shadow); }
+  .crewrow input[type=text], .crewrow select { border:0; background:var(--room); border-radius:10px; padding:5px 8px; outline:none; width:100%; }
+  .crown { border:0; background:var(--room); border-radius:10px; padding:5px 8px; cursor:pointer; font-weight:700; color:var(--dim); }
+  .crown.on { background:var(--g3); color:#3A2C00; }
+  .launch { position:fixed; left:50%; transform:translateX(-50%); bottom:18px; z-index:7; display:flex; gap:12px; align-items:center; background:var(--txt); color:var(--room); border-radius:20px; padding:10px 10px 10px 18px; box-shadow:0 16px 40px rgba(0,0,0,.3); max-width:calc(100% - 24px); }
+  .launch .sum { font-size:13px; }
+  .launch .sum b { color:var(--desk); }
+  .launch button { border:0; background:var(--acc); color:#fff; border-radius:14px; padding:9px 18px; font-weight:800; cursor:pointer; white-space:nowrap; }
+  .launch button:disabled { opacity:.4; cursor:not-allowed; }
+
+  @media (max-width:1100px) { .withfeed { grid-template-columns:1fr; } .feed { display:none; } }
+  @media (max-width:700px) {
+    .dock { flex-wrap:wrap; margin:8px 8px 0; top:8px; }
+    .dock .mission, .dock .round:not(.acc), .theme { display:none; }
+    .pills { order:3; width:100%; justify-content:space-between; }
+    .rings { padding:12px 8px 2px; }
+    .room { grid-template-columns:1fr; padding:12px 8px 220px; gap:12px; }
+    .tray { left:8px; right:8px; bottom:8px; width:auto; }
+    .tray .r:nth-child(n+3) { display:none; }
+    .sheet { inset:0; width:100%; border-radius:0; }
+    .props { grid-template-columns:1fr; }
+    .bigname { font-size:32px; }
+    .crewrow { grid-template-columns:44px 1fr; }
+    .crewrow > :nth-child(n+3) { grid-column:1 / 3; }
+    .launch { left:8px; right:8px; transform:none; flex-wrap:wrap; }
+    .launch .sum { flex-basis:100%; }
+    .h2 input { width:140px; }
+  }
+</style>
+</head>
+<body>
+<div id="work" class="screen">
+  <div class="dock">
+    <div class="logo">v</div><h1>vibeOS</h1><span class="mission" title="click to edit"></span>
+    <div class="pills"><button aria-pressed="true">Room</button><button>Org</button><button>Activity</button></div>
+    <button class="round">#vibeos ↗</button><button class="round acc" data-go="new">+ company</button>
+    <span class="theme"><button data-set="light">☀</button><button data-set="system" aria-pressed="true">◐</button><button data-set="dark">☾</button></span>
+  </div>
+  <div class="rings" id="rings"></div>
+  <div class="hintline"><span>tap a goal ring to light up its notes · drag a note onto a desk to hand it over (they get a DM)</span><span class="warn">⚠ 2 notes missing the company label — fix</span></div>
+  <div class="withfeed">
+    <div class="room" id="room"></div>
+    <div class="feed"><div id="feedstack"><div class="feedcard" id="feed"><h3>What happened</h3></div></div></div>
+  </div>
+  <div class="tray" id="tray"></div>
+</div>
+
+<div id="new" class="screen">
+  <div class="dock"><div class="logo">v</div><h1>New company</h1><span class="mission">a room, a crew, and goals — stored in beads and one channel</span><span class="theme"><button data-set="light">☀</button><button data-set="system" aria-pressed="true">◐</button><button data-set="dark">☾</button></span></div>
+  <div class="assemble">
+    <input class="bigname" id="dname" value="Acme Labs" placeholder="Name your company">
+    <div class="slugline">lives in <b>#</b><input id="slug" value="acme-labs"><span id="slughint"></span></div>
+    <input class="missionbox" id="mission" placeholder="What's it for? (one line — the mission)">
+    <div class="h2">Who's in the room <input placeholder="find an agent…"></div>
+    <div class="tiles" id="tiles"></div>
+    <div class="h2">The crew · tap 👑 to pick the lead</div>
+    <div class="crew" id="crew"></div>
+  </div>
+  <div class="launch"><span class="sum" id="sum"></span><button id="create">Open the room</button></div>
+</div>
+
+<div class="sheet" id="sheet" role="dialog" aria-label="Issue"></div>
+
+<script>const D = {
+  company: { name: "vibeOS", slug: "vibeos", epic: "beads-v1b", mission: "ship vibeOS so a builder can hand an AI a real computer in one click" },
+  agents: [
+    { name: "vibeos-ceo", role: "lead · briefs, reviews, merges", live: "busy", chan: "joined", lead: true, now: "beads-c1a", done: 3 },
+    { name: "vibeos-pm", role: "product · onboarding, research", live: "on", chan: "joined", reportsTo: "vibeos-ceo", now: null, done: 1 },
+    { name: "vibeos-vercel", role: "deploys vibeos.sh/app", live: "busy", chan: "joined", reportsTo: "vibeos-ceo", now: "beads-k2q", done: 4 },
+    { name: "vibeos-docker", role: "self-hosted image", live: "asleep", chan: "invited", now: null, done: 2 },
+    { name: "vibeos-hexclave", role: "sandbox infra", live: "on", chan: "joined", reportsTo: "vibeos-pm", now: "beads-q2d", done: 0 },
+  ],
+  goals: [
+    { id: "beads-g01", title: "Ship vibeos.sh/app public beta", done: 9, prog: 4, blocked: 1, total: 20, kids: [
+      { id: "beads-g01a", title: "Self-hosted docker image matches the site", done: 4, prog: 1, blocked: 0, total: 5 },
+      { id: "beads-g01b", title: "Onboarding works without a call", done: 1, prog: 2, blocked: 1, total: 5 },
+    ] },
+    { id: "beads-g02", title: "10 builders paying for agent sandboxes", done: 1, prog: 3, blocked: 0, total: 10, kids: [] },
+    { id: "beads-g03", title: "Kill the dead kernel/crypto code", done: 3, prog: 0, blocked: 0, total: 3, kids: [] },
+  ],
+  issues: [
+    { id: "beads-p0x", title: "Decide pricing page copy for the beta", st: "open", who: null, goal: "Public beta", age: "5h" },
+    { id: "beads-t3v", title: "Waitlist export → 3-question email", st: "open", who: null, goal: "10 builders", age: "1d" },
+    { id: "beads-c1a", title: "Triage: what blocks the beta?", st: "prog", who: "vibeos-ceo", goal: "Public beta", sub: "1/4", age: "20m" },
+    { id: "beads-c9e", title: "Review PR #212 once r7m lands", st: "open", who: "vibeos-ceo", goal: "Onboarding", blk: "r7m", age: "3h" },
+    { id: "beads-r7m", title: "API key flow: paste, validate, store encrypted", st: "blocked", who: "vibeos-pm", goal: "Onboarding", blk: "q2d", cm: 2, age: "1h" },
+    { id: "beads-m4n", title: "Five onboarding interviews, 15 min each", st: "open", who: "vibeos-pm", goal: "Onboarding", age: "2d" },
+    { id: "beads-ws6", title: "In-app research ask on the thank-you screen", st: "open", who: "vibeos-pm", goal: "10 builders", cm: 3, age: "2d" },
+    { id: "beads-k2q", title: "Onboarding step 5: adapters never actually connect", st: "prog", who: "vibeos-vercel", goal: "Onboarding", sub: "2/3", pr: "#212", cm: 4, age: "3h" },
+    { id: "beads-v8d", title: "Preview deploys for every PR", st: "open", who: "vibeos-vercel", goal: "Public beta", age: "1d" },
+    { id: "beads-d2k", title: "Image digest pinned in the README", st: "prog", who: "vibeos-docker", goal: "Docker image", age: "2d", stale: true },
+    { id: "beads-q2d", title: "e2b vs daytona cold-start numbers", st: "prog", who: "vibeos-hexclave", goal: "10 builders", age: "40m" },
+    { id: "beads-n0w", title: "Sandbox pricing per minute vs per seat", st: "open", who: "vibeos-hexclave", goal: "10 builders", age: "now", nudged: true },
+    { id: "beads-x1y", title: "Landing hero copy v3", st: "open", who: "vibeos-landing", goal: "Public beta", age: "6d" },
+  ],
+  staleMore: 8,
+  untriaged: 17,
+  unlabelled: 2,
+  needs: [
+    { id: "beads-z32", title: "Decide: hosted AI or bring-your-own-key for the beta?", st: "open", why: "assigned to you · vibeos-ceo asked 2h ago", hot: true },
+    { id: "beads-r7m", title: "API key flow: paste, validate, store encrypted", st: "blocked", why: "blocked on q2d · vibeos-pm · 1h" },
+    { id: "beads-d2k", title: "Image digest pinned in the README", st: "prog", why: "in progress, silent 2d · vibeos-docker" },
+  ],
+  events: [
+    { day: "Today" },
+    { who: "aleks", verb: "commented on", ref: "beads-k2q", t: "12m", q: "@vibeos-ceo can someone unblock r7m today?" },
+    { who: "vibeos-ceo", verb: "claimed", ref: "beads-c1a", t: "20m" },
+    { who: "vibeos-hexclave", verb: "in #vibeos", t: "35m", q: "cold start: e2b 1.9s p50, daytona 0.8s p50 — writing it up on beads-q2d" },
+    { who: "vibeos-pm", verb: "marked blocked", ref: "beads-r7m", t: "1h", q: "waiting on q2d — which sandbox stores the key" },
+    { who: "vibeos-vercel", verb: "opened PR #212 for", ref: "beads-k2q", t: "3h" },
+    { who: "vibeos-docker", verb: "closed", ref: "beads-d1f", t: "5h", q: "digest matches site build 00:43 UTC" },
+    { day: "Yesterday" },
+    { who: "vibeos-pm", verb: "filed", ref: "beads-k2q", t: "1d" },
+    { who: "vibeos-ceo", verb: "added goal", t: "1d", q: "10 builders paying for agent sandboxes" },
+  ],
+  detail: {
+    id: "beads-k2q", crumb: "vibeOS › Public beta › Onboarding works without a call",
+    desc: "Step 4 validates key formats with a regex and never calls the backend. Done = a real connection test on step 5, and the wizard refuses to finish without one.",
+    blockedBy: "beads-r7m", createdBy: "vibeos-pm", created: "2d ago",
+    subs: [["closed", "call /adapters/test from step 4"], ["closed", "persist connectedProviders"], ["prog", "block launch until a provider is connected"]],
+    thread: [
+      { sys: true, text: "vibeos-pm filed it under Onboarding works without a call", t: "2d" },
+      { who: "vibeos-pm", src: "bead", t: "2d", text: "repro: fresh account, paste any sk-ant-… string, wizard says connected." },
+      { sys: true, text: "vibeos-vercel claimed it", t: "1d" },
+      { who: "vibeos-vercel", src: "#vibeos", t: "3h", text: "beads-k2q: test endpoint is in, PR #212 green. last bit needs the key flow from beads-r7m first." },
+      { who: "aleks", src: "bead", t: "12m", text: "@vibeos-ceo can someone unblock r7m today?" },
+    ],
+  },
+  pool: [
+    { name: "vibeos-ceo", cwd: "~/Github/vibeos-landing", live: "busy", in: "vibeos" },
+    { name: "vibeos-pm", cwd: "~/Github/vibeos", live: "on", in: "vibeos" },
+    { name: "research", cwd: "~/Github/research", live: "on" },
+    { name: "mail", cwd: "~/Github/caffeinum/mail", live: "busy" },
+    { name: "paw-folder", cwd: "~/Github/paw", live: "on" },
+    { name: "supertelegram", cwd: "~/Github/supertelegram", live: "asleep" },
+    { name: "team2027-queue", cwd: "~/Github/team2027/queue", live: "on" },
+  ],
+  picked: [{ name: "research", role: "research", lead: true }, { name: "mail", role: "", reportsTo: "research" }],
+};
+const ST = { open: "○", prog: "◐", blocked: "⊘", closed: "✓" };
+const STN = { open: "open", prog: "in progress", blocked: "blocked", closed: "done" };
+const ORDER = { prog: 0, blocked: 1, open: 2, closed: 3 };
+const hue = (n) => { let h = 0; for (const c of n) h = (h * 31 + c.charCodeAt(0)) % 360; return h; };
+const byWho = (w) => D.issues.filter((i) => i.who === w).sort((a, b) => ORDER[a.st] - ORDER[b.st]);
+const issue = (id) => D.issues.find((i) => i.id === id);
+const short = (id) => id.replace("beads-", "");
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+if (location.hash === "#new") { document.documentElement.dataset.screen = "new"; addEventListener("load", () => scrollTo(0, 0)); }
+if (location.hash === "#dark") document.documentElement.dataset.theme = "dark";
+function wireTheme(root = document) {
+  for (const b of root.querySelectorAll("[data-set]")) b.addEventListener("click", () => {
+    for (const x of root.querySelectorAll("[data-set]")) x.setAttribute("aria-pressed", String(x === b));
+    if (b.dataset.set === "system") document.documentElement.removeAttribute("data-theme");
+    else document.documentElement.dataset.theme = b.dataset.set;
+  });
+  const t = document.documentElement.dataset.theme;
+  if (t) for (const x of root.querySelectorAll("[data-set]")) x.setAttribute("aria-pressed", String(x.dataset.set === t));
+}
+function wireKeys({ cards, open, close, cycle }) {
+  let cur = null;
+  const sel = (c) => { if (!c) return; cur?.classList.remove("sel"); cur = c; c.classList.add("sel"); c.scrollIntoView({ block: "nearest", inline: "nearest" }); };
+  document.addEventListener("keydown", (e) => {
+    if (e.target.closest("input,textarea,select,[contenteditable]")) { if (e.key === "Escape") e.target.blur(); return; }
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    const list = [...document.querySelectorAll(cards)];
+    if (e.key === "Escape") { if (close()) return; cur?.classList.remove("sel"); cur = null; return; }
+    if (!cur) { if ("jk".includes(e.key)) sel(list[0]); return; }
+    const i = list.indexOf(cur);
+    if (e.key === "j") sel(list[i + 1]);
+    if (e.key === "k") sel(list[i - 1]);
+    if (e.key === "Enter") open(cur.dataset.id);
+    if (e.key === "s") cycle(cur);
+  });
+  return sel;
+}
+const NEXT = { open: "prog", prog: "closed", closed: "open", blocked: "open" };
+</script>
+<script>
+const GC = { "Public beta": "g1", "Onboarding": "g2", "10 builders": "g3", "Docker image": "g4" };
+const gcls = (g) => GC[g] || "g5";
+const lv = { on: "on", busy: "busy", asleep: "asleep" };
+const face = (n, live = "", size = 44) => `<span class="face ${live}" style="background:hsl(${hue(n)} 55% 50%);width:${size}px;height:${size}px;font-size:${size * .38}px">${n[0].toUpperCase()}</span>`;
+const mini = (n) => `<span class="mini" style="background:hsl(${hue(n)} 55% 50%)">${n[0].toUpperCase()}</span>`;
+document.querySelector("#work .mission").textContent = D.company.mission;
+const ringColors = ["var(--g1)", "var(--g3)", "var(--g5)"];
+document.getElementById("rings").innerHTML = D.goals.map((g, i) => { const c = ringColors[i], pct = g.done / g.total * 100;
+  return `<div class="ring ${i === 0 ? "sel" : ""}" style="--gc:${c}" data-goal="${i}"><span class="donut" style="background:conic-gradient(${c} ${pct}%, var(--room) 0)"><span>${Math.round(pct)}%</span></span><span><b>${esc(g.title)}</b><small>${g.done}/${g.total} done${g.kids.length ? " · " + g.kids.length + " sub-goals" : ""}</small></span></div>`; }).join("") + `<div class="ring add">+ goal</div>`;
+
+function note(i) {
+  const m = [`<span class="st ${i.st}">${ST[i.st]}</span>`, `<span>${short(i.id)}</span>`];
+  if (i.blk) m.push(`<span class="bl">⛓${i.blk}</span>`);
+  if (i.sub) m.push(`<span>☰${i.sub}</span>`);
+  if (i.cm) m.push(`<span>💬${i.cm}</span>`);
+  if (i.nudged) m.push(`<span class="ng">nudged ✓</span>`);
+  return `<div class="note ${gcls(i.goal)} ${["Public beta", "Onboarding", "Docker image"].includes(i.goal) ? "match" : ""} ${i.st === "closed" ? "done" : ""}" data-id="${i.id}" title="${i.goal}"><div class="t">${esc(i.title)}</div><div class="m">${m.join("")}</div></div>`;
+}
+let room = "";
+for (const a of D.agents) {
+  const now = a.now ? issue(a.now) : null, rest = byWho(a.name).filter((i) => i.id !== a.now);
+  room += `<div class="desk dimmed"><div class="who">${face(a.name, lv[a.live])}<span><b>${a.name}${a.lead ? '<span class="crown" title="lead">👑</span>' : ""}</b><small>${a.role} · <span class="chan ${a.chan}">${a.chan}</span></small></span><span class="count">${byWho(a.name).length}</span></div>
+    <div class="now ${now ? gcls(now.goal) : "idle"}" ${now ? `data-id="${now.id}"` : ""}><div class="lbl">${now ? "working on" : a.live === "asleep" ? "asleep" : "idle"}</div><div class="t">${now ? esc(now.title) : a.live === "asleep" ? "a message wakes it" : "nothing claimed"}</div></div>
+    <div class="notes">${rest.map(note).join("")}<div class="note plus">+ note</div></div>
+    ${a.done ? `<div class="deskfoot">✓ ${a.done} done this week</div>` : ""}</div>`;
+}
+room += `<div class="desk ghost"><div class="who">${face("?", "", 44).replace(/background:[^;]+/, "background:var(--faint)")}<span><b>Nobody's desk</b><small>drop a note on someone to hand it over</small></span></div><div class="notes" style="margin-top:12px">${D.issues.filter((i) => !i.who).map(note).join("")}<div class="note plus">+ note</div></div></div>`;
+room += `<div class="desk warn"><div class="who">${face("!", "", 44).replace(/background:[^;]+/, "background:var(--busy)")}<span><b>vibeos-landing</b><small>no such agent — old name? 9 notes</small></span></div><div class="notes" style="margin-top:12px">${byWho("vibeos-landing").map(note).join("")}<div class="note plus" style="border-style:solid">hand all 9 to…</div></div></div>`;
+room += `<div class="desk ghost"><div class="who"><span class="face" style="background:var(--room);color:var(--dim)">⋯</span><span><b>Untriaged · ${D.untriaged}</b><small>the crew's beads that aren't in this room yet</small></span></div><div class="deskfoot"><span class="round">peek</span><span class="round acc">bring all in…</span></div></div>`;
+document.getElementById("room").innerHTML = room;
+
+document.getElementById("tray").innerHTML = `<h3>Needs you <span class="n">${D.needs.length}</span></h3>` + D.needs.map((n) => `<div class="r" data-open="${n.id}"><span class="st ${n.st}">${ST[n.st]}</span><span><span class="t">${esc(n.title)}</span><small class="${n.hot ? "hot" : ""}">${n.why}</small></span></div>`).join("");
+document.getElementById("feed").innerHTML += D.events.map((e) => e.day ? `<div class="dayl">${e.day}</div>` : `<div class="ev">${mini(e.who)}<div><b>${e.who}</b> <span class="v">${e.verb}</span> ${e.ref ? `<span class="ref" data-open="${e.ref}">${short(e.ref)}</span>` : ""} <span class="tm">${e.t}</span>${e.q ? `<div class="q">${esc(e.q)}</div>` : ""}</div></div>`).join("");
+
+// wide: the tray docks above the feed; narrow: it floats over the room
+const tray = document.getElementById("tray"), workEl = document.getElementById("work"), stack = document.getElementById("feedstack");
+const placeTray = () => { if (matchMedia("(min-width:1101px)").matches) stack.prepend(tray); else workEl.append(tray); };
+placeTray(); addEventListener("resize", placeTray);
+const sheet = document.getElementById("sheet");
+function openSheet(id) {
+  const i = issue(id) || D.needs.find((n) => n.id === id), d = D.detail, rich = id === d.id;
+  sheet.className = "sheet on " + gcls(i.goal);
+  sheet.innerHTML = `<div class="top"><div class="crumb"><span>${rich ? d.crumb : "vibeOS"}</span><b>${short(id)}</b><button class="x" data-close>esc ✕</button></div>
+    <h4 contenteditable>${esc(i.title)}</h4><div class="chips">${Object.keys(ST).map((k) => `<button aria-pressed="${k === i.st}">${ST[k]} ${STN[k]}</button>`).join("")}</div></div>
+    <div class="body"><div class="props"><div class="prop"><small>desk</small>${i.who || "nobody"} ▾</div><div class="prop"><small>goal</small>${i.goal || "—"} ▾</div>
+    ${rich ? `<div class="prop bad"><small>waiting on</small>⛓ ${d.blockedBy}</div><div class="prop"><small>pull request</small>#212 ✓ green</div>` : ""}</div>
+    ${rich ? `<p class="desc">${d.desc}</p><div class="sec">Steps · 2/3</div>${d.subs.map(([s, t]) => `<div><span class="st ${s}">${ST[s]}</span> ${s === "closed" ? `<s style="opacity:.55">${t}</s>` : t}</div>`).join("")}
+    <div class="sec">Conversation · bead + #vibeos</div>${d.thread.map((m) => m.sys ? `<div class="sysl">${m.text} · ${m.t}</div>` : `<div class="bubble">${mini(m.who)}<div class="bb"><div class="bh"><b>${m.who}</b> <span class="tag ${m.src.startsWith("#") ? "ch" : ""}">${m.src}</span> ${m.t}</div>${esc(m.text)}</div></div>`).join("")}` : `<p class="desc" style="color:var(--dim)">No description yet.</p>`}</div>
+    <div class="compose"><textarea rows="2" placeholder="Say something — @name pings them"></textarea><div class="crow"><label><input type="checkbox"> also in #vibeos</label><span>⏎ send</span><button class="round acc">Send</button></div></div>`;
+}
+const closeSheet = () => { const was = sheet.classList.contains("on"); sheet.classList.remove("on"); return was; };
+function cycle(n) { const s = n.querySelector(".st"); if (!s) return; const cur = Object.keys(ST).find((k) => s.classList.contains(k)); const nx = NEXT[cur]; s.classList.replace(cur, nx); s.textContent = ST[nx]; n.classList.toggle("done", nx === "closed"); }
+const select = wireKeys({ cards: "#room .note[data-id]", open: openSheet, close: closeSheet, cycle });
+document.addEventListener("click", (e) => {
+  const go = e.target.closest("[data-go]"); if (go) { document.documentElement.dataset.screen = go.dataset.go; scrollTo(0, 0); return; }
+  if (e.target.closest("[data-close]")) return closeSheet();
+  const s = e.target.closest(".note .st"); if (s) return cycle(s.closest(".note"));
+  const n = e.target.closest(".note[data-id], .now[data-id]"); if (n) { if (n.classList.contains("note")) select(n); return openSheet(n.dataset.id); }
+  const o = e.target.closest("[data-open]"); if (o) return openSheet(o.dataset.open);
+  const r = e.target.closest(".ring[data-goal]"); if (r) { const on = !r.classList.contains("sel"); for (const x of document.querySelectorAll(".ring")) x.classList.remove("sel"); r.classList.toggle("sel", on); for (const d of document.querySelectorAll(".desk")) d.classList.toggle("dimmed", on); }
+});
+
+// /new
+const picked = new Map(D.picked.map((p) => [p.name, p]));
+let slugTouched = false;
+function renderNew() {
+  document.getElementById("tiles").innerHTML = D.pool.map((a) => `<div class="tile ${picked.has(a.name) ? "on" : ""}" data-pick="${a.name}">${picked.has(a.name) ? '<span class="chk">✓</span>' : ""}${face(a.name, lv[a.live], 48)}<b>${a.name}</b><small>${a.cwd}</small>${a.in ? `<small style="color:var(--acc)">in ${a.in}</small>` : ""}</div>`).join("");
+  const ps = [...picked.values()];
+  document.getElementById("crew").innerHTML = ps.length ? ps.map((p) => `<div class="crewrow">${face(p.name, "", 40)}<b>${p.name}</b><input type="text" value="${p.role}" placeholder="role, e.g. research"><button class="crown ${p.lead ? "on" : ""}" data-lead="${p.name}">👑 ${p.lead ? "lead" : "make lead"}</button>${p.lead ? "<span></span>" : `<select><option>reports to ${p.reportsTo || "the lead"}</option></select>`}</div>`).join("")
+    : `<div class="desk ghost" style="text-align:center;color:var(--dim)">tap agents above to bring them in</div>`;
+  const slug = document.getElementById("slug").value, ok = /^[a-z0-9][a-z0-9-]{0,40}$/.test(slug), taken = slug === "vibeos";
+  document.getElementById("slughint").innerHTML = !ok ? '<span class="err">a–z, 0–9 and - only</span>' : taken ? '<span class="err">#vibeos is taken — <a href="#">open it</a></span>' : `→ /company/${slug}`;
+  const lead = ps.find((p) => p.lead);
+  document.getElementById("sum").innerHTML = `Opens <b>#${slug}</b>, invites <b>${ps.length}</b>${lead ? `, led by <b>${lead.name}</b>` : ""} · files the company bead · posts a hello`;
+  document.getElementById("create").disabled = !ok || taken || !ps.length || !lead;
+}
+document.getElementById("new").addEventListener("input", (e) => {
+  if (e.target.id === "slug") slugTouched = true;
+  if (e.target.id === "dname" && !slugTouched) document.getElementById("slug").value = e.target.value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+  if (["slug", "dname"].includes(e.target.id)) renderNew();
+});
+document.getElementById("new").addEventListener("click", (e) => {
+  const t = e.target.closest("[data-pick]");
+  if (t) { picked.has(t.dataset.pick) ? picked.delete(t.dataset.pick) : picked.set(t.dataset.pick, { name: t.dataset.pick, role: "", lead: !picked.size }); renderNew(); }
+  const l = e.target.closest("[data-lead]");
+  if (l) { for (const p of picked.values()) p.lead = p.name === l.dataset.lead; renderNew(); }
+});
+renderNew();
+for (const s of document.querySelectorAll(".screen")) wireTheme(s);
+</script>
+</body>
+</html>
