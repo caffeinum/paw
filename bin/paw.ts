@@ -97,7 +97,7 @@ const cmd = raw[0];
 try {
   if (cmd === "cotal") {
     // `paw cotal <verb…>` escape hatch: spawn the COTAL composition root (bin/cotald.ts) as a
-    // subprocess under node+tsx — runtime coordination, never a compile-time import. The verb still
+    // subprocess under plain node — runtime coordination, never a compile-time import. The verb still
     // gets a live mesh + the default --space, or it would run against a missing/wrong space.
     const rest = stripCotalNamespace(raw);
     if (rest.length === 0) {

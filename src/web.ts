@@ -1452,7 +1452,7 @@ export async function startWebServer(deps: WebDeps): Promise<WebServer> {
 
 async function web(argv: string[]): Promise<void> {
   // BEFORE anything else, and before the mesh is touched: under bun this process cannot serve a
-  // WebSocket at all (node:http never emits `upgrade`), so hand the whole command to node+tsx and
+  // WebSocket at all (node:http never emits `upgrade`), so hand the whole command to node and
   // become a passthrough. Parse-then-reexec would do the work twice; ensure() twice would be worse.
   if (reexecUnderNode(["web", ...argv])) return;
   const { port, space: spaceArg, server: serverArg, open } = parseArgs(argv);

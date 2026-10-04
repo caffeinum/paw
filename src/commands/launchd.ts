@@ -24,7 +24,7 @@
  * fails loud if nothing is live, rather than guessing. The spawn-pacing gate (src/pacing.ts) still
  * staggers the boot.
  *
- * Runs the CLI the documented way — node + tsx over the CHECKOUT's bin/paw.ts (the daemons it
+ * Runs the CLI the documented way — plain node (native TS) over the CHECKOUT's bin/paw.ts (the daemons it
  * ensures resolve through the pinned release, as always). PATH is written into the plist from
  * `toolDirs()` because launchd starts jobs with a minimal environment — the same class of failure
  * `nodeBin`/`withToolPath` exist for.

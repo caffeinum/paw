@@ -3,7 +3,7 @@
  * checkout — never from the operator's live, mutable working copy.
  *
  * THE INCIDENT (2026-08-20). Every daemon (mesh `up`, manager `supervise`, the mailbox beacon,
- * `paw web`) is spawned via tsx with its entry file and its `node_modules/tsx/dist/cli.mjs` resolved
+ * `paw web`) was spawned via tsx with its entry file and its `node_modules/tsx/dist/cli.mjs` resolved
  * from REPO_ROOT — `/Users/aleks/Github/paw`, the checkout the operator also EDITS. That night a
  * `pnpm add @cotal-ai/*@0.25.0` ran in that checkout while a 0.15 manager was live; the next
  * `ensure()` started a SECOND manager off the half-installed tree, and two managers on incompatible
@@ -128,7 +128,7 @@ function cloneNodeModules(src: string, dst: string): void {
   const from = join(src, "node_modules");
   if (!existsSync(from)) {
     throw new Error(
-      `paw: can't snapshot a release — ${from} doesn't exist. The daemons run node+tsx out of the ` +
+      `paw: can't snapshot a release — ${from} doesn't exist. The daemons run node out of the ` +
         `release, so its dependencies must be installed first (\`pnpm install\`).`,
     );
   }
@@ -247,7 +247,7 @@ function basenameOf(p: string): string {
 let devWarned = false;
 
 /**
- * The root every DAEMON spawn resolves its entry file and its tsx out of.
+ * The root every DAEMON spawn resolves its entry file (and node_modules) out of.
  *
  * Precedence: `PAW_RELEASE=dev` (the checkout, announced loudly — it is the pre-incident behaviour
  * and must never be silent) > `PAW_RELEASE=<id>` (pin one release, e.g. to roll back) > the `current`

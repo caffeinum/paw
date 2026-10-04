@@ -28,13 +28,26 @@ Moved verbatim from CLAUDE.md (2026-10-02 split). Index: [CLAUDE.md](../../CLAUD
   marker (`meshPidPath` from cotal's own `nats.pid`, which is correct — not a spawn() pid). Space-
   exactness is unit-tested in `check:commands`. Verified live: `paw restart` → exactly one manager
   (no dup), `paw down` → zero managers + zero mailbox, `down` on `ex1` leaves `ex11` untouched.
-  **Daemons are pinned to node+tsx.** `ensureMesh`/`ensureManagerUp` start the mesh (`up --detach`)
-  and manager (`supervise`) by driving **bin/cotald.ts** via `cotaldViaNode` (exported — bin/paw.ts
-  reuses it for the passthrough); `ensureMailbox` spawns the beacon through **bin/paw.ts** via the
-  private `pawViaNode` (mailbox is a paw command, not a cotal one). Both use the repo's
-  `node_modules/.bin/tsx` directly, NOT the current CLI runtime — so the **CLI may run under bun**
-  (fast startup) while the daemons always run node+tsx (bun can't drive node-pty's ioctl →
-  bun-hosted manager = pty stubs, no agents). `isReachable` is the only cotal-core import;
+  **Daemons are pinned to PLAIN node (native TypeScript, no tsx — 2026-10-03).** `ensureMesh`/
+  `ensureManagerUp` start the mesh (`up --detach`) and manager (`supervise`) by driving
+  **bin/cotald.ts** via `cotaldViaNode` (exported — bin/paw.ts reuses it for the passthrough);
+  `ensureMailbox`, `paw web`'s bun→node re-exec and the detached restart/adopt children go through
+  **bin/paw.ts** via `pawViaNode`. Both are `<abs nodeBin()> <release>/bin/<entry>.ts …` — node strips
+  the types itself (needs >= 22.18 / 23.6; `viaNode` fails loud below that via `stripsTypesNatively`),
+  so there is no tsx wrapper process and no tsx require hook. NOT the current CLI runtime — the
+  **CLI may run under bun** (fast startup) while the daemons always run node (bun can't drive
+  node-pty's ioctl → bun-hosted manager = pty stubs, no agents). What made it possible: every relative
+  import is `./x.ts` (tsconfig `allowImportingTsExtensions` + `rewriteRelativeImportExtensions`, so
+  `pnpm build` still emits `.js`), and `erasableSyntaxOnly` + `verbatimModuleSyntax` make tsc reject
+  anything node can't strip (parameter properties, enums, namespaces, value-imports of types).
+  **Measured** (isolated spaces started side by side, one agent each, steady state after ~5 min,
+  macOS `footprint`, summed per daemon): manager 173→127MB, mailbox 91→70MB, web 115→82MB, and 6→3
+  processes. Less than the ~460MB tsx/mcp.cjs figure suggested — these three daemons never load
+  cotal's mcp.cjs; the big win there was the hub's (already plain node). Native stripping isn't free
+  either: node's amaro (swc wasm) adds ~18MB on the first .ts and ~40MB after stripping all of src/.
+  The pgrep ownership patterns are unchanged and match both the new argv and a still-running
+  tsx-era daemon (asserted in check:commands), so the first `paw restart` after the upgrade still
+  finds the old manager. `isReachable` is the only cotal-core import;
   readiness still probed in-process via a `ps` round-trip. **Runtime (`resolveRuntime(space?)`):**
   precedence is `PAW_RUNTIME` env (fail-loud on garbage) > the space's **sticky preference file**
   (`~/.paw/spaces/<space>/runtime`, set by `paw runtime <r>` — `readRuntimePreference`/
