@@ -1498,6 +1498,23 @@ const stillAligned = async (ws: RawWs, label: string, ...setup: Buffer[]): Promi
   const plain = await startWebServer({ ...deps, port: cport, clientRoot: root });
   assert((await fetch(`${cbase}/api/companies`, { headers: H })).status === 501, "company route: a server without the service answers 501, not an empty list");
   await plain.close();
+  // a company slug may not hijack an existing channel (refused before any bd call)
+  const { companyService } = await import("../src/company-service.ts");
+  const never = async () => { throw new Error("must not be reached"); };
+  const svc = companyService({ operator: "aleks", rows: never as never, dm: never, post: never, seedChannel: never, invite: never as never, channels: () => ["team2027"] });
+  for (const slug of ["general", "team2027"]) {
+    let err: { status?: number; message?: string } | undefined;
+    try { await svc.create({ name: "X", slug, members: ["a"], lead: "a" }); } catch (e) { err = e as typeof err; }
+    assert(err?.status === 409 && /already a channel/.test(err.message ?? ""), `company: slug "${slug}" can't hijack an existing channel (409 in words)`);
+  }
+  // dotted agent names in client-routed paths must get the shell, not a JSON 404
+  const sport = await freePort();
+  const sserver = await startWebServer({ ...deps, port: sport, clientRoot: root });
+  const dotted = await fetch(`http://127.0.0.1:${sport}/company/x/my.agent/dialog`, { headers: { Origin: `http://127.0.0.1:${sport}` } });
+  const asset = await fetch(`http://127.0.0.1:${sport}/missing.js`, { headers: { Origin: `http://127.0.0.1:${sport}` } });
+  assert(dotted.status === 200 && (dotted.headers.get("content-type") ?? "").includes("html"), "company route: /company/x/my.agent/dialog (a dotted agent) serves the shell on reload");
+  assert(asset.status === 404, "a missing ASSET still 404s (the extension rule holds outside /company and /new)");
+  await sserver.close();
   console.log("✓ company routes");
 }
 

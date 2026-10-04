@@ -745,7 +745,8 @@ export function serveStatic(root: string | undefined, urlPath: string, res: Resp
     // A single-page client owns its own routing, so an extensionless unknown path falls back to the
     // shell. A path that LOOKS like an asset 404s instead — a missing bundle file must be visible as
     // missing, not answered with HTML that then fails to parse as JS.
-    if (extname(rel)) {
+    // Client-routed pages are exempt: an agent name may carry a dot (`/company/x/my.agent`).
+    if (extname(rel) && !/^(company\/|new$)/.test(rel)) {
       sendJson(res, 404, { error: `paw: no such file "${rel}"` });
       return;
     }
@@ -1660,6 +1661,7 @@ async function web(argv: string[]): Promise<void> {
       },
       company: companyService({
         operator: operatorName(),
+        channels: () => channelNames,
         rows: async () => {
           if (!collectedAt) await refreshStatus();
           return rows;

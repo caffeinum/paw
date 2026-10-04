@@ -18,6 +18,9 @@ export interface CompanyDeps {
   post: (channel: string, text: string) => Promise<void>;
   /** Write the channel's registry card (description + instructions). */
   seedChannel: (slug: string, description: string, instructions: string) => Promise<void>;
+  /** Channels that already exist on the mesh (registry ∪ traffic seen). A company may not claim one:
+   *  its card would be overwritten, everyone invited and the brief posted there. */
+  channels: () => string[];
   /** The /api/invite behaviour: DM each, sequentially; announce the reached ones in the channel. */
   invite: (slug: string, names: string[]) => Promise<{ invited: string[]; failed: { name: string; error: string }[] }>;
 }
@@ -107,6 +110,8 @@ export function companyService(deps: CompanyDeps) {
   }
 
   async function create(input: CreateCompanyInput): Promise<{ slug: string; epic: string } & SetupResult> {
+    // Before any bd call: #general (every persona subscribes) or any existing channel would be hijacked.
+    if (input.slug === "general" || deps.channels().includes(input.slug)) throw new HttpError(409, `#${input.slug} is already a channel on this mesh — a company needs a channel of its own; pick another name`);
     const taken = new Set((await companies()).map((c) => c.slug));
     const known = new Set((await deps.rows()).map((r) => r.name));
     const problem = validateCompany(input, known, taken);
