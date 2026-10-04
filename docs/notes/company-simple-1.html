@@ -139,7 +139,7 @@ const BEADS = [
 const GLYPH = { open: "○", prog: "◐", blocked: "⊘", closed: "✓" };
 const WORD = { prog: "In progress", blocked: "Blocked", open: "To do", closed: "Done" };
 const ORDER = ["prog", "blocked", "open", "closed"];
-const LAYOUT = document.documentElement.dataset.layout;
+let LAYOUT = document.documentElement.dataset.layout;
 if (location.hash === "#new") document.documentElement.dataset.screen = "new";
 if (location.hash === "#dark") document.documentElement.dataset.theme = "dark";
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
@@ -203,7 +203,7 @@ document.getElementById("create").addEventListener("click", () => {
   const n = [...picked], st = document.getElementById("steps"); st.hidden = false;
   // mock outcome: the last invite fails, to show where a failure surfaces
   st.innerHTML = `<li>✓ company bead filed</li><li>✓ channel #${document.getElementById("slug").textContent} created</li>` +
-    `<li class="${n.length > 1 ? "bad" : ""}">${n.length > 1 ? "✕" : "✓"} invited ${n.length > 1 ? n.length - 1 : n.length}/${n.length}${n.length > 1 ? ` — ${n[n.length - 1]}: no reply from the mesh <button class="link">retry</button>` : ""}</li>`;
+    `<li class="${n.length > 1 ? "bad" : ""}">${n.length > 1 ? "✕" : "✓"} invited ${n.length > 1 ? n.length - 1 : n.length}/${n.length}${n.length > 1 ? ` — ${n[n.length - 1]}: dm publish failed: nats: timeout <button class="link">retry</button>` : ""}</li>`;
 });
 </script>
 </body>

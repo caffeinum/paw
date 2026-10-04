@@ -1,0 +1,262 @@
+<!doctype html>
+<html lang="en" data-screen="work">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Random 1 — company</title>
+<!-- Random 1: every design decision is rolled by a seeded RNG (mulberry32, seed 111188232) at load.
+     Same minimal MVP content as Simple 1/2/3. The only non-random rules: colour pairs are re-rolled
+     until they reach 4.5:1, display faces are never used for body text, and the layout falls back to
+     a single column at phone width. The roll log is the legend in the corner. -->
+<style id="base">
+  * { box-sizing:border-box; }
+  html, body { margin:0; }
+  .screen { display:none; }
+  html[data-screen="work"] #work, html[data-screen="new"] #new { display:block; }
+  button, input, select, textarea { font:inherit; color:inherit; }
+  #legend { text-align:left; position:fixed; z-index:50; font:11px/1.35 Menlo, Monaco, Consolas, monospace; max-width:250px; max-height:60vh; overflow:auto; padding:8px 10px; border-radius:6px; background:rgba(0,0,0,.78); color:#f2f2f2; }
+  #legend b { color:#fff; } #legend summary { cursor:pointer; } #legend div { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .sheet { position:fixed; z-index:40; display:none; overflow:auto; }
+  .sheet.on { display:block; }
+  .radial { position:relative; }
+  @media (max-width:600px) { #legend { max-width:180px; font-size:10px; } }
+</style>
+<style id="rolled"></style>
+</head>
+<body>
+<div id="work" class="screen"><div class="page" id="page"></div></div>
+<div id="new" class="screen"><div class="page"><div id="form"></div></div></div>
+<div class="sheet" id="sheet"></div>
+<details id="legend" open><summary><b>roll log · seed 111188232</b></summary><div id="log"></div></details>
+<script>
+const SEED = 111188232;
+function mulberry32(a) { return () => { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+const rnd = mulberry32(SEED);
+const LOG = [];
+const roll = (label, v) => { LOG.push([label, typeof v === "object" ? JSON.stringify(v) : String(v)]); return v; };
+const pick = (label, arr) => roll(label, arr[Math.floor(rnd() * arr.length)]);
+const range = (label, lo, hi, dp = 0) => roll(label, +(lo + rnd() * (hi - lo)).toFixed(dp));
+
+// colour: random HSL, contrast-checked
+const hsl2rgb = (h, s, l) => { s /= 100; l /= 100; const k = (n) => (n + h / 30) % 12, a = s * Math.min(l, 1 - l); const f = (n) => l - a * Math.max(-1, Math.min(k(n) - 3, 9 - k(n), 1)); return [f(0), f(8), f(4)]; };
+const lum = ([r, g, b]) => { const c = (x) => x <= .03928 ? x / 12.92 : ((x + .055) / 1.055) ** 2.4; return .2126 * c(r) + .7152 * c(g) + .0722 * c(b); };
+const contrast = (a, b) => { const [x, y] = [lum(hsl2rgb(...a)), lum(hsl2rgb(...b))].sort((p, q) => q - p); return (x + .05) / (y + .05); };
+const css = ([h, s, l], a = 1) => `hsl(${h} ${s}% ${l}% / ${a})`;
+const randColor = () => [Math.floor(rnd() * 360), Math.floor(rnd() * 100), Math.floor(rnd() * 100)];
+function palette(name, darkBias) {
+  let tries = 0, bg, fg, acc, dim;
+  do { tries++; bg = randColor(); if (darkBias === "dark") bg[2] = Math.floor(rnd() * 22); if (darkBias === "light") bg[2] = 78 + Math.floor(rnd() * 22); fg = randColor(); } while (contrast(bg, fg) < 7 && tries < 5000);
+  let t2 = 0; do { t2++; acc = randColor(); } while (contrast(bg, acc) < 4.5 && t2 < 5000);
+  let t3 = 0; do { t3++; dim = [fg[0], Math.floor(rnd() * 60), Math.floor(rnd() * 100)]; } while ((contrast(bg, dim) < 4.5 || contrast(bg, dim) > contrast(bg, fg) - .5) && t3 < 5000);
+  const surf = [bg[0] + Math.floor(rnd() * 40) - 20, bg[1], Math.max(0, Math.min(100, bg[2] + (bg[2] > 50 ? -1 : 1) * (2 + Math.floor(rnd() * 8))))];
+  roll(`${name} bg/fg/accent/dim`, `${css(bg)} / ${css(fg)} / ${css(acc)} / ${css(dim)}`);
+  roll(`${name} contrast fg·acc·dim`, `${contrast(bg, fg).toFixed(1)} · ${contrast(bg, acc).toFixed(1)} · ${contrast(bg, dim).toFixed(1)} (rerolls ${tries + t2 + t3 - 3})`);
+  return { bg, fg, acc, dim, surf };
+}
+
+const FACES = [
+  ["Georgia", 1], ["Times New Roman", 1], ["Palatino", 1], ["Baskerville", 1], ["Didot", 1], ["Hoefler Text", 1], ["Big Caslon", 1], ["Iowan Old Style", 1], ["Charter", 1], ["Rockwell", 1],
+  ["Courier New", 1], ["Menlo", 1], ["Monaco", 1], ["American Typewriter", 1], ["Andale Mono", 1],
+  ["Futura", 1], ["Avenir Next", 1], ["Gill Sans", 1], ["Optima", 1], ["Verdana", 1], ["Trebuchet MS", 1], ["Helvetica Neue", 1], ["Arial", 1], ["Tahoma", 1], ["Skia", 1], ["Geneva", 1],
+  ["Impact", 0], ["Arial Black", 0], ["Copperplate", 0], ["Chalkboard SE", 0], ["Marker Felt", 0], ["Papyrus", 0], ["Bradley Hand", 0], ["Snell Roundhand", 0], ["Herculanum", 0], ["Luminari", 0], ["Phosphate", 0], ["Chalkduster", 0],
+];
+const headFace = pick("heading face", FACES)[0];
+let bodyFace, br = 0; do { const f = FACES[Math.floor(rnd() * FACES.length)]; bodyFace = f[1] ? f[0] : null; br++; } while (!bodyFace);
+roll("body face", bodyFace + (br > 1 ? ` (${br - 1} display faces skipped)` : ""));
+const themeMode = pick("theme", ["light + dark", "light only", "dark only", "whatever-the-roll + inverse"]);
+const L = palette("main", themeMode === "dark only" ? "dark" : themeMode === "whatever-the-roll + inverse" ? null : "light");
+const DK = themeMode === "light + dark" ? palette("dark", "dark") : themeMode === "whatever-the-roll + inverse" ? palette("inverse", L.bg[2] > 50 ? "dark" : "light") : null;
+const base = range("base size px", 13, 21);
+const ratio = range("type scale", 1.08, 1.75, 2);
+const unit = range("spacing unit px", 3, 16);
+const radius = pick("corner radius", [0, 2, 4, 8, 14, 22, 999]);
+const bw = pick("border width", [0, 1, 1, 2, 3, 5]);
+const bstyle = pick("border style", ["solid", "dashed", "dotted", "double", "groove", "solid"]);
+const align = pick("text alignment", ["left", "left", "center", "right", "justify"]);
+const hcase = pick("heading case", ["none", "uppercase", "lowercase", "capitalize"]);
+const hweight = pick("heading weight", [300, 400, 600, 800, 900]);
+const track = range("heading letter-spacing em", -0.05, 0.3, 2);
+const layout = pick("layout", ["columns", "list", "card grid", "radial", "timeline", "table", "stacked strips", "zigzag"]);
+const statusStyle = pick("status shown as", ["glyphs ○◐⊘✓", "words", "coloured dots", "brackets [ ] [~] [!] [x]", "emoji", "strike + italics"]);
+const addAt = pick("add-bead control", ["under each agent", "one bar at top", "floating button", "bottom bar"]);
+const newAt = pick("new-company link", ["top-left", "top-right", "footer", "vertical tab on the left edge"]);
+const panelAt = pick("bead opens as", ["right drawer", "left drawer", "bottom sheet", "centered modal", "top sheet", "full screen"]);
+const motion = pick("motion", ["none", "fade 120ms", "slide 300ms", "bounce on hover", "slow 900ms ease", "wiggle on hover"]);
+const texture = pick("texture", ["none", "noise", "diagonal stripes", "dot grid", "graph paper", "linear gradient", "radial glow"]);
+const shadow = pick("shadow", ["none", "soft", "hard offset", "long glow"]);
+const density = range("line-height", 1.15, 1.9, 2);
+const maxw = pick("content width", ["100%", "1200px", "960px", "720px", "560px"]);
+const headSize = range("title size × base", 1.3, 4.2, 1);
+const legendAt = pick("legend corner", ["bottom-right", "bottom-left", "top-right", "top-left"]);
+
+const fs = (n) => `${(base * ratio ** n).toFixed(1)}px`;
+const sp = (n) => `${unit * n}px`;
+const fam = (f) => `"${f}", ${/Mono|Courier|Menlo|Monaco|Typewriter/.test(f) ? "monospace" : /Georgia|Times|Palatino|Baskerville|Didot|Hoefler|Caslon|Iowan|Charter|Rockwell/.test(f) ? "serif" : "sans-serif"}`;
+const vars = (p) => `--bg:${css(p.bg)};--fg:${css(p.fg)};--acc:${css(p.acc)};--dim:${css(p.dim)};--surf:${css(p.surf)};--line:${css(p.fg, .28)};`;
+const tex = (c) => ({ none: "none", noise: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence baseFrequency='.85' numOctaves='2'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)' opacity='.09'/%3E%3C/svg%3E")`,
+  "diagonal stripes": `repeating-linear-gradient(45deg, ${c} 0 1px, transparent 1px 14px)`, "dot grid": `radial-gradient(${c} 1px, transparent 1.5px)`, "graph paper": `linear-gradient(${c} 1px, transparent 1px), linear-gradient(90deg, ${c} 1px, transparent 1px)`,
+  "linear gradient": `linear-gradient(${Math.floor(rnd() * 360)}deg, transparent, ${c})`, "radial glow": `radial-gradient(circle at ${Math.floor(rnd() * 100)}% ${Math.floor(rnd() * 100)}%, ${c}, transparent 60%)` }[texture]);
+const texSize = texture === "dot grid" ? "18px 18px" : texture === "graph paper" ? "24px 24px" : "auto";
+const sh = { none: "none", soft: "0 4px 18px rgba(0,0,0,.14)", "hard offset": "5px 5px 0 var(--fg)", "long glow": "0 0 40px var(--acc)" }[shadow];
+const dur = { none: "0ms", "fade 120ms": "120ms", "slide 300ms": "300ms", "bounce on hover": "250ms", "slow 900ms ease": "900ms", "wiggle on hover": "200ms" }[motion];
+const hover = motion === "bounce on hover" ? "transform:translateY(-3px) scale(1.02);" : motion === "wiggle on hover" ? "animation:wig .3s;" : motion === "slide 300ms" ? "transform:translateX(6px);" : "opacity:.75;";
+const panelPos = { "right drawer": "top:0;right:0;bottom:0;width:min(440px,100%);", "left drawer": "top:0;left:0;bottom:0;width:min(440px,100%);", "bottom sheet": "left:0;right:0;bottom:0;max-height:70vh;", "centered modal": "top:50%;left:50%;transform:translate(-50%,-50%);width:min(560px,92vw);max-height:80vh;", "top sheet": "top:0;left:0;right:0;max-height:70vh;", "full screen": "inset:0;" }[panelAt];
+const legendPos = { "bottom-right": "right:10px;bottom:10px;", "bottom-left": "left:10px;bottom:10px;", "top-right": "right:10px;top:10px;", "top-left": "left:10px;top:10px;" }[legendAt];
+
+document.getElementById("rolled").textContent = `
+:root { ${vars(L)} }
+${DK && themeMode === "light + dark" ? `@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { ${vars(DK)} } } :root[data-theme="dark"] { ${vars(DK)} }` : ""}
+${DK && themeMode !== "light + dark" ? `@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { ${vars(DK)} } } :root[data-theme="dark"] { ${vars(DK)} }` : ""}
+body { background-color:var(--bg); color:var(--fg); font-family:${fam(bodyFace)}; font-size:${base}px; line-height:${density}; text-align:${align};
+  background-image:${tex("var(--line)")}; background-size:${texSize}; min-height:100vh; }
+.page { max-width:${maxw}; margin:0 auto; padding:${sp(4)} ${sp(3)} ${sp(12)}; }
+h1, h2, h3 { font-family:${fam(headFace)}; font-weight:${hweight}; text-transform:${hcase}; letter-spacing:${track}em; margin:0; line-height:1.15; }
+h1 { font-size:${(base * headSize).toFixed(0)}px; }
+h2 { font-size:${fs(1)}; margin-bottom:${sp(1)}; }
+h3 { font-size:${fs(2)}; }
+.mission { color:var(--dim); margin:${sp(1)} 0 ${sp(4)}; font-size:${fs(0.5)}; }
+a, .link { color:var(--acc); cursor:pointer; background:none; border:0; padding:0; text-decoration:underline; }
+.box { background:var(--surf); border:${bw}px ${bstyle} var(--line); border-radius:${radius}px; padding:${sp(2)}; box-shadow:${sh}; transition:all ${dur}; }
+.bead { display:flex; gap:${sp(1)}; align-items:baseline; padding:${sp(0.6)} 0; cursor:pointer; transition:all ${dur}; justify-content:${align === "right" ? "flex-end" : align === "center" ? "center" : "flex-start"}; }
+.bead:hover { ${hover} }
+.bead .st { flex:none; color:var(--dim); }
+.bead.done .t { opacity:.6; } .bead .tag { color:var(--dim); font-size:${fs(-1)}; }
+.dot { display:inline-block; width:.5em; height:.5em; border-radius:50%; background:var(--dim); margin:0 .3em; vertical-align:middle; opacity:.5; }
+.dot.live { background:var(--acc); opacity:1; }
+.cdot { display:inline-block; width:.7em; height:.7em; border-radius:50%; border:2px solid var(--dim); }
+.cdot.prog { background:linear-gradient(90deg, var(--acc) 50%, transparent 50%); border-color:var(--acc); } .cdot.blocked { border-color:var(--fg); background:repeating-linear-gradient(45deg,var(--fg) 0 2px,transparent 2px 4px); } .cdot.closed { background:var(--dim); }
+.addin { width:100%; border:0; border-bottom:${Math.max(1, bw)}px ${bstyle} var(--line); background:transparent; padding:${sp(0.6)} 0; outline:none; text-align:${align}; }
+.btn { background:var(--acc); color:var(--bg); border:${bw}px ${bstyle} var(--fg); border-radius:${radius}px; padding:${sp(0.8)} ${sp(2)}; cursor:pointer; box-shadow:${sh}; }
+.sheet { ${panelPos} background:var(--bg); color:var(--fg); border:${Math.max(1, bw)}px ${bstyle} var(--fg); border-radius:${panelAt === "centered modal" ? radius : 0}px; padding:${sp(3)}; box-shadow:0 10px 60px rgba(0,0,0,.35); }
+.sheet.on { animation:enter ${dur} ease; }
+.sheet textarea { width:100%; border:${Math.max(1, bw)}px ${bstyle} var(--line); border-radius:${Math.min(radius, 16)}px; background:transparent; padding:${sp(1)}; margin:${sp(2)} 0 ${sp(1)}; }
+.comment { margin:${sp(1.5)} 0; } .comment .who { color:var(--dim); font-size:${fs(-1)}; }
+@keyframes enter { from { opacity:0; transform:${panelAt.includes("right") ? "translateX(30px)" : panelAt.includes("left") ? "translateX(-30px)" : panelAt.includes("bottom") ? "translateY(30px)" : panelAt.includes("top") ? "translateY(-30px)" : "scale(.96)"}; } }
+@keyframes wig { 25% { transform:rotate(-1.5deg); } 75% { transform:rotate(1.5deg); } }
+#legend { ${legendPos} }
+.newlink { ${newAt === "vertical tab on the left edge" ? `position:fixed;left:0;top:40%;writing-mode:vertical-rl;transform:rotate(180deg);padding:${sp(1)};background:var(--acc);color:var(--bg);text-decoration:none;border-radius:0 ${radius}px ${radius}px 0;` : ""} }
+.fab { position:fixed; right:${sp(3)}; bottom:${sp(3)}; z-index:30; }
+.bottombar { position:fixed; left:0; right:0; bottom:0; z-index:30; display:flex; gap:${sp(1)}; padding:${sp(1.5)} ${sp(3)}; background:var(--surf); border-top:${Math.max(1, bw)}px ${bstyle} var(--line); }
+.topbar { display:flex; gap:${sp(1)}; margin-bottom:${sp(3)}; align-items:baseline; }
+.topbar .addin, .bottombar .addin { flex:1; }
+select { background:var(--bg); color:var(--fg); border:${Math.max(1, bw)}px ${bstyle} var(--line); border-radius:${Math.min(radius, 12)}px; padding:2px 6px; }
+.L-columns { display:grid; grid-template-columns:repeat(auto-fit, minmax(${Math.max(150, unit * 16)}px, 1fr)); gap:${sp(2)}; }
+.L-grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(${Math.max(140, unit * 14)}px, 1fr)); gap:${sp(1.5)}; }
+.L-grid .box { min-height:${Math.max(80, unit * 9)}px; display:flex; flex-direction:column; gap:${sp(1)}; cursor:pointer; }
+.L-list section { margin-bottom:${sp(3)}; }
+.L-table { width:100%; border-collapse:collapse; } .L-table td, .L-table th { border-bottom:${Math.max(1, bw)}px ${bstyle} var(--line); padding:${sp(0.8)} ${sp(1)}; text-align:${align === "justify" ? "left" : align}; }
+.L-table tr { cursor:pointer; } .L-table tr:hover { ${hover} }
+.L-timeline { border-left:${Math.max(2, bw)}px ${bstyle} var(--acc); margin-left:${sp(2)}; padding-left:${sp(3)}; }
+.L-timeline section { position:relative; margin-bottom:${sp(3)}; } .L-timeline section::before { content:""; position:absolute; left:calc(-${sp(3)} - 7px - ${Math.max(2, bw) / 2}px); top:.4em; width:12px; height:12px; border-radius:${radius}px; background:var(--acc); }
+.L-strips section { margin:0 calc(-1 * ${sp(3)}); padding:${sp(2)} ${sp(3)}; } .L-strips section:nth-child(odd) { background:var(--surf); }
+.L-zigzag section { width:min(70%, 520px); margin-bottom:${sp(2)}; } .L-zigzag section:nth-child(even) { margin-left:auto; }
+.L-radial { position:relative; height:min(78vh, 760px); }
+.L-radial section { position:absolute; width:${Math.max(180, unit * 17)}px; transform:translate(-50%,-50%); }
+.L-radial .hub { position:absolute; left:50%; top:50%; transform:translate(-50%,-50%); text-align:center; width:200px; }
+.form { max-width:440px; margin:0 auto; }
+.form label { display:block; margin:${sp(2.5)} 0 ${sp(0.6)}; color:var(--dim); font-size:${fs(-1)}; }
+.form input[type=text] { width:100%; background:transparent; border:${Math.max(1, bw)}px ${bstyle} var(--line); border-radius:${Math.min(radius, 16)}px; padding:${sp(1)}; }
+.form .pick { display:block; margin:${sp(0.5)} 0; color:var(--fg); font-size:inherit; }
+.form input[type=checkbox] { accent-color:var(--acc); }
+.steps { list-style:none; padding:0; margin:${sp(2)} 0 0; }
+@media (max-width:600px) {
+  .page { padding:${sp(2)} 16px ${sp(14)}; }
+  h1 { font-size:min(${(base * headSize).toFixed(0)}px, 13vw); overflow-wrap:anywhere; }
+  .L-columns, .L-grid { grid-template-columns:1fr; }
+  .L-radial { height:auto; } .L-radial section, .L-radial .hub { position:static; transform:none; width:auto; margin-bottom:${sp(2)}; text-align:inherit; }
+  .L-zigzag section { width:100%; }
+  .L-table thead { display:none; } .L-table td { display:block; border:0; padding:2px 0; } .L-table tr { display:block; border-bottom:${Math.max(1, bw)}px ${bstyle} var(--line); padding:${sp(1)} 0; }
+  .newlink { position:static !important; writing-mode:horizontal-tb !important; transform:none !important; }
+}`;
+
+// data (same as Simple 1/2/3)
+const AGENTS = [{ name: "vibeos-ceo", live: true }, { name: "vibeos-pm", live: true }, { name: "vibeos-vercel", live: true }, { name: "vibeos-docker", live: false }, { name: "vibeos-hexclave", live: true }];
+const BEADS = [
+  { id: "c1a", who: "vibeos-ceo", st: "prog", t: "Triage what blocks the beta", d: "List everything between today and a public beta, assign each item, close what isn't needed." },
+  { id: "c9e", who: "vibeos-ceo", st: "open", t: "Review PR #212" },
+  { id: "r7m", who: "vibeos-pm", st: "blocked", t: "API key flow: paste, validate, store", d: "Users paste a key, we test it against the provider, store it encrypted. Blocked until we know which sandbox holds the key (q2d).", c: [["vibeos-pm", "waiting on q2d — which sandbox stores the key"], ["aleks", "@vibeos-ceo can someone unblock this today?"]] },
+  { id: "m4n", who: "vibeos-pm", st: "open", t: "Five onboarding interviews" },
+  { id: "k2q", who: "vibeos-vercel", st: "prog", t: "Onboarding step 5 never actually connects", d: "Step 4 checks the key format with a regex and never calls the backend. Done = a real connection test on step 5.", c: [["vibeos-pm", "repro: fresh account, paste any sk-ant-… string, wizard says connected."], ["vibeos-vercel", "test endpoint is in, PR #212 green. last bit needs r7m first."]] },
+  { id: "v8d", who: "vibeos-vercel", st: "open", t: "Preview deploys for every PR" },
+  { id: "w1q", who: "vibeos-vercel", st: "closed", t: "Move the landing page to the new domain" },
+  { id: "d2k", who: "vibeos-docker", st: "open", t: "Pin the image digest in the README" },
+  { id: "q2d", who: "vibeos-hexclave", st: "prog", t: "Compare e2b and daytona cold starts", c: [["vibeos-hexclave", "e2b 1.9s p50, daytona 0.8s p50 — writing it up"]] },
+  { id: "n0w", who: "vibeos-hexclave", st: "open", t: "Sandbox pricing per minute or per seat" },
+];
+if (location.hash === "#new") document.documentElement.dataset.screen = "new";
+if (location.hash === "#dark") document.documentElement.dataset.theme = "dark";
+const ORDER = ["prog", "blocked", "open", "closed"];
+const WORD = { prog: "in progress", blocked: "blocked", open: "to do", closed: "done" };
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const stHtml = (s) => ({ "glyphs ○◐⊘✓": { open: "○", prog: "◐", blocked: "⊘", closed: "✓" }[s], words: `<i>${WORD[s]}</i>`, "coloured dots": `<span class="cdot ${s}"></span>`,
+  "brackets [ ] [~] [!] [x]": { open: "[ ]", prog: "[~]", blocked: "[!]", closed: "[x]" }[s], emoji: { open: "⚪", prog: "🔨", blocked: "🧱", closed: "✅" }[s], "strike + italics": s === "prog" ? "▸" : s === "blocked" ? "×" : "" })[statusStyle];
+const tStyle = (b) => statusStyle === "strike + italics" ? (b.st === "closed" ? "text-decoration:line-through" : b.st === "blocked" ? "font-style:italic" : "") : "";
+const mine = (w) => BEADS.filter((b) => b.who === w).sort((a, b) => ORDER.indexOf(a.st) - ORDER.indexOf(b.st));
+const bead = (b, tag) => `<div class="bead ${b.st === "closed" ? "done" : ""}" data-id="${b.id}"><span class="st" title="${WORD[b.st]}">${stHtml(b.st)}</span><span class="t" style="${tStyle(b)}">${esc(b.t)}</span>${tag ? `<span class="tag">${b.who}</span>` : ""}</div>`;
+const who = (a) => `<h3>${a.name}<span class="dot ${a.live ? "live" : ""}" title="${a.live ? "online" : "asleep"}"></span></h3>`;
+const perAgentAdd = (a) => addAt === "under each agent" ? `<button class="link" data-add="${a.name}">+ add</button>` : "";
+const agentBlock = (a, cls = "") => `<section class="${cls}">${who(a)}${mine(a.name).map((b) => bead(b)).join("")}${perAgentAdd(a)}</section>`;
+const addBar = (cls) => `<div class="${cls}"><input class="addin" id="addq" placeholder="add a bead…"><select id="addwho">${AGENTS.map((a) => `<option>${a.name}</option>`).join("")}</select></div>`;
+
+function render() {
+  let body = "";
+  if (layout === "columns") body = `<div class="L-columns">${AGENTS.map((a) => agentBlock(a, "box")).join("")}</div>`;
+  if (layout === "list" || layout === "stacked strips" || layout === "zigzag" || layout === "timeline") {
+    const cls = { list: "L-list", "stacked strips": "L-strips", zigzag: "L-zigzag", timeline: "L-timeline" }[layout];
+    body = `<div class="${cls}">${AGENTS.map((a) => agentBlock(a, layout === "zigzag" ? "box" : "")).join("")}</div>`;
+  }
+  if (layout === "card grid") body = `<div class="L-grid">${BEADS.slice().sort((a, b) => ORDER.indexOf(a.st) - ORDER.indexOf(b.st)).map((b) => `<div class="box" data-id="${b.id}"><span class="st">${stHtml(b.st)} <span style="color:var(--dim)">${WORD[b.st]}</span></span><span style="${tStyle(b)}">${esc(b.t)}</span><span style="color:var(--dim);font-size:${fs(-1)};margin-top:auto">${b.who}<span class="dot ${AGENTS.find((a) => a.name === b.who).live ? "live" : ""}"></span></span></div>`).join("")}</div>
+    ${addAt === "under each agent" ? `<p>${AGENTS.map((a) => `<button class="link" data-add="${a.name}">+ add for ${a.name}</button>`).join(" · ")}</p>` : ""}`;
+  if (layout === "table") body = `<table class="L-table"><thead><tr><th>status</th><th>bead</th><th>agent</th></tr></thead><tbody>${BEADS.slice().sort((a, b) => AGENTS.findIndex((x) => x.name === a.who) - AGENTS.findIndex((x) => x.name === b.who)).map((b) => `<tr data-id="${b.id}"><td>${stHtml(b.st)} ${statusStyle === "words" ? "" : WORD[b.st]}</td><td style="${tStyle(b)}">${esc(b.t)}</td><td>${b.who}<span class="dot ${AGENTS.find((a) => a.name === b.who).live ? "live" : ""}"></span></td></tr>`).join("")}</tbody></table>
+    ${addAt === "under each agent" ? `<p>${AGENTS.map((a) => `<button class="link" data-add="${a.name}">+ add for ${a.name}</button>`).join(" · ")}</p>` : ""}`;
+  if (layout === "radial") body = `<div class="L-radial"><div class="hub"><h2>vibeOS</h2><div style="color:var(--dim)">${AGENTS.length} agents</div></div>${AGENTS.map((a, i) => { const ang = -Math.PI / 2 + i * 2 * Math.PI / AGENTS.length; return agentBlock(a, "box").replace('<section class="box"', `<section class="box" style="left:${50 + 36 * Math.cos(ang)}%;top:${50 + 36 * Math.sin(ang)}%"`); }).join("")}</div>`;
+  const newLink = `<a class="newlink" href="#new" data-go="new">new company</a>`;
+  const header = `<header style="display:flex;gap:${sp(2)};align-items:baseline;flex-wrap:wrap;${newAt === "top-left" ? "" : ""}">${newAt === "top-left" ? newLink : ""}<div style="flex:1;min-width:0"><h1>vibeOS</h1><p class="mission">Ship vibeOS so a builder can hand an AI a real computer in one click.</p></div>${newAt === "top-right" ? newLink : ""}</header>`;
+  document.getElementById("page").innerHTML = header + (addAt === "one bar at top" ? addBar("topbar") : "") + body +
+    (newAt === "footer" ? `<footer style="margin-top:${sp(6)}">${newLink}</footer>` : "") + (newAt === "vertical tab on the left edge" ? newLink : "") +
+    (addAt === "floating button" ? `<button class="btn fab" data-fab>+ bead</button>` : "") + (addAt === "bottom bar" ? addBar("bottombar") : "");
+}
+render();
+
+const sheet = document.getElementById("sheet");
+function open(id) {
+  const b = BEADS.find((x) => x.id === id);
+  sheet.innerHTML = `<button class="link" data-close style="float:right">close</button><h2>${esc(b.t)}</h2><div style="color:var(--dim)">${stHtml(b.st)} ${WORD[b.st]} · ${b.who}</div>
+    <p>${esc(b.d || "No description.")}</p>${(b.c || []).map(([w, t]) => `<div class="comment"><div class="who">${w}</div>${esc(t)}</div>`).join("") || `<p style="color:var(--dim)">No comments yet.</p>`}
+    <textarea rows="3" placeholder="write a comment…"></textarea><button class="btn">comment</button>`;
+  sheet.classList.remove("on"); void sheet.offsetWidth; sheet.classList.add("on");
+}
+const add = (w, t) => { BEADS.push({ id: Math.random().toString(36).slice(2, 5), who: w, st: "open", t }); render(); };
+document.addEventListener("click", (e) => {
+  const g = e.target.closest("[data-go]"); if (g) { e.preventDefault(); document.documentElement.dataset.screen = g.dataset.go; return; }
+  if (e.target.closest("[data-close]")) return sheet.classList.remove("on");
+  const r = e.target.closest("[data-id]"); if (r && !e.target.closest("#sheet")) return open(r.dataset.id);
+  const a = e.target.closest("[data-add]");
+  if (a) { const i = document.createElement("input"); i.className = "addin"; i.placeholder = "new bead for " + a.dataset.add + " — enter"; a.replaceWith(i); i.focus();
+    i.addEventListener("keydown", (k) => { if (k.key === "Enter" && i.value.trim()) add(a.dataset.add, i.value.trim()); if (k.key === "Escape") render(); }); }
+  if (e.target.closest("[data-fab]")) { const t = prompt("New bead title"); if (t) { const w = prompt("For which agent?", AGENTS[0].name); if (w) add(w, t); } }
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") sheet.classList.remove("on");
+  if (e.target.id === "addq" && e.key === "Enter" && e.target.value.trim()) add(document.getElementById("addwho").value, e.target.value.trim());
+});
+
+// /new in the same rolled style
+const POOL = ["vibeos-ceo", "vibeos-pm", "research", "mail", "paw-folder", "supertelegram"];
+const picked = new Set(["research", "mail"]);
+document.getElementById("form").innerHTML = `<div class="form box"><h2>new company</h2>
+  <label for="nm">name</label><input type="text" id="nm" value="Acme Labs">
+  <label for="ms">mission (optional)</label><input type="text" id="ms" placeholder="what is it for?">
+  <label>agents</label>${POOL.map((n) => `<label class="pick"><input type="checkbox" value="${n}" ${picked.has(n) ? "checked" : ""}> ${n}</label>`).join("")}
+  <p><button class="btn" id="create">create</button> <a href="#" data-go="work">cancel</a></p><ol class="steps" id="steps"></ol></div>`;
+document.getElementById("form").addEventListener("input", (e) => { if (e.target.type === "checkbox") e.target.checked ? picked.add(e.target.value) : picked.delete(e.target.value); });
+document.getElementById("create").addEventListener("click", () => {
+  const slug = document.getElementById("nm").value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, ""), n = [...picked];
+  document.getElementById("steps").innerHTML = `<li>✓ company bead filed</li><li>✓ channel #${slug} created</li><li>${n.length > 1 ? `✕ invited ${n.length - 1}/${n.length} — ${n[n.length - 1]}: no reply <button class="link">retry</button>` : `✓ invited ${n.length}/${n.length}`}</li>`;
+});
+
+if (matchMedia("(max-width:600px)").matches) document.getElementById("legend").open = false; // the log would cover the page on a phone; tap to open
+document.getElementById("log").innerHTML = LOG.map(([k, v]) => `<div title="${esc(v)}"><b>${esc(k)}</b> ${esc(v)}</div>`).join("");
+</script>
+</body>
+</html>
