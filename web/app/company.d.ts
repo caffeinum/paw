@@ -6,6 +6,7 @@ export function initCompany(deps: {
   rows: () => Array<{ name: string; folder?: string; mesh: string; live: boolean; busy?: boolean }>;
   md?: (text: string) => string;
   build: string;
+  space?: () => string;
   navigate: (path: string) => void;
   onSubState?: () => void;
   onOpenChannel: (slug: string) => void;
@@ -20,6 +21,7 @@ export function initCompany(deps: {
   query: () => URLSearchParams;
   onKey: (e: KeyboardEvent) => boolean;
   data: () => any;
+  companiesError: () => string | undefined;
   tick: () => void;
   loadCompanies: () => Promise<Array<{ slug: string; name: string; members?: string[]; onYou?: number }>>;
 };

@@ -102,7 +102,9 @@ export function initCompany(deps) {
   let pollTimer;
   let seq = 0;
 
-  const k = (name) => `paw.company.${s.slug}.${name}`;
+  // per SPACE too: two spaces share one browser origin (same rule as drafts / read-state)
+  const k = (name) => `paw.company.${deps.space?.() ?? ""}.${s.slug}.${name}`;
+  const kNew = () => `paw.company.${deps.space?.() ?? ""}.new.draft`;
   const post = (path, body) => deps.api(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
   const editing = () => {
     const a = document.activeElement;
@@ -174,7 +176,7 @@ export function initCompany(deps) {
     s.slug = undefined;
     s.steps = undefined;
     const blank = { name: "", slug: "", slugEdited: false, mission: "", members: [], lead: undefined, filter: "" };
-    const draft = store.get("paw.company.new.draft", undefined);
+    const draft = store.get(kNew(), undefined);
     s.form = draft && typeof draft === "object" && Array.isArray(draft.members) ? { ...blank, ...draft } : blank;
     if (prefill) {
       s.form.slug = prefill;
@@ -476,7 +478,7 @@ export function initCompany(deps) {
     </div></div>`;
   }
 
-  const saveDraft = () => store.set("paw.company.new.draft", s.form);
+  const saveDraft = () => store.set(kNew(), s.form);
 
   async function createCompany() {
     const f = s.form;
@@ -495,8 +497,8 @@ export function initCompany(deps) {
         ...(/kickoff/.test(chErr) ? [{ text: chErr, bad: true }] : [{ text: "kickoff posted" }]),
       ];
       const problems = [chErr, ...failed].filter(Boolean);
-      if (problems.length) store.set(`paw.company.${f.slug}.banner`, `Setup didn't finish: ${problems.join(" · ")}`);
-      store.del("paw.company.new.draft");
+      if (problems.length) store.set(`paw.company.${deps.space?.() ?? ""}.${f.slug}.banner`, `Setup didn't finish: ${problems.join(" · ")}`);
+      store.del(kNew());
       paint(true);
       setTimeout(() => deps.navigate(`/company/${f.slug}`), problems.length ? 2500 : 600);
     } catch (e) {
@@ -752,6 +754,7 @@ export function initCompany(deps) {
     query,
     onKey,
     data: () => s.data,
+    companiesError: () => s.companiesError,
     /** app.js's render tick: repaint for fresh roster dots (never under the caret). */
     tick: () => paint(),
     loadCompanies,

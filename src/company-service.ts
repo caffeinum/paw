@@ -6,8 +6,8 @@
  * Only what the MVP page calls exists: list, create, page, and the ops `issue-create` and
  * `retry-channel`. Member/role/goal/filing ops come back WITH their UI (spec §0 LATER).
  */
-import { assignmentText, companiesFrom, companyBrief, companyIssues, companyMetadata, onYou, validateCompany, type Company, type CompanyIssue, type CreateCompanyInput, type OnYou } from "./company.ts";
-import { createTaskGetId, listByMetadata, listLabelPattern, listLabelled, listTasks, writeGeneration, type Task } from "./tasks.ts";
+import { renameInMetadata, assignmentText, companiesFrom, companyBrief, companyIssues, companyMetadata, onYou, validateCompany, type Company, type CompanyIssue, type CreateCompanyInput, type OnYou } from "./company.ts";
+import { createTaskGetId, mutateMetadata, updateTask, listByMetadata, listLabelled, listTasks, writeGeneration, type Task } from "./tasks.ts";
 import type { AgentStatus } from "./status.ts";
 
 export interface CompanyDeps {
@@ -62,17 +62,31 @@ export class HttpError extends Error {
 
 const TTL_MS = 15_000;
 
+/** `paw rename`: every company whose roster holds `from` gets `to` instead (whole-metadata rewrite),
+ *  and a company `from` leads gets `to` as its assignee (reassignOpenTasks only moves OPEN beads).
+ *  Returns the slugs touched. */
+export async function renameInCompanies(from: string, to: string): Promise<string[]> {
+  const touched: string[] = [];
+  for (const c of companiesFrom(await listByMetadata({ hasKey: "company" }))) {
+    if (!c.members.includes(from) && c.lead !== from) continue;
+    if (c.members.includes(from)) await mutateMetadata(c.epic, (md) => renameInMetadata(md, from, to));
+    if (c.lead === from) await updateTask(c.epic, { assignee: to });
+    touched.push(c.slug);
+  }
+  return touched;
+}
+
 export function companyService(deps: CompanyDeps) {
   let listCache: { at: number; gen: number; companies: CompanyRow[] } | undefined;
   const pageCache = new Map<string, { at: number; gen: number; payload: CompanyPayload }>();
 
-  /** Every company + its "on you" count: TWO bd calls total (the roots, and every company's open
-   *  beads by label glob), never one per company. */
+  /** Every company + its "on you" count, computed EXACTLY as the page does (companyIssues → onYou)
+   *  over the cached global list — the sidebar number and the page's never disagree. */
   async function companies(): Promise<CompanyRow[]> {
     if (listCache && listCache.gen === writeGeneration() && Date.now() - listCache.at < TTL_MS) return listCache.companies;
     const roots = companiesFrom(await listByMetadata({ hasKey: "company" }));
-    const open = await listLabelPattern("company:*");
-    const list = roots.map((c) => ({ ...c, onYou: onYou(open.filter((t) => t.id !== c.epic && (t.labels ?? []).includes(`company:${c.slug}`)), deps.operator).count }));
+    const global = await listTasks();
+    const list = roots.map((c) => ({ ...c, onYou: onYou(companyIssues(c, global.filter((t) => (t.labels ?? []).includes(`company:${c.slug}`)), global), deps.operator).count }));
     listCache = { at: Date.now(), gen: writeGeneration(), companies: list };
     return list;
   }

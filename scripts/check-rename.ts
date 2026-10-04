@@ -125,6 +125,49 @@ assert(renameAgentOnDisk(SPACE, FOLDER, "api2", "queue2").from === "api", "a for
   }
 }
 
+// The renamed agent keeps its queue: open beads move to the new name, closed ones keep their history.
+// bd's db follows HOME here (bdEnv pins $HOME/.beads), so a temp HOME isolates it from the real one.
+{
+  const { execFileSync } = await import("node:child_process");
+  const realHome = process.env.HOME;
+  const home = mkdtempSync(join(tmpdir(), "paw-beads-home-"));
+  process.env.HOME = home;
+  try {
+    const env = { ...process.env, HOME: home, BEADS_DIR: join(home, ".beads") };
+    execFileSync("bd", ["init", "--quiet"], { cwd: home, env, stdio: "ignore" });
+    const mk = (title: string, assignee: string) =>
+      execFileSync("bd", ["create", title, "-a", assignee, "--silent"], { cwd: home, env, encoding: "utf8" }).trim();
+    const open1 = mk("one", "old-name");
+    const open2 = mk("two", "old-name");
+    const done = mk("three", "old-name");
+    const other = mk("four", "someone-else");
+    execFileSync("bd", ["close", done], { cwd: home, env, stdio: "ignore" });
+    const { reassignOpenTasks } = await import("../src/tasks.ts");
+    const moved = await reassignOpenTasks("old-name", "new-name");
+    assert(moved.sort().join(",") === [open1, open2].sort().join(","), "beads: exactly the old name's OPEN beads move");
+    const who = (id: string) =>
+      (JSON.parse(execFileSync("bd", ["show", id, "--json"], { cwd: home, env, encoding: "utf8" })) as Array<{ assignee?: string }>)[0]?.assignee;
+    assert(who(open1) === "new-name" && who(open2) === "new-name", "beads: moved beads now belong to the new name");
+    assert(who(done) === "old-name", "beads: a closed bead keeps its historical assignee");
+    assert(who(other) === "someone-else", "beads: another agent's bead is untouched");
+    // companies: the roster key and the lead follow the name; other metadata keys survive
+    const co = execFileSync("bd", ["create", "Acme", "-t", "epic", "-a", "old-name", "-l", "company:acme", "--metadata", JSON.stringify({ company: "acme", org: { "old-name": {}, x: {} }, note: "keep" }), "--silent"], { cwd: home, env, encoding: "utf8" }).trim();
+    execFileSync("bd", ["close", co], { cwd: home, env, stdio: "ignore" }); // closed: reassignOpenTasks won't move it
+    const { renameInCompanies } = await import("../src/company-service.ts");
+    const touched = await renameInCompanies("old-name", "new-name");
+    const shown = (JSON.parse(execFileSync("bd", ["show", co, "--json"], { cwd: home, env, encoding: "utf8" })) as Array<{ assignee?: string; metadata?: { org?: Record<string, unknown>; note?: string; company?: string } }>)[0];
+    assert(touched.join() === "acme", "companies: the company holding the old name is reported");
+    assert(Object.keys(shown.metadata?.org ?? {}).sort().join() === "new-name,x" && shown.metadata?.note === "keep" && shown.metadata?.company === "acme", "companies: metadata.org key renamed, other keys kept");
+    assert(shown.assignee === "new-name", "companies: the lead (epic assignee) follows the rename even on a closed epic");
+    const { renameInMetadata } = await import("../src/company.ts");
+    let clash = false;
+    try { renameInMetadata({ company: "a", org: { p: {}, q: {} } }, "p", "q"); } catch { clash = true; }
+    assert(clash, "companies: renaming onto a name already on the roster fails loud");
+  } finally {
+    process.env.HOME = realHome;
+  }
+}
+
 if (failures > 0) {
   console.error(`\n${failures} paw rename check(s) failed`);
   process.exit(1);

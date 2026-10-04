@@ -1,0 +1,455 @@
+<!doctype html>
+<html lang="en" data-screen="work">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Company A — Ledger</title>
+<!-- Company A — "Ledger": calm editorial. The company page reads like a memo you can act on:
+     serif masthead, a reading column, people as sections, activity as margin notes. Static mock,
+     fake data; same data + flows as B and C (docs/notes/company-spec.md). -->
+<style>
+  :root {
+    --paper:#F7F3EA; --sheet:#FFFDF8; --ink:#22201C; --dim:#6E675C; --faint:#A39A8B; --rule:#DDD3C2;
+    --accent:#9B2C2C; --accent-soft:#F3E3DC; --done:#4F6B3A; --prog:#B7791F; --blocked:#9B2C2C; --link:#7A4B1E;
+    --serif:"Iowan Old Style","Charter","Palatino Linotype",Palatino,Georgia,serif;
+    --sans:"Avenir Next","Gill Sans","Segoe UI",system-ui,sans-serif;
+  }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+    --paper:#15130F; --sheet:#1C1915; --ink:#EAE3D3; --dim:#A99F8C; --faint:#6F6758; --rule:#383128;
+    --accent:#E07A5F; --accent-soft:#33221B; --done:#9DBB7E; --prog:#E3B062; --blocked:#E07A5F; --link:#E2B884; } }
+  :root[data-theme="dark"] {
+    --paper:#15130F; --sheet:#1C1915; --ink:#EAE3D3; --dim:#A99F8C; --faint:#6F6758; --rule:#383128;
+    --accent:#E07A5F; --accent-soft:#33221B; --done:#9DBB7E; --prog:#E3B062; --blocked:#E07A5F; --link:#E2B884; }
+  * { box-sizing:border-box; }
+  html, body { margin:0; background:var(--paper); color:var(--ink); }
+  body { font-family:var(--serif); font-size:17px; line-height:1.55; -webkit-font-smoothing:antialiased; }
+  button, input, select, textarea { font:inherit; color:inherit; }
+  a { color:var(--link); }
+  :focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+  .meta { font-family:var(--sans); font-size:12px; letter-spacing:.04em; color:var(--dim); }
+  .caps { font-family:var(--sans); font-size:11px; letter-spacing:.14em; text-transform:uppercase; color:var(--dim); font-weight:600; }
+
+  /* top rail: paw nav collapsed to a thin line of type */
+  .rail { display:flex; align-items:center; gap:18px; padding:12px 28px; border-bottom:1px solid var(--rule); font-family:var(--sans); font-size:13px; color:var(--dim); }
+  .rail b { color:var(--ink); font-family:var(--serif); font-size:16px; font-style:italic; font-weight:600; }
+  .rail a { color:var(--dim); text-decoration:none; } .rail a.on { color:var(--ink); border-bottom:1px solid var(--ink); }
+  .rail .sp { flex:1; }
+  .seg { display:inline-flex; gap:2px; }
+  .seg button { border:1px solid transparent; background:none; border-radius:999px; padding:1px 9px; cursor:pointer; color:var(--dim); font-family:var(--sans); font-size:12px; }
+  .seg button[aria-pressed="true"] { border-color:var(--rule); color:var(--ink); }
+
+  .page { display:grid; grid-template-columns:minmax(0,720px) 280px; gap:56px; justify-content:center; padding:40px 28px 80px; }
+  .screen { display:none; } .screen.on { display:block; }
+  html[data-screen="work"] #work, html[data-screen="new"] #new { display:block; }
+
+  /* masthead */
+  .kicker { font-family:var(--sans); font-size:12px; letter-spacing:.14em; text-transform:uppercase; color:var(--accent); font-weight:700; }
+  h1 { font-size:54px; line-height:1.02; margin:6px 0 10px; font-weight:600; letter-spacing:-.01em; }
+  .dek { font-size:21px; font-style:italic; color:var(--dim); margin:0 0 6px; cursor:text; }
+  .byline { font-family:var(--sans); font-size:13px; color:var(--dim); padding-bottom:22px; border-bottom:2px solid var(--ink); margin-bottom:28px; }
+  .byline a { text-decoration:none; border-bottom:1px solid var(--rule); }
+  .tabs { display:flex; gap:22px; font-family:var(--sans); font-size:14px; margin:-12px 0 28px; }
+  .tabs button { border:0; background:none; padding:0 0 4px; cursor:pointer; color:var(--dim); }
+  .tabs button[aria-pressed="true"] { color:var(--ink); border-bottom:2px solid var(--accent); }
+
+  /* needs you — a note pinned to the top of the memo */
+  .note { background:var(--accent-soft); border-left:3px solid var(--accent); padding:16px 20px 12px; margin:0 0 36px; }
+  .note .caps { color:var(--accent); }
+  .note ol { margin:8px 0 0; padding-left:22px; }
+  .note li { margin:4px 0; cursor:pointer; }
+  .note li:hover .t { text-decoration:underline; text-decoration-thickness:1px; }
+  .note .why { display:block; font-family:var(--sans); font-size:12.5px; color:var(--dim); }
+  .note .why.hot { color:var(--accent); }
+
+  h2 { font-size:26px; margin:0 0 4px; font-weight:600; }
+  h2 small { font-family:var(--sans); font-size:12px; color:var(--dim); font-weight:400; margin-left:8px; letter-spacing:.04em; }
+  section { margin-bottom:44px; }
+
+  /* goals — an outline with words, not dashboards */
+  .goals { list-style:none; margin:12px 0 0; padding:0; counter-reset:g; }
+  .goals > li { counter-increment:g; padding:10px 0; border-top:1px solid var(--rule); cursor:pointer; }
+  .goals > li:last-child { border-bottom:1px solid var(--rule); }
+  .goals > li > .gl::before { content:counter(g, upper-roman) ".  "; color:var(--faint); font-style:italic; }
+  .goals .gl { display:flex; align-items:baseline; gap:14px; }
+  .goals .gt { flex:1; }
+  .goals .gn { font-family:var(--sans); font-size:13px; color:var(--dim); white-space:nowrap; font-variant-numeric:tabular-nums; }
+  .goals .thin { height:2px; background:var(--rule); margin:6px 0 0 30px; display:flex; }
+  .goals .thin i { display:block; } .thin .d { background:var(--done); } .thin .p { background:var(--prog); } .thin .b { background:var(--blocked); }
+  .goals ul { list-style:none; padding:0 0 0 30px; margin:6px 0 0; font-size:15px; color:var(--dim); }
+  .goals ul li { display:flex; gap:14px; padding:2px 0; }
+  .goals ul li span:first-child { flex:1; font-style:italic; }
+  .goals li.sel > .gl .gt { text-decoration:underline; text-decoration-color:var(--accent); text-decoration-thickness:2px; text-underline-offset:4px; }
+  .filter { font-family:var(--sans); font-size:13px; color:var(--dim); margin:10px 0 0; display:flex; gap:14px; flex-wrap:wrap; }
+  .filter b { color:var(--ink); font-weight:600; }
+  .filter .warn { color:var(--prog); }
+  .filter button { border:0; background:none; padding:0; color:var(--link); cursor:pointer; text-decoration:underline; text-decoration-color:var(--rule); }
+
+  /* people */
+  .person { padding:22px 0 8px; border-top:1px solid var(--rule); }
+  .person h3 { margin:0; font-size:22px; font-weight:600; display:flex; align-items:baseline; gap:10px; flex-wrap:wrap; }
+  .person h3 .lead { font-family:var(--sans); font-size:11px; letter-spacing:.14em; text-transform:uppercase; color:var(--accent); }
+  .dot { width:8px; height:8px; border-radius:50%; display:inline-block; transform:translateY(-2px); }
+  .dot.on { background:var(--done); } .dot.busy { background:var(--prog); } .dot.asleep { border:1.5px solid var(--faint); }
+  .person .role { font-style:italic; color:var(--dim); font-size:15px; }
+  .person .chan { font-family:var(--sans); font-size:12px; color:var(--dim); }
+  .person .chan.invited { color:var(--prog); }
+  .now { margin:10px 0 8px; font-size:16px; }
+  .now .caps { margin-right:8px; }
+  .now.idle { color:var(--dim); font-style:italic; }
+  .items { list-style:none; margin:0; padding:0; }
+  .item { display:grid; grid-template-columns:22px 1fr auto; gap:8px; padding:5px 6px; margin:0 -6px; cursor:pointer; border-radius:2px; }
+  .item:hover { background:var(--sheet); }
+  .item.sel { background:var(--sheet); box-shadow:inset 2px 0 0 var(--accent); }
+  .item .st { font-family:var(--sans); text-align:center; cursor:pointer; user-select:none; }
+  .st.prog { color:var(--prog); } .st.blocked { color:var(--blocked); } .st.closed { color:var(--done); } .st.open { color:var(--faint); }
+  .item .it { font-size:16px; }
+  .item.done .it { text-decoration:line-through; color:var(--faint); }
+  .item .im { grid-column:2 / 4; font-family:var(--sans); font-size:12px; color:var(--dim); display:flex; gap:12px; flex-wrap:wrap; margin-top:-2px; }
+  .item .im .bl { color:var(--blocked); } .item .im .ng { color:var(--done); }
+  .item .ia { font-family:var(--sans); font-size:12px; color:var(--faint); white-space:nowrap; }
+  .fold { font-family:var(--sans); font-size:13px; color:var(--dim); margin:6px 0 0 30px; cursor:pointer; }
+  .add { font-family:var(--sans); font-size:13px; color:var(--dim); margin:4px 0 0 30px; cursor:text; border-bottom:1px dashed var(--rule); display:inline-block; }
+  .person.stale h3 { color:var(--prog); }
+  .person.untri { color:var(--dim); }
+
+  /* margin notes */
+  .margin { border-left:1px solid var(--rule); padding-left:24px; font-size:14.5px; position:sticky; top:20px; align-self:start; max-height:calc(100vh - 40px); overflow:auto; }
+  .margin .day { margin:18px 0 6px; }
+  .mn { margin:0 0 14px; }
+  .mn .w { font-weight:600; }
+  .mn .v { color:var(--dim); font-style:italic; }
+  .mn .r { font-family:var(--sans); font-size:12px; color:var(--link); cursor:pointer; }
+  .mn .t { font-family:var(--sans); font-size:11px; color:var(--faint); }
+  .mn blockquote { margin:3px 0 0; padding-left:10px; border-left:2px solid var(--rule); color:var(--ink); font-size:14px; }
+
+  /* the issue opens as a sheet laid over the memo */
+  .sheet { position:fixed; top:0; right:0; bottom:0; width:min(560px,100%); background:var(--sheet); border-left:1px solid var(--rule); box-shadow:-24px 0 48px rgba(40,30,20,.14); padding:28px 34px 0; display:none; flex-direction:column; z-index:10; }
+  .sheet.on { display:flex; }
+  .sheet .crumb { font-family:var(--sans); font-size:12px; color:var(--dim); display:flex; gap:10px; }
+  .sheet .crumb .x { margin-left:auto; border:0; background:none; cursor:pointer; color:var(--dim); font-size:13px; }
+  .sheet h4 { font-size:28px; line-height:1.15; margin:12px 0 8px; font-weight:600; outline:none; }
+  .sheet .stline { font-family:var(--sans); font-size:13px; display:flex; gap:6px; flex-wrap:wrap; margin-bottom:14px; }
+  .sheet .stline button { border:1px solid var(--rule); background:none; border-radius:999px; padding:1px 10px; cursor:pointer; color:var(--dim); }
+  .sheet .stline button[aria-pressed="true"] { border-color:var(--ink); color:var(--ink); }
+  .sheet dl { display:grid; grid-template-columns:110px 1fr; gap:4px 12px; font-size:15px; margin:0 0 16px; }
+  .sheet dt { font-family:var(--sans); font-size:12px; color:var(--dim); letter-spacing:.04em; padding-top:3px; }
+  .sheet dd { margin:0; }
+  .sheet .body { overflow:auto; flex:1; padding-bottom:16px; }
+  .sheet .desc { font-size:17px; }
+  .sheet .subs { list-style:none; padding:0; margin:6px 0 0; font-size:15px; }
+  .sheet .th { margin-top:8px; }
+  .sheet .msg { margin:12px 0; }
+  .sheet .msg .h { font-family:var(--sans); font-size:12px; color:var(--dim); }
+  .sheet .msg .h b { color:var(--ink); font-size:13px; }
+  .sheet .msg.sys { font-family:var(--sans); font-size:12.5px; color:var(--faint); font-style:normal; }
+  .src { border:1px solid var(--rule); border-radius:3px; padding:0 4px; font-size:10.5px; margin:0 4px; }
+  .sheet .compose { border-top:1px solid var(--rule); padding:12px 0 16px; }
+  .sheet textarea { width:100%; border:0; border-bottom:1px solid var(--ink); background:transparent; resize:none; font-size:16px; padding:4px 0; outline:none; font-style:italic; }
+  .sheet .crow { display:flex; gap:12px; align-items:center; font-family:var(--sans); font-size:12px; color:var(--dim); margin-top:8px; }
+  .btn { border:1px solid var(--ink); background:var(--ink); color:var(--paper); border-radius:2px; padding:5px 14px; cursor:pointer; font-family:var(--sans); font-size:13px; letter-spacing:.04em; }
+  .btn.ghost { background:none; color:var(--ink); border-color:var(--rule); }
+  .btn:disabled { opacity:.4; cursor:not-allowed; }
+
+  /* /new — a letter you fill in */
+  .letter { max-width:680px; margin:0 auto; padding:48px 28px 80px; }
+  .letter h1 { font-size:46px; }
+  .letter p.sent { font-size:22px; line-height:2.1; margin:0 0 6px; }
+  .blank { border:0; border-bottom:1.5px solid var(--ink); background:transparent; font-size:22px; font-style:italic; padding:0 4px; outline:none; color:var(--ink); }
+  .blank:focus { border-bottom-color:var(--accent); }
+  .blank.slug { font-family:var(--sans); font-style:normal; font-size:18px; width:150px; }
+  .letter .hint { font-family:var(--sans); font-size:12.5px; color:var(--dim); margin:0 0 20px; }
+  .letter .hint.err { color:var(--accent); }
+  .crew { border-top:2px solid var(--ink); margin-top:26px; }
+  .crew input[type=search] { width:100%; border:0; border-bottom:1px solid var(--rule); background:transparent; padding:10px 0; font-size:16px; font-style:italic; outline:none; }
+  .crow2 { display:grid; grid-template-columns:22px 1fr auto; gap:10px; align-items:baseline; padding:7px 0; border-bottom:1px solid var(--rule); cursor:pointer; }
+  .crow2 .cw { font-family:var(--sans); font-size:12px; color:var(--dim); }
+  .crow2.picked { background:linear-gradient(90deg,var(--accent-soft),transparent 60%); }
+  .crow2 .extra { grid-column:2 / 4; display:flex; gap:12px; align-items:baseline; font-family:var(--sans); font-size:13px; color:var(--dim); flex-wrap:wrap; }
+  .crow2 .extra input[type=text] { border:0; border-bottom:1px solid var(--rule); background:transparent; font-family:var(--serif); font-style:italic; font-size:15px; width:160px; outline:none; }
+  .crow2 .extra select { border:0; border-bottom:1px solid var(--rule); background:transparent; font-size:13px; }
+  .postscript { font-style:italic; color:var(--dim); font-size:15px; margin:26px 0 18px; padding-left:16px; border-left:2px solid var(--rule); }
+  .postscript code { font-family:var(--sans); font-style:normal; font-size:13px; color:var(--ink); }
+  .sign { display:flex; gap:12px; align-items:center; }
+  .sign .meta { margin-left:auto; }
+
+  @media (max-width:1100px) {
+    .page { grid-template-columns:minmax(0,720px); }
+    .margin { position:static; border-left:0; border-top:2px solid var(--ink); padding:16px 0 0; max-height:none; }
+  }
+  @media (max-width:640px) {
+    body { font-size:16px; }
+    .rail { padding:10px 16px; gap:12px; flex-wrap:wrap; }
+    .rail .hide-s { display:none; }
+    .page { padding:24px 16px 60px; }
+    h1 { font-size:38px; } .dek { font-size:18px; }
+    .goals .thin { margin-left:0; }
+    .goals ul { padding-left:12px; }
+    .item { grid-template-columns:20px 1fr; } .item .ia { display:none; }
+    .sheet { padding:18px 16px 0; border-left:0; }
+    .sheet dl { grid-template-columns:90px 1fr; }
+    .letter { padding:28px 16px 60px; } .letter h1 { font-size:34px; }
+    .letter p.sent, .blank { font-size:19px; }
+    .sign .meta { display:none; }
+  }
+</style>
+</head>
+<body>
+<nav class="rail">
+  <b>paw</b><a class="hide-s" href="#">Activity</a><a class="hide-s" href="#">Tasks</a>
+  <a class="on" href="#" data-go="work">vibeOS</a><a href="#" class="hide-s">Dora</a><a href="#" data-go="new">+ company</a>
+  <span class="sp"></span>
+  <span class="seg"><button data-set="light">light</button><button data-set="system" aria-pressed="true">auto</button><button data-set="dark">dark</button></span>
+</nav>
+
+<div id="work" class="screen">
+  <div class="page">
+    <article>
+      <div class="kicker">Company · #vibeos</div>
+      <h1>vibeOS</h1>
+      <p class="dek" title="click to edit — the company bead's description"></p>
+      <div class="byline">Led by <a href="#">vibeos-ceo</a> · five people · fourteen open · three goals · talk in <a href="#">#vibeos</a></div>
+      <div class="tabs"><button aria-pressed="true">The work</button><button>Who reports to whom</button><button>The record</button></div>
+
+      <div class="note" id="needs"></div>
+
+      <section>
+        <h2>Goals <small>click one to read only its work</small></h2>
+        <ol class="goals" id="goals"></ol>
+        <div class="filter"><span>Reading: <b>Ship public beta</b> <button>show everything</button></span><span>· <button>blocked only</button></span><span>· <button>by status</button> / <button>by goal</button></span><span class="warn">· 2 issues lack the company label — <button>label them</button></span></div>
+      </section>
+
+      <section id="people"></section>
+    </article>
+    <aside class="margin" id="margin"><div class="caps">In the margin</div></aside>
+  </div>
+</div>
+
+<div id="new" class="screen">
+  <div class="letter">
+    <div class="kicker">New company</div>
+    <h1>Found a company</h1>
+    <p class="sent">It is called <input class="blank" id="dname" value="Acme Labs" size="10">,</p>
+    <p class="sent">and it talks in #<input class="blank slug" id="slug" value="acme-labs">.</p>
+    <p class="hint" id="slughint"></p>
+    <p class="sent">It exists to <input class="blank" id="mission" placeholder="say what it is for" size="26">.</p>
+    <p class="hint">the mission becomes the company bead's description and the channel's topic.</p>
+    <div class="crew">
+      <div class="caps" style="margin-top:14px">The crew</div>
+      <input type="search" placeholder="find an agent…">
+      <div id="pool"></div>
+    </div>
+    <p class="postscript" id="ps"></p>
+    <div class="sign"><button class="btn" id="create">Found it</button><button class="btn ghost">Not now</button><span class="meta">⌘⏎ found · esc leave</span></div>
+  </div>
+</div>
+
+<div class="sheet" id="sheet" role="dialog" aria-label="Issue"></div>
+
+<script>const D = {
+  company: { name: "vibeOS", slug: "vibeos", epic: "beads-v1b", mission: "ship vibeOS so a builder can hand an AI a real computer in one click" },
+  agents: [
+    { name: "vibeos-ceo", role: "lead · briefs, reviews, merges", live: "busy", chan: "joined", lead: true, now: "beads-c1a", done: 3 },
+    { name: "vibeos-pm", role: "product · onboarding, research", live: "on", chan: "joined", reportsTo: "vibeos-ceo", now: null, done: 1 },
+    { name: "vibeos-vercel", role: "deploys vibeos.sh/app", live: "busy", chan: "joined", reportsTo: "vibeos-ceo", now: "beads-k2q", done: 4 },
+    { name: "vibeos-docker", role: "self-hosted image", live: "asleep", chan: "invited", now: null, done: 2 },
+    { name: "vibeos-hexclave", role: "sandbox infra", live: "on", chan: "joined", reportsTo: "vibeos-pm", now: "beads-q2d", done: 0 },
+  ],
+  goals: [
+    { id: "beads-g01", title: "Ship vibeos.sh/app public beta", done: 9, prog: 4, blocked: 1, total: 20, kids: [
+      { id: "beads-g01a", title: "Self-hosted docker image matches the site", done: 4, prog: 1, blocked: 0, total: 5 },
+      { id: "beads-g01b", title: "Onboarding works without a call", done: 1, prog: 2, blocked: 1, total: 5 },
+    ] },
+    { id: "beads-g02", title: "10 builders paying for agent sandboxes", done: 1, prog: 3, blocked: 0, total: 10, kids: [] },
+    { id: "beads-g03", title: "Kill the dead kernel/crypto code", done: 3, prog: 0, blocked: 0, total: 3, kids: [] },
+  ],
+  issues: [
+    { id: "beads-p0x", title: "Decide pricing page copy for the beta", st: "open", who: null, goal: "Public beta", age: "5h" },
+    { id: "beads-t3v", title: "Waitlist export → 3-question email", st: "open", who: null, goal: "10 builders", age: "1d" },
+    { id: "beads-c1a", title: "Triage: what blocks the beta?", st: "prog", who: "vibeos-ceo", goal: "Public beta", sub: "1/4", age: "20m" },
+    { id: "beads-c9e", title: "Review PR #212 once r7m lands", st: "open", who: "vibeos-ceo", goal: "Onboarding", blk: "r7m", age: "3h" },
+    { id: "beads-r7m", title: "API key flow: paste, validate, store encrypted", st: "blocked", who: "vibeos-pm", goal: "Onboarding", blk: "q2d", cm: 2, age: "1h" },
+    { id: "beads-m4n", title: "Five onboarding interviews, 15 min each", st: "open", who: "vibeos-pm", goal: "Onboarding", age: "2d" },
+    { id: "beads-ws6", title: "In-app research ask on the thank-you screen", st: "open", who: "vibeos-pm", goal: "10 builders", cm: 3, age: "2d" },
+    { id: "beads-k2q", title: "Onboarding step 5: adapters never actually connect", st: "prog", who: "vibeos-vercel", goal: "Onboarding", sub: "2/3", pr: "#212", cm: 4, age: "3h" },
+    { id: "beads-v8d", title: "Preview deploys for every PR", st: "open", who: "vibeos-vercel", goal: "Public beta", age: "1d" },
+    { id: "beads-d2k", title: "Image digest pinned in the README", st: "prog", who: "vibeos-docker", goal: "Docker image", age: "2d", stale: true },
+    { id: "beads-q2d", title: "e2b vs daytona cold-start numbers", st: "prog", who: "vibeos-hexclave", goal: "10 builders", age: "40m" },
+    { id: "beads-n0w", title: "Sandbox pricing per minute vs per seat", st: "open", who: "vibeos-hexclave", goal: "10 builders", age: "now", nudged: true },
+    { id: "beads-x1y", title: "Landing hero copy v3", st: "open", who: "vibeos-landing", goal: "Public beta", age: "6d" },
+  ],
+  staleMore: 8,
+  untriaged: 17,
+  unlabelled: 2,
+  needs: [
+    { id: "beads-z32", title: "Decide: hosted AI or bring-your-own-key for the beta?", st: "open", why: "assigned to you · vibeos-ceo asked 2h ago", hot: true },
+    { id: "beads-r7m", title: "API key flow: paste, validate, store encrypted", st: "blocked", why: "blocked on q2d · vibeos-pm · 1h" },
+    { id: "beads-d2k", title: "Image digest pinned in the README", st: "prog", why: "in progress, silent 2d · vibeos-docker" },
+  ],
+  events: [
+    { day: "Today" },
+    { who: "aleks", verb: "commented on", ref: "beads-k2q", t: "12m", q: "@vibeos-ceo can someone unblock r7m today?" },
+    { who: "vibeos-ceo", verb: "claimed", ref: "beads-c1a", t: "20m" },
+    { who: "vibeos-hexclave", verb: "in #vibeos", t: "35m", q: "cold start: e2b 1.9s p50, daytona 0.8s p50 — writing it up on beads-q2d" },
+    { who: "vibeos-pm", verb: "marked blocked", ref: "beads-r7m", t: "1h", q: "waiting on q2d — which sandbox stores the key" },
+    { who: "vibeos-vercel", verb: "opened PR #212 for", ref: "beads-k2q", t: "3h" },
+    { who: "vibeos-docker", verb: "closed", ref: "beads-d1f", t: "5h", q: "digest matches site build 00:43 UTC" },
+    { day: "Yesterday" },
+    { who: "vibeos-pm", verb: "filed", ref: "beads-k2q", t: "1d" },
+    { who: "vibeos-ceo", verb: "added goal", t: "1d", q: "10 builders paying for agent sandboxes" },
+  ],
+  detail: {
+    id: "beads-k2q", crumb: "vibeOS › Public beta › Onboarding works without a call",
+    desc: "Step 4 validates key formats with a regex and never calls the backend. Done = a real connection test on step 5, and the wizard refuses to finish without one.",
+    blockedBy: "beads-r7m", createdBy: "vibeos-pm", created: "2d ago",
+    subs: [["closed", "call /adapters/test from step 4"], ["closed", "persist connectedProviders"], ["prog", "block launch until a provider is connected"]],
+    thread: [
+      { sys: true, text: "vibeos-pm filed it under Onboarding works without a call", t: "2d" },
+      { who: "vibeos-pm", src: "bead", t: "2d", text: "repro: fresh account, paste any sk-ant-… string, wizard says connected." },
+      { sys: true, text: "vibeos-vercel claimed it", t: "1d" },
+      { who: "vibeos-vercel", src: "#vibeos", t: "3h", text: "beads-k2q: test endpoint is in, PR #212 green. last bit needs the key flow from beads-r7m first." },
+      { who: "aleks", src: "bead", t: "12m", text: "@vibeos-ceo can someone unblock r7m today?" },
+    ],
+  },
+  pool: [
+    { name: "vibeos-ceo", cwd: "~/Github/vibeos-landing", live: "busy", in: "vibeos" },
+    { name: "vibeos-pm", cwd: "~/Github/vibeos", live: "on", in: "vibeos" },
+    { name: "research", cwd: "~/Github/research", live: "on" },
+    { name: "mail", cwd: "~/Github/caffeinum/mail", live: "busy" },
+    { name: "paw-folder", cwd: "~/Github/paw", live: "on" },
+    { name: "supertelegram", cwd: "~/Github/supertelegram", live: "asleep" },
+    { name: "team2027-queue", cwd: "~/Github/team2027/queue", live: "on" },
+  ],
+  picked: [{ name: "research", role: "research", lead: true }, { name: "mail", role: "", reportsTo: "research" }],
+};
+const ST = { open: "○", prog: "◐", blocked: "⊘", closed: "✓" };
+const STN = { open: "open", prog: "in progress", blocked: "blocked", closed: "done" };
+const ORDER = { prog: 0, blocked: 1, open: 2, closed: 3 };
+const hue = (n) => { let h = 0; for (const c of n) h = (h * 31 + c.charCodeAt(0)) % 360; return h; };
+const byWho = (w) => D.issues.filter((i) => i.who === w).sort((a, b) => ORDER[a.st] - ORDER[b.st]);
+const issue = (id) => D.issues.find((i) => i.id === id);
+const short = (id) => id.replace("beads-", "");
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+if (location.hash === "#new") { document.documentElement.dataset.screen = "new"; addEventListener("load", () => scrollTo(0, 0)); }
+if (location.hash === "#dark") document.documentElement.dataset.theme = "dark";
+function wireTheme(root = document) {
+  for (const b of root.querySelectorAll("[data-set]")) b.addEventListener("click", () => {
+    for (const x of root.querySelectorAll("[data-set]")) x.setAttribute("aria-pressed", String(x === b));
+    if (b.dataset.set === "system") document.documentElement.removeAttribute("data-theme");
+    else document.documentElement.dataset.theme = b.dataset.set;
+  });
+  const t = document.documentElement.dataset.theme;
+  if (t) for (const x of root.querySelectorAll("[data-set]")) x.setAttribute("aria-pressed", String(x.dataset.set === t));
+}
+function wireKeys({ cards, open, close, cycle }) {
+  let cur = null;
+  const sel = (c) => { if (!c) return; cur?.classList.remove("sel"); cur = c; c.classList.add("sel"); c.scrollIntoView({ block: "nearest", inline: "nearest" }); };
+  document.addEventListener("keydown", (e) => {
+    if (e.target.closest("input,textarea,select,[contenteditable]")) { if (e.key === "Escape") e.target.blur(); return; }
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    const list = [...document.querySelectorAll(cards)];
+    if (e.key === "Escape") { if (close()) return; cur?.classList.remove("sel"); cur = null; return; }
+    if (!cur) { if ("jk".includes(e.key)) sel(list[0]); return; }
+    const i = list.indexOf(cur);
+    if (e.key === "j") sel(list[i + 1]);
+    if (e.key === "k") sel(list[i - 1]);
+    if (e.key === "Enter") open(cur.dataset.id);
+    if (e.key === "s") cycle(cur);
+  });
+  return sel;
+}
+const NEXT = { open: "prog", prog: "closed", closed: "open", blocked: "open" };
+</script>
+<script>
+document.querySelector(".dek").textContent = "To " + D.company.mission + ".";
+document.getElementById("needs").innerHTML = `<div class="caps">For your attention · ${D.needs.length}</div><ol>` +
+  D.needs.map((n) => `<li data-open="${n.id}"><span class="t">${esc(n.title)}</span><span class="why ${n.hot ? "hot" : ""}">${n.why}</span></li>`).join("") + "</ol>";
+const bar = (g) => `<div class="thin"><i class="d" style="width:${g.done / g.total * 100}%"></i><i class="p" style="width:${g.prog / g.total * 100}%"></i><i class="b" style="width:${g.blocked / g.total * 100}%"></i></div>`;
+document.getElementById("goals").innerHTML = D.goals.map((g, i) => `<li class="${i === 0 ? "sel" : ""}"><div class="gl"><span class="gt">${esc(g.title)}</span><span class="gn">${g.done} of ${g.total} done</span></div>${bar(g)}${g.kids.length ? `<ul>${g.kids.map((k) => `<li><span>${esc(k.title)}</span><span class="gn">${k.done} of ${k.total}</span></li>`).join("")}</ul>` : ""}</li>`).join("");
+
+const words = ["no", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine"];
+function item(i) {
+  const m = [`<span>${short(i.id)}</span>`];
+  if (i.blk) m.push(`<span class="bl">waits on ${i.blk}</span>`);
+  if (i.sub) m.push(`<span>${i.sub} steps</span>`);
+  if (i.pr) m.push(`<span>PR ${i.pr} green</span>`);
+  if (i.cm) m.push(`<span>${i.cm} notes</span>`);
+  if (i.nudged) m.push(`<span class="ng">nudged ✓</span>`);
+  return `<li class="item ${i.st === "closed" ? "done" : ""}" data-id="${i.id}"><span class="st ${i.st}" title="${STN[i.st]} — click to change">${ST[i.st]}</span><span class="it">${esc(i.title)}</span><span class="ia">${i.age}</span><div class="im">${m.join("")}</div></li>`;
+}
+let people = "";
+const un = D.issues.filter((i) => !i.who);
+people += `<div class="person"><h3>Nobody yet</h3><div class="role">${words[un.length]} unassigned — give one to someone and they get a note</div><ul class="items">${un.map(item).join("")}</ul><div class="add">+ write a new issue</div></div>`;
+for (const a of D.agents) {
+  const now = a.now ? issue(a.now) : null;
+  people += `<div class="person"><h3>${a.name} <span class="dot ${a.live}" title="${a.live}"></span>${a.lead ? '<span class="lead">lead</span>' : ""}</h3>
+    <div class="role">${a.role} <span class="chan ${a.chan}">· ${a.chan === "invited" ? "invited to #vibeos, hasn't joined" : "in #vibeos"}</span></div>
+    <div class="now ${now ? "" : "idle"}"><span class="caps">Now</span>${now ? esc(now.title) : a.live === "asleep" ? "asleep — a message wakes it" : "idle, nothing claimed"}</div>
+    <ul class="items">${byWho(a.name).map(item).join("")}</ul>
+    ${a.done ? `<div class="fold">▸ and ${words[a.done]} finished this week</div>` : ""}<div class="add">+ write a new issue for ${a.name}</div></div>`;
+}
+people += `<div class="person stale"><h3>vibeos-landing?</h3><div class="role">nine issues name an agent that doesn't exist — an old name? <a href="#">give them to someone</a></div><ul class="items">${byWho("vibeos-landing").map(item).join("")}</ul><div class="fold">▸ eight more</div></div>`;
+people += `<div class="person untri"><h3 style="color:var(--dim)">Not yet filed here</h3><div class="role">${D.untriaged} beads belong to this crew but not to vibeOS. <a href="#">read them</a> · <a href="#">file them all…</a></div></div>`;
+document.getElementById("people").innerHTML = `<h2>People <small>lead first, then by who they report to</small></h2>` + people;
+
+document.getElementById("margin").innerHTML += D.events.map((e) => e.day ? `<div class="caps day">${e.day}</div>` :
+  `<div class="mn"><span class="w">${e.who}</span> <span class="v">${e.verb}</span> ${e.ref ? `<span class="r" data-open="${e.ref}">${short(e.ref)}</span>` : ""} <span class="t">${e.t}</span>${e.q ? `<blockquote>${esc(e.q)}</blockquote>` : ""}</div>`).join("");
+
+const sheet = document.getElementById("sheet");
+function openSheet(id) {
+  const i = issue(id) || D.needs.find((n) => n.id === id);
+  const d = D.detail, rich = id === d.id;
+  sheet.innerHTML = `<div class="crumb"><span>${rich ? d.crumb : "vibeOS"}</span><span>${id}</span><button class="x" data-close>close · esc</button></div>
+    <h4 contenteditable>${esc(i.title)}</h4>
+    <div class="stline">${Object.keys(ST).map((k) => `<button aria-pressed="${k === i.st}">${ST[k]} ${STN[k]}</button>`).join("")}</div>
+    <div class="body">
+    <dl><dt>who</dt><dd>${i.who || "nobody"} <select style="border:0;background:none;color:var(--dim)"><option>reassign…</option></select></dd><dt>goal</dt><dd><i>${i.goal || "—"}</i></dd>
+    ${rich ? `<dt>waits on</dt><dd style="color:var(--blocked)">${d.blockedBy} — the key flow</dd><dt>pull request</dt><dd><a href="#">caffeinum/vibeos#212</a>, checks green</dd><dt>filed</dt><dd>by ${d.createdBy}, ${d.created}</dd>` : ""}</dl>
+    ${rich ? `<p class="desc">${d.desc}</p><div class="caps">Steps · 2 of 3</div><ul class="subs">${d.subs.map(([s, t]) => `<li><span class="st ${s}">${ST[s]}</span> ${s === "closed" ? `<s style="color:var(--faint)">${t}</s>` : t}</li>`).join("")}</ul>
+    <div class="caps th" style="margin-top:22px">The thread · notes on the bead and #vibeos mentions</div>
+    ${d.thread.map((m) => m.sys ? `<div class="msg sys">— ${m.text}, ${m.t} ago</div>` : `<div class="msg"><div class="h"><b>${m.who}</b><span class="src">${m.src}</span>${m.t} ago</div>${esc(m.text)}</div>`).join("")}` : `<p class="desc" style="color:var(--dim);font-style:italic">No description yet.</p>`}
+    </div>
+    <div class="compose"><textarea rows="2" placeholder="add a note — @name to ping them"></textarea><div class="crow"><label><input type="checkbox"> also say it in #vibeos</label><span>⏎ send</span><button class="btn" style="margin-left:auto">Add note</button></div></div>`;
+  sheet.classList.add("on");
+}
+const closeSheet = () => { const was = sheet.classList.contains("on"); sheet.classList.remove("on"); return was; };
+function cycle(row) { const s = row.querySelector(".st"); const cur = Object.keys(ST).find((k) => s.classList.contains(k)); const nx = NEXT[cur]; s.classList.replace(cur, nx); s.textContent = ST[nx]; row.classList.toggle("done", nx === "closed"); }
+const select = wireKeys({ cards: "#work .item", open: openSheet, close: closeSheet, cycle });
+document.addEventListener("click", (e) => {
+  const g = e.target.closest("[data-go]"); if (g) { e.preventDefault(); document.documentElement.dataset.screen = g.dataset.go; return; }
+  if (e.target.closest("[data-close]")) return closeSheet();
+  const s = e.target.closest(".item .st"); if (s) return cycle(s.closest(".item"));
+  const it = e.target.closest(".item"); if (it) { select(it); return openSheet(it.dataset.id); }
+  const o = e.target.closest("[data-open]"); if (o) return openSheet(o.dataset.open);
+});
+
+// /new
+const picked = new Map(D.picked.map((p) => [p.name, p]));
+let slugTouched = false;
+function renderNew() {
+  document.getElementById("pool").innerHTML = D.pool.map((a) => { const p = picked.get(a.name); return `<div class="crow2 ${p ? "picked" : ""}" data-pick="${a.name}">
+    <span>${p ? "☑" : "☐"}</span><span>${a.name} <span class="dot ${a.live}"></span></span><span class="cw">${a.cwd}${a.in ? " · already in " + a.in : ""}</span>
+    ${p ? `<div class="extra">as <input type="text" value="${p.role}" placeholder="their role"> <label><input type="radio" name="lead" ${p.lead ? "checked" : ""}> leads</label>${p.lead ? "" : `<span>reports to <select><option>${p.reportsTo || "the lead"}</option></select></span>`}</div>` : ""}</div>`; }).join("");
+  const slug = document.getElementById("slug").value, ok = /^[a-z0-9][a-z0-9-]{0,40}$/.test(slug), taken = slug === "vibeos";
+  const h = document.getElementById("slughint");
+  h.className = "hint" + (ok && !taken ? "" : " err");
+  h.innerHTML = !ok ? "lowercase letters, digits and hyphens" : taken ? "#vibeos already exists — <a href='#'>open it</a>" : `the page will live at /company/${slug}`;
+  const names = [...picked.keys()];
+  document.getElementById("ps").innerHTML = `P.S. — founding it will open <code>#${slug}</code>, invite ${names.join(" and ") || "nobody yet"}, file the company bead <code>company:${slug}</code> with the crew written into it, and post one hello so everyone knows.`;
+  document.getElementById("create").disabled = !ok || taken || !picked.size;
+}
+document.getElementById("new").addEventListener("input", (e) => {
+  if (e.target.id === "slug") slugTouched = true;
+  if (e.target.id === "dname" && !slugTouched) document.getElementById("slug").value = e.target.value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+  renderNew();
+});
+document.getElementById("pool").addEventListener("click", (e) => {
+  if (e.target.closest(".extra")) return;
+  const r = e.target.closest("[data-pick]"); if (!r) return;
+  picked.has(r.dataset.pick) ? picked.delete(r.dataset.pick) : picked.set(r.dataset.pick, { name: r.dataset.pick, role: "", lead: !picked.size });
+  renderNew();
+});
+renderNew();
+wireTheme();
+</script>
+</body>
+</html>

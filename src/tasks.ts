@@ -272,8 +272,17 @@ export async function updateTask(id: string, fields: { title?: string; descripti
   invalidate();
 }
 
-/** Attach a comment to a bead — durable, part of the task's record (`bd show`/`bd comments`), unlike
- *  a DM which only the recipient sees. */
+/** Move every OPEN task (bd's default filter: open, in_progress, blocked) from assignee `from` to `to`;
+ *  returns the ids moved. Closed work keeps its historical assignee. For `paw rename`: without it the
+ *  renamed agent stopped seeing its own queue (9 open beads stayed on vibeos-landing, 2026-10-03). */
+export async function reassignOpenTasks(from: string, to: string): Promise<string[]> {
+  const ids = parseTasks(await bd(["list", "-n", "0", "-a", from, "--json"]))
+    .filter((t) => isOpen(t) && t.assignee === from)
+    .map((t) => t.id);
+  for (const id of ids) await updateTask(id, { assignee: to });
+  return ids;
+}
+
 /** Every bead carrying ALL of `labels`, closed included (a company's goal progress counts closed
  *  work). Uncached here — the caller (company view) keeps its own cache keyed on writeGeneration. */
 export async function listLabelled(labels: string[]): Promise<Task[]> {
@@ -283,11 +292,6 @@ export async function listLabelled(labels: string[]): Promise<Task[]> {
   return parseTasks(await bd(args));
 }
 
-/** Open beads whose labels match a glob (`company:*`) — one call for every company's open work. */
-export async function listLabelPattern(pattern: string): Promise<Task[]> {
-  return parseTasks(await bd(["list", "--json", "-n", "0", "--label-pattern", pattern]));
-}
-
 /** Beads by metadata: `{hasKey}` → `--has-metadata-key`, `{field: [k, v]}` → `--metadata-field k=v`. Closed included. */
 export async function listByMetadata(q: { hasKey?: string; field?: [string, string] }): Promise<Task[]> {
   const args = ["list", "--json", "-n", "0", "--all"];
@@ -295,6 +299,29 @@ export async function listByMetadata(q: { hasKey?: string; field?: [string, stri
   if (q.field) args.push("--metadata-field", `${q.field[0]}=${q.field[1]}`);
   if (args.length === 5) throw new Error("listByMetadata: give hasKey or field");
   return parseTasks(await bd(args));
+}
+
+/** Attach a comment to a bead — durable, part of the task's record (`bd show`/`bd comments`), unlike
+ *  a DM which only the recipient sees. */
+/** Read-modify-write of one bead's WHOLE metadata object (bd's `--metadata` replaces it) inside the
+ *  serialized chain, so no other paw write interleaves a stale read. `mutate` gets the current object
+ *  (unknown keys included) and returns the next one. */
+export async function mutateMetadata(id: string, mutate: (cur: Record<string, unknown>) => Record<string, unknown>): Promise<Record<string, unknown>> {
+  const run = async (): Promise<Record<string, unknown>> => {
+    const shown: unknown = JSON.parse(await bdExec(["show", id, "--json"], 30_000));
+    const row = (Array.isArray(shown) ? shown[0] : shown) as { metadata?: unknown } | undefined;
+    if (!row) throw new Error(`bd show ${id}: no such bead`);
+    const cur = parseMetadata(row.metadata) ?? {};
+    if ("_unparsed" in cur) throw new Error(`bd show ${id}: metadata isn't JSON — fix it by hand: ${String(cur._unparsed).slice(0, 120)}`);
+    const next = mutate(structuredClone(cur));
+    await bdExec(["update", id, "--metadata", JSON.stringify(next)], 30_000);
+    return next;
+  };
+  const job = chain.then(run, run);
+  chain = job.catch(() => {});
+  const out = await job;
+  invalidate();
+  return out;
 }
 
 export async function commentTask(id: string, text: string): Promise<void> {

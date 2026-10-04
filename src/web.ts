@@ -1656,6 +1656,8 @@ async function web(argv: string[]): Promise<void> {
           if (ch.historyError) error = [error, ch.historyError].filter(Boolean).join("; ");
           posts = dialogChannel(ch.messages, agent, channel);
         }
+        // dmHistory returns at most FETCH_CAP rows — say so rather than present a cut history as whole.
+        if (history.length >= FETCH_CAP) error = [error, `history capped at the space's last ${FETCH_CAP} DMs — older dialog isn't shown`].filter(Boolean).join("; ");
         const messages = [...dialogDms(all, agent, names, ep.card.id), ...posts].sort((a, b) => a.ts - b.ts).slice(-limit);
         return { agent, messages, ...(error ? { error } : {}) };
       },

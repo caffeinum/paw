@@ -72,6 +72,15 @@ export function companyFromTask(t: Task): Company | undefined {
   };
 }
 
+/** A company's metadata with roster key `from` renamed to `to`, member order and every other key kept.
+ *  Unchanged (same object) when `from` isn't a member. Pure. */
+export function renameInMetadata(md: Record<string, unknown>, from: string, to: string): Record<string, unknown> {
+  const org = md.org;
+  if (!org || typeof org !== "object" || Array.isArray(org) || !(from in org)) return md;
+  if (to in org) throw new Error(`"${to}" is already on the roster of company "${String(md.company)}" — merge by hand`);
+  return { ...md, org: Object.fromEntries(Object.entries(org as Record<string, unknown>).map(([k, v]) => [k === from ? to : k, v])) };
+}
+
 /** Every company among some rows (non-roots dropped), by name. Pure. */
 export function companiesFrom(tasks: Task[]): Company[] {
   return tasks.map(companyFromTask).filter((c): c is Company => !!c).sort((a, b) => a.name.localeCompare(b.name));

@@ -1,0 +1,704 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>paw — company mock</title>
+<!-- STATIC MOCK with fake data for the company pages spec (docs/notes/company-spec.md, "Visual &
+     interaction"). Tokens, sidebar, top bar, .modes, .btn, .pip, .av, .tag, .padhead, breakpoints
+     (1100 / 860) are copied from web/app/index.html — the builder reuses those rules, it does not
+     port this file's copies. Everything prefixed .co-* is new and is what the builder adds. -->
+<style>
+  :root {
+    --sidebar:#3F0E40; --sidebar-hi:#350D36; --sidebar-txt:#BCABBC; --sidebar-str:#FFFFFF;
+    --selected:#1164A3; --content:#FFFFFF; --content-alt:#F8F8F8; --line:#DDDDDD;
+    --txt:#1D1C1D; --txt-dim:#616061; --link:#1264A3;
+    --green:#2BAC76; --amber:#ECB22E; --red:#E01E5A; --code-bg:#F6F6F6; --code-txt:#E01E5A;
+    --font:"Slack-Lato","Lato",-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;
+    --mono:Monaco,Menlo,Consolas,"Courier New",monospace;
+    --prog:#4a9eda; --blocked:#d05548; --done:#4caf7d;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --sidebar:#19171D; --sidebar-hi:#27242C; --sidebar-txt:#ABABAD; --sidebar-str:#FFFFFF;
+      --content:#1A1D21; --content-alt:#222529; --line:#35373B;
+      --txt:#D1D2D3; --txt-dim:#ABABAD; --link:#1D9BD1; --code-bg:#232529;
+    }
+  }
+  :root[data-theme="dark"] {
+    --sidebar:#19171D; --sidebar-hi:#27242C; --sidebar-txt:#ABABAD; --sidebar-str:#FFFFFF;
+    --content:#1A1D21; --content-alt:#222529; --line:#35373B;
+    --txt:#D1D2D3; --txt-dim:#ABABAD; --link:#1D9BD1; --code-bg:#232529;
+  }
+  * { box-sizing:border-box; }
+  html, body { height:100%; overflow:hidden; }
+  body { margin:0; font-family:var(--font); font-size:15px; line-height:1.46668; color:var(--txt);
+         background:var(--content); -webkit-font-smoothing:antialiased; }
+  button { font-family:inherit; }
+  a { color:var(--link); }
+  :focus-visible { outline:2px solid var(--link); outline-offset:2px; }
+
+  /* ── copied shell (index.html) ── */
+  .app { height:100vh; display:grid; grid-template-rows:38px 1fr; }
+  .top { background:var(--sidebar); display:flex; align-items:center; justify-content:center;
+         color:var(--sidebar-txt); font-size:13px; gap:10px; position:relative; }
+  .search { background:rgba(255,255,255,.12); border:none; border-radius:6px; width:46%; max-width:640px;
+            text-align:center; padding:3px 8px; color:#E8E8E8; font-size:13px; outline:none; }
+  .search::placeholder { color:#C9BFC9; }
+  .theme { position:absolute; right:12px; display:flex; gap:2px; background:rgba(255,255,255,.10); border-radius:6px; padding:2px; }
+  .theme button { background:none; border:none; border-radius:4px; cursor:pointer; color:#D9D0D9; font-size:12px; padding:3px 7px; }
+  .theme button[aria-pressed="true"] { background:rgba(255,255,255,.22); color:#fff; }
+  .mockbar { position:absolute; left:12px; display:flex; gap:2px; background:rgba(255,255,255,.10); border-radius:6px; padding:2px; }
+  .mockbar button { background:none; border:none; border-radius:4px; cursor:pointer; color:#D9D0D9; font-size:11px; padding:3px 7px; }
+  .mockbar button[aria-pressed="true"] { background:rgba(255,255,255,.22); color:#fff; }
+
+  .body-grid { display:grid; grid-template-columns:260px 1fr; min-height:0; }
+  .side { background:var(--sidebar); color:var(--sidebar-txt); overflow-y:auto; padding-bottom:20px; }
+  .ws { display:flex; align-items:center; gap:8px; padding:14px 16px 10px; color:var(--sidebar-str); font-weight:900; font-size:18px; }
+  .ws small { font-weight:400; font-size:12px; color:var(--sidebar-txt); }
+  .sec { padding:14px 16px 4px; font-size:13px; font-weight:700; display:flex; align-items:center; gap:6px; cursor:pointer; user-select:none; }
+  .sec .chev { font-size:9px; opacity:.7; width:9px; }
+  .seccount { margin-left:auto; font-weight:400; opacity:.55; font-size:12px; }
+  .row { display:flex; align-items:center; gap:8px; padding:4px 16px 4px 18px; font-size:15px; cursor:pointer; white-space:nowrap; }
+  .row:hover { background:var(--sidebar-hi); }
+  .row.active { background:var(--selected); color:#fff; font-weight:700; box-shadow:inset 3px 0 0 var(--sidebar-str); }
+  .row .nm { flex:1; overflow:hidden; text-overflow:ellipsis; }
+  .row .hash { opacity:.7; width:12px; text-align:center; }
+  .row .n { margin-left:auto; font-size:12px; opacity:.6; }
+  .row.addrow { opacity:.7; font-size:14px; }
+  .pip { width:9px; height:9px; border-radius:50%; flex:none; display:inline-block; }
+  .pip.on { background:var(--green); } .pip.busy { background:var(--amber); }
+  .pip.off { border:1.5px solid currentColor; opacity:.55; }
+  .main { display:grid; grid-template-rows:auto 1fr; min-height:0; background:var(--content); position:relative; }
+  .chead { border-bottom:1px solid var(--line); padding:0 20px; height:49px; display:flex; align-items:center; gap:10px; }
+  .chead h1 { font-size:18px; font-weight:900; margin:0; letter-spacing:-.2px; }
+  .chead .topic { color:var(--txt-dim); font-size:13px; border-left:1px solid var(--line); padding-left:10px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .chead .right { margin-left:auto; display:flex; gap:8px; align-items:center; }
+  .modes { display:flex; gap:2px; background:var(--content-alt); border:1px solid var(--line); border-radius:6px; padding:2px; }
+  .modes button { background:none; border:none; border-radius:4px; cursor:pointer; font-size:13px; font-weight:700; color:var(--txt-dim); padding:3px 10px; }
+  .modes button[aria-pressed="true"] { background:var(--content); color:var(--txt); box-shadow:0 1px 2px rgba(0,0,0,.12); }
+  .btn { background:none; border:1px solid var(--line); border-radius:4px; color:var(--txt-dim); font-size:13px; padding:3px 9px; cursor:pointer; }
+  .btn:hover { background:var(--content-alt); color:var(--txt); }
+  .btn.primary { background:var(--green); border-color:var(--green); color:#fff; font-weight:700; }
+  .btn.primary:disabled { opacity:.45; cursor:not-allowed; }
+  .menu { display:none; width:30px; height:30px; background:none; border:1px solid var(--line); border-radius:6px; color:var(--txt-dim); cursor:pointer; }
+  .av { width:36px; height:36px; border-radius:4px; display:flex; align-items:center; justify-content:center; color:#fff; font-weight:900; font-size:14px; flex:none; }
+  .tag { font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.4px; border-radius:3px; padding:1px 4px; background:var(--content-alt); color:var(--txt-dim); border:1px solid var(--line); }
+
+  /* ── NEW: company pages ─────────────────────────────────────────────── */
+  .view { display:none; min-height:0; overflow:hidden; }
+  .view.on { display:grid; }
+  .co-work { grid-template-columns:1fr 320px; min-height:0; }
+  .co-scroll { overflow:auto; min-height:0; overscroll-behavior:contain; }
+
+  /* goals strip */
+  .co-goals { padding:14px 20px 6px; border-bottom:1px solid var(--line); }
+  .co-h { font-size:11px; text-transform:uppercase; letter-spacing:.06em; color:var(--txt-dim); font-weight:700; display:flex; align-items:center; gap:8px; margin:0 0 6px; }
+  .co-h .btn { font-size:11px; padding:1px 7px; text-transform:none; letter-spacing:0; margin-left:auto; }
+  .goal { display:grid; grid-template-columns:14px 1fr 120px 52px; align-items:center; gap:8px; padding:4px 6px; border-radius:6px; font-size:14px; cursor:pointer; }
+  .goal:hover, .goal.sel { background:var(--content-alt); }
+  .goal.sel { box-shadow:inset 3px 0 0 var(--selected); }
+  .goal .gchev { font-size:9px; opacity:.6; }
+  .goal.sub { padding-left:28px; font-size:13px; color:var(--txt-dim); }
+  .goal .gt { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .bar { height:6px; border-radius:3px; background:var(--line); overflow:hidden; display:flex; }
+  .bar i { display:block; height:100%; }
+  .bar .d { background:var(--done); } .bar .p { background:var(--prog); } .bar .b { background:var(--blocked); }
+  .goal .gn { font-size:12px; color:var(--txt-dim); text-align:right; font-variant-numeric:tabular-nums; }
+  .filterline { display:flex; align-items:center; gap:6px; padding:10px 20px 0; font-size:12px; color:var(--txt-dim); flex-wrap:wrap; }
+  .chip { border:1px solid var(--line); border-radius:999px; padding:1px 9px; font-size:12px; cursor:pointer; background:var(--content); color:var(--txt-dim); }
+  .chip.on { border-color:var(--selected); color:var(--txt); box-shadow:inset 0 0 0 1px var(--selected); }
+  .chip .x { opacity:.6; margin-left:4px; }
+
+  /* needs you */
+  .needs { margin:12px 20px 0; border:1px solid rgba(224,30,90,.35); border-left:3px solid var(--red); border-radius:8px; background:var(--content); }
+  .needs .co-h { margin:0; padding:8px 12px 4px; color:var(--red); }
+  .nrow { display:grid; grid-template-columns:16px 1fr auto; gap:8px; align-items:baseline; padding:4px 12px; font-size:13.5px; cursor:pointer; }
+  .nrow:hover { background:var(--content-alt); }
+  .nrow .why { font-size:11px; color:var(--txt-dim); white-space:nowrap; }
+  .nrow .why.r { color:var(--red); }
+  .needs .more { font-size:12px; color:var(--txt-dim); padding:2px 12px 8px 36px; }
+  .mission { font-size:13px; color:var(--txt-dim); margin:0 0 8px; cursor:text; }
+  .mission b { color:var(--txt); font-weight:600; }
+  .mission:hover { text-decoration:underline dotted; }
+  .chip.warn { color:var(--amber); border-color:rgba(236,178,46,.6); }
+  .seg { display:inline-flex; border:1px solid var(--line); border-radius:6px; overflow:hidden; margin-left:auto; }
+  .seg button { border:0; background:none; font-size:12px; padding:1px 8px; color:var(--txt-dim); cursor:pointer; }
+  .seg button[aria-pressed="true"] { background:var(--content-alt); color:var(--txt); font-weight:700; }
+  .lane.collapsed-lane { flex-basis:200px; }
+  .lane.collapsed-lane .lcards { display:none; }
+  .lane.stale .lhead b { color:var(--amber); }
+  .nudge { color:var(--green); }
+  .nudge.fail { color:var(--red); }
+  .steps { list-style:none; padding:0; margin:10px 0 0; font-size:13px; }
+  .steps li { padding:2px 0; } .steps .ok { color:var(--green); } .steps .bad { color:var(--red); } .steps .run { color:var(--amber); }
+  .slugrow { display:flex; gap:6px; align-items:center; font-size:12px; color:var(--txt-dim); margin-top:6px; }
+  .slugrow input { font-family:var(--mono); font-size:12px; border:1px solid var(--line); border-radius:4px; padding:2px 6px; background:var(--content); color:var(--txt); width:180px; }
+  .tree li.dflt > .onode { border-style:dashed; }
+  .banner { margin:10px 20px 0; padding:8px 12px; border-radius:6px; border-left:3px solid var(--amber); background:var(--content-alt); font-size:13px; display:flex; gap:10px; align-items:center; }
+  .banner .btn { margin-left:auto; }
+
+  /* agent lanes */
+  .lanes { display:flex; gap:12px; padding:12px 20px 30px; align-items:flex-start; }
+  .lane { flex:0 0 272px; border-radius:10px; background:var(--content-alt); border:1px solid var(--line); display:flex; flex-direction:column; max-height:100%; }
+  .lane.over { border-style:dashed; border-color:var(--selected); }
+  .lhead { padding:10px 10px 8px; border-bottom:1px solid var(--line); }
+  .lh1 { display:flex; align-items:center; gap:8px; }
+  .lh1 .av { width:24px; height:24px; font-size:11px; border-radius:4px; }
+  .lh1 b { font-size:14px; font-weight:900; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .lh1 .lead { font-size:11px; color:var(--amber); }
+  .lh1 .ln { margin-left:auto; font-size:11px; color:var(--txt-dim); background:rgba(128,128,128,.15); border-radius:999px; padding:0 7px; }
+  .lrole { font-size:12px; color:var(--txt-dim); margin:2px 0 0 32px; }
+  .lnow { font-size:12px; margin:6px 0 0; padding:5px 8px; border-radius:6px; background:var(--content); border:1px solid var(--line); display:flex; gap:6px; align-items:baseline; }
+  .lnow .k { color:var(--txt-dim); flex:none; }
+  .lnow .v { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .lnow.idle .v { color:var(--txt-dim); font-style:italic; }
+  .lcards { padding:8px; display:flex; flex-direction:column; gap:6px; }
+  .card { background:var(--content); border:1px solid var(--line); border-radius:8px; padding:8px 10px; cursor:pointer; display:grid; grid-template-columns:16px 1fr; gap:2px 6px; }
+  .card:hover { border-color:rgba(128,128,128,.6); }
+  .card.sel { outline:2px solid var(--selected); outline-offset:-1px; }
+  .card .st { font-size:13px; line-height:1.35; cursor:pointer; text-align:center; user-select:none; }
+  .st.open { opacity:.6; } .st.prog { color:var(--prog); } .st.blocked { color:var(--blocked); } .st.closed { color:var(--done); }
+  .card .ct { font-size:13px; font-weight:600; line-height:1.35; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
+  .card .cm { grid-column:2; display:flex; gap:8px; align-items:center; font-size:11px; color:var(--txt-dim); }
+  .card .cm .id { font-variant-numeric:tabular-nums; font-family:var(--mono); font-size:10.5px; }
+  .card .cm .blk { color:var(--blocked); }
+  .card .cm .gchip { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:110px; }
+  .card .cm .sub { font-variant-numeric:tabular-nums; }
+  .card .cm .when { margin-left:auto; }
+  .card.done .ct { text-decoration:line-through; opacity:.5; font-weight:400; }
+  .lfold { font-size:12px; color:var(--txt-dim); padding:4px 4px 0; cursor:pointer; }
+  .lfold:hover { color:var(--txt); }
+  .ladd { border:0; background:none; color:var(--txt-dim); font-size:12px; padding:6px; text-align:left; cursor:pointer; border-radius:6px; }
+  .ladd:hover { background:rgba(128,128,128,.12); color:var(--txt); }
+  .ladd kbd, .kbd { font-family:var(--mono); font-size:10px; border:1px solid var(--line); border-radius:3px; padding:0 4px; background:var(--content); color:var(--txt-dim); }
+  .lane.unassigned .lhead b { color:var(--txt-dim); }
+
+  /* activity rail (right aside, same geometry as .aside) */
+  .co-act { border-left:1px solid var(--line); background:var(--content-alt); overflow-y:auto; padding:14px 16px 40px; min-width:0; }
+  .ev { display:grid; grid-template-columns:22px 1fr; gap:8px; padding:6px 0; font-size:13px; line-height:1.4; }
+  .ev .av { width:22px; height:22px; font-size:10px; border-radius:4px; }
+  .ev .who { font-weight:700; }
+  .ev .what { color:var(--txt-dim); }
+  .ev .ref { font-family:var(--mono); font-size:11px; color:var(--link); cursor:pointer; }
+  .ev .t { font-size:11px; color:var(--txt-dim); }
+  .ev .q { margin-top:2px; color:var(--txt); border-left:2px solid var(--line); padding-left:8px; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
+  .evday { font-size:11px; color:var(--txt-dim); text-transform:uppercase; letter-spacing:.06em; margin:12px 0 2px; }
+  .co-act .chips { display:flex; gap:4px; margin-bottom:6px; }
+
+  /* issue drawer */
+  .drawer { position:absolute; top:0; right:0; bottom:0; width:min(520px,100%); background:var(--content); border-left:1px solid var(--line); box-shadow:-12px 0 32px rgba(0,0,0,.18); z-index:20; display:none; flex-direction:column; }
+  .drawer.on { display:flex; }
+  .dhead { display:flex; align-items:center; gap:8px; padding:10px 16px; border-bottom:1px solid var(--line); font-size:12px; color:var(--txt-dim); }
+  .dhead .crumb { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .dhead .x { margin-left:auto; }
+  .dhead .pill, .dhead .btn { white-space:nowrap; flex:none; }
+  .dhead .crumb { flex:1; min-width:0; }
+  .dbody { overflow-y:auto; padding:14px 18px 20px; flex:1; }
+  .dtitle { font-size:20px; font-weight:700; line-height:1.3; margin:4px 0 10px; outline:none; }
+  .stchips { display:flex; gap:6px; flex-wrap:wrap; }
+  .mst { display:inline-flex; align-items:center; gap:6px; border:1px solid var(--line); background:var(--content-alt); border-radius:999px; font-size:12px; padding:2px 10px; cursor:pointer; color:var(--txt); }
+  .mst.on { border-color:var(--selected); box-shadow:0 0 0 1px var(--selected) inset; }
+  .props { display:grid; grid-template-columns:96px 1fr; gap:6px 10px; font-size:13px; margin:14px 0; }
+  .props .k { color:var(--txt-dim); }
+  .person { display:inline-flex; align-items:center; gap:6px; }
+  .person .av { width:18px; height:18px; font-size:9px; border-radius:3px; }
+  .pill { font-family:var(--mono); font-size:11px; border:1px solid var(--line); border-radius:4px; padding:0 5px; }
+  .pill.blk { color:var(--blocked); border-color:rgba(208,85,72,.5); }
+  .ddesc { font-size:14px; line-height:1.55; white-space:pre-wrap; }
+  .dsec { font-size:11px; text-transform:uppercase; letter-spacing:.06em; color:var(--txt-dim); margin:18px 0 6px; font-weight:700; display:flex; gap:8px; align-items:center; }
+  .subl { font-size:13px; display:flex; flex-direction:column; gap:3px; }
+  .subl div { display:flex; gap:6px; }
+  .thread { display:flex; flex-direction:column; gap:12px; }
+  .tm { display:grid; grid-template-columns:28px 1fr; gap:8px; font-size:13.5px; }
+  .tm .av { width:28px; height:28px; font-size:11px; }
+  .tm .h { display:flex; gap:6px; align-items:baseline; }
+  .tm .h b { font-weight:900; }
+  .tm .h .t { font-size:11px; color:var(--txt-dim); }
+  .src { font-size:10px; border-radius:3px; padding:0 4px; border:1px solid var(--line); color:var(--txt-dim); }
+  .src.ch { color:var(--link); border-color:rgba(18,100,163,.4); }
+  .tm.sys { grid-template-columns:28px 1fr; color:var(--txt-dim); font-size:12px; }
+  .tm.sys .dot { text-align:center; }
+  .dcomp { border-top:1px solid var(--line); padding:10px 16px 12px; }
+  .dcomp textarea { width:100%; resize:none; border:1px solid var(--line); border-radius:8px; background:var(--content); color:var(--txt); padding:8px 10px; font:inherit; font-size:14px; outline:none; }
+  .dcomp textarea:focus { border-color:var(--selected); }
+  .dcomp .row2 { display:flex; align-items:center; gap:10px; font-size:12px; color:var(--txt-dim); margin-top:6px; }
+  .dcomp .row2 .btn { margin-left:auto; }
+  .dcomp label { display:inline-flex; gap:5px; align-items:center; cursor:pointer; }
+
+  /* org chart */
+  .org { padding:28px 20px 40px; overflow:auto; }
+  .tree, .tree ul { list-style:none; margin:0; padding:0; }
+  .tree { display:flex; justify-content:center; }
+  .tree ul { display:flex; justify-content:center; padding-top:22px; position:relative; }
+  .tree li { position:relative; padding:22px 8px 0; display:flex; flex-direction:column; align-items:center; }
+  .tree > li { padding-top:0; }
+  .tree li::before, .tree li::after { content:""; position:absolute; top:0; height:22px; border-top:1px solid var(--line); width:50%; }
+  .tree li::before { right:50%; } .tree li::after { left:50%; border-left:1px solid var(--line); }
+  .tree li:first-child::before, .tree li:last-child::after { border-top:0; }
+  .tree li:only-child::before, .tree li:only-child::after { border-top:0; }
+  .tree > li::before, .tree > li::after { display:none; }
+  .tree ul::before { content:""; position:absolute; top:0; left:50%; height:22px; border-left:1px solid var(--line); }
+  .tree li:first-child::after { border-radius:6px 0 0 0; }
+  .tree li:last-child::before { border-right:1px solid var(--line); border-radius:0 6px 0 0; }
+  .onode { width:208px; border:1px solid var(--line); border-radius:10px; background:var(--content); padding:10px; cursor:pointer; text-align:left; }
+  .onode:hover { border-color:rgba(128,128,128,.6); }
+  .onode.you { background:var(--content-alt); width:150px; text-align:center; }
+  .onode .o1 { display:flex; gap:8px; align-items:center; }
+  .onode .o1 .av { width:28px; height:28px; font-size:12px; }
+  .onode .o1 b { font-size:14px; font-weight:900; }
+  .onode .orole { font-size:12px; color:var(--txt-dim); }
+  .onode .onow { font-size:12px; margin-top:6px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .onode .ocnt { font-size:11px; color:var(--txt-dim); margin-top:2px; }
+  .orghint { text-align:center; font-size:12px; color:var(--txt-dim); margin-top:22px; }
+
+  /* activity full tab */
+  .actfull { max-width:760px; margin:0 auto; padding:10px 20px 40px; }
+
+  /* /new */
+  .newwrap { overflow:auto; padding:32px 20px 60px; }
+  .newcard { max-width:620px; margin:0 auto; }
+  .newcard h2 { font-size:22px; font-weight:900; margin:0 0 4px; }
+  .newcard .lede { color:var(--txt-dim); font-size:14px; margin:0 0 22px; }
+  .fld { margin-bottom:18px; }
+  .fld label { display:block; font-size:13px; font-weight:700; margin-bottom:4px; }
+  .fld .help { font-size:12px; color:var(--txt-dim); margin-top:4px; }
+  .fld .help.err { color:var(--red); }
+  .inp { width:100%; border:1px solid var(--line); border-radius:6px; padding:8px 10px; font:inherit; font-size:15px; background:var(--content); color:var(--txt); outline:none; }
+  .inp:focus { border-color:var(--selected); box-shadow:0 0 0 1px var(--selected); }
+  .namebox { display:flex; align-items:center; border:1px solid var(--line); border-radius:6px; }
+  .namebox:focus-within { border-color:var(--selected); box-shadow:0 0 0 1px var(--selected); }
+  .namebox span { padding-left:10px; color:var(--txt-dim); font-size:15px; }
+  .namebox .inp { border:0; box-shadow:none; padding-left:2px; }
+  .picker { border:1px solid var(--line); border-radius:8px; overflow:hidden; }
+  .picker .pq { border:0; border-bottom:1px solid var(--line); border-radius:0; }
+  .plist { max-height:260px; overflow:auto; }
+  .prow { display:grid; grid-template-columns:18px 24px 1fr auto; gap:8px; align-items:center; padding:6px 10px; font-size:14px; cursor:pointer; }
+  .prow:hover, .prow.kb { background:var(--content-alt); }
+  .prow .av { width:24px; height:24px; font-size:11px; }
+  .prow .fold { font-size:12px; color:var(--txt-dim); font-family:var(--mono); }
+  .prow .inco { font-size:11px; color:var(--txt-dim); }
+  .prow input { margin:0; }
+  .fld label.prow { display:grid; font-weight:400; margin:0; }
+  .sel-list { display:flex; flex-direction:column; gap:6px; margin-top:10px; }
+  .selr { display:grid; grid-template-columns:24px 140px 1fr 80px 150px 22px; gap:8px; align-items:center; font-size:14px; }
+  .selr .av { width:24px; height:24px; font-size:11px; }
+  .selr .inp { font-size:13px; padding:4px 8px; }
+  .selr select { font:inherit; font-size:13px; padding:4px 6px; border:1px solid var(--line); border-radius:6px; background:var(--content); color:var(--txt); }
+  .selr label + .rm { grid-column:6; }
+  .selr .rm { border:0; background:none; color:var(--txt-dim); cursor:pointer; }
+  .preview { border:1px dashed var(--line); border-radius:8px; padding:10px 14px; font-size:13px; color:var(--txt-dim); margin:22px 0 14px; }
+  .preview ul { margin:4px 0 0; padding-left:18px; }
+  .preview code { font-family:var(--mono); font-size:12px; color:var(--txt); }
+  .newfoot { display:flex; align-items:center; gap:10px; }
+  .newfoot .hint { font-size:12px; color:var(--txt-dim); margin-left:auto; }
+
+  /* empty states */
+  .empty { border:1px dashed var(--line); border-radius:10px; padding:28px 20px; text-align:center; color:var(--txt-dim); font-size:14px; max-width:520px; margin:40px auto; }
+  .empty b { color:var(--txt); display:block; font-size:16px; margin-bottom:4px; }
+  .empty .btn { margin-top:12px; }
+
+  .mocknote { font-size:11px; color:var(--txt-dim); padding:6px 20px; border-bottom:1px dashed var(--line); background:var(--content-alt); }
+
+  /* Tablet: activity rail goes first (same rule as .aside) — the Activity tab is its other home. */
+  @media (max-width:1100px) {
+    .co-work { grid-template-columns:1fr; }
+    .co-act { display:none; }
+  }
+  /* Phone: lanes STACK (no horizontal page scroll), drawer = full-screen sheet, sidebar = drawer. */
+  @media (max-width:860px) {
+    .needs { margin:10px 12px 0; }
+    .lane.collapsed-lane { flex-basis:auto; }
+    .body-grid { grid-template-columns:1fr; }
+    .side { position:fixed; inset:38px auto 0 0; z-index:30; width:min(86vw,320px); transform:translateX(-100%); transition:transform .18s; box-shadow:0 0 40px rgba(0,0,0,.45); }
+    body.navopen .side { transform:none; }
+    .menu { display:inline-flex; align-items:center; justify-content:center; }
+    .chead { height:auto; min-height:49px; flex-wrap:wrap; padding:8px 12px; row-gap:4px; }
+    .chead h1 { font-size:16px; }
+    .chead .right { order:1; margin-left:auto; }
+    .chead .topic { order:2; flex-basis:100%; border-left:none; padding-left:0; }
+    .chead .right .btn.chan { display:none; }
+    .mockbar { display:none; }
+    .co-goals, .filterline { padding-left:12px; padding-right:12px; }
+    .goal { grid-template-columns:14px 1fr 64px 44px; }
+    .lanes { flex-direction:column; padding:10px 12px 30px; gap:10px; }
+    .lane { flex:none; width:100%; }
+    .lane.collapsed .lcards { display:none; }
+    .lhead { cursor:pointer; }
+    .drawer { width:100%; border-left:0; }
+    .org { padding:16px 12px; }
+    .tree, .tree ul { display:block; padding:0; }
+    .tree ul { padding-left:18px; border-left:1px solid var(--line); margin-left:14px; }
+    .tree li { padding:8px 0 0; display:block; }
+    .tree li::before, .tree li::after, .tree ul::before { display:none; }
+    .onode, .onode.you { width:100%; text-align:left; }
+    .selr { grid-template-columns:24px 1fr 22px; }
+    .selr .inp, .selr select { grid-column:2 / 4; }
+    .newwrap { padding:20px 12px 40px; }
+    .newfoot .hint { display:none; }
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="top">
+    <div class="mockbar" role="group" aria-label="mock screens">
+      <button data-go="work" aria-pressed="true">/company/vibeos</button>
+      <button data-go="new">/new</button>
+      <button data-go="empty">empty company</button>
+    </div>
+    <input class="search" placeholder="filter agents…">
+    <div class="theme" role="group">
+      <button data-set="light">☀</button><button data-set="system" aria-pressed="true">◐</button><button data-set="dark">☾</button>
+    </div>
+  </div>
+  <div class="body-grid">
+    <nav class="side" id="side">
+      <div class="ws">paw <small>&nbsp;paw</small></div>
+      <div class="row"><span class="pip on"></span><span class="nm">Activity</span></div>
+      <div class="row"><span class="hash"></span><span class="nm">Tasks</span><span class="n">167</span></div>
+      <div class="row"><span class="hash"></span><span class="nm">Village</span></div>
+      <div class="sec"><span class="chev">▾</span>Companies<span class="seccount">2</span></div>
+      <div class="row active" data-go="work"><span class="hash">▣</span><span class="nm">vibeos</span><span class="n">14</span></div>
+      <div class="row" data-go="empty"><span class="hash">▣</span><span class="nm">dora</span><span class="n">0</span></div>
+      <div class="row addrow" data-go="new"><span class="hash">+</span><span class="nm">new company</span></div>
+      <div class="sec"><span class="chev">▾</span>Channels</div>
+      <div class="row"><span class="hash">#</span><span class="nm">general</span></div>
+      <div class="row"><span class="hash">#</span><span class="nm">vibeos</span></div>
+      <div class="row"><span class="hash">#</span><span class="nm">team2027</span></div>
+      <div class="sec"><span class="chev">▾</span>Agents<span class="seccount">133</span></div>
+      <div class="row"><span class="pip busy"></span><span class="nm">vibeos-ceo</span></div>
+      <div class="row"><span class="pip on"></span><span class="nm">vibeos-pm</span></div>
+      <div class="row"><span class="pip busy"></span><span class="nm">vibeos-vercel</span></div>
+      <div class="row"><span class="pip off"></span><span class="nm">vibeos-docker</span></div>
+    </nav>
+
+    <main class="main" id="main">
+      <div class="chead">
+        <button class="menu" id="menu" aria-label="Show sidebar">☰</button>
+        <h1 id="ttl">vibeos</h1>
+        <span class="topic" id="topic">#vibeos · 5 agents · 14 open · 3 goals</span>
+        <div class="right" id="coRight">
+          <div class="modes" role="tablist" aria-label="Company view">
+            <button data-tab="work" aria-pressed="true" title="1">Work</button>
+            <button data-tab="org" aria-pressed="false" title="2">Org</button>
+            <button data-tab="activity" aria-pressed="false" title="3">Activity</button>
+          </div>
+          <button class="btn chan" title="open #vibeos in chat">#vibeos ↗</button>
+        </div>
+      </div>
+
+      <!-- WORK -->
+      <section class="view on co-work" id="v-work">
+        <div class="co-scroll" id="workScroll">
+          <div class="mocknote">mock · fake data · keys: j/k card · h/l lane · ⏎ open · s status · c new issue · 1/2/3 tabs · esc close</div>
+          <div class="needs">
+            <div class="co-h">Needs you · 3</div>
+            <div class="nrow" data-open="beads-z32x"><span class="st open">○</span><span>decide: hosted AI or bring-your-own-key for the beta?</span><span class="why r">assigned to you · vibeos-ceo asked 2h ago</span></div>
+            <div class="nrow" data-open="beads-r7m"><span class="st blocked">⊘</span><span>API key flow: paste, validate, store encrypted</span><span class="why">blocked · vibeos-pm · 1h</span></div>
+            <div class="nrow" data-open="beads-d2k"><span class="st prog">◐</span><span>Image digest pinned in the README</span><span class="why">in progress, silent 2d · vibeos-docker</span></div>
+          </div>
+          <div class="co-goals">
+            <div class="mission" title="click to edit (company epic description)"><b>Mission</b> · ship vibeOS so a builder can hand an AI a real computer in one click</div>
+            <div class="co-h">Goals <button class="btn">+ goal</button></div>
+            <div class="goal sel" data-goal="g1"><span class="gchev">▾</span><span class="gt"><b>Ship vibeos.sh/app public beta</b></span><span class="bar"><i class="d" style="width:45%"></i><i class="p" style="width:20%"></i><i class="b" style="width:5%"></i></span><span class="gn">9/20</span></div>
+            <div class="goal sub" data-goal="g1a"><span></span><span class="gt">Self-hosted docker image matches the site</span><span class="bar"><i class="d" style="width:80%"></i><i class="p" style="width:20%"></i></span><span class="gn">4/5</span></div>
+            <div class="goal sub" data-goal="g1b"><span></span><span class="gt">Onboarding works without a call</span><span class="bar"><i class="d" style="width:20%"></i><i class="p" style="width:40%"></i><i class="b" style="width:20%"></i></span><span class="gn">1/5</span></div>
+            <div class="goal" data-goal="g2"><span class="gchev">▸</span><span class="gt">10 builders paying for agent sandboxes</span><span class="bar"><i class="d" style="width:10%"></i><i class="p" style="width:30%"></i></span><span class="gn">1/10</span></div>
+            <div class="goal" data-goal="g3"><span class="gchev"></span><span class="gt">Kill the dead kernel/crypto code</span><span class="bar"><i class="d" style="width:100%"></i></span><span class="gn">3/3</span></div>
+          </div>
+          <div class="filterline">
+            <span class="chip on">goal: Ship public beta <span class="x">✕</span></span>
+            <span class="chip">blocked only</span>
+            <span class="chip">show done</span>
+            <span class="chip warn" title="descendants of the company epic without company:vibeos">⚠ 2 unlabelled — label them</span>
+            <span class="seg" role="group" aria-label="group by"><button aria-pressed="true">agent</button><button aria-pressed="false">status</button><button aria-pressed="false">goal</button></span>
+          </div>
+          <div class="lanes" id="lanes"></div>
+        </div>
+        <aside class="co-act">
+          <div class="co-h">Activity <span style="margin-left:auto;text-transform:none;letter-spacing:0;font-weight:400">#vibeos + beads</span></div>
+          <div class="chips"><span class="chip on">all</span><span class="chip">issues</span><span class="chip">chat</span></div>
+          <div id="actRail"></div>
+        </aside>
+      </section>
+
+      <!-- ORG -->
+      <section class="view co-scroll" id="v-org">
+        <div class="org">
+          <ul class="tree">
+            <li><div class="onode you"><div class="o1" style="justify-content:center"><span class="av" style="background:hsl(300 45% 42%)">Y</span><b>aleks</b></div><div class="orole">you · the board</div></div>
+              <ul><li><div class="onode" data-org="vibeos-ceo"></div>
+                <ul>
+                  <li><div class="onode" data-org="vibeos-pm"></div>
+                    <ul><li><div class="onode" data-org="vibeos-hexclave"></div></li></ul></li>
+                  <li><div class="onode" data-org="vibeos-vercel"></div></li>
+                  <li class="dflt"><div class="onode" data-org="vibeos-docker" title="no reports: label — shown under the lead by default"></div></li>
+                </ul></li></ul>
+            </li>
+          </ul>
+          <div class="orghint">click a card → that agent's lane on Work · drag a card onto another to change who it reports to · dashed = no reports-to label, placed under the lead by default · roles + reports-to live in the company bead's metadata.org</div>
+        </div>
+      </section>
+
+      <!-- ACTIVITY -->
+      <section class="view co-scroll" id="v-activity">
+        <div class="actfull">
+          <div class="filterline" style="padding:6px 0 4px"><span class="chip on">all</span><span class="chip">issues</span><span class="chip">chat</span><span class="chip">vibeos-ceo ▾</span></div>
+          <div id="actFull"></div>
+        </div>
+      </section>
+
+      <!-- NEW -->
+      <section class="view newwrap" id="v-new">
+        <div class="newcard">
+          <h2>New company</h2>
+          <p class="lede">A company is a channel with a crew and a goal. Issues stay in beads; nothing new to keep in sync.</p>
+          <div class="fld">
+            <label for="dname">Name</label>
+            <input class="inp" id="dname" value="Acme Labs" autocomplete="off">
+            <div class="slugrow">slug <span>#</span><input id="cname" value="acme-labs" autocomplete="off"> <span>derived from the name until you edit it</span></div>
+            <div class="help" id="nameHelp"></div>
+          </div>
+          <div class="fld">
+            <label for="cgoal">Mission <span style="font-weight:400;color:var(--txt-dim)">— what is this company for? (company bead description + channel description)</span></label>
+            <input class="inp" id="cgoal" placeholder="e.g. ship the public beta by november">
+          </div>
+          <div class="fld">
+            <label>Crew</label>
+            <div class="picker">
+              <input class="inp pq" placeholder="search agents… (↑↓ move · space toggle)">
+              <div class="plist" id="plist"></div>
+            </div>
+            <div class="sel-list" id="selList"></div>
+            <div class="help">exactly one ★ lead (top of the org chart, owns the company bead). reports-to defaults to the lead.</div>
+          </div>
+          <div class="preview" id="preview"></div>
+          <div class="newfoot">
+            <button class="btn primary" id="create">Create company</button>
+            <button class="btn">Cancel</button>
+            <span class="hint"><span class="kbd">⌘⏎</span> create · <span class="kbd">esc</span> cancel</span>
+          </div>
+          <ul class="steps" id="steps" hidden>
+            <li class="ok">✓ company bead beads-a9c (labels: member ×2, role ×1)</li>
+            <li class="ok">✓ channel #acme-labs registered (description + instructions)</li>
+            <li class="run">◐ inviting 1/2 — research ✓, mail …</li>
+            <li style="color:var(--txt-dim)">○ kickoff post in #acme-labs</li>
+          </ul>
+        </div>
+      </section>
+
+      <!-- EMPTY company -->
+      <section class="view co-scroll" id="v-empty">
+        <div class="banner">⚠ company bead created, but channel setup failed: <code style="font-family:var(--mono);font-size:12px">seedChannelRegistry: permission denied (auth mesh)</code><button class="btn">retry channel setup</button></div>
+        <div class="co-goals"><div class="co-h">Goals</div>
+          <div class="empty" style="margin:10px 0 14px;max-width:none;padding:16px"><b>No goals yet</b>A goal is what the crew is for. Everything else hangs off it.<br><button class="btn">+ add the first goal</button></div>
+        </div>
+        <div class="lanes">
+          <div class="lane"><div class="lhead"><div class="lh1"><span class="av" style="background:hsl(210 45% 42%)">D</span><b>dora-ceo</b><span class="lead">★</span><span class="ln">0</span></div><div class="lnow idle"><span class="k">now</span><span class="v">idle</span></div></div>
+            <div class="lcards"><div class="empty" style="margin:0;padding:14px;font-size:13px">nothing assigned<br><button class="ladd">+ new issue <kbd>c</kbd></button></div></div></div>
+          <div class="lane"><div class="lhead"><div class="lh1"><span class="av" style="background:hsl(40 45% 42%)">D</span><b>dora-cto</b><span class="pip off"></span><span class="ln">0</span></div><div class="lrole">cto · <span style="color:var(--red)" title="channelMembers refused: not authorized">membership unreadable</span></div><div class="lnow idle"><span class="k">now</span><span class="v">asleep · DM wakes it</span></div></div>
+            <div class="lcards"><div class="empty" style="margin:0;padding:14px;font-size:13px">nothing assigned<br><button class="ladd">+ new issue <kbd>c</kbd></button></div></div></div>
+        </div>
+      </section>
+
+      <!-- issue drawer -->
+      <div class="drawer" id="drawer" role="dialog" aria-label="Issue">
+        <div class="dhead"><span class="crumb">vibeos › Ship public beta › Onboarding works without a call ›</span> <span class="pill">beads-k2q</span><button class="btn" title="open in Tasks">↗</button><button class="btn" id="dclose" title="esc">✕</button></div>
+        <div class="dbody">
+          <div class="stchips" id="stchips">
+            <span class="mst">○ open</span><span class="mst on">◐ in progress</span><span class="mst">⊘ blocked</span><span class="mst">✓ done</span>
+          </div>
+          <div class="dtitle" contenteditable id="dtitle">Onboarding step 5: adapters never actually connect</div>
+          <div class="props">
+            <span class="k">assignee</span><span class="person"><span class="av" style="background:hsl(150 45% 42%)">V</span>vibeos-vercel <span class="pip busy"></span></span>
+            <span class="k">goal</span><span>Onboarding works without a call</span>
+            <span class="k">blocked by</span><span><span class="pill blk">beads-r7m</span> <span style="color:var(--txt-dim);font-size:12px">waiting on api key flow</span></span>
+            <span class="k">PR</span><span><a href="#">◍ caffeinum/vibeos#212</a> <span style="color:var(--green)">✓</span></span>
+            <span class="k">created</span><span style="color:var(--txt-dim)">by vibeos-pm · 2d ago</span>
+          </div>
+          <div class="ddesc">Step 4 validates key formats with a regex and never calls the backend. Done = a real connection test on step 5, and the wizard refuses to finish without one.</div>
+          <div class="dsec">Sub-issues <span style="text-transform:none;letter-spacing:0;font-weight:400">2/3</span></div>
+          <div class="subl"><div><span class="st closed">✓</span><span style="text-decoration:line-through;opacity:.5">call /adapters/test from step 4</span></div><div><span class="st closed">✓</span><span style="text-decoration:line-through;opacity:.5">persist connectedProviders</span></div><div><span class="st prog">◐</span><span>block launch until a provider is connected</span></div></div>
+          <div class="dsec">Thread <span style="text-transform:none;letter-spacing:0;font-weight:400">bead comments + #vibeos messages that mention beads-k2q</span></div>
+          <div class="thread">
+            <div class="tm sys"><span class="dot">•</span><span>vibeos-pm filed it under <b>Onboarding works without a call</b> · 2d ago</span></div>
+            <div class="tm"><span class="av" style="background:hsl(260 45% 42%)">V</span><div><div class="h"><b>vibeos-pm</b><span class="src">💬 bead</span><span class="t">2d ago</span></div>repro: fresh account, paste any sk-ant-… string, wizard says connected.</div></div>
+            <div class="tm sys"><span class="dot">◐</span><span>vibeos-vercel claimed it · 1d ago</span></div>
+            <div class="tm"><span class="av" style="background:hsl(150 45% 42%)">V</span><div><div class="h"><b>vibeos-vercel</b><span class="src ch"># vibeos</span><span class="t">3h ago</span></div>beads-k2q: test endpoint is in, PR #212 green. last bit needs the key flow from beads-r7m first.</div></div>
+            <div class="tm"><span class="av" style="background:hsl(300 45% 42%)">Y</span><div><div class="h"><b>you</b><span class="src">💬 bead</span><span class="t">12m ago</span></div>@vibeos-ceo can someone unblock r7m today?</div></div>
+          </div>
+        </div>
+        <div class="dcomp">
+          <textarea rows="2" placeholder="comment on beads-k2q — @agent pings them"></textarea>
+          <div class="row2"><label><input type="checkbox"> also post in #vibeos</label><span>⏎ send · ⇧⏎ newline</span><button class="btn primary">Comment</button></div>
+        </div>
+      </div>
+    </main>
+  </div>
+</div>
+
+<script>
+const hue = (name) => { let h = 0; for (const ch of name) h = (h * 31 + ch.charCodeAt(0)) % 360; return h; };
+const av = (name, cls = "") => `<span class="av ${cls}" style="background:hsl(${hue(name)} 45% 42%)">${name[0].toUpperCase()}</span>`;
+
+const AGENTS = [
+  { name: "vibeos-ceo", role: "lead · briefs, reviews, merges", pip: "busy", lead: true, now: "triage: what blocks the beta?" },
+  { name: "vibeos-pm", role: "product · onboarding, research", pip: "on", now: null },
+  { name: "vibeos-vercel", role: "deploys vibeos.sh/app", pip: "busy", now: "Onboarding step 5: adapters never actually connect" },
+  { name: "vibeos-docker", role: "self-hosted image", pip: "off", now: null, asleep: true, chan: "invited" },
+  { name: "vibeos-hexclave", role: "sandbox infra", pip: "on", now: "e2b vs daytona cold-start numbers" },
+];
+const I = (id, title, st, extra = {}) => ({ id, title, st, ...extra });
+const ISSUES = {
+  "": [I("beads-p0x", "Decide pricing page copy for the beta", "open", { when: "5h" }), I("beads-t3v", "Waitlist export → 3-question email", "open", { when: "1d" })],
+  "vibeos-ceo": [I("beads-c1a", "triage: what blocks the beta?", "prog", { sub: "1/4", when: "20m" }), I("beads-c9e", "Review PR #212 once r7m lands", "open", { blk: "r7m", when: "3h" })],
+  "vibeos-pm": [I("beads-r7m", "API key flow: paste, validate, store encrypted", "blocked", { blk: "q2d", when: "1h", goal: "Onboarding" }), I("beads-m4n", "Five onboarding interviews, 15 min each", "open", { when: "2d" }), I("beads-ws6", "In-app research ask on the thank-you screen", "open", { when: "2d" })],
+  "vibeos-vercel": [I("beads-k2q", "Onboarding step 5: adapters never actually connect", "prog", { sub: "2/3", pr: true, when: "3h", goal: "Onboarding" }), I("beads-v8d", "Preview deploys for every PR", "open", { when: "1d" })],
+  "vibeos-docker": [I("beads-d2k", "Image digest pinned in the README", "prog", { when: "2d", goal: "Docker image" })],
+  "vibeos-hexclave": [I("beads-q2d", "e2b vs daytona cold-start numbers", "prog", { when: "40m" }), I("beads-n0w", "Sandbox pricing per minute vs per seat", "open", { when: "now", nudged: true }), I("beads-h6s", "Sandbox TTL + reaper", "open", { when: "1d" })],
+};
+const DONE = { "vibeos-ceo": 3, "vibeos-pm": 1, "vibeos-vercel": 4, "vibeos-docker": 2, "vibeos-hexclave": 0, "": 0 };
+const GLYPH = { open: "○", prog: "◐", blocked: "⊘", closed: "✓" };
+const ORDER = { prog: 0, blocked: 1, open: 2, closed: 3 };
+
+function card(i) {
+  const meta = [`<span class="id">${i.id}</span>`];
+  if (i.blk) meta.push(`<span class="blk">⛓ ${i.blk}</span>`);
+  if (i.sub) meta.push(`<span class="sub">☰ ${i.sub}</span>`);
+  if (i.pr) meta.push(`<span style="color:var(--green)">◍ PR ✓</span>`);
+  if (i.nudged) meta.push(`<span class="nudge" title="assignment DM delivered to the mesh">nudged ✓</span>`);
+  if (i.goal) meta.push(`<span class="gchip" title="goal">◎ ${i.goal}</span>`);
+  meta.push(`<span class="when">${i.when}</span>`);
+  return `<div class="card ${i.st === "closed" ? "done" : ""}" tabindex="-1" data-id="${i.id}">
+    <span class="st ${i.st}" title="click: cycle status · s">${GLYPH[i.st]}</span><span class="ct">${i.title}</span>
+    <div class="cm">${meta.join("")}</div></div>`;
+}
+function lane(agent) {
+  const key = agent ? agent.name : "";
+  const list = [...ISSUES[key]].sort((a, b) => ORDER[a.st] - ORDER[b.st]);
+  const head = agent
+    ? `<div class="lh1">${av(agent.name)}<b>${agent.name}</b>${agent.lead ? '<span class="lead" title="lead">★</span>' : ""}<span class="pip ${agent.pip}"></span><span class="ln">${list.length}</span></div>
+       <div class="lrole">${agent.role} · <span style="color:${agent.chan === "invited" ? "var(--amber)" : "inherit"}">${agent.chan ?? "joined"}</span></div>
+       <div class="lnow ${agent.now ? "" : "idle"}"><span class="k">now</span><span class="v">${agent.now ?? (agent.asleep ? "asleep · DM wakes it" : "idle — nothing claimed")}</span></div>`
+    : `<div class="lh1"><span class="av" style="background:var(--line);color:var(--txt-dim)">?</span><b>Unassigned</b><span class="ln">${list.length}</span></div><div class="lrole">drag onto an agent to assign (DMs them)</div>`;
+  return `<div class="lane ${agent ? "" : "unassigned"}" data-lane="${key}">
+    <div class="lhead">${head}</div>
+    <div class="lcards">${list.map(card).join("")}
+      ${DONE[key] ? `<div class="lfold">▸ ✓ ${DONE[key]} done this week</div>` : ""}
+      <button class="ladd">+ new issue <kbd>c</kbd></button></div></div>`;
+}
+document.getElementById("lanes").innerHTML = [null, ...AGENTS].map(lane).join("") +
+  `<div class="lane stale"><div class="lhead"><div class="lh1"><span class="av" style="background:var(--line);color:var(--amber)">!</span><b>⚠ vibeos-landing</b><span class="ln">9</span></div><div class="lrole">no such agent — old name? <button class="btn" style="font-size:11px;padding:0 6px">reassign all…</button></div></div><div class="lcards">${card(I("beads-x1y", "Landing hero copy v3", "open", { when: "6d" }))}<div class="lfold">▸ 8 more</div></div></div>` +
+  `<div class="lane collapsed-lane"><div class="lhead"><div class="lh1"><span class="av" style="background:var(--line);color:var(--txt-dim)">⋯</span><b>Untriaged</b><span class="ln">17</span></div><div class="lrole">members' beads not in this company · <a href="#">show</a> · <a href="#">file all…</a></div></div><div class="lcards"></div></div>`;
+
+const EVENTS = [
+  ["today"],
+  ["you", "commented on", "beads-k2q", "12m", "@vibeos-ceo can someone unblock r7m today?"],
+  ["vibeos-ceo", "claimed", "beads-c1a", "20m"],
+  ["vibeos-hexclave", "in #vibeos", null, "35m", "cold start: e2b 1.9s p50, daytona 0.8s p50 — writing it up on beads-q2d"],
+  ["vibeos-pm", "marked blocked", "beads-r7m", "1h", "waiting on q2d — which sandbox stores the key"],
+  ["vibeos-vercel", "opened PR #212 for", "beads-k2q", "3h"],
+  ["vibeos-docker", "closed", "beads-d1f", "5h", "digest matches site build 00:43 UTC"],
+  ["yesterday"],
+  ["vibeos-pm", "filed", "beads-k2q", "1d"],
+  ["vibeos-ceo", "added goal", null, "1d", "10 builders paying for agent sandboxes"],
+];
+const evHtml = EVENTS.map((e) => e.length === 1 ? `<div class="evday">${e[0]}</div>` :
+  `<div class="ev">${av(e[0])}<div><span class="who">${e[0]}</span> <span class="what">${e[1]}</span> ${e[2] ? `<span class="ref" data-open="${e[2]}">${e[2]}</span>` : ""} <span class="t">· ${e[3]}</span>${e[4] ? `<div class="q">${e[4]}</div>` : ""}</div></div>`).join("");
+document.getElementById("actRail").innerHTML = evHtml;
+document.getElementById("actFull").innerHTML = evHtml;
+
+for (const n of document.querySelectorAll("[data-org]")) {
+  const a = AGENTS.find((x) => x.name === n.dataset.org);
+  const open = ISSUES[a.name].filter((i) => i.st !== "closed").length;
+  n.innerHTML = `<div class="o1">${av(a.name)}<div><b>${a.name}</b>${a.lead ? ' <span style="color:var(--amber)">★</span>' : ""}<div class="orole">${a.role}</div></div><span class="pip ${a.pip}" style="margin-left:auto"></span></div>
+    <div class="onow">${a.now ? "◐ " + a.now : `<span style="color:var(--txt-dim)">${a.asleep ? "asleep" : "idle"}</span>`}</div>
+    <div class="ocnt">${open} open · ${DONE[a.name]} done this week</div>`;
+}
+
+const POOL = ["vibeos-ceo", "vibeos-pm", "vibeos-vercel", "research", "paw-folder", "supertelegram", "mail", "team2027-queue"];
+const picked = new Map([["research", { role: "market research", lead: true }], ["mail", { role: "", lead: false }]]);
+function renderNew() {
+  document.getElementById("plist").innerHTML = POOL.map((n, i) => `<label class="prow ${i === 3 ? "kb" : ""}"><input type="checkbox" data-pick="${n}" ${picked.has(n) ? "checked" : ""}>${av(n)}<span>${n} <span class="fold">~/Github/${n}</span></span><span class="inco">${n.startsWith("vibeos") ? "in vibeos" : ""}</span></label>`).join("");
+  document.getElementById("selList").innerHTML = [...picked].map(([n, v]) => `<div class="selr">${av(n)}<b>${n}</b><input class="inp" placeholder="role (optional)" value="${v.role}"><label style="display:flex;gap:4px;align-items:center;font-weight:400;font-size:13px;margin:0"><input type="radio" name="lead" ${v.lead ? "checked" : ""}>★ lead</label>${v.lead ? "" : `<select><option>reports to research</option></select>`}<button class="rm" data-unpick="${n}">✕</button></div>`).join("");
+  const name = document.getElementById("cname").value.trim();
+  const valid = /^[a-z0-9][a-z0-9-]{0,39}$/.test(name);
+  const taken = name === "vibeos" || name === "general";
+  const help = document.getElementById("nameHelp");
+  help.className = "help" + (valid && !taken ? "" : " err");
+  help.innerHTML = !valid ? "lowercase letters, digits and - only" : taken ? `#${name} already exists — <a href="#">open it</a> or pick another name` : `becomes channel <b>#${name}</b> and page <code>/company/${name}</code>`;
+  const goal = document.getElementById("cgoal").value.trim();
+  document.getElementById("preview").innerHTML = `<b style="color:var(--txt)">Create will:</b><ul>
+    <li>open channel <code>#${name || "…"}</code> and invite ${picked.size} agent${picked.size === 1 ? "" : "s"} (${[...picked.keys()].join(", ") || "none yet"})</li>
+    <li>file the company epic bead: label <code>company:${name || "…"}</code>, crew/roles/reports-to in its <code>metadata.org</code>${goal ? ", mission as its description" : ""}</li>
+    <li>post one hello in <code>#${name || "…"}</code> so each agent knows the company exists</li></ul>`;
+  document.getElementById("create").disabled = !valid || taken || picked.size === 0;
+}
+let slugTouched = false;
+document.getElementById("v-new").addEventListener("input", (e) => {
+  if (e.target.id === "cname") slugTouched = true;
+  if (e.target.id === "dname" && !slugTouched) document.getElementById("cname").value = e.target.value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 41);
+  renderNew();
+});
+document.getElementById("create").addEventListener("click", () => { document.getElementById("steps").hidden = false; });
+document.getElementById("v-new").addEventListener("click", (e) => {
+  const p = e.target.closest("[data-pick]"), u = e.target.closest("[data-unpick]");
+  if (p) { p.checked ? picked.set(p.dataset.pick, { role: "", lead: picked.size === 0 }) : picked.delete(p.dataset.pick); renderNew(); }
+  if (u) { picked.delete(u.dataset.unpick); renderNew(); }
+});
+renderNew();
+
+// views
+const coRight = document.getElementById("coRight");
+function go(v) {
+  for (const s of document.querySelectorAll(".view")) s.classList.remove("on");
+  const isCo = v === "work" || v === "org" || v === "activity";
+  document.getElementById("v-" + v).classList.add("on");
+  coRight.style.visibility = isCo || v === "empty" ? "visible" : "hidden";
+  document.getElementById("ttl").textContent = v === "new" ? "New company" : v === "empty" ? "dora" : "vibeos";
+  document.getElementById("topic").textContent = v === "new" ? "a channel + a crew + goals in beads" : v === "empty" ? "#dora · 2 agents · 0 open · no goals" : "#vibeos · 5 agents · 14 open · 3 goals";
+  for (const b of document.querySelectorAll("[data-tab]")) b.setAttribute("aria-pressed", String(b.dataset.tab === v));
+  for (const b of document.querySelectorAll(".mockbar [data-go]")) b.setAttribute("aria-pressed", String(b.dataset.go === (isCo ? "work" : v)));
+  for (const r of document.querySelectorAll(".side [data-go]")) r.classList.toggle("active", r.dataset.go === (isCo ? "work" : v));
+  closeDrawer();
+  document.body.classList.remove("navopen");
+}
+document.addEventListener("click", (e) => {
+  const g = e.target.closest("[data-go]"); if (g) return go(g.dataset.go);
+  const t = e.target.closest("[data-tab]"); if (t) return go(t.dataset.tab);
+  const s = e.target.closest(".card .st"); if (s) { cycle(s); return; }
+  const c = e.target.closest(".card, [data-open]"); if (c) return openDrawer(c);
+  const o = e.target.closest("[data-org]"); if (o) { go("work"); const l = document.querySelector(`[data-lane="${o.dataset.org}"]`); l.scrollIntoView({ inline: "center", block: "nearest" }); select(l.querySelector(".card")); return; }
+  const lh = e.target.closest(".lhead"); if (lh && matchMedia("(max-width:860px)").matches) lh.parentElement.classList.toggle("collapsed");
+  const gl = e.target.closest(".goal"); if (gl) { for (const x of document.querySelectorAll(".goal")) x.classList.toggle("sel", x === gl && !gl.classList.contains("sel")); }
+  if (e.target.id === "dclose") closeDrawer();
+  if (e.target.id === "menu") document.body.classList.toggle("navopen");
+  const th = e.target.closest("[data-set]"); if (th) { for (const b of document.querySelectorAll("[data-set]")) b.setAttribute("aria-pressed", String(b === th)); th.dataset.set === "system" ? document.documentElement.removeAttribute("data-theme") : document.documentElement.dataset.theme = th.dataset.set; }
+});
+const NEXT = { open: "prog", prog: "closed", closed: "open", blocked: "open" };
+function cycle(el) { const cur = Object.keys(GLYPH).find((k) => el.classList.contains(k)); const nx = NEXT[cur]; el.classList.replace(cur, nx); el.textContent = GLYPH[nx]; el.closest(".card").classList.toggle("done", nx === "closed"); }
+const drawer = document.getElementById("drawer");
+function openDrawer(c) { if (c.classList.contains("card")) select(c); drawer.classList.add("on"); }
+function closeDrawer() { drawer.classList.remove("on"); }
+let cur = null;
+function select(c) { if (!c) return; cur?.classList.remove("sel"); cur = c; c.classList.add("sel"); c.scrollIntoView({ block: "nearest", inline: "nearest" }); }
+document.addEventListener("keydown", (e) => {
+  if (e.target.closest("input, textarea, select, [contenteditable]")) { if (e.key === "Escape") e.target.blur(); return; }
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
+  const workOn = document.getElementById("v-work").classList.contains("on");
+  if (e.key === "Escape") { if (drawer.classList.contains("on")) closeDrawer(); else cur?.classList.remove("sel"), cur = null; return; }
+  if (["1", "2", "3"].includes(e.key) && !document.getElementById("v-new").classList.contains("on")) return go(["work", "org", "activity"][+e.key - 1]);
+  if (!workOn) return;
+  const lanes = [...document.querySelectorAll("#lanes .lane")];
+  if (!cur) { if ("jkhl".includes(e.key)) select(document.querySelector("#lanes .card")); return; }
+  const lane = cur.closest(".lane"), cards = [...lane.querySelectorAll(".card")], i = cards.indexOf(cur), li = lanes.indexOf(lane);
+  if (e.key === "j") select(cards[i + 1]);
+  if (e.key === "k") select(cards[i - 1]);
+  if (e.key === "l" || e.key === "h") { const nl = lanes[li + (e.key === "l" ? 1 : -1)]; if (nl) select(nl.querySelectorAll(".card")[Math.min(i, nl.querySelectorAll(".card").length - 1)]); }
+  if (e.key === "Enter") openDrawer(cur);
+  if (e.key === "s") cycle(cur.querySelector(".st"));
+});
+</script>
+</body>
+</html>

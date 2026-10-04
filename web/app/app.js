@@ -1234,6 +1234,7 @@ function renderCompanies() {
       .catch(() => {});
   }
   const list = state.companies ?? [];
+  const listErr = company.companiesError();
   $("companiesCount").textContent = state.folded.companies && list.length ? String(list.length) : "";
   $("companies").innerHTML =
     list
@@ -1241,7 +1242,9 @@ function renderCompanies() {
         (c) =>
           `<div class="row${state.co?.slug === c.slug ? " active" : ""}" data-company="${esc(c.slug)}"><span class="hash">▣</span><span class="nm">${esc(c.slug)}</span>${c.onYou ? `<span class="count" style="background:none;color:var(--sidebar-txt);font-weight:400" title="beads blocked on you">${c.onYou} on you</span>` : ""}</div>`,
       )
-      .join("") + `<div class="row addrow${state.co?.page === "new" ? " active" : ""}" data-newco="1"><span class="hash">+</span><span class="nm">new company</span></div>`;
+      .join("") +
+    (listErr ? `<div class="row sub nonagent" style="color:var(--red)" title="${esc(listErr)}">couldn't list companies: ${esc(listErr.slice(0, 80))}</div>` : "") +
+    `<div class="row addrow${state.co?.page === "new" ? " active" : ""}" data-newco="1"><span class="hash">+</span><span class="nm">new company</span></div>`;
   for (const r of $("companies").querySelectorAll("[data-company]")) r.addEventListener("click", () => navigatePath(`/company/${r.dataset.company}`));
   $("companies").querySelector("[data-newco]").addEventListener("click", () => navigatePath("/new"));
 }
@@ -1398,6 +1401,7 @@ const company = initCompany({
   api,
   el: $,
   rows: () => state.rows,
+  space: () => state.space,
   md,
   build: CLIENT_BUILD,
   navigate: (path) => navigatePath(path),
