@@ -1,0 +1,35 @@
+docs/notes/company-random-1.html
+  s_ed25aaaf9c7e77::t_3a3d22359fc5a5 1-262
+docs/notes/company-random-2.html
+  s_ed25aaaf9c7e77::t_aa21d9806ce2f2 1-262
+docs/notes/company-random-3.html
+  s_ed25aaaf9c7e77::t_d0851a558fbff0 1-262
+docs/notes/company-random-4.html
+  s_ed25aaaf9c7e77::t_674dcea946e046 1-198
+docs/notes/company-random-5.html
+  s_ed25aaaf9c7e77::t_9f9478e6a809ea 1-196
+docs/notes/company-random-6.html
+  s_ed25aaaf9c7e77::t_535dff182a1493 1-202
+docs/notes/company-simple-1.html
+  s_ed25aaaf9c7e77::t_e8ddb253ef3009 142,206
+docs/notes/company-simple-2.html
+  s_ed25aaaf9c7e77::t_41125050bbda58 142,206
+docs/notes/company-simple-3.html
+  s_ed25aaaf9c7e77::t_433d2cfd439aa4 142,206
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "80e0bbeedc07c194b4c9d2813aea629fa7120bf2",
+  "prompts": {},
+  "sessions": {
+    "s_ed25aaaf9c7e77": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "90dd1251-161e-469a-96db-040d1e555035",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Aleksey Bykhun <theisease@gmail.com>"
+    }
+  }
+}
