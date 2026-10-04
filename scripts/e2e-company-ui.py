@@ -58,7 +58,12 @@ with sync_playwright() as p:
             ok("13 lead chat: the real #msgs + composer sit in a right column beside the company page", display(page, ".main > .msgs") != "none" and display(page, ".main > .comp") != "none" and msgs["x"] >= co["x"] + co["w"] - 2 and abs(msgs["w"] - 400) < 2, f"msgs={msgs} co={co}")
             ok("13 the chat header names the lead", page.inner_text("#title") == "alpha", page.inner_text("#title"))
             ok("13 the lead's PONG reply renders in that chat", re.search("pong", page.inner_text(".main > .msgs"), re.I) is not None)
-            ok("13 the milestone row reads 1/2", "1/2" in page.inner_text(".co-col"))
+            # the agents are REAL and may close beads themselves — compare against what the API says now
+            ms_row = page.inner_text(".co-ms-row")
+            api_ms = page.evaluate("""async () => { const d = await (await fetch('/api/company/test-co?fresh=1')).json();
+              const m = await import('/company-model.js'); const r = m.milestones(d.issues, d.company.epic).find((x) => x.title === 'Milestone one');
+              return r ? `${r.done}/${r.total}` : null }""")
+            ok("13 the milestone row shows the API's done/total", api_ms is not None and api_ms in ms_row, f"{ms_row!r} vs {api_ms}")
             page.screenshot(path=f"{OUT}/company-home-light.png")
             # the view toggle
             heads = page.eval_on_selector_all(".co-work .co-group h2", "els => els.map(e => e.textContent.trim())")
@@ -76,6 +81,9 @@ with sync_playwright() as p:
             ok("?view=agent overrides the stored choice", page.get_attribute('.co-views [data-view="agent"]', "aria-pressed") == "true")
             # the bead panel + a comment
             ok("10 the bead panel is NOT painted before a bead is opened", display(page, ".co-panel") in ("none", "missing"))
+            if page.locator(".co-work .co-bead .co-t").count() == 0:
+                page.click(".co-work .co-fold")  # the agents may have finished everything — open a done fold
+                page.wait_for_timeout(300)
             page.click(".co-work .co-bead .co-t")
             page.wait_for_timeout(1500)
             ok("10 clicking a bead PAINTS the panel", display(page, ".co-panel") == "flex")
@@ -162,6 +170,9 @@ with sync_playwright() as p:
     ok("phone: the lead chat collapses to a 'Chat with alpha →' row", display(page, ".co-chatslot") != "none" and "Chat with alpha" in page.inner_text(".co-chatslot"))
     ok("phone: the ☰ menu is painted", display(page, ".co-menu") != "none")
     page.screenshot(path=f"{OUT}/company-home-phone.png")
+    if page.locator(".co-work .co-bead .co-t").count() == 0:
+        page.click(".co-work .co-fold")
+        page.wait_for_timeout(300)
     page.click(".co-work .co-bead .co-t")
     page.wait_for_timeout(800)
     r = rect(page, ".co-panel")

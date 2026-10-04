@@ -211,6 +211,10 @@ try {
   ok("8 a duplicate root fails LOUD naming both ids", d8.status === 409 && String(d8.body.error).includes(epic) && String(d8.body.error).includes(dup), JSON.stringify(d8.body));
   bdRaw("update", dup, "--unset-metadata", "company");
   ok("8 …and recovers once the duplicate is unset", (await get("/api/company/test-co?fresh=1")).status === 200);
+  const before = (bd("list", "--all", "-n", "0") as unknown[]).length;
+  const hijack = await post("/api/companies", { name: "General", slug: "general", members: ["alpha"], lead: "alpha" });
+  const hijack2 = await post("/api/companies", { name: "Again", slug: "test-co", members: ["alpha"], lead: "alpha" });
+  ok("R1 a slug that is an existing channel is refused (409) and files nothing", hijack.status === 409 && hijack2.status === 409 && (bd("list", "--all", "-n", "0") as unknown[]).length === before, JSON.stringify(hijack.body));
 } catch (e) {
   fails++;
   console.error("✗ e2e threw:", (e as Error).stack);
