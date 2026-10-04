@@ -11,9 +11,8 @@
  * data is local and the operator just wrote to it from the composer.
  */
 import { execFile } from "node:child_process";
-import { homedir } from "node:os";
-import { join } from "node:path";
 import { toolDirs } from "./lifecycle.ts";
+import { beadsDir } from "./beads-dir.ts";
 import { prInfoByUrl, type PrInfo } from "./git.ts";
 
 export interface Task {
@@ -40,6 +39,15 @@ export interface Task {
   /** Closed beads stay VISIBLE (at the bottom) for {@link CLOSED_WINDOW_DAYS}: when and why. */
   closedAt?: string;
   closeReason?: string;
+  /** bd labels — `company:<slug>` ties a bead to a company (inherited by children at create). */
+  labels?: string[];
+  /** When bd first saw it go in_progress (bd's `started_at`) — the company feed's "started" event. */
+  startedAt?: string;
+  /** bd's free-form metadata object (a company epic keeps `{company, org}` here — it does NOT inherit). */
+  metadata?: Record<string, unknown>;
+  /** Ids this bead waits on through a `blocks` dependency (bd leaves the waiting bead `open`; who is
+   *  blocking whom is computed from this). Straight from `bd list --json`'s `dependencies`, no extra call. */
+  waitsOn?: string[];
 }
 
 /** How long a closed bead keeps showing at the bottom of the lists. Done work is still context —
@@ -59,6 +67,31 @@ export function sortTasks(tasks: Task[]): Task[] {
     if (s !== 0) return s;
     return (a.priority ?? 9) - (b.priority ?? 9);
   });
+}
+
+/** bd emits metadata as an object (or, in some places, a JSON string). Empty → undefined. A string
+ *  that isn't JSON is passed up as `{_unparsed}` rather than dropped — the company page quotes it. */
+function parseMetadata(v: unknown): Record<string, unknown> | undefined {
+  let o = v;
+  if (typeof v === "string") {
+    if (!v.trim()) return undefined;
+    try {
+      o = JSON.parse(v);
+    } catch {
+      return { _unparsed: v };
+    }
+  }
+  if (!o || typeof o !== "object" || Array.isArray(o)) return undefined;
+  return Object.keys(o).length ? (o as Record<string, unknown>) : undefined;
+}
+
+/** `dependencies:[{depends_on_id, type}]` → the ids of `blocks` dependencies, or undefined. */
+function blocksDeps(v: unknown): string[] | undefined {
+  if (!Array.isArray(v)) return undefined;
+  const ids = v
+    .filter((d): d is { depends_on_id: string; type: string } => !!d && typeof d === "object" && (d as { type?: unknown }).type === "blocks" && typeof (d as { depends_on_id?: unknown }).depends_on_id === "string")
+    .map((d) => d.depends_on_id);
+  return ids.length ? ids : undefined;
 }
 
 /** Parse `bd list --json` output. Tolerant per-row (a malformed row is dropped, not the whole list),
@@ -86,6 +119,10 @@ export function parseTasks(json: string): Task[] {
       closeReason: typeof r.close_reason === "string" && r.close_reason ? r.close_reason : undefined,
       type: typeof r.issue_type === "string" && r.issue_type ? r.issue_type : undefined,
       externalRef: typeof r.external_ref === "string" && r.external_ref ? r.external_ref : undefined,
+      labels: Array.isArray(r.labels) && r.labels.length ? r.labels.filter((l): l is string => typeof l === "string") : undefined,
+      metadata: parseMetadata(r.metadata),
+      waitsOn: blocksDeps(r.dependencies),
+      startedAt: typeof r.started_at === "string" && r.started_at ? r.started_at : undefined,
       createdAt: typeof r.created_at === "string" ? r.created_at : undefined,
       createdBy: typeof r.created_by === "string" && r.created_by ? r.created_by : undefined,
       updatedAt: typeof r.updated_at === "string" ? r.updated_at : undefined,
@@ -99,7 +136,7 @@ export function parseTasks(json: string): Task[] {
 export function bdEnv(): NodeJS.ProcessEnv {
   const dirs = (process.env.PATH ?? "").split(":").filter(Boolean);
   for (const d of toolDirs()) if (!dirs.includes(d)) dirs.push(d);
-  return { ...process.env, BEADS_DIR: join(homedir(), ".beads"), PATH: dirs.join(":") };
+  return { ...process.env, BEADS_DIR: beadsDir(), PATH: dirs.join(":") };
 }
 
 function bdExec(args: string[], timeoutMs: number): Promise<string> {
@@ -128,6 +165,13 @@ function bd(args: string[], timeoutMs = 30_000): Promise<string> {
 
 const TASKS_TTL_MS = 15_000;
 let cache: { at: number; tasks: Task[] } | undefined;
+/** Bumped on every write, so caches layered over bd (the company view's) drop with the task list's. */
+let writes = 0;
+export const writeGeneration = (): number => writes;
+function invalidate(): void {
+  cache = undefined;
+  writes++;
+}
 
 /** The open work (bd's default list: open + in_progress + blocked), newest read ≤15s old. */
 export async function listTasks(): Promise<Task[]> {
@@ -187,21 +231,37 @@ export async function createTask(title: string, description?: string): Promise<T
 
 /** File a task and return its bd-assigned id (`bd create --silent` prints exactly that) — the task
  *  pad stamps it onto the row the operator is still typing in. */
-export async function createTaskGetId(title: string, description?: string, parent?: string, assignee?: string): Promise<string> {
+export interface CreateExtras {
+  /** bd issue type (`epic` for a company or a goal). */
+  type?: string;
+  labels?: string[];
+  /** Don't inherit the parent's labels — a goal must not pick up the company root's member/role labels. */
+  noInheritLabels?: boolean;
+  metadata?: Record<string, unknown>;
+}
+
+export async function createTaskGetId(title: string, description?: string, parent?: string, assignee?: string, extras: CreateExtras = {}): Promise<string> {
   const args = ["create", title, "--silent"];
+  if (extras.type) args.push("-t", extras.type);
+  if (extras.labels?.length) args.push("-l", extras.labels.join(","));
+  if (extras.noInheritLabels) args.push("--no-inherit-labels");
+  if (extras.metadata) args.push("--metadata", JSON.stringify(extras.metadata));
   if (description) args.push("-d", description);
   if (parent) args.push("--parent", parent);
   if (assignee) args.push("-a", assignee);
   const id = (await bd(args)).trim().split("\n").pop() ?? "";
-  cache = undefined;
+  invalidate();
   if (!id) throw new Error("bd create returned no id");
   return id;
 }
 
 /** Edit a task in place. Only the fields given are touched; asking for nothing is a caller bug and
  *  fails loud rather than invoking bd as a no-op. */
-export async function updateTask(id: string, fields: { title?: string; description?: string; status?: string; parent?: string; assignee?: string }): Promise<void> {
+export async function updateTask(id: string, fields: { title?: string; description?: string; status?: string; parent?: string; assignee?: string; addLabels?: string[]; removeLabels?: string[]; metadata?: Record<string, unknown> }): Promise<void> {
   const args = ["update", id];
+  if (fields.metadata !== undefined) args.push("--metadata", JSON.stringify(fields.metadata));
+  for (const l of fields.addLabels ?? []) args.push("--add-label", l);
+  for (const l of fields.removeLabels ?? []) args.push("--remove-label", l);
   if (fields.assignee !== undefined) args.push("-a", fields.assignee);
   if (fields.title !== undefined) args.push("--title", fields.title);
   if (fields.description !== undefined) args.push("-d", fields.description);
@@ -209,14 +269,37 @@ export async function updateTask(id: string, fields: { title?: string; descripti
   if (fields.parent !== undefined) args.push("--parent", fields.parent); // "" clears — bd's own convention
   if (args.length === 2) throw new Error("updateTask: no fields to update");
   await bd(args);
-  cache = undefined;
+  invalidate();
 }
 
 /** Attach a comment to a bead — durable, part of the task's record (`bd show`/`bd comments`), unlike
  *  a DM which only the recipient sees. */
+/** Every bead carrying ALL of `labels`, closed included (a company's goal progress counts closed
+ *  work). Uncached here — the caller (company view) keeps its own cache keyed on writeGeneration. */
+export async function listLabelled(labels: string[]): Promise<Task[]> {
+  if (!labels.length) throw new Error("listLabelled: at least one label");
+  const args = ["list", "--json", "-n", "0", "--all"];
+  for (const l of labels) args.push("-l", l);
+  return parseTasks(await bd(args));
+}
+
+/** Open beads whose labels match a glob (`company:*`) — one call for every company's open work. */
+export async function listLabelPattern(pattern: string): Promise<Task[]> {
+  return parseTasks(await bd(["list", "--json", "-n", "0", "--label-pattern", pattern]));
+}
+
+/** Beads by metadata: `{hasKey}` → `--has-metadata-key`, `{field: [k, v]}` → `--metadata-field k=v`. Closed included. */
+export async function listByMetadata(q: { hasKey?: string; field?: [string, string] }): Promise<Task[]> {
+  const args = ["list", "--json", "-n", "0", "--all"];
+  if (q.hasKey) args.push("--has-metadata-key", q.hasKey);
+  if (q.field) args.push("--metadata-field", `${q.field[0]}=${q.field[1]}`);
+  if (args.length === 5) throw new Error("listByMetadata: give hasKey or field");
+  return parseTasks(await bd(args));
+}
+
 export async function commentTask(id: string, text: string): Promise<void> {
   await bd(["comment", id, text]);
-  cache = undefined; // comment_count changed
+  invalidate(); // comment_count changed
 }
 
 /** The PRs-sidebar rows a task list contributes: one per merge-request bead with a RESOLVED PR,
@@ -262,5 +345,5 @@ export async function closeTask(id: string, reason?: string): Promise<void> {
   const args = ["close", id];
   if (reason) args.push("--reason", reason);
   await bd(args);
-  cache = undefined;
+  invalidate();
 }

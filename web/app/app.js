@@ -24,6 +24,8 @@ import { wireEditableList } from "./editlist.js";
 import { initTaskspad } from "./taskspad.js";
 import { initBoard } from "./board.js";
 import { initVillage } from "./village.js";
+import { initCompany } from "./company.js";
+import { parsePath } from "./company-model.js";
 import { initPalette } from "./palette.js";
 import { composeQuote, quotable } from "./quote.js";
 
@@ -36,6 +38,9 @@ const TASKS = "~tasks";
 const BOARD = "~board"; // the kanban view of the same list — a sibling of Tasks in the focus model
 const SEARCH = "~search"; // results of the last search, a view like Tasks/Board (the composer hides)
 const VILLAGE = "~village"; // the transit-map view of the fleet — a sibling of Tasks/Board in the focus model
+const COMPANY = "~co:"; // + slug: a company page (/company/<slug>) — a focus target like Board
+const NEWCO = "~new"; // the /new company form
+const isCompanyFocus = (f) => typeof f === "string" && (f === NEWCO || f.startsWith(COMPANY));
 
 /**
  * Any uncaught error becomes VISIBLE — a red banner with the message, on the page itself. "The tab
@@ -64,7 +69,7 @@ window.addEventListener("unhandledrejection", (e) => showFault(`unhandled: ${e.r
 // The client names its own build, loudly, so "which code is this tab running" is answered by any
 // screenshot instead of a forensic session (the 2026-08-25 evening: three rounds of fixes debugged
 // against tabs of unknown vintage). Stamped by paw-folder at edit time; shown in the header hint.
-const CLIENT_BUILD = "palette-1";
+const CLIENT_BUILD = "company-1";
 console.log("[paw] client build", CLIENT_BUILD);
 
 const state = {
@@ -893,7 +898,7 @@ function render() {
         ? esc(state.search ? `search "${state.search.q}" · ${state.search.phase === "done" ? "done" : state.search.phase + "…"}` : "search")
         : esc(`${state.rows.length} agents · ${state.unread} unread`);
   renderComposerMode();
-  $("main").classList.toggle("nofocus", !state.focus || state.focus === TASKS || state.focus === BOARD || state.focus === SEARCH || state.focus === VILLAGE);
+  $("main").classList.toggle("nofocus", !state.focus || state.focus === TASKS || state.focus === BOARD || state.focus === SEARCH || state.focus === VILLAGE || isCompanyFocus(state.focus));
   // The pad follows FOCUS — it is never opened or closed on its own. (Render is the one place that
   // reconciles it, so a deep link, a poll, and a click all end in the same state.)
   if (state.focus === TASKS) {
@@ -907,9 +912,16 @@ function render() {
     village.update(state.space, state.rows, state.village || {});
     void loadVillage(); // refresh edges/last-lines from /api/village; re-renders on arrival
   } else if (village.isOpen()) village.close();
+  if (state.focus === NEWCO) company.showNew(state.newPrefill);
+  else if (isCompanyFocus(state.focus)) {
+    company.showCompany(state.focus.slice(COMPANY.length), state.companySub ?? {});
+    state.companySub = undefined;
+    company.tick();
+  } else if (company.isOpen()) company.close();
   $("input").placeholder = state.focus ? `message ${state.focus}` : "";
   renderSidebarExtras();
   renderTasks();
+  renderCompanies();
   renderAgents(now);
   renderPrs();
   applyFolds();
@@ -1194,6 +1206,44 @@ function renderTasks() {
   $("villageRow").firstElementChild.addEventListener("click", () => focusTarget(VILLAGE));
 }
 
+/** The Companies section: one row per company + "+ new company". Refreshed every 30s, not on the
+ *  2s tick (each list is a bd call). */
+let companiesAt = 0;
+function renderCompanies() {
+  if (Date.now() - companiesAt > 30_000) {
+    companiesAt = Date.now();
+    void company
+      .loadCompanies()
+      .then((list) => {
+        state.companies = list;
+        renderCompanies();
+      })
+      .catch(() => {});
+  }
+  const list = state.companies ?? [];
+  $("companiesCount").textContent = state.folded.companies && list.length ? String(list.length) : "";
+  $("companies").innerHTML =
+    list.map((c) => `<div class="row${state.focus === COMPANY + c.slug ? " active" : ""}" data-company="${esc(c.slug)}"><span class="hash">▣</span><span class="nm">${esc(c.slug)}</span></div>`).join("") +
+    `<div class="row addrow${state.focus === NEWCO ? " active" : ""}" data-newco="1"><span class="hash">+</span><span class="nm">new company</span></div>`;
+  for (const r of $("companies").querySelectorAll("[data-company]")) r.addEventListener("click", () => focusTarget(COMPANY + r.dataset.company));
+  $("companies").querySelector("[data-newco]").addEventListener("click", () => {
+    state.newPrefill = undefined;
+    focusTarget(NEWCO);
+  });
+}
+
+/** Path navigation from inside the company pages (`/new`, `/company/x`, `/`). */
+function navigatePath(path) {
+  const u = new URL(path, location.origin);
+  const p = parsePath(u.pathname);
+  if (p?.page === "new") {
+    state.newPrefill = u.searchParams.get("name") ?? undefined;
+    return focusTarget(NEWCO);
+  }
+  if (p?.page === "company") return focusTarget(COMPANY + p.slug);
+  focusTarget(null);
+}
+
 /**
  * The per-agent Tasks pane (Chat | Trace | Tasks): the GLOBAL list filtered to this agent — assigned
  * to it or filed by it — as an editable checklist on the shared editlist.js contract. A new row here
@@ -1294,6 +1344,22 @@ const taskspad = initTaskspad({
   },
 });
 try { document.querySelector(".padhint").textContent += ` · build ${CLIENT_BUILD}`; } catch { /* hint is cosmetic */ }
+const company = initCompany({
+  api,
+  el: $,
+  rows: () => state.rows,
+  avatarColor,
+  md,
+  build: CLIENT_BUILD,
+  navigate: (path) => navigatePath(path),
+  onSubState: () => syncUrl(),
+  onOpenChannel: (slug) => focusTarget("#" + slug),
+  openNav: () => openNav(),
+  onFocusAgent: (name) => {
+    state.mode = "chat";
+    focusTarget(name);
+  },
+});
 const village = initVillage({ onFocusAgent: (name) => { state.mode = "chat"; focusTarget(name); } }); // a village click opens the CHAT, not whatever mode was last active (a codex worker has no trace)
 // ⌘K/Ctrl+K command palette: jump to any agent, channel, or view. A VIEW over focusTarget — picking
 // here is identical to a sidebar click. Items are built fresh on open from the current state.
@@ -1303,6 +1369,8 @@ const palette = initPalette({
     { target: TASKS, label: "Tasks", kind: "view" },
     { target: BOARD, label: "Board", kind: "view" },
     { target: VILLAGE, label: "Village", kind: "view" },
+    { target: NEWCO, label: "New company", kind: "view" },
+    ...(state.companies ?? []).map((c) => ({ target: COMPANY + c.slug, label: "▣ " + c.slug, kind: "view" })),
     ...state.channels.map((ch) => ({ target: "#" + ch, label: "#" + ch, kind: "channel" })),
     ...state.rows.map((r) => ({ target: r.name, label: r.name, kind: "agent", live: r.live, busy: r.busy, status: r.mesh, hint: shortPath(r.folder || "") })),
   ],
@@ -1523,6 +1591,15 @@ function focusAgent(name) {
  * Back to leave the page.
  */
 function syncUrl() {
+  if (isCompanyFocus(state.focus)) {
+    const path = state.focus === NEWCO ? "/new" : `/company/${encodeURIComponent(state.focus.slice(COMPANY.length))}`;
+    const q = state.focus === NEWCO ? new URLSearchParams(state.newPrefill ? { name: state.newPrefill } : {}) : company.query();
+    const url = path + (q.toString() ? `?${q}` : "");
+    // A page change is a history entry (Back works); a sub-state change (tab, drawer) replaces it.
+    if (location.pathname !== path) history.pushState(null, "", url);
+    else if (location.pathname + location.search !== url) history.replaceState(null, "", url);
+    return;
+  }
   const q = new URLSearchParams();
   if (state.focus === TASKS) q.set("at", "tasks");
   else if (state.focus === BOARD) q.set("at", "board");
@@ -1530,7 +1607,9 @@ function syncUrl() {
   else if (state.focus === VILLAGE) q.set("at", "village");
   else if (state.focus) q.set("at", state.focus);
   if (state.mode !== "chat") q.set("view", state.mode);
-  history.replaceState(null, "", q.toString() ? `?${q}` : location.pathname);
+  const url = q.toString() ? `/?${q}` : "/";
+  if (parsePath(location.pathname)) history.pushState(null, "", url); // leaving a company page is a page change
+  else history.replaceState(null, "", url);
 }
 
 async function loadChannel(name) {
@@ -1936,6 +2015,19 @@ function stepConversation(delta) {
   if (next !== state.focus) focusTarget(next);
 }
 
+// The company page's keys (j/k/1/2/3/s/…) — capture phase, and only when nothing else has the caret
+// (company.onKey decides). The palette keeps ⌘K: onKey ignores modified keys.
+document.addEventListener(
+  "keydown",
+  (e) => {
+    if (isCompanyFocus(state.focus) && document.getElementById("palette")?.hidden !== false &&company.onKey(e)) {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+    }
+  },
+  true,
+);
+
 document.addEventListener("keydown", (e) => {
   // ⌘K / Ctrl+K toggles the command palette from anywhere (composer included).
   if ((e.metaKey || e.ctrlKey) && !e.altKey && (e.key === "k" || e.key === "K")) {
@@ -1974,15 +2066,37 @@ applyTheme((() => {
   }
 })());
 
-(function readUrl() {
+function readUrl() {
   const q = new URLSearchParams(location.search);
+  const p = parsePath(location.pathname);
+  if (p?.page === "new") {
+    state.focus = NEWCO;
+    state.newPrefill = q.get("name") ?? undefined;
+    return;
+  }
+  if (p?.page === "company") {
+    state.focus = COMPANY + p.slug;
+    state.companySub = { layout: q.get("layout") ?? undefined, issue: q.get("issue") ?? undefined, fromUrl: true };
+    return;
+  }
   if (q.get("at") === "tasks") state.focus = TASKS;
   else if (q.get("at") === "board") state.focus = BOARD;
   else if (q.get("at") === "search") { state.focus = SEARCH; if (q.get("q")) setTimeout(() => runSearch(q.get("q")), 0); }
   else if (q.get("at") === "village") state.focus = VILLAGE;
   else if (q.get("at")) state.focus = q.get("at");
   if (q.get("view") === "trace") state.mode = "trace";
-})();
+}
+readUrl();
+window.addEventListener("popstate", () => {
+  const before = state.focus;
+  state.focus = null;
+  readUrl();
+  const f = state.focus;
+  if (f !== before) {
+    state.focus = before;
+    focusTarget(f);
+  } else render();
+});
 await Promise.all([loadInbox().catch(() => {}), loadStatus().catch(() => {})]);
 // Restore the draft HERE rather than in readUrl: drafts are keyed by space, and the space is only known
 // once the first inbox read lands — restoring any earlier reads the wrong key and comes back empty,

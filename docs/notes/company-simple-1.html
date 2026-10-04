@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="en" data-screen="work" data-layout="1">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Simple 1 — company</title>
+<!-- Simple 1: minimal company page. Only: name + mission, members, each member's beads
+     (title + status), one way to add, click → description + comments. 1 = a column per agent,
+     2 = one list grouped by agent, 3 = one list grouped by status with the agent as a tag.
+     Static mock, fake data (docs/notes/company-spec.md). -->
+<style>
+  :root { color-scheme:light dark; --bg:#FFFFFF; --fg:#111111; --dim:#767676; --line:#ECECEC; --soft:#F6F6F6; --acc:#2563EB; }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg:#111111; --fg:#EDEDED; --dim:#8A8A8A; --line:#262626; --soft:#1A1A1A; --acc:#6EA0FF; } }
+    :root[data-theme="light"] { color-scheme:light; }
+  :root[data-theme="dark"] { color-scheme:dark; --bg:#111111; --fg:#EDEDED; --dim:#8A8A8A; --line:#262626; --soft:#1A1A1A; --acc:#6EA0FF; }
+  * { box-sizing:border-box; }
+  html, body { margin:0; background:var(--bg); color:var(--fg); }
+  body { font:15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; -webkit-font-smoothing:antialiased; }
+  button, input, textarea { font:inherit; color:inherit; }
+  a, .link { color:var(--acc); text-decoration:none; cursor:pointer; background:none; border:0; padding:0; }
+  :focus-visible { outline:2px solid var(--acc); outline-offset:2px; }
+  .screen { display:none; }
+  html[data-screen="work"] #work, html[data-screen="new"] #new { display:block; }
+
+  .wrap { max-width:1280px; margin:0 auto; padding:56px 32px 96px; }
+  html[data-layout="2"] .wrap, html[data-layout="3"] .wrap { max-width:680px; }
+  header { display:flex; align-items:baseline; gap:16px; margin-bottom:48px; }
+  header div { flex:1; }
+  h1 { font-size:28px; font-weight:600; margin:0; letter-spacing:-.01em; }
+  .mission { color:var(--dim); margin:4px 0 0; }
+  .dim { color:var(--dim); }
+  .small { font-size:13px; }
+  .dot { display:inline-block; width:7px; height:7px; border-radius:50%; background:var(--dim); opacity:.35; margin-left:6px; vertical-align:middle; }
+  .dot.live { background:var(--fg); opacity:.8; }
+
+  /* a bead row — the same everywhere */
+  .bead { display:flex; gap:10px; align-items:baseline; padding:7px 0; cursor:pointer; }
+  .bead .st { width:14px; flex:none; text-align:center; color:var(--dim); }
+  .bead .t { flex:1; }
+  .bead:hover .t { text-decoration:underline; text-decoration-color:var(--line); text-underline-offset:3px; }
+  .bead.done .t { color:var(--dim); text-decoration:line-through; }
+  .bead.sel .t { color:var(--acc); }
+  .tag { font-size:13px; color:var(--dim); white-space:nowrap; }
+  .add { display:block; margin-top:6px; font-size:14px; }
+  .addin { width:100%; border:0; border-bottom:1px solid var(--line); background:none; padding:6px 0; outline:none; }
+  .addin:focus { border-color:var(--acc); }
+
+  /* 1 — a column per agent */
+  .cols { display:grid; grid-template-columns:repeat(auto-fit, minmax(180px, 1fr)); gap:40px 28px; }
+  .col h2, .group h2 { font-size:13px; font-weight:600; margin:0 0 8px; padding-bottom:8px; border-bottom:1px solid var(--line); }
+  /* 2 — one list grouped by agent */
+  .group { margin-bottom:36px; }
+  /* 3 — one list grouped by status */
+  .addbar { display:flex; gap:10px; align-items:baseline; margin-bottom:36px; }
+  .addbar input { flex:1; }
+  .addbar select { border:0; border-bottom:1px solid var(--line); background:none; color:var(--dim); font:inherit; padding:6px 0; }
+  .members { color:var(--dim); font-size:14px; margin:-32px 0 40px; }
+
+  /* the bead, opened */
+  .panel { position:fixed; top:0; right:0; bottom:0; width:min(440px,100%); background:var(--bg); border-left:1px solid var(--line); padding:32px 32px 24px; display:none; flex-direction:column; z-index:5; }
+  .panel.on { display:flex; }
+  .panel .close { position:absolute; top:22px; right:24px; color:var(--dim); font-size:20px; background:none; border:0; cursor:pointer; }
+  .panel h3 { font-size:20px; font-weight:600; margin:0 32px 6px 0; line-height:1.3; }
+  .panel .desc { margin:20px 0 28px; white-space:pre-wrap; }
+  .panel .scroll { flex:1; overflow:auto; }
+  .comment { margin:0 0 16px; }
+  .comment .who { font-size:13px; color:var(--dim); }
+  .panel textarea { width:100%; border:1px solid var(--line); border-radius:6px; background:none; padding:10px; resize:none; outline:none; }
+  .panel textarea:focus { border-color:var(--acc); }
+  .btn { border:0; background:var(--fg); color:var(--bg); border-radius:6px; padding:7px 16px; cursor:pointer; font-weight:500; }
+  .btn:disabled { opacity:.35; cursor:not-allowed; }
+
+  /* /new */
+  .form { max-width:420px; margin:0 auto; padding:72px 32px; }
+  .form label.f { display:block; font-size:13px; color:var(--dim); margin:28px 0 6px; }
+  .form input[type=text] { width:100%; border:0; border-bottom:1px solid var(--line); background:none; padding:6px 0; font-size:18px; outline:none; }
+  .form input[type=text]:focus { border-color:var(--acc); }
+  .pick { display:flex; gap:10px; align-items:center; padding:6px 0; cursor:pointer; }
+  .pick input { accent-color:var(--acc); margin:0; }
+  .form .btn { margin-top:32px; }
+  .steps { list-style:none; padding:0; margin:20px 0 0; }
+  .steps li { padding:2px 0; }
+  .steps .bad { color:#D93025; }
+  :root[data-theme="dark"] .steps .bad { color:#FF7B72; }
+  @media (prefers-color-scheme: dark) { .steps .bad { color:#FF7B72; } }
+
+  @media (max-width:640px) {
+    .wrap { padding:32px 20px 64px; }
+    header { margin-bottom:32px; }
+    .cols { grid-template-columns:1fr; gap:32px; }
+    .members { margin:-20px 0 28px; }
+    .panel { padding:24px 20px 20px; border-left:0; }
+    .form { padding:40px 20px; }
+  }
+</style>
+</head>
+<body>
+<div id="work" class="screen">
+  <div class="wrap">
+    <header><div><h1>vibeOS</h1><p class="mission">Ship vibeOS so a builder can hand an AI a real computer in one click.</p></div><a href="#new" data-go="new" class="small">New company</a></header>
+    <main id="main"></main>
+  </div>
+</div>
+
+<div id="new" class="screen">
+  <div class="form">
+    <h1>New company</h1>
+    <label class="f" for="name">Name</label>
+    <input type="text" id="name" placeholder="Acme Labs" autocomplete="off">
+    <label class="f" for="mission">Mission <span style="opacity:.7">(optional)</span></label>
+    <input type="text" id="mission" placeholder="What is it for?" autocomplete="off">
+    <label class="f">Agents</label>
+    <div id="picks"></div>
+    <button class="btn" id="create" disabled>Create</button>
+    <p class="dim small" style="margin-top:12px">Creates #<span id="slug">…</span> with these agents. <a href="#" data-go="work">Cancel</a></p>
+    <ol class="steps small" id="steps" hidden></ol>
+  </div>
+</div>
+
+<aside class="panel" id="panel" role="dialog" aria-label="Bead"></aside>
+
+<script>
+const AGENTS = [
+  { name: "vibeos-ceo", live: true }, { name: "vibeos-pm", live: true }, { name: "vibeos-vercel", live: true },
+  { name: "vibeos-docker", live: false }, { name: "vibeos-hexclave", live: true },
+];
+const BEADS = [
+  { id: "c1a", who: "vibeos-ceo", st: "prog", t: "Triage what blocks the beta", d: "List everything between today and a public beta, assign each item, close what isn't needed." },
+  { id: "c9e", who: "vibeos-ceo", st: "open", t: "Review PR #212" },
+  { id: "r7m", who: "vibeos-pm", st: "blocked", t: "API key flow: paste, validate, store", d: "Users paste a key, we test it against the provider, store it encrypted.\nBlocked until we know which sandbox holds the key (q2d).", c: [["vibeos-pm", "waiting on q2d — which sandbox stores the key"], ["aleks", "@vibeos-ceo can someone unblock this today?"]] },
+  { id: "m4n", who: "vibeos-pm", st: "open", t: "Five onboarding interviews" },
+  { id: "k2q", who: "vibeos-vercel", st: "prog", t: "Onboarding step 5 never actually connects", d: "Step 4 checks the key format with a regex and never calls the backend. Done = a real connection test on step 5, and the wizard won't finish without one.", c: [["vibeos-pm", "repro: fresh account, paste any sk-ant-… string, wizard says connected."], ["vibeos-vercel", "test endpoint is in, PR #212 green. last bit needs r7m first."]] },
+  { id: "v8d", who: "vibeos-vercel", st: "open", t: "Preview deploys for every PR" },
+  { id: "w1q", who: "vibeos-vercel", st: "closed", t: "Move the landing page to the new domain" },
+  { id: "d2k", who: "vibeos-docker", st: "open", t: "Pin the image digest in the README" },
+  { id: "q2d", who: "vibeos-hexclave", st: "prog", t: "Compare e2b and daytona cold starts", c: [["vibeos-hexclave", "e2b 1.9s p50, daytona 0.8s p50 — writing it up"]] },
+  { id: "n0w", who: "vibeos-hexclave", st: "open", t: "Sandbox pricing per minute or per seat" },
+];
+const GLYPH = { open: "○", prog: "◐", blocked: "⊘", closed: "✓" };
+const WORD = { prog: "In progress", blocked: "Blocked", open: "To do", closed: "Done" };
+const ORDER = ["prog", "blocked", "open", "closed"];
+const LAYOUT = document.documentElement.dataset.layout;
+if (location.hash === "#new") document.documentElement.dataset.screen = "new";
+if (location.hash === "#dark") document.documentElement.dataset.theme = "dark";
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const mine = (w) => BEADS.filter((b) => b.who === w).sort((a, b) => ORDER.indexOf(a.st) - ORDER.indexOf(b.st));
+const row = (b, tag) => `<div class="bead ${b.st === "closed" ? "done" : ""}" data-id="${b.id}"><span class="st" title="${WORD[b.st]}">${GLYPH[b.st]}</span><span class="t">${esc(b.t)}</span>${tag ? `<span class="tag">${b.who}</span>` : ""}</div>`;
+const head = (a) => `<h2>${a.name}<span class="dot ${a.live ? "live" : ""}" title="${a.live ? "online" : "asleep"}"></span></h2>`;
+const adder = (a) => `<button class="link add" data-add="${a.name}">+ Add</button>`;
+
+function render() {
+  const main = document.getElementById("main");
+  if (LAYOUT === "1") main.innerHTML = `<div class="cols">${AGENTS.map((a) => `<section class="col">${head(a)}${mine(a.name).map((b) => row(b)).join("")}${adder(a)}</section>`).join("")}</div>`;
+  if (LAYOUT === "2") main.innerHTML = AGENTS.map((a) => `<section class="group">${head(a)}${mine(a.name).map((b) => row(b)).join("")}${adder(a)}</section>`).join("");
+  if (LAYOUT === "3") main.innerHTML =
+    `<p class="members">${AGENTS.map((a) => `${a.name}<span class="dot ${a.live ? "live" : ""}"></span>`).join(" &nbsp;·&nbsp; ")}</p>
+     <div class="addbar"><input class="addin" id="add3" placeholder="Add a bead…"><select id="who3">${AGENTS.map((a) => `<option>${a.name}</option>`).join("")}</select></div>` +
+    ORDER.map((s) => { const list = BEADS.filter((b) => b.st === s); return list.length ? `<section class="group"><h2>${WORD[s]} <span class="dim" style="font-weight:400">${list.length}</span></h2>${list.map((b) => row(b, true)).join("")}</section>` : ""; }).join("");
+}
+render();
+
+const panel = document.getElementById("panel");
+function open(id) {
+  const b = BEADS.find((x) => x.id === id);
+  for (const r of document.querySelectorAll(".bead")) r.classList.toggle("sel", r.dataset.id === id);
+  panel.innerHTML = `<button class="close" data-close aria-label="close">×</button>
+    <h3>${esc(b.t)}</h3><div class="dim small">${GLYPH[b.st]} ${WORD[b.st]} · ${b.who} · beads-${b.id}</div>
+    <div class="scroll"><p class="desc ${b.d ? "" : "dim"}">${esc(b.d || "No description.")}</p>
+    ${(b.c || []).map(([w, t]) => `<div class="comment"><div class="who">${w}</div>${esc(t)}</div>`).join("") || `<p class="dim small">No comments yet.</p>`}</div>
+    <textarea rows="3" placeholder="Write a comment…"></textarea><div style="margin-top:10px"><button class="btn">Comment</button></div>`;
+  panel.classList.add("on");
+}
+function close() { panel.classList.remove("on"); for (const r of document.querySelectorAll(".bead.sel")) r.classList.remove("sel"); }
+function addBead(who, t) { BEADS.push({ id: Math.random().toString(36).slice(2, 5), who, st: "open", t }); render(); }
+
+document.addEventListener("click", (e) => {
+  const g = e.target.closest("[data-go]"); if (g) { e.preventDefault(); document.documentElement.dataset.screen = g.dataset.go; return; }
+  if (e.target.closest("[data-close]")) return close();
+  const b = e.target.closest(".bead"); if (b) return open(b.dataset.id);
+  const a = e.target.closest("[data-add]");
+  if (a) { const inp = document.createElement("input"); inp.className = "addin"; inp.placeholder = "New bead for " + a.dataset.add + " — Enter to add";
+    a.replaceWith(inp); inp.focus();
+    inp.addEventListener("keydown", (k) => { if (k.key === "Enter" && inp.value.trim()) addBead(a.dataset.add, inp.value.trim()); if (k.key === "Escape") render(); }); }
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && !e.target.closest("input,textarea")) close();
+  if (e.target.id === "add3" && e.key === "Enter" && e.target.value.trim()) addBead(document.getElementById("who3").value, e.target.value.trim());
+});
+
+// /new
+const POOL = ["vibeos-ceo", "vibeos-pm", "research", "mail", "paw-folder", "supertelegram"];
+const picked = new Set(["research", "mail"]);
+document.getElementById("picks").innerHTML = POOL.map((n) => `<label class="pick"><input type="checkbox" value="${n}" ${picked.has(n) ? "checked" : ""}> ${n}</label>`).join("");
+function check() {
+  const name = document.getElementById("name").value.trim();
+  const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+  document.getElementById("slug").textContent = slug || "…";
+  document.getElementById("create").disabled = !slug || !picked.size;
+}
+document.getElementById("new").addEventListener("input", (e) => { if (e.target.type === "checkbox") e.target.checked ? picked.add(e.target.value) : picked.delete(e.target.value); check(); });
+document.getElementById("name").value = "Acme Labs"; check();
+document.getElementById("create").addEventListener("click", () => {
+  const n = [...picked], st = document.getElementById("steps"); st.hidden = false;
+  // mock outcome: the last invite fails, to show where a failure surfaces
+  st.innerHTML = `<li>✓ company bead filed</li><li>✓ channel #${document.getElementById("slug").textContent} created</li>` +
+    `<li class="${n.length > 1 ? "bad" : ""}">${n.length > 1 ? "✕" : "✓"} invited ${n.length > 1 ? n.length - 1 : n.length}/${n.length}${n.length > 1 ? ` — ${n[n.length - 1]}: no reply from the mesh <button class="link">retry</button>` : ""}</li>`;
+});
+</script>
+</body>
+</html>

@@ -45,7 +45,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { Socket } from "node:net";
 import { extname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { registry, type Command, type CotalEndpoint, type CotalMessage } from "@cotal-ai/core";
+import { registry, seedChannelRegistry, type Command, type CotalEndpoint, type CotalMessage } from "@cotal-ai/core";
 import { controlCreds, folderForName, personaFilePath } from "./addressing.ts";
 import { claudeProjectDir } from "./adopt.ts";
 import { advanceCursor, cursorPath, readCursor } from "./cursor.ts";
@@ -91,6 +91,8 @@ import { readAgentType, readResumeId, transcriptPath } from "./session.ts";
 import { searchEntries, searchTranscript, snippet, type MessageHit, type TranscriptHit } from "./search.ts";
 import { collectStatus, type AgentStatus } from "./status.ts";
 import { dropSharedManagerControl, sharedManagerControl } from "./control.ts";
+import { companyService, HttpError, type CompanyService } from "./company-service.ts";
+import { SLUG_RE, operatorName } from "./company.ts";
 import { closeTask, commentTask, createTaskGetId, listComments, listTasks, taskPrRows, updateTask } from "./tasks.ts";
 import { gitToplevel, listWorktrees } from "./worktree.ts";
 import type { Block } from "./transcript.ts";
@@ -683,6 +685,40 @@ export function inviteText(channel: string): string {
   return `you've been invited to #${channel} — join it with cotal_join("${channel}"), then say hello there so the channel knows you're in.`;
 }
 
+/** Ask each agent to join `channel` (the /invite request), then announce the reached ones there. */
+export async function inviteAll(
+  dm: (to: string, text: string) => Promise<unknown>,
+  post: (channel: string, text: string) => Promise<void>,
+  channel: string,
+  names: string[],
+): Promise<{ invited: string[]; failed: { name: string; error: string }[] }> {
+  // Sequential, not Promise.all: each DM may SPAWN a sleeping agent, and firing a dozen cold
+  // starts at once is how the manager gets a thundering herd for a decoration.
+  const invited: string[] = [];
+  const failed: { name: string; error: string }[] = [];
+  for (const name of names) {
+    try {
+      await dm(name, inviteText(channel));
+      invited.push(name);
+    } catch (e) {
+      // One unreachable agent must not lose the others — an invite to four agents where the
+      // third is gone should still reach the fourth, and say so.
+      failed.push({ name, error: (e as Error).message });
+    }
+  }
+  // Record the ask in the channel itself, so the channel shows what was requested rather than
+  // the invite being invisible until (or unless) an agent acts on it. Only the ones actually
+  // reached: naming an agent we could not DM would claim something that did not happen.
+  if (invited.length) {
+    try {
+      await post(channel, `invited ${invited.map((n) => "@" + n).join(", ")} to this channel`);
+    } catch {
+      /* the DMs are what matter; a failed notice must not turn a delivered invite into an error */
+    }
+  }
+  return { invited, failed };
+}
+
 export function serveStatic(root: string | undefined, urlPath: string, res: Responder): void {
   if (!root) {
     sendJson(res, 503, {
@@ -900,6 +936,8 @@ export interface WebDeps {
   /** The village snapshot: DM edges + last-spoken lines (see Village). OPTIONAL — a server without it
    *  answers 501 and the Village tab renders stations from status alone, no wires. */
   village?: () => VillageData;
+  /** Companies (docs/notes/company-spec.md). OPTIONAL — without it the routes answer 501. */
+  company?: CompanyService;
   clientRoot?: string;
 }
 
@@ -1072,7 +1110,7 @@ export async function startWebServer(deps: WebDeps): Promise<WebServer> {
           // is not.
           try {
             if (req.method === "POST") {
-              let body: { op?: unknown; id?: unknown; title?: unknown; description?: unknown; status?: unknown; reason?: unknown; parent?: unknown; text?: unknown; assignee?: unknown };
+              let body: { op?: unknown; id?: unknown; title?: unknown; description?: unknown; status?: unknown; reason?: unknown; parent?: unknown; text?: unknown; assignee?: unknown; labels?: unknown; addLabels?: unknown; removeLabels?: unknown };
               try {
                 body = JSON.parse(await readBody(req)) as typeof body;
               } catch {
@@ -1084,9 +1122,22 @@ export async function startWebServer(deps: WebDeps): Promise<WebServer> {
               const description = typeof body.description === "string" && body.description.trim() ? body.description.trim() : undefined;
               const parent = typeof body.parent === "string" ? body.parent : undefined; // "" is meaningful: it clears the parent
               const assignee = typeof body.assignee === "string" && body.assignee.trim() ? body.assignee.trim() : undefined;
+              const strings = (v: unknown): string[] | undefined => {
+                if (v === undefined) return undefined;
+                if (!Array.isArray(v) || v.some((x) => typeof x !== "string" || !x.trim() || /[,\s]/.test(x))) throw new Error("paw: labels must be an array of non-empty strings without commas or spaces");
+                return v as string[];
+              };
+              let labels: string[] | undefined, addLabels: string[] | undefined, removeLabels: string[] | undefined;
+              try {
+                labels = strings(body.labels);
+                addLabels = strings(body.addLabels);
+                removeLabels = strings(body.removeLabels);
+              } catch (e) {
+                return sendJson(res, 400, { error: (e as Error).message });
+              }
               if (op === "create") {
                 if (!title) return sendJson(res, 400, { error: "paw: a task needs a title" });
-                const newId = await createTaskGetId(title, description, parent || undefined, assignee);
+                const newId = await createTaskGetId(title, description, parent || undefined, assignee, labels ? { labels } : {});
                 // The /task composer path still wants the fresh list; the pad only needs the id.
                 const wantList = body.op === undefined; // bare {title} = the composer command
                 return sendJson(res, 200, wantList ? { id: newId, tasks: await listTasks() } : { id: newId });
@@ -1094,7 +1145,7 @@ export async function startWebServer(deps: WebDeps): Promise<WebServer> {
               if (!id) return sendJson(res, 400, { error: `paw: op "${op}" needs an id` });
               if (op === "update") {
                 const status = typeof body.status === "string" && body.status.trim() ? body.status.trim() : undefined;
-                await updateTask(id, { title: title || undefined, description, status, parent, assignee });
+                await updateTask(id, { title: title || undefined, description, status, parent, assignee, addLabels, removeLabels });
                 return sendJson(res, 200, { ok: true }); // no re-list: a write already costs a dolt engine boot, and the pad's DOM is the truth mid-edit
               }
               if (op === "comments") return sendJson(res, 200, { comments: await listComments(id) });
@@ -1113,6 +1164,42 @@ export async function startWebServer(deps: WebDeps): Promise<WebServer> {
             return sendJson(res, 200, { tasks: await listTasks() });
           } catch (e) {
             return sendJson(res, 502, { error: (e as Error).message });
+          }
+        }
+
+        if (path === "/api/companies" || path.startsWith("/api/company/")) {
+          const co = deps.company;
+          if (!co) return sendJson(res, 501, { error: "paw: this server was started without companies" });
+          try {
+            if (path === "/api/companies") {
+              if (req.method === "POST") {
+                let body: Record<string, unknown>;
+                try {
+                  body = JSON.parse(await readBody(req)) as Record<string, unknown>;
+                } catch {
+                  return sendJson(res, 400, { error: "paw: body must be JSON" });
+                }
+                if (!Array.isArray(body.members) || body.members.some((m) => typeof m !== "string")) return sendJson(res, 400, { error: "paw: {members} must be an array of agent names" });
+                const members = (body.members as string[]).map((m) => m.trim()).filter(Boolean);
+                const str = (k: string): string => (typeof body[k] === "string" ? (body[k] as string).trim() : "");
+                return sendJson(res, 200, await co.create({ name: str("name"), slug: str("slug"), mission: str("mission") || undefined, members, lead: str("lead") }));
+              }
+              return sendJson(res, 200, { companies: await co.companies() });
+            }
+            const slug = decodeURIComponent(path.slice("/api/company/".length));
+            if (!SLUG_RE.test(slug)) return sendJson(res, 400, { error: `paw: "${slug}" is not a company slug` });
+            if (req.method === "POST") {
+              let body: Record<string, unknown>;
+              try {
+                body = JSON.parse(await readBody(req)) as Record<string, unknown>;
+              } catch {
+                return sendJson(res, 400, { error: "paw: body must be JSON {op, …}" });
+              }
+              return sendJson(res, 200, await co.op(slug, body));
+            }
+            return sendJson(res, 200, await co.page(slug, url.searchParams.get("fresh") === "1"));
+          } catch (e) {
+            return sendJson(res, e instanceof HttpError ? e.status : 502, { error: (e as Error).message });
           }
         }
 
@@ -1296,30 +1383,7 @@ export async function startWebServer(deps: WebDeps): Promise<WebServer> {
           if (!names.length) return sendJson(res, 400, { error: "paw: {names} must list at least one agent" });
           if (!post) return sendJson(res, 501, { error: "paw: this server was built without a channel sender" });
 
-          // Sequential, not Promise.all: each DM may SPAWN a sleeping agent, and firing a dozen cold
-          // starts at once is how the manager gets a thundering herd for a decoration.
-          const invited: string[] = [];
-          const failed: { name: string; error: string }[] = [];
-          for (const name of names) {
-            try {
-              await dm(name, inviteText(channel));
-              invited.push(name);
-            } catch (e) {
-              // One unreachable agent must not lose the others — an invite to four agents where the
-              // third is gone should still reach the fourth, and say so.
-              failed.push({ name, error: (e as Error).message });
-            }
-          }
-          // Record the ask in the channel itself, so the channel shows what was requested rather than
-          // the invite being invisible until (or unless) an agent acts on it. Only the ones actually
-          // reached: naming an agent we could not DM would claim something that did not happen.
-          if (invited.length) {
-            try {
-              await post(channel, `invited ${invited.map((n) => "@" + n).join(", ")} to this channel`);
-            } catch {
-              /* the DMs are what matter; a failed notice must not turn a delivered invite into an error */
-            }
-          }
+          const { invited, failed } = await inviteAll(dm, post, channel, names);
           return sendJson(res, 200, { channel, invited, failed });
         }
 
@@ -1549,6 +1613,20 @@ async function web(argv: string[]): Promise<void> {
       channelMembers: () => channels.members(),
       village: () => village.snapshot(),
       channelActivity: (seen) => channels.activity(seen),
+      company: companyService({
+        operator: operatorName(),
+        rows: async () => {
+          if (!collectedAt) await refreshStatus();
+          return rows;
+        },
+        dm: (to, text) => sendAsYou({ space, server, target: to, text }),
+        post: async (channel, text) => { await ep.multicast(text, { channel }); },
+        seedChannel: async (slug, description, instructions) => {
+          const creds = await controlCreds(space);
+          await seedChannelRegistry({ servers: server, space, ...(creds ? { creds } : {}), file: { channels: { [slug]: { description, instructions } } } });
+        },
+        invite: (slug, names) => inviteAll((to, text) => sendAsYou({ space, server, target: to, text }), async (ch, text) => { await ep.multicast(text, { channel: ch }); }, slug, names),
+      }),
       channel: (name, limit) => channelMessages(ep, channels, name, limit, authed),
       search: async (q, scope, agents) => {
         const errors: string[] = [];

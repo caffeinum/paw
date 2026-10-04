@@ -1,9 +1,9 @@
 import { claudeConnector } from "@cotal-ai/connector-claude-code";
 import { registry, type Connector, type LaunchOpts, type LaunchSpec } from "@cotal-ai/core";
-import { homedir } from "node:os";
 import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { HUMAN_PEER } from "./names.ts";
+import { beadsDir } from "./beads-dir.ts";
 import { readClaudeArgs, readResumeId, transcriptExists } from "./session.ts";
 import { ensureShim, hubEnabled, hubSocketPath } from "./hub/paths.ts";
 import { routeCotalToHub } from "./hub/route.ts";
@@ -224,7 +224,7 @@ export const pawConnector: Connector = {
     // BEADS_ACTOR makes the audit trail honest: without it bd falls back to git user.name and every
     // agent-filed task reads "created by Aleksey Bykhun" — the one fact the operator's hover card
     // exists to answer ("which agent filed this?") fabricated away by a default.
-    const env = { ...spec.env, BEADS_DIR: join(homedir(), ".beads"), BEADS_ACTOR: opts.name };
+    const env = { ...spec.env, BEADS_DIR: beadsDir(), BEADS_ACTOR: opts.name };
 
     return { ...spec, args, env };
   },

@@ -165,3 +165,12 @@ Moved verbatim from CLAUDE.md (2026-10-02 split). Index: [CLAUDE.md](../../CLAUD
   `bdone`) instead of being drop-only; the per-agent tab says "N open (+M done this week)"; the
   sidebar Tasks count is OPEN-only and `taskPrRows` drops closed review beads from the PRs sidebar.
   Verified headless: 71 rows, closed at the end at each level, count 22, Done column 43.
+
+## test beads db (PAW_BEADS_DIR)
+
+- **Tests select their beads db with `PAW_BEADS_DIR` (2026-10-03, `src/beads-dir.ts`)** — `bdEnv()` and the
+  connector's injected `BEADS_DIR` both resolve through `beadsDir()` = `PAW_BEADS_DIR`, else `~/.beads`.
+  bd's own `BEADS_DIR` is deliberately IGNORED by paw: every agent shell already carries it (the
+  connector injects it) and an operator shell may carry one for some repo's tracker, so honouring it
+  would silently redirect the fleet's list. Daemons inherit `PAW_BEADS_DIR` via daemonEnv, so test
+  agents spawned in an isolated space file into the same throwaway db (`bd init` it first).

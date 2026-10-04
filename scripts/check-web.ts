@@ -1340,6 +1340,126 @@ const stillAligned = async (ws: RawWs, label: string, ...setup: Buffer[]): Promi
   assert(keepSidebarPr("OPEN", false) && keepSidebarPr("MERGED", true) && !keepSidebarPr("MERGED", false) && !keepSidebarPr("CLOSED", false) && !keepSidebarPr(undefined, false), "prs: sibling worktrees only when OPEN; the agent's own folder always");
 }
 
+// ── companies (src/company.ts + web/app/company-model.js; docs/notes/company-spec.md §0) ─────────
+{
+  const co = await import("../src/company.ts");
+  const T = (o: Record<string, unknown>) => ({ id: "x", title: "t", status: "open", ...o }) as import("../src/tasks.ts").Task;
+
+  assert(co.slugify("vibeOS Labs!") === "vibeos-labs" && co.slugify("  --  ") === "", "company: slugify lowercases, dashes, trims — empty when nothing usable");
+  assert(co.SLUG_RE.test("test-co") && !co.SLUG_RE.test("-x") && !co.SLUG_RE.test("Test"), "company: slug rule");
+  assert(JSON.stringify(co.companyMetadata("test-co", ["A", "B"])) === JSON.stringify({ company: "test-co", org: { A: {}, B: {} } }), "company: metadata = {company, org:{agent:{}}} — the operator is NOT written in");
+
+  const root = T({ id: "e1", title: "Test Co", assignee: "A", description: "ship it", metadata: { company: "test-co", org: { A: {}, B: {} } }, labels: ["company:test-co"] });
+  const c = co.companyFromTask(root)!;
+  assert(c.slug === "test-co" && c.epic === "e1" && c.lead === "A" && c.mission === "ship it" && c.members.join() === "A,B" && !c.problem, "company: epic with metadata.company → the company (lead = assignee, mission = description)");
+  assert(co.companyFromTask(T({ labels: ["company:test-co"] })) === undefined, "company: a child with only the inherited LABEL is not a company root");
+  assert(/org\["A"\]/.test(co.companyFromTask(T({ metadata: { company: "x", org: { A: "ceo" } } }))!.problem ?? ""), "company: a malformed org entry comes back WITH a problem in words");
+  assert(!!co.companyFromTask(T({ metadata: { company: "x" } }))!.problem, "company: missing org is a problem, not an empty roster");
+
+  const known = new Set(["A", "B"]);
+  const base = { name: "Test Co", slug: "test-co", members: ["A", "B"], lead: "A" };
+  assert(co.validateCompany(base, known, new Set()) === undefined, "company: a valid /new submission passes");
+  assert(/already exists/.test(co.validateCompany(base, known, new Set(["test-co"])) ?? ""), "company: a taken slug is refused");
+  assert(/no agent named "D"/.test(co.validateCompany({ ...base, members: ["A", "D"] }, known, new Set()) ?? ""), "company: an unknown agent is refused");
+  assert(/lead/.test(co.validateCompany({ ...base, lead: "Z" }, known, new Set()) ?? ""), "company: the lead must be one of the picked agents");
+  assert(/twice/.test(co.validateCompany({ ...base, members: ["A", "A"] }, known, new Set()) ?? ""), "company: a duplicate pick is refused");
+
+  const issue = T({ id: "e1.1", parent: "e1", labels: ["company:test-co"], assignee: "B" });
+  const stray = T({ id: "e1.1.1", parent: "e1.1", assignee: "B" });
+  const issues = co.companyIssues(c, [root, issue], [root, issue, stray, T({ id: "o1" })]);
+  assert(!issues.some((i) => i.id === "e1") && issues.length === 2, "company: the epic is not its own bead; outsiders stay out");
+  assert(issues.find((i) => i.id === "e1.1.1")?.unlabelled === true, "company: an unlabelled descendant is IN, flagged");
+
+  const ops = [
+    T({ id: "op1", assignee: "aleks" }),
+    T({ id: "w1", assignee: "B", waitsOn: ["op1"] }),
+    T({ id: "w2", assignee: "B", waitsOn: ["opDone"] }),
+    T({ id: "opDone", assignee: "aleks", status: "closed" }),
+    T({ id: "w3", assignee: "B", waitsOn: ["x9"] }),
+  ];
+  const y = co.onYou(ops, "aleks");
+  assert(y.count === 2 && y.assigned.join() === "op1" && y.waiting.length === 1 && y.waiting[0].id === "w1" && y.waiting[0].blocker === "op1", "company: on you = open beads assigned to the operator + beads waiting on one");
+  assert(co.onYou(ops.map((t) => (t.id === "op1" ? { ...t, status: "closed" } : t)), "aleks").count === 0, "company: closing the operator bead clears it — no further write");
+
+  const brief = co.companyBrief(c, "aleks");
+  assert(brief.includes("#test-co is the Test Co company") && brief.includes("Lead (CEO): A") && brief.includes("Do not DM aleks for status") && brief.includes(`bd create "<decision needed>" --parent e1 -a aleks`) && brief.includes("bd dep add <waiting-id> <that-id>"), "company: the brief carries the reporting + escalation rules");
+  assert(co.assignmentText("Test Co", "e1.1", "I").startsWith("Test Co: you've been assigned e1.1 — I."), "company: the assignment DM");
+  const { parseTasks } = await import("../src/tasks.ts");
+  const parsed = parseTasks(JSON.stringify([{ id: "a", title: "t", status: "open", dependencies: [{ issue_id: "a", depends_on_id: "p", type: "parent-child" }, { issue_id: "a", depends_on_id: "b", type: "blocks" }], metadata: { company: "x" } }]));
+  assert(parsed[0].waitsOn?.join() === "b" && parsed[0].metadata?.company === "x", "tasks: parseTasks passes `blocks` deps (only) and metadata through");
+  console.log("✓ company model (server)");
+}
+
+{
+  const m = await import("../web/app/company-model.js");
+  const members = [
+    { name: "A", live: true, busy: false, state: "idle", known: true },
+    { name: "B", live: false, busy: false, state: "offline", known: true },
+  ];
+  const I = (o: Record<string, unknown>) => ({ status: "open", title: "x", updatedAt: "2026-10-03T11:00:00Z", ...o }) as import("../web/app/company-model.js").CoBead;
+  const issues = [I({ id: "a1", assignee: "A", status: "in_progress" }), I({ id: "a2", assignee: "A", status: "closed" }), I({ id: "b1", assignee: "B" }), I({ id: "g1", assignee: "ghost" }), I({ id: "u1" }), I({ id: "y1", assignee: "aleks" })];
+  const onYou = { assigned: ["y1"], waiting: [{ id: "b1", blocker: "y1" }] };
+  const groups = m.groupByAgent(members, issues, "aleks", onYou);
+  assert(groups.map((g) => g.key).join() === "you,agent:A,agent:B,other:ghost,unassigned", "company UI: You first, then members (server order), stray assignees, Unassigned last");
+  assert(groups[0].open.map((b) => b.id).join() === "y1" && groups[0].waiting!.map((w) => `${w.bead.id}<${w.blocker.id}`).join() === "b1<y1", "company UI: You holds its beads + 'waiting on you' with the blocker");
+  assert(groups[1].open.length === 1 && groups[1].done.length === 1, "company UI: done splits out (the page collapses it)");
+  assert(groups.reduce((n, g) => n + g.open.length + g.done.length, 0) === issues.length, "company UI: every bead lands in exactly ONE holder group (waiting is a reference, not a move)");
+  assert(!m.groupByAgent(members, [I({ id: "z", assignee: "A" })]).some((g) => g.kind === "unassigned"), "company UI: no Unassigned group when nothing is unassigned");
+  const st = m.groupByStatus(issues, new Set(["y1", "b1"]));
+  const blocked = st.find((c) => c.key === "blocked")!;
+  assert(blocked.beads.map((b) => b.id).sort().join() === "b1,y1" && blocked.beads.every((b) => b.onYou), "company UI: by status — beads on you sit in Blocked, tagged");
+  assert(st.reduce((n, c) => n + c.beads.length, 0) === issues.length && st.map((c) => c.name).join() === "In progress,Blocked,To do,Done", "company UI: by status — four groups, every bead once");
+  assert(m.parseView("status") === "status" && m.parseView("columns") === "agent" && m.parseView(undefined) === "agent", "company UI: view preference — default By agent, stale value falls back");
+  assert(m.leadOf({ members: ["A", "B"], lead: "B" }) === "B" && m.leadOf({ members: ["A", "B"], lead: "Z" }) === "A" && m.leadOf({ members: [] }) === undefined, "company UI: /new lead = the chosen one while picked, else the first picked");
+  assert(m.newCompanyProblems({ name: "X", slug: "x", members: ["A"] }, new Set()).length === 0 && m.newCompanyProblems({ name: "X", slug: "x", members: ["A"] }, new Set(["x"]))[0].includes("already exists"), "company UI: /new problems");
+  assert(m.parseMention("@beta please look") ?.to === "beta" && m.parseMention("no tag") === undefined, "company UI: @agent at the start = comment + DM");
+  const pc = m.parsePath("/company/vibeos");
+  assert(pc?.page === "company" && (pc as { slug: string }).slug === "vibeos" && m.parsePath("/new")?.page === "new" && m.parsePath("/") === undefined, "company UI: /new and /company/<slug> paths");
+  console.log("✓ company model (client)");
+}
+
+// ── company routes over a FAKE service (no bd, no mesh) ──────────────────────────────────────────
+{
+  const { HttpError } = await import("../src/company-service.ts");
+  const calls: unknown[][] = [];
+  const fake = {
+    companies: async () => [{ slug: "t", onYou: 0 }],
+    create: async (input: unknown) => (calls.push(["create", input]), { slug: "t", epic: "e1", invited: ["A"], failed: [] }),
+    page: async (slug: string) => {
+      if (slug === "nope") throw new HttpError(404, 'no company "nope"');
+      return { company: { slug } };
+    },
+    op: async (slug: string, body: unknown) => (calls.push(["op", slug, body]), { ok: true }),
+  };
+  const cport = await freePort();
+  const cserver = await startWebServer({ ...deps, port: cport, clientRoot: root, company: fake as never });
+  const cbase = `http://127.0.0.1:${cport}`;
+  const H = { Origin: cbase, "content-type": "application/json" };
+  const list = (await fetch(`${cbase}/api/companies`, { headers: H }).then((r) => r.json())) as { companies: Array<{ slug: string }> };
+  assert(list.companies[0].slug === "t", "company route: GET /api/companies lists");
+  const made = (await fetch(`${cbase}/api/companies`, { method: "POST", headers: H, body: JSON.stringify({ name: " T ", slug: "t", members: [" A ", "B"], lead: "A" }) }).then((r) => r.json())) as { epic: string };
+  const input = calls.find((x) => x[0] === "create")![1] as { name: string; members: string[]; lead: string };
+  assert(made.epic === "e1" && input.name === "T" && input.members.join() === "A,B" && input.lead === "A", "company route: POST /api/companies trims and passes the lead");
+  const junk = await fetch(`${cbase}/api/companies`, { method: "POST", headers: H, body: JSON.stringify({ name: "T", slug: "t", members: [{ name: "A" }], lead: "A" }) });
+  assert(junk.status === 400, "company route: members that aren't names are refused, not coerced");
+  const nf = await fetch(`${cbase}/api/company/nope`, { headers: H });
+  assert(nf.status === 404 && /no company "nope"/.test(((await nf.json()) as { error: string }).error), "company route: an unknown slug is a 404 in words");
+  assert((await fetch(`${cbase}/api/company/Bad%20Slug`, { headers: H })).status === 400, "company route: a non-slug is refused before the service runs");
+  await fetch(`${cbase}/api/company/t`, { method: "POST", headers: H, body: JSON.stringify({ op: "issue-create", title: "x", assignee: "B" }) });
+  assert(calls.some((x) => x[0] === "op" && x[1] === "t"), "company route: POST /api/company/<slug> reaches the op");
+  assert((await fetch(`${cbase}/api/companies`, { method: "POST", headers: { ...H, Origin: "http://evil.example" }, body: "{}" })).status === 403, "company route: the exact-Origin check still guards the new routes");
+  const shellRes = await fetch(`${cbase}/company/t`, { headers: { Origin: cbase } });
+  assert(shellRes.status === 200 && (shellRes.headers.get("content-type") ?? "").includes("html"), "company route: /company/<slug> falls back to the SPA shell");
+  const { readFileSync } = await import("node:fs");
+  const realShell = readFileSync(new URL("../web/app/index.html", import.meta.url), "utf8");
+  assert(realShell.includes('src="/app.js"') && !/src="\.\//.test(realShell), "company route: the real shell loads /app.js ABSOLUTELY (./app.js under /company/x would 404)");
+  await cserver.close();
+  const plain = await startWebServer({ ...deps, port: cport, clientRoot: root });
+  assert((await fetch(`${cbase}/api/companies`, { headers: H })).status === 501, "company route: a server without the service answers 501, not an empty list");
+  await plain.close();
+  console.log("✓ company routes");
+}
+
 await server.close();
 assert((await fetch(`${base}/api/status`, { headers: ORIGIN }).then(() => false).catch(() => true)) === true, "close() actually stops answering");
 
