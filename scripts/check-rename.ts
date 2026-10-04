@@ -94,6 +94,37 @@ assert(byName.from === "queue" && lookupFolderName(SPACE, "/fake/repo/queue") ==
 // A currentName that belongs to ANOTHER folder never redirects the rename to it.
 assert(renameAgentOnDisk(SPACE, FOLDER, "api2", "queue2").from === "api", "a foreign currentName falls back to the folder's own default");
 
+// The login fleet job bakes agent names; a rename must follow it there (vibeos-landing → vibeos-ceo,
+// 2026-10-03, silently dropped out of the next login's `paw start`).
+{
+  const { renameInFleetArgs, renameInFleetJob, fleetJob, renderPlist, plistPath, FLEET_LABEL } = await import(
+    "../src/commands/launchd.ts"
+  );
+  const { execFileSync } = await import("node:child_process");
+  const { mkdirSync, writeFileSync } = await import("node:fs");
+  const args = ["/n", "/paw.ts", "start", "a", "paw", "b", "--space", "paw"];
+  assert(renameInFleetArgs(args, "paw", "a", "z")?.join(" ") === "/n /paw.ts start z paw b --space paw", "fleet args: the name is replaced in place");
+  assert(renameInFleetArgs(args, "paw", "paw", "x")?.join(" ") === "/n /paw.ts start a x b --space paw", "fleet args: an agent named like the space is renamed, the --space value is not");
+  assert(renameInFleetArgs(args, "paw", "nope", "x") === undefined, "fleet args: a name the job doesn't start → untouched");
+  assert(renameInFleetArgs(args, "other", "a", "z") === undefined, "fleet args: another space's job → untouched");
+
+  const realHome = process.env.HOME;
+  process.env.HOME = mkdtempSync(join(tmpdir(), "paw-launchd-home-")); // plistPath follows os.homedir()
+  try {
+    assert(renameInFleetJob("paw", "a", "z") === undefined, "fleet job: no plist installed → nothing to do");
+    mkdirSync(join(process.env.HOME, "Library", "LaunchAgents"), { recursive: true });
+    const job = fleetJob("paw", ["a", "b"], { cli: ["/n", "/paw.ts"], env: { PAW_HOME: "/h" }, log: "/l", cwd: "/c" });
+    writeFileSync(plistPath(FLEET_LABEL), renderPlist(job));
+    assert(renameInFleetJob("paw", "a", "z") === plistPath(FLEET_LABEL), "fleet job: a started name is rewritten on disk");
+    const back = JSON.parse(execFileSync("plutil", ["-convert", "json", "-o", "-", plistPath(FLEET_LABEL)], { encoding: "utf8" }));
+    assert(back.ProgramArguments.join(" ") === "/n /paw.ts start z b --space paw", "fleet job: the plist now starts the new name");
+    assert(back.EnvironmentVariables?.PAW_HOME === "/h" && back.Label === FLEET_LABEL, "fleet job: the rest of the plist survives");
+    assert(renameInFleetJob("paw", "a", "y") === undefined, "fleet job: the old name is gone, a second rename of it is a no-op");
+  } finally {
+    process.env.HOME = realHome;
+  }
+}
+
 if (failures > 0) {
   console.error(`\n${failures} paw rename check(s) failed`);
   process.exit(1);

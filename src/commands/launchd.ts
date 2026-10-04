@@ -223,6 +223,50 @@ export function plistPath(label: string): string {
   return join(homedir(), "Library", "LaunchAgents", `${label}.plist`);
 }
 
+/**
+ * The fleet job's argv with agent `from` renamed to `to`, or undefined when that job doesn't start
+ * `from` in `space`. Only the names between `start` and `--space` are touched, so a rename to or from
+ * a word that is also the space (`paw`) can't rewrite the flag's value.
+ */
+export function renameInFleetArgs(args: string[], space: string, from: string, to: string): string[] | undefined {
+  const start = args.indexOf("start");
+  const flag = args.indexOf("--space", start + 1);
+  if (start < 0 || flag < 0 || args[flag + 1] !== space) return undefined;
+  const at = args.slice(start + 1, flag).indexOf(from);
+  if (at < 0) return undefined;
+  const out = [...args];
+  out[start + 1 + at] = to;
+  return out;
+}
+
+/**
+ * Keep the login fleet job pointing at an agent through `paw rename`: the job bakes agent NAMES, so a
+ * renamed agent silently dropped out of the next login's `paw start` (vibeos-landing → vibeos-ceo,
+ * 2026-10-03). Rewrites the plist ON DISK only — re-bootstrapping would RunAtLoad and wake every agent in
+ * the list, sleepers included — so launchd picks it up at the next login. Returns the plist path it
+ * rewrote, or undefined when there is no fleet job or it doesn't start `from`.
+ */
+export function renameInFleetJob(space: string, from: string, to: string): string | undefined {
+  const path = plistPath(FLEET_LABEL);
+  if (!existsSync(path)) return undefined;
+  const plist = JSON.parse(execFileSync("plutil", ["-convert", "json", "-o", "-", path], { encoding: "utf8" })) as {
+    ProgramArguments?: unknown;
+  };
+  if (!Array.isArray(plist.ProgramArguments) || !plist.ProgramArguments.every((a) => typeof a === "string")) {
+    throw new Error(`paw: ${path} has no string ProgramArguments — fix or reinstall it (\`paw launchd install\`)`);
+  }
+  const args = renameInFleetArgs(plist.ProgramArguments, space, from, to);
+  if (!args) return undefined;
+  const tmp = `${path}.paw-rename.json`;
+  writeFileSync(tmp, JSON.stringify({ ...plist, ProgramArguments: args }));
+  try {
+    execFileSync("plutil", ["-convert", "xml1", "-o", path, tmp]);
+  } finally {
+    unlinkSync(tmp);
+  }
+  return path;
+}
+
 function logPath(space: string, name: string): string {
   const dir = join(process.env.PAW_HOME?.trim() || join(homedir(), ".paw"), "spaces", space);
   mkdirSync(dir, { recursive: true });

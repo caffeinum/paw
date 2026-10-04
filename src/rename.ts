@@ -21,6 +21,7 @@ import { withManagerControl } from "./control.ts";
 import { resolveSpace } from "./lifecycle.ts";
 import { resolveExistingFolderArg } from "./address.ts";
 import { pawServer } from "./server.ts";
+import { renameInFleetJob } from "./commands/launchd.ts";
 
 function parseArgs(argv: string[]): { space?: string; target?: string; newName?: string } {
   const out: { space?: string; target?: string; newName?: string } = {};
@@ -98,7 +99,10 @@ async function rename(argv: string[]): Promise<void> {
     return wasLive;
   });
 
+  const fleetPlist = renameInFleetJob(space, from, to);
+
   console.log(`✓ renamed "${from}" → "${to}"`);
+  if (fleetPlist) console.log(`  login fleet job now starts "${to}" (${fleetPlist}; takes effect at next login)`);
   console.log(
     restarted
       ? `  live on the mesh as "${to}" (resumed)`
