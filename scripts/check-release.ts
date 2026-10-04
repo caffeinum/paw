@@ -36,9 +36,9 @@ const {
   releaseId,
   releasePath,
   releasesDir,
-} = await import("../src/release.js");
-const { cotaldViaTsx, pawViaTsx, managerMatchPattern, mailboxMatchPattern } = await import("../src/lifecycle.js");
-const { parseReleaseArgs } = await import("../src/commands/release.js");
+} = await import("../src/release.ts");
+const { cotaldViaNode, pawViaNode, managerMatchPattern, mailboxMatchPattern } = await import("../src/lifecycle.ts");
+const { parseReleaseArgs } = await import("../src/commands/release.ts");
 
 let failures = 0;
 function assert(cond: boolean, msg: string): void {
@@ -58,7 +58,7 @@ function throws(fn: () => unknown): boolean {
 }
 
 /** A minimal fake checkout: the payload paw snapshots, plus a stand-in node_modules carrying the
- *  tsx cli.mjs the daemon argv resolves (so viaTsx takes its real first branch). */
+ *  dependency file, so node_modules immutability is exercised (the daemons need no tsx any more). */
 function fixtureCheckout(): string {
   const root = mkdtempSync(join(tmpdir(), "paw-release-checkout-"));
   mkdirSync(join(root, "bin"), { recursive: true });
@@ -165,16 +165,17 @@ const first = createRelease({ root: checkout });
 
 // ---- the daemon argv resolves through the release, and keeps doing so ------------------------
 {
-  const [, cotaldArgs] = cotaldViaTsx(["supervise", "--space", "reltest", "--server", "nats://127.0.0.1:4222"]);
-  const [, pawArgs] = pawViaTsx(["mailbox", "--space", "reltest"]);
+  const [, cotaldArgs] = cotaldViaNode(["supervise", "--space", "reltest", "--server", "nats://127.0.0.1:4222"]);
+  const [, pawArgs] = pawViaNode(["mailbox", "--space", "reltest"]);
   assert(cotaldArgs.some((a) => a === join(first.path, "bin", "cotald.ts")), "argv: cotald entry comes from the RELEASE dir");
-  assert(cotaldArgs[0] === join(first.path, "node_modules", "tsx", "dist", "cli.mjs"), "argv: tsx comes from the release's OWN node_modules (one self-consistent tree)");
+  assert(cotaldArgs[0] === join(first.path, "bin", "cotald.ts"), "argv: node runs the release's .ts entry DIRECTLY (native type stripping)");
+  assert(!cotaldArgs.some((a) => a.includes("tsx")) && !pawArgs.some((a) => a.includes("tsx")), "argv: no tsx anywhere in a daemon argv (no wrapper process, no require hook)");
   assert(!cotaldArgs.some((a) => a.startsWith(checkout)), "argv: nothing resolves out of the checkout");
   assert(pawArgs.some((a) => a === join(first.path, "bin", "paw.ts")), "argv: the mailbox beacon entry comes from the release dir");
 
   // The property the incident is about: mutate the checkout, re-resolve, get the same argv.
   writeFileSync(join(checkout, "src", "lifecycle.ts"), "export const v = 3;\n");
-  const [, after] = cotaldViaTsx(["supervise", "--space", "reltest", "--server", "nats://127.0.0.1:4222"]);
+  const [, after] = cotaldViaNode(["supervise", "--space", "reltest", "--server", "nats://127.0.0.1:4222"]);
   assert(JSON.stringify(after) === JSON.stringify(cotaldArgs), "argv: editing the checkout does NOT change what the next daemon would start");
   writeFileSync(join(checkout, "src", "lifecycle.ts"), "export const v = 1;\n");
 

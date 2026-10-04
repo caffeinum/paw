@@ -15,7 +15,7 @@
  *
  * Colors are tty-gated at the wrapper, so piping `paw log`/`paw chat` gives clean, ANSI-free text.
  */
-import { displayWidth, sliceWidth } from "./width.js";
+import { displayWidth, sliceWidth } from "./width.ts";
 
 const tty = process.stdout.isTTY === true;
 const wrap = (code: string) => (s: string) => (tty ? `\x1b[${code}m${s}\x1b[0m` : s);

@@ -13,9 +13,9 @@ process.env.PAW_HOME = home; // persona + registry under here too
 process.env.PAW_SPACE = "adopt";
 
 import type { Command } from "@cotal-ai/core";
-const { claudeProjectDir, latestSession, transcriptCwd, sanitizeAdoptName, parseArgs, pinSession, pinClaudeArgs, planAdoptName, assertSafeRepin } = await import("../src/adopt.js");
+const { claudeProjectDir, latestSession, transcriptCwd, sanitizeAdoptName, parseArgs, pinSession, pinClaudeArgs, planAdoptName, assertSafeRepin } = await import("../src/adopt.ts");
 const { registry } = await import("@cotal-ai/core");
-const { personaFilePath } = await import("../src/addressing.js");
+const { personaFilePath } = await import("../src/addressing.ts");
 const adoptCmd = registry.resolve<Command>("command", "adopt");
 // paw drives commands with a raw argv; wrap it as the ParsedArgs the dispatcher now passes.
 const runAdopt = (argv: string[]) => adoptCmd.run({ values: {}, positionals: [], raw: argv });
@@ -97,7 +97,7 @@ await runAdopt([folder, "--resume", "old-sess", "--replace", "--no-start"]);
 // A session recorded in a WORKTREE of this repo is adoptable FROM THE REPO ROOT — the agent registers
 // to the worktree's folder, not the root. (sameRepoWorktree is git-driven, so the list/toplevel are injected.)
 {
-  const { sameRepoWorktree } = await import("../src/adopt.js");
+  const { sameRepoWorktree } = await import("../src/adopt.ts");
   const wt = join(work, "wt-a");
   mkdirSync(wt, { recursive: true });
   const list = (root: string) => (root === canonical ? [{ path: canonical }, { path: realpathSync(wt) }] : []);
@@ -143,7 +143,7 @@ mkdirSync(sessIndex, { recursive: true });
 // "personal-burn" → new-sess at this folder; a same-named session at a DIFFERENT cwd must be ignored.
 writeFileSync(join(sessIndex, "111.json"), JSON.stringify({ sessionId: "new-sess", cwd: canonical, name: "personal-burn", updatedAt: 200 }));
 writeFileSync(join(sessIndex, "222.json"), JSON.stringify({ sessionId: "elsewhere", cwd: "/some/other/project", name: "personal-burn", updatedAt: 300 }));
-const { resolveNamedSession, namesForFolder } = await import("../src/named.js");
+const { resolveNamedSession, namesForFolder } = await import("../src/named.ts");
 assert(resolveNamedSession(canonical, "personal-burn") === "new-sess", "resolveNamedSession maps name → id scoped to the folder");
 assert(resolveNamedSession(canonical, "no-such-name") === undefined, "resolveNamedSession returns undefined for an unknown name");
 assert(namesForFolder(canonical).get("new-sess") === "personal-burn", "namesForFolder maps sessionId → name for the folder");
@@ -165,7 +165,7 @@ assert(resolveNamedSession(canonical, "dup") === "new-sess", "resolveNamedSessio
 // TWO-WRITERS GUARD: a session open in a live, non-mesh process must block the start path.
 // Use this test runner's own pid as a guaranteed-alive process; its command line is `node …/tsx …`
 // (no --dangerously-load-development-channels), so liveSessionProcs marks it mesh:false = foreign.
-const { liveSessionProcs } = await import("../src/named.js");
+const { liveSessionProcs } = await import("../src/named.ts");
 writeFileSync(join(sessIndex, "666.json"), JSON.stringify({ sessionId: "new-sess", cwd: canonical, name: "open-tui", pid: process.pid }));
 const procs = liveSessionProcs("new-sess");
 assert(procs.some((p) => p.pid === process.pid && !p.mesh), "liveSessionProcs reports the live non-mesh process as foreign");
@@ -195,8 +195,8 @@ rmSync(lus, { recursive: true, force: true });
 // claude I'm running INSIDE" (an ancestor — must hand off to a detached child) from "another terminal's
 // claude" (safe to kill inline); sanitizeAdoptName fails loud on an empty --name; adoptInFlight guards
 // against stacking a second detached takeover.
-const { isSelfAncestor, selfSessionProc } = await import("../src/named.js");
-const { adoptInFlight } = await import("../src/lifecycle.js");
+const { isSelfAncestor, selfSessionProc } = await import("../src/named.ts");
+const { adoptInFlight } = await import("../src/lifecycle.ts");
 
 assert(isSelfAncestor(process.ppid) === true, "isSelfAncestor(ppid) is true — our parent IS an ancestor");
 assert(isSelfAncestor(1) === false, "isSelfAncestor(1) is false — launchd/init is everyone's ancestor, never 'self'");
@@ -264,7 +264,7 @@ assert(selfSessionProc("/nonexistent/folder/xyz") === undefined, "selfSessionPro
 assert(adoptInFlight("adopt-check-nopid") === false, "adoptInFlight is false when no adopt.pid exists");
 
 // ---- persona claudeArgs: the flags a MANAGED `paw claude` replays on every launch ----
-const { readClaudeArgs } = await import("../src/session.js");
+const { readClaudeArgs } = await import("../src/session.ts");
 const argSpace = "adoptargs";
 const argAgent = "argsagent";
 

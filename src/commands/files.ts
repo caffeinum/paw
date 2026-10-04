@@ -11,12 +11,12 @@
  * roster, just reads the channel backlog and exits.
  */
 import { CotalEndpoint, assertValidChannel, registry, type Command, type CotalMessage } from "@cotal-ai/core";
-import { controlCreds, stableHumanId } from "../addressing.js";
-import { resolveSpace } from "../lifecycle.js";
-import { HUMAN_PEER } from "../names.js";
-import { formatWhen } from "./history.js";
-import { ago } from "../status.js";
-import { pawServer } from "../server.js";
+import { controlCreds, stableHumanId } from "../addressing.ts";
+import { resolveSpace } from "../lifecycle.ts";
+import { HUMAN_PEER } from "../names.ts";
+import { formatWhen } from "./history.ts";
+import { ago } from "../status.ts";
+import { pawServer } from "../server.ts";
 
 /** How deep to read the channel backlog. cotal's channelHistory returns the OLDEST N, so to surface
  *  the NEWEST we fetch up to this many and take the tail (same cap + reason as src/history.ts). */

@@ -6,15 +6,15 @@
  * what the transcript shows afterwards — interrupted, or still stuck.
  */
 import { registry, type Command } from "@cotal-ai/core";
-import { personaFilePath, psRowAlive, type PsRow } from "../addressing.js";
-import { withManagerControl } from "../control.js";
-import { readForeground } from "../foreground.js";
-import { actualManagerRuntime, resolveSpace } from "../lifecycle.js";
-import { readResumeId } from "../session.js";
-import { ago, readTurnState, toolLabel } from "../status.js";
-import { interruptTool, sendEscape } from "../unstick.js";
-import { resolveStopName } from "./stop.js";
-import { pawServer } from "../server.js";
+import { personaFilePath, psRowAlive, type PsRow } from "../addressing.ts";
+import { withManagerControl } from "../control.ts";
+import { readForeground } from "../foreground.ts";
+import { actualManagerRuntime, resolveSpace } from "../lifecycle.ts";
+import { readResumeId } from "../session.ts";
+import { ago, readTurnState, toolLabel } from "../status.ts";
+import { interruptTool, sendEscape } from "../unstick.ts";
+import { resolveStopName } from "./stop.ts";
+import { pawServer } from "../server.ts";
 
 export function parseUnstickArgs(argv: string[]): { space?: string; target: string; force: boolean } {
   let space: string | undefined;

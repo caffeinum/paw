@@ -14,9 +14,9 @@ import { DatabaseSync } from "node:sqlite";
 process.env.PAW_HOME = mkdtempSync(join(tmpdir(), "paw-log-home-"));
 process.env.PAW_SPACE = "logtest";
 
-const { chooseTranscriptId, agentNameForFolder, openAgentLog, blocksForAgent } = await import("../src/log.js");
-const { latestOpencodeSession, blocksFromOpencodeRows, pathsMatch } = await import("../src/opencode-log.js");
-const { findCodexSessionFile, parseCodexJsonl } = await import("../src/codex-log.js");
+const { chooseTranscriptId, agentNameForFolder, openAgentLog, blocksForAgent } = await import("../src/log.ts");
+const { latestOpencodeSession, blocksFromOpencodeRows, pathsMatch } = await import("../src/opencode-log.ts");
+const { findCodexSessionFile, parseCodexJsonl } = await import("../src/codex-log.ts");
 
 let failures = 0;
 function assert(cond: boolean, msg: string): void {

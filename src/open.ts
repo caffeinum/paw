@@ -9,16 +9,16 @@
  * Self-registers an "open" command on import; bin/paw.ts ensures the mesh + manager are up first.
  */
 import { registry, type Command } from "@cotal-ai/core";
-import { attachTmux, tmuxSession, tmuxSplit, tmuxSplitAdvice, tmuxWindowExists } from "./native-attach.js";
-import { liveSessionProcs } from "./named.js";
+import { attachTmux, tmuxSession, tmuxSplit, tmuxSplitAdvice, tmuxWindowExists } from "./native-attach.ts";
+import { liveSessionProcs } from "./named.ts";
 import { existsSync } from "node:fs";
-import { assertUnambiguousTarget, canonicalDir, ensureAgentSpawned, folderForName, personaFilePath, registerInstance, resolveFolderAgent, setFolderName, type Kind } from "./addressing.js";
-import { readAgentType, readResumeId } from "./session.js";
-import { withManagerControl } from "./control.js";
-import { readForeground } from "./foreground.js";
-import { isAddressHandle, resolveAddress } from "./address.js";
-import { readRuntimeMarker, resolveSpace } from "./lifecycle.js";
-import { pawServer } from "./server.js";
+import { assertUnambiguousTarget, canonicalDir, ensureAgentSpawned, folderForName, personaFilePath, registerInstance, resolveFolderAgent, setFolderName, type Kind } from "./addressing.ts";
+import { readAgentType, readResumeId } from "./session.ts";
+import { withManagerControl } from "./control.ts";
+import { readForeground } from "./foreground.ts";
+import { isAddressHandle, resolveAddress } from "./address.ts";
+import { readRuntimeMarker, resolveSpace } from "./lifecycle.ts";
+import { pawServer } from "./server.ts";
 
 function parseArgs(argv: string[]): { space?: string; target?: string; model?: string; name?: string } {
   const out: { space?: string; target?: string; model?: string; name?: string } = {};

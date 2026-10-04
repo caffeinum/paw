@@ -5,8 +5,8 @@
 import { closeSync, existsSync, openSync, readSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { pawCotalRoot } from "./cotal-root.js";
-import { pathsMatch } from "./opencode-log.js";
+import { pawCotalRoot } from "./cotal-root.ts";
+import { pathsMatch } from "./opencode-log.ts";
 import {
   failureText,
   harnessOutputText,
@@ -18,7 +18,7 @@ import {
   toolDisplayName,
   userTextBlock,
   type Block,
-} from "./transcript.js";
+} from "./transcript.ts";
 
 export function resolveCodexRoots(space: string): string[] {
   const override = process.env.CODEX_HOME?.trim();

@@ -21,9 +21,9 @@ import {
   resolveAgentFolder,
   restartAgent,
   type PsRow,
-} from "../addressing.js";
-import { withManagerControl } from "../control.js";
-import { awaitSpawnHeadroom } from "../pacing.js";
+} from "../addressing.ts";
+import { withManagerControl } from "../control.ts";
+import { awaitSpawnHeadroom } from "../pacing.ts";
 import {
   RUNTIMES,
   type Runtime,
@@ -39,8 +39,8 @@ import {
   restartManager,
   spawnDetachedRestart,
   writeRuntimePreference,
-} from "../lifecycle.js";
-import { pawServer } from "../server.js";
+} from "../lifecycle.ts";
+import { pawServer } from "../server.ts";
 
 const tty = process.stdout.isTTY === true;
 const wrap = (code: string) => (s: string) => (tty ? `\x1b[${code}m${s}\x1b[0m` : s);

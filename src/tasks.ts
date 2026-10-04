@@ -13,8 +13,8 @@
 import { execFile } from "node:child_process";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { toolDirs } from "./lifecycle.js";
-import { prInfoByUrl, type PrInfo } from "./git.js";
+import { toolDirs } from "./lifecycle.ts";
+import { prInfoByUrl, type PrInfo } from "./git.ts";
 
 export interface Task {
   id: string;

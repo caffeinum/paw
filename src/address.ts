@@ -16,14 +16,14 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { canonicalDir, registeredAgentFor, type Kind } from "./addressing.js";
-import { resolveSpace } from "./lifecycle.js";
-import { listBranches, repoDir, resolveGithubTarget, parseGithubHandle } from "./github.js";
-import { HUMAN_PEER } from "./names.js";
-import { canonicalizeWebUrl, HOST_RE, routeUrl, type UrlPlan } from "./url.js";
-import { resolveWorktreeFolder } from "./worktree.js";
+import { canonicalDir, registeredAgentFor, type Kind } from "./addressing.ts";
+import { resolveSpace } from "./lifecycle.ts";
+import { listBranches, repoDir, resolveGithubTarget, parseGithubHandle } from "./github.ts";
+import { HUMAN_PEER } from "./names.ts";
+import { canonicalizeWebUrl, HOST_RE, routeUrl, type UrlPlan } from "./url.ts";
+import { resolveWorktreeFolder } from "./worktree.ts";
 
-export type { Kind } from "./addressing.js";
+export type { Kind } from "./addressing.ts";
 
 export interface ResolvedAddress {
   cwd: string; // the canonical on-disk key — reuses the whole folder→name registry

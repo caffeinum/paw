@@ -16,11 +16,11 @@ import {
   personaFilePath,
   stopAgent,
   withRegistryLock,
-} from "./addressing.js";
-import { withManagerControl } from "./control.js";
-import { resolveSpace } from "./lifecycle.js";
-import { resolveExistingFolderArg } from "./address.js";
-import { pawServer } from "./server.js";
+} from "./addressing.ts";
+import { withManagerControl } from "./control.ts";
+import { resolveSpace } from "./lifecycle.ts";
+import { resolveExistingFolderArg } from "./address.ts";
+import { pawServer } from "./server.ts";
 
 function parseArgs(argv: string[]): { space?: string; target?: string; newName?: string } {
   const out: { space?: string; target?: string; newName?: string } = {};

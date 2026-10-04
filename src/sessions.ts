@@ -10,11 +10,11 @@
 import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { basename, join } from "node:path";
 import { registry, type Command } from "@cotal-ai/core";
-import { assertUnambiguousTarget, canonicalDir, lookupFolderName, personaFilePath, sanitizeAgentName } from "./addressing.js";
-import { claudeProjectDir } from "./adopt.js";
-import { readResumeId } from "./session.js";
-import { resolveSpace } from "./lifecycle.js";
-import { liveSessionProcs, namesForFolder } from "./named.js";
+import { assertUnambiguousTarget, canonicalDir, lookupFolderName, personaFilePath, sanitizeAgentName } from "./addressing.ts";
+import { claudeProjectDir } from "./adopt.ts";
+import { readResumeId } from "./session.ts";
+import { resolveSpace } from "./lifecycle.ts";
+import { liveSessionProcs, namesForFolder } from "./named.ts";
 
 /** A warning when a pinned (adopted) session is ALSO open in a standalone `claude` outside paw — two
  *  writers on one transcript can corrupt it. paw can't stop a `claude -r` you launch after adopting,
@@ -24,7 +24,7 @@ function foreignWarn(pinned: string | undefined): string {
   const foreign = liveSessionProcs(pinned).filter((p) => !p.mesh);
   return foreign.length ? `  ⚠ also open outside paw (pid ${foreign.map((p) => p.pid).join(", ")})` : "";
 }
-import { gitToplevel, listWorktrees, parseWorktreeRef, resolveWorktreeFolder } from "./worktree.js";
+import { gitToplevel, listWorktrees, parseWorktreeRef, resolveWorktreeFolder } from "./worktree.ts";
 
 const PER_WORKTREE_CAP = 6; // transcripts shown per worktree in the repo view
 

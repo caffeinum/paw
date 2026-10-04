@@ -14,11 +14,11 @@
  * (chat) binds the durable inbox; the beacon never does.
  */
 import { CotalEndpoint, registry, type Command } from "@cotal-ai/core";
-import { controlCreds, stableHumanId } from "./addressing.js";
-import { resolveSpace } from "./lifecycle.js";
-import { HUMAN_PEER } from "./names.js";
-import { startSleepHost } from "./sleep-host.js";
-import { pawServer } from "./server.js";
+import { controlCreds, stableHumanId } from "./addressing.ts";
+import { resolveSpace } from "./lifecycle.ts";
+import { HUMAN_PEER } from "./names.ts";
+import { startSleepHost } from "./sleep-host.ts";
+import { pawServer } from "./server.ts";
 
 function parseArgs(argv: string[]): { space?: string; server?: string } {
   const out: { space?: string; server?: string } = {};

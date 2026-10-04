@@ -6,11 +6,11 @@
  * beacon holds "you" present) and consume:false (never touches "you"'s durable inbox slot).
  */
 import { CotalEndpoint, assertValidChannel, registry, type Command } from "@cotal-ai/core";
-import { controlCreds, stableHumanId } from "../addressing.js";
-import { resolveSpace } from "../lifecycle.js";
-import { HUMAN_PEER } from "../names.js";
-import { stripChannel } from "./history.js";
-import { pawServer } from "../server.js";
+import { controlCreds, stableHumanId } from "../addressing.ts";
+import { resolveSpace } from "../lifecycle.ts";
+import { HUMAN_PEER } from "../names.ts";
+import { stripChannel } from "./history.ts";
+import { pawServer } from "../server.ts";
 
 const tty = process.stdout.isTTY === true;
 const wrap = (code: string) => (s: string) => (tty ? `\x1b[${code}m${s}\x1b[0m` : s);

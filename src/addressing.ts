@@ -22,17 +22,17 @@ import {
 } from "@cotal-ai/core";
 // auth-path helpers moved to @cotal-ai/workspace in cotal v0.8 (#120).
 import { authDir, loadSpaceAuth } from "@cotal-ai/workspace";
-import { pawCotalRoot } from "./cotal-root.js";
-import { confineAndTrustCwd, isFolderTrusted, pawTrustedFolder, pretrustFolder } from "./cwd.js";
-import { readForeground } from "./foreground.js";
-import { clearSleep, prepareWake, sleepLog } from "./sleep-state.js";
-import { withFileLock, withFileLockAsync } from "./lock.js";
-import { liveSessionProcs, meshAgentSession } from "./named.js";
-import { isClaudeHarness, personaValue, readAgentType, readCwd, readResumeId, readShareTools, transcriptMtime } from "./session.js";
-import { defaultTmuxEnv, readRuntimeMarker } from "./lifecycle.js";
-import { answerStartupPrompt, tmuxSplit, tmuxSplitAdvice, type StartupScreen } from "./native-attach.js";
-import { HOST_RE } from "./url.js";
-import type { ManagerControl, ManagerReply } from "./control.js";
+import { pawCotalRoot } from "./cotal-root.ts";
+import { confineAndTrustCwd, isFolderTrusted, pawTrustedFolder, pretrustFolder } from "./cwd.ts";
+import { readForeground } from "./foreground.ts";
+import { clearSleep, prepareWake, sleepLog } from "./sleep-state.ts";
+import { withFileLock, withFileLockAsync } from "./lock.ts";
+import { liveSessionProcs, meshAgentSession } from "./named.ts";
+import { isClaudeHarness, personaValue, readAgentType, readCwd, readResumeId, readShareTools, transcriptMtime } from "./session.ts";
+import { defaultTmuxEnv, readRuntimeMarker } from "./lifecycle.ts";
+import { answerStartupPrompt, tmuxSplit, tmuxSplitAdvice, type StartupScreen } from "./native-attach.ts";
+import { HOST_RE } from "./url.ts";
+import type { ManagerControl, ManagerReply } from "./control.ts";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 

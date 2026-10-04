@@ -26,9 +26,9 @@ process.env.PAW_HOME = join(root, "paw");
 delete process.env.PAW_ROOT;
 const tmuxDir = mkdtempSync("/tmp/pawtrx-"); // short: tmux socket paths are capped
 const tmuxEnv = { ...process.env, TMUX_TMPDIR: tmuxDir, TMUX: "" };
-const { classifyStartupScreen } = await import("../src/native-attach.js");
-const { startupWatch } = await import("../src/addressing.js");
-const { pretrustFolder, isFolderTrusted } = await import("../src/cwd.js");
+const { classifyStartupScreen } = await import("../src/native-attach.ts");
+const { startupWatch } = await import("../src/addressing.ts");
+const { pretrustFolder, isFolderTrusted } = await import("../src/cwd.ts");
 
 let fails = 0;
 const ok = (label: string, cond: boolean, detail = "") => {

@@ -26,8 +26,8 @@ import "@cotal-ai/cmux"; // self-registers the `cmux` runtime + terminal-layout 
 import "@cotal-ai/connector-codex"; // self-registers the `codex` connector (host-mode peer over codex app-server)
 import "@cotal-ai/connector-opencode"; // self-registers the `opencode` connector (in-process plugin)
 import { isReachable, registry } from "@cotal-ai/core";
-import { pawServer } from "../src/server.js";
-import { pawConnector } from "../src/connector.js"; // importing this self-registers the VANILLA `claude` connector (0.12) + paw's `paw`
+import { pawServer } from "../src/server.ts";
+import { pawConnector } from "../src/connector.ts"; // importing this self-registers the VANILLA `claude` connector (0.12) + paw's `paw`
 
 // Replace the vanilla `claude` connector (just self-registered by the connector-claude-code import) with
 // paw's opinionated wrapper, so the manager's default agent type "claude" resolves to OURS. `register`

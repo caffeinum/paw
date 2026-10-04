@@ -10,7 +10,7 @@
  */
 import { execFileSync } from "node:child_process";
 import { resolve } from "node:path";
-import { canonicalDir } from "./addressing.js";
+import { canonicalDir } from "./addressing.ts";
 
 export interface WorktreeRef {
   repo: string; // path to the repo (or any worktree of it); "." if omitted

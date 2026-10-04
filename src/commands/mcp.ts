@@ -22,9 +22,9 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { globalConfigPath, registry, type Command, type CotalConfig, type McpServerSpec } from "@cotal-ai/core";
-import { listAgents, personaFilePath } from "../addressing.js";
-import { resolveSpace } from "../lifecycle.js";
-import { readShareTools } from "../session.js";
+import { listAgents, personaFilePath } from "../addressing.ts";
+import { resolveSpace } from "../lifecycle.ts";
+import { readShareTools } from "../session.ts";
 
 const tty = process.stdout.isTTY === true;
 const wrap = (code: string) => (s: string) => (tty ? `\x1b[${code}m${s}\x1b[0m` : s);

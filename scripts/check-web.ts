@@ -41,7 +41,7 @@ import {
   inviteText,
   serveStatic,
   startWebServer,
-} from "../src/web.js";
+} from "../src/web.ts";
 
 const ESC = String.fromCharCode(27);
 const NUL = String.fromCharCode(0);
@@ -252,7 +252,7 @@ const deps = {
   },
   bash: async (agent: string, command: string) => {
     if (agent === "ghost") throw new Error(`paw: no agent named "ghost"`);
-    const { runBash } = await import("../src/bash.js");
+    const { runBash } = await import("../src/bash.ts");
     return runBash(command, process.cwd());
   },
 };
@@ -956,7 +956,7 @@ const stillAligned = async (ws: RawWs, label: string, ...setup: Buffer[]): Promi
   // ── the PRs section (web/app/prs.js + git.ts rollup/parse) ─────────────────────────────────────
   {
     const { prGlyph, checkGlyph, diffLabel, shouldRefetch } = await import("../web/app/prs.js");
-    const { rollupChecks, parsePr } = await import("../src/git.js");
+    const { rollupChecks, parsePr } = await import("../src/git.ts");
 
     assert(prGlyph({ number: 1, url: "u" }).cls === "open", "pr: a plain PR is open");
     assert(prGlyph({ number: 1, url: "u", isDraft: true }).cls === "draft", "pr: a DRAFT is not 'open' — the point of draft is that it isn't ready");
@@ -1048,7 +1048,7 @@ const stillAligned = async (ws: RawWs, label: string, ...setup: Buffer[]): Promi
 // exposes (POST /api/dm against agents that run bypassPermissions), not a new capability — and it
 // inherits the same and only defences, asserted above: loopback, exact Origin, Host.
 {
-  const { parseBang, bashMessage, runBash, shellInvocation, stripRcNoise } = await import("../src/bash.js");
+  const { parseBang, bashMessage, runBash, shellInvocation, stripRcNoise } = await import("../src/bash.ts");
 
   // The `!` runner uses the OPERATOR'S shell so their rc (aliases, functions, PATH) loads — reported
   // live 2026-09-09: `!preview` "command not found" under a bare /bin/sh that sources nothing.
@@ -1163,7 +1163,7 @@ const stillAligned = async (ws: RawWs, label: string, ...setup: Buffer[]): Promi
 
 // ---- tasks (src/tasks.ts + web/app/tasks.js) — parse, sort, glyphs, /task command ----
 {
-  const { parseTasks, sortTasks, bdEnv } = await import("../src/tasks.js");
+  const { parseTasks, sortTasks, bdEnv } = await import("../src/tasks.ts");
   const { taskGlyph, parseTaskCommand } = await import("../web/app/tasks.js");
 
   const rows = parseTasks(
@@ -1272,11 +1272,11 @@ const stillAligned = async (ws: RawWs, label: string, ...setup: Buffer[]): Promi
   assert(nested[0].tasks.map((t) => t.id).join(",") === "p", "board: children ride inside the parent's card, not as cards");
   assert(nested[1].tasks.map((t) => t.id).join(",") === "o", "board: an orphan (parent not on the board) is still a card");
   assert(childrenOf([{ id: "p" }, { id: "p.1", parent: "p" }, { id: "x", parent: "q" }], "p").map((t) => t.id).join(",") === "p.1", "board: childrenOf is direct children only");
-  const { parseComments } = await import("../src/tasks.js");
+  const { parseComments } = await import("../src/tasks.ts");
   const cs = parseComments(JSON.stringify([{ author: "research", text: "on it", created_at: "2026-08-26T03:57:13Z" }, { text: "anon" }, "junk"]));
   assert(cs.length === 2 && cs[0].author === "research" && cs[1].author === "?" && cs[1].createdAt === "", "tasks: parseComments tolerant per row, author never fabricated as a name");
   {
-    const { parseTasks: parseT } = await import("../src/tasks.js");
+    const { parseTasks: parseT } = await import("../src/tasks.ts");
     const [mr] = parseT(JSON.stringify([{ id: "x-1", title: "review", status: "open", issue_type: "merge-request", external_ref: "https://github.com/o/r/pull/7" }]));
     assert(mr.type === "merge-request" && mr.externalRef === "https://github.com/o/r/pull/7", "tasks: merge-request type + external ref pass through");
     const { prChipHtml } = await import("../web/app/taskspad.js");
@@ -1285,14 +1285,14 @@ const stillAligned = async (ws: RawWs, label: string, ...setup: Buffer[]): Promi
     const chip = prChipHtml({ type: "merge-request", externalRef: "u", pr: { url: "https://github.com/o/r/pull/7", number: 7, state: "MERGED", checks: "pass" } });
     assert(chip.includes("⧉ #7") && chip.includes("ck pass") && chip.includes('href="https://github.com/o/r/pull/7"'), "prChip: merged + passing renders the PRs-sidebar vocabulary");
     assert(prChipHtml({ type: "merge-request", externalRef: "u", pr: { url: "u", number: 1, state: "OPEN", isDraft: true } }).includes("◌ #1"), "prChip: draft glyph");
-    const { taskPrRows } = await import("../src/tasks.js");
+    const { taskPrRows } = await import("../src/tasks.ts");
     const rows = taskPrRows([
       { id: "b-1", title: "review", status: "open", type: "merge-request", externalRef: "u", pr: { url: "https://github.com/o/r/pull/9", number: 9 }, assignee: "research" },
       { id: "b-2", title: "unresolved", status: "open", type: "merge-request", externalRef: "u2" },
       { id: "b-3", title: "plain", status: "open", pr: { url: "x", number: 1 } },
     ] as never);
     assert(rows.length === 1 && rows[0].task === "b-1" && rows[0].agent === "research" && rows[0].pr.number === 9, "taskPrRows: only merge-request beads WITH a resolved PR, labelled by assignee, carrying the bead id");
-    const { sortTasks: sortT, isOpen } = await import("../src/tasks.js");
+    const { sortTasks: sortT, isOpen } = await import("../src/tasks.ts");
     const ordered = sortT([
       { id: "c", title: "", status: "closed" },
       { id: "o", title: "", status: "open" },
@@ -1325,7 +1325,7 @@ const stillAligned = async (ws: RawWs, label: string, ...setup: Buffer[]): Promi
 
 // ---- /api/prs: worktree expansion (pure over fake git) ----
 {
-  const { expandAgentWorktrees } = await import("../src/web.js");
+  const { expandAgentWorktrees } = await import("../src/web.ts");
   const fake = {
     toplevel: (d: string) => (d.startsWith("/repo") ? "/repo" : undefined),
     worktrees: (root: string) => (root === "/repo" ? ["/repo", "/repo-wt-a", "/repo-wt-b"] : []),
@@ -1336,7 +1336,7 @@ const stillAligned = async (ws: RawWs, label: string, ...setup: Buffer[]): Promi
   assert(!x.some((t) => t.folder.startsWith("/just")), "prs: a plain folder (no repo) is skipped");
   const boom = expandAgentWorktrees([{ name: "x", folder: "/repo" }], { toplevel: () => { throw new Error("git gone"); }, worktrees: () => [] });
   assert(boom.length === 0, "prs: one bad repo yields nothing rather than failing the sweep");
-  const { keepSidebarPr } = await import("../src/web.js");
+  const { keepSidebarPr } = await import("../src/web.ts");
   assert(keepSidebarPr("OPEN", false) && keepSidebarPr("MERGED", true) && !keepSidebarPr("MERGED", false) && !keepSidebarPr("CLOSED", false) && !keepSidebarPr(undefined, false), "prs: sibling worktrees only when OPEN; the agent's own folder always");
 }
 
@@ -1381,12 +1381,12 @@ console.log("\nall paw web checks passed 🐾");
 
 // ── search (src/search.ts) ────────────────────────────────────────────────────────────────────────
 {
-  const { snippet, searchEntries, recordText } = await import("../src/search.js");
+  const { snippet, searchEntries, recordText } = await import("../src/search.ts");
   assert(snippet("the quick brown fox jumps over the lazy dog", "brown", 20).includes("brown"), "snippet keeps the match whole");
   assert(snippet("aaaa PELICAN bbbb", "pelican").includes("PELICAN"), "snippet matches case-insensitively and returns original casing");
   assert(snippet("x".repeat(500), "nomatch", 40) === "x".repeat(40) + "…", "no match → the head of the text, cut and marked, never empty");
   assert(snippet("a\n\n  b   c", "b") === "a b c", "whitespace is flattened for a one-line snippet");
-  const entries: import("../src/feed.js").Entry[] = [
+  const entries: import("../src/feed.ts").Entry[] = [
     { from: "research", text: "deploy is green", ts: 1, dir: "in" },
     { from: "you", to: "queue", text: "please redeploy v119", ts: 2, dir: "out" },
     { from: "harbor", text: "nothing here", ts: 3, dir: "in" },
@@ -1420,7 +1420,7 @@ console.log("\nall paw web checks passed 🐾");
   assert(l.a === 5 && !("b" in l) && !("c" in l), "loadSeen keeps only finite numbers");
   globalThis.localStorage = { getItem: () => "[]", setItem: () => {} } as unknown as Storage;
   assert(Object.keys(loadSeen("paw")).length === 0, "an array reads as nothing seen");
-  const { Channels } = await import("../src/web.js");
+  const { Channels } = await import("../src/web.ts");
   const c = new Channels();
   c.noteStamps("x", [10, 20, 30, 20]);
   c.noteStamps("x", [40]);

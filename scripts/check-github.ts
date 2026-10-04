@@ -12,7 +12,7 @@ import { dirname, join } from "node:path";
 const pawHome = realpathSync(mkdtempSync(join(tmpdir(), "paw-gh-home-")));
 process.env.PAW_HOME = pawHome; // repos clone under here
 
-const { parseGithubHandle, ghCloneArgs, repoDir, resolveGithubTarget } = await import("../src/github.js");
+const { parseGithubHandle, ghCloneArgs, repoDir, resolveGithubTarget } = await import("../src/github.ts");
 
 let failures = 0;
 function assert(cond: boolean, msg: string): void {

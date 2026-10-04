@@ -11,8 +11,8 @@ process.env.PAW_HOME = mkdtempSync(join(tmpdir(), "paw-rm-home-"));
 process.env.PAW_SPACE = "rmtest";
 const space = "rmtest";
 
-const { folderToName, lookupFolderName, personaFilePath, registerInstance, setFolderName, setPersonaKeys } = await import("../src/addressing.js");
-const { resolveRemoval } = await import("../src/rm.js");
+const { folderToName, lookupFolderName, personaFilePath, registerInstance, setFolderName, setPersonaKeys } = await import("../src/addressing.ts");
+const { resolveRemoval } = await import("../src/rm.ts");
 
 let failures = 0;
 function assert(cond: boolean, msg: string): void {

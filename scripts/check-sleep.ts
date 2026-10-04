@@ -4,12 +4,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 process.env.PAW_HOME = mkdtempSync(join(tmpdir(), "pawsleepchk-"));
-const { parseHibernate, extraChannels, openBackgroundTasks, shellDescendants, sleepDecision } = await import("../src/sleep.js");
-const { backlogFilters, dmSender } = await import("../src/sleep-host.js");
-const { standInActor, writeSleepRecord, prepareWake, isAsleep, readWakingRecord, markStandIn, standInHolder, scanRecords, listSleeping, sleepState, failWake, clearSleep, sleepDir, MAX_WAKE_FAILURES } = await import("../src/sleep-state.js");
-const { scanActivity, preDespawnCheck } = await import("../src/sleep.js");
-const { effectiveCursor, toForward } = await import("../src/sleep-host.js");
-const { stopAgent } = await import("../src/addressing.js");
+const { parseHibernate, extraChannels, openBackgroundTasks, shellDescendants, sleepDecision } = await import("../src/sleep.ts");
+const { backlogFilters, dmSender } = await import("../src/sleep-host.ts");
+const { standInActor, writeSleepRecord, prepareWake, isAsleep, readWakingRecord, markStandIn, standInHolder, scanRecords, listSleeping, sleepState, failWake, clearSleep, sleepDir, MAX_WAKE_FAILURES } = await import("../src/sleep-state.ts");
+const { scanActivity, preDespawnCheck } = await import("../src/sleep.ts");
+const { effectiveCursor, toForward } = await import("../src/sleep-host.ts");
+const { stopAgent } = await import("../src/addressing.ts");
 
 let fails = 0;
 const ok = (label: string, cond: boolean, detail = "") => {
@@ -155,8 +155,8 @@ ok("already-forwarded seqs are skipped on a retry", toForward(backlog, [6, 7]).m
 ok("nothing forwarded yet → all of it", toForward(backlog, undefined).length === 3);
 
 // follow-up 1: a live seat beside a sleep record is treated as woken
-const { reconcileTargets, retryDelayMs } = await import("../src/sleep-host.js");
-const { mergeSleepRecord } = await import("../src/sleep.js");
+const { reconcileTargets, retryDelayMs } = await import("../src/sleep-host.ts");
+const { mergeSleepRecord } = await import("../src/sleep.ts");
 const rows1 = [
   { name: "z1", status: "running", mesh: "idle" },
   { name: "z2", status: "running", mesh: "absent" },
@@ -171,7 +171,7 @@ ok("F1 a wake already in flight is not doubled", reconcileTargets(["z1"], rows1,
 writeSleepRecord("s", { name: "h", folder: "/x", since: 1, cursorSeq: 3, reason: "t" });
 await stopAgent({ space: "s", ps: async () => ({ ok: true, data: [] }) } as unknown as Parameters<typeof stopAgent>[0], "nobody-else"); // unrelated: untouched
 ok("F1 setup: h asleep", isAsleep("s", "h"));
-const { ensureAgentSpawned } = await import("../src/addressing.js");
+const { ensureAgentSpawned } = await import("../src/addressing.ts");
 const liveCtl = { space: "s", ps: async () => ({ ok: true, data: [{ name: "h", status: "running", mesh: "idle" }] }) } as unknown as Parameters<typeof ensureAgentSpawned>[0];
 const reused = await ensureAgentSpawned(liveCtl, { space: "s", name: "h", cwd: "/x" });
 ok("F1 ensureAgentSpawned's reuse path heals: record handed to the host as waking", !reused.spawned && !isAsleep("s", "h") && readWakingRecord("s", "h")?.cursorSeq === 3);
@@ -180,7 +180,7 @@ const merged = mergeSleepRecord({ name: "m", folder: "/x", since: 1, cursorSeq: 
 ok("F1 a re-sleep over an unreconciled record keeps the earlier cursor and forwarded set", merged.cursorSeq === 4 && merged.forwarded?.join() === "5" && merged.lastId === "local.NEW");
 
 // follow-up 2: stopping a sleeping agent says so
-const { stopMessage } = await import("../src/commands/stop.js");
+const { stopMessage } = await import("../src/commands/stop.ts");
 ok("F2 stop of a sleeper says it was asleep and is now stopped", /was asleep; a DM no longer wakes it/.test(stopMessage("q", false, true) ?? ""));
 ok("F2 stop of a live agent is unchanged", stopMessage("q", true, false) === "✓ stopped q");
 ok("F2 nothing stopped and not asleep → caller's 'isn't running' path", stopMessage("q", false, false) === undefined);

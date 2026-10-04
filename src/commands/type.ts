@@ -26,15 +26,15 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { registry, type Command } from "@cotal-ai/core";
-import { folderForName, personaFilePath } from "../addressing.js";
-import { resolveSpace } from "../lifecycle.js";
-import { readResumeId } from "../session.js";
-import { readTurnState } from "../status.js";
-import { capturePane, paneInput, paneShowsPrompt, sendKeys, tmuxTarget, type KeyPart } from "../unstick.js";
-import { liveSessionProcs } from "../named.js";
-import { tmuxSplit, tmuxSplitAdvice } from "../native-attach.js";
-import { resolveStopName } from "./stop.js";
-import { requireTmuxPane } from "./unstick.js";
+import { folderForName, personaFilePath } from "../addressing.ts";
+import { resolveSpace } from "../lifecycle.ts";
+import { readResumeId } from "../session.ts";
+import { readTurnState } from "../status.ts";
+import { capturePane, paneInput, paneShowsPrompt, sendKeys, tmuxTarget, type KeyPart } from "../unstick.ts";
+import { liveSessionProcs } from "../named.ts";
+import { tmuxSplit, tmuxSplitAdvice } from "../native-attach.ts";
+import { resolveStopName } from "./stop.ts";
+import { requireTmuxPane } from "./unstick.ts";
 
 export type TypeArgs = {
   space?: string;

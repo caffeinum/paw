@@ -24,16 +24,16 @@ import { existsSync } from "node:fs";
 import { registry, dmStream, parsePrincipalKey, unicastRecvFilter, type Command } from "@cotal-ai/core";
 import { connect } from "@nats-io/transport-node";
 import { jetstreamManager } from "@nats-io/jetstream";
-import { agentRecord, listAgents, personaFilePath, setPersonaKeys, wirePrincipal, type PsRow } from "./addressing.js";
-import { withManagerControl, type ManagerControl } from "./control.js";
-import { ensure, resolveSpace } from "./lifecycle.js";
-import { liveSessionProcs } from "./named.js";
-import { personaValue, readResumeId, transcriptMtime, transcriptPath } from "./session.js";
-import { dmsSince } from "./sleep-host.js";
-import { listSleeping, readSleepRecord, readWakingRecord, scanRecords, sleepLog, sleepState, writeSleepRecord, type SleepRecord } from "./sleep-state.js";
-import { collectStatus, type AgentStatus } from "./status.js";
-import { tailRead } from "./transcript.js";
-import { pawServer } from "./server.js";
+import { agentRecord, listAgents, personaFilePath, setPersonaKeys, wirePrincipal, type PsRow } from "./addressing.ts";
+import { withManagerControl, type ManagerControl } from "./control.ts";
+import { ensure, resolveSpace } from "./lifecycle.ts";
+import { liveSessionProcs } from "./named.ts";
+import { personaValue, readResumeId, transcriptMtime, transcriptPath } from "./session.ts";
+import { dmsSince } from "./sleep-host.ts";
+import { listSleeping, readSleepRecord, readWakingRecord, scanRecords, sleepLog, sleepState, writeSleepRecord, type SleepRecord } from "./sleep-state.ts";
+import { collectStatus, type AgentStatus } from "./status.ts";
+import { tailRead } from "./transcript.ts";
+import { pawServer } from "./server.ts";
 
 /** The prompt cache TTL: below it a sleep would make the wake pay a cold cache. */
 export const MIN_HIBERNATE_MS = 60 * 60_000;

@@ -8,8 +8,8 @@
 import { existsSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
-import { pawCotalRoot } from "./cotal-root.js";
-import { openReadonlySqlite } from "./sqlite-readonly.js";
+import { pawCotalRoot } from "./cotal-root.ts";
+import { openReadonlySqlite } from "./sqlite-readonly.ts";
 import {
   failureText,
   harnessOutputText,
@@ -20,7 +20,7 @@ import {
   toolDisplayName,
   userTextBlock,
   type Block,
-} from "./transcript.js";
+} from "./transcript.ts";
 
 const SKIP_PART = new Set(["step-start", "step-finish", "reasoning", "patch", "file", "compaction", "subtask", "agent", "retry"]);
 

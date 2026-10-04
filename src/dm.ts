@@ -30,13 +30,13 @@ import {
   setFolderName,
   stableHumanId,
   waitForPeerId,
-} from "./addressing.js";
-import { isAddressHandle, resolveAddress } from "./address.js";
-import { withManagerControl } from "./control.js";
-import { composeMessage, peelWords, stageAttachment } from "./images.js";
-import { resolveSpace } from "./lifecycle.js";
-import { HUMAN_PEER } from "./names.js";
-import { pawServer } from "./server.js";
+} from "./addressing.ts";
+import { isAddressHandle, resolveAddress } from "./address.ts";
+import { withManagerControl } from "./control.ts";
+import { composeMessage, peelWords, stageAttachment } from "./images.ts";
+import { resolveSpace } from "./lifecycle.ts";
+import { HUMAN_PEER } from "./names.ts";
+import { pawServer } from "./server.ts";
 
 const tty = process.stdout.isTTY === true;
 const wrap = (code: string) => (s: string) => (tty ? `\x1b[${code}m${s}\x1b[0m` : s);

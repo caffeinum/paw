@@ -41,14 +41,14 @@ import {
   startResilient,
   waitForPeerId,
   type Kind,
-} from "./addressing.js";
-import { isAddressHandle, resolveAddress } from "./address.js";
-import { HOST_RE } from "./url.js";
-import { bashMessage, parseBang, runBash } from "./bash.js";
-import { withManagerControl } from "./control.js";
-import { advanceCursor } from "./cursor.js";
-import { arrowRun, CLEAR_ALL, displayWidth, fitWidth, entryVisible, hintFor, History, LogFollower, navKey, Painter, type Entry, pickerWindow, showsChat, showsLogs, stepView, VIEW_LABEL, type ChatView } from "./chat-views.js";
-import { attachesAbove, openAgentLog, renderBlock } from "./log.js";
+} from "./addressing.ts";
+import { isAddressHandle, resolveAddress } from "./address.ts";
+import { HOST_RE } from "./url.ts";
+import { bashMessage, parseBang, runBash } from "./bash.ts";
+import { withManagerControl } from "./control.ts";
+import { advanceCursor } from "./cursor.ts";
+import { arrowRun, CLEAR_ALL, displayWidth, fitWidth, entryVisible, hintFor, History, LogFollower, navKey, Painter, type Entry, pickerWindow, showsChat, showsLogs, stepView, VIEW_LABEL, type ChatView } from "./chat-views.ts";
+import { attachesAbove, openAgentLog, renderBlock } from "./log.ts";
 import {
   ATTACH_ICON,
   attachmentsRide,
@@ -60,14 +60,14 @@ import {
   stageAttachment,
   stillThere,
   type Attachment,
-} from "./images.js";
-import { FRESH_SPAWN_MS, LIVE_AGENT_MS } from "./dm.js";
-import { messageText as textOf } from "./feed.js";
-import { dedupeRoster } from "./commands/who.js";
-import { isContinueKey, joinLines, peelContinuation } from "./multiline.js";
-import { resolveSpace } from "./lifecycle.js";
-import { renderMarkdown } from "./markdown.js";
-import { HUMAN_PEER } from "./names.js";
+} from "./images.ts";
+import { FRESH_SPAWN_MS, LIVE_AGENT_MS } from "./dm.ts";
+import { messageText as textOf } from "./feed.ts";
+import { dedupeRoster } from "./commands/who.ts";
+import { isContinueKey, joinLines, peelContinuation } from "./multiline.ts";
+import { resolveSpace } from "./lifecycle.ts";
+import { renderMarkdown } from "./markdown.ts";
+import { HUMAN_PEER } from "./names.ts";
 import {
   composePastes,
   DISABLE_BRACKETED_PASTE,
@@ -79,8 +79,8 @@ import {
   shouldCollapse,
   submittedLineCount,
   type PasteBlock,
-} from "./paste.js";
-import { pawServer } from "./server.js";
+} from "./paste.ts";
+import { pawServer } from "./server.ts";
 
 /** Tiny ANSI helpers — kept local so chat doesn't reach into cotal's CLI internals. */
 const tty = process.stdout.isTTY === true;

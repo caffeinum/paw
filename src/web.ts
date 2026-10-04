@@ -46,9 +46,9 @@ import type { Socket } from "node:net";
 import { extname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { registry, type Command, type CotalEndpoint, type CotalMessage } from "@cotal-ai/core";
-import { controlCreds, folderForName, personaFilePath } from "./addressing.js";
-import { claudeProjectDir } from "./adopt.js";
-import { advanceCursor, cursorPath, readCursor } from "./cursor.js";
+import { controlCreds, folderForName, personaFilePath } from "./addressing.ts";
+import { claudeProjectDir } from "./adopt.ts";
+import { advanceCursor, cursorPath, readCursor } from "./cursor.ts";
 
 /**
  * The browser reads its OWN cursor, not the shared one.
@@ -81,24 +81,24 @@ function webCursor(space: string): number {
   if (shared > 0) advanceCursor(space, shared, WEB_CURSOR);
   return shared;
 }
-import { sendAsYou } from "./dm.js";
-import { FETCH_CAP, messageText, observerEndpoint, pollLoop, readConversation, type Entry } from "./feed.js";
-import { ensure, resolveSpace, reexecUnderNode } from "./lifecycle.js";
-import { blocksForAgent, chooseTranscriptId } from "./log.js";
-import { meshAgentSession } from "./named.js";
-import { HUMAN_PEER } from "./names.js";
-import { readAgentType, readResumeId, transcriptPath } from "./session.js";
-import { searchEntries, searchTranscript, snippet, type MessageHit, type TranscriptHit } from "./search.js";
-import { collectStatus, type AgentStatus } from "./status.js";
-import { dropSharedManagerControl, sharedManagerControl } from "./control.js";
-import { closeTask, commentTask, createTaskGetId, listComments, listTasks, taskPrRows, updateTask } from "./tasks.js";
-import { gitToplevel, listWorktrees } from "./worktree.js";
-import type { Block } from "./transcript.js";
+import { sendAsYou } from "./dm.ts";
+import { FETCH_CAP, messageText, observerEndpoint, pollLoop, readConversation, type Entry } from "./feed.ts";
+import { ensure, resolveSpace, reexecUnderNode } from "./lifecycle.ts";
+import { blocksForAgent, chooseTranscriptId } from "./log.ts";
+import { meshAgentSession } from "./named.ts";
+import { HUMAN_PEER } from "./names.ts";
+import { readAgentType, readResumeId, transcriptPath } from "./session.ts";
+import { searchEntries, searchTranscript, snippet, type MessageHit, type TranscriptHit } from "./search.ts";
+import { collectStatus, type AgentStatus } from "./status.ts";
+import { dropSharedManagerControl, sharedManagerControl } from "./control.ts";
+import { closeTask, commentTask, createTaskGetId, listComments, listTasks, taskPrRows, updateTask } from "./tasks.ts";
+import { gitToplevel, listWorktrees } from "./worktree.ts";
+import type { Block } from "./transcript.ts";
 import { randomBytes } from "node:crypto";
-import { imagesDir } from "./images.js";
-import { prInfo, prInfoMany } from "./git.js";
-import { bashMessage, runBash } from "./bash.js";
-import { pawServer } from "./server.js";
+import { imagesDir } from "./images.ts";
+import { prInfo, prInfoMany } from "./git.ts";
+import { bashMessage, runBash } from "./bash.ts";
+import { pawServer } from "./server.ts";
 
 /** 7788, NOT 7799 — `cotal web` owns 7799 and running both at once is the normal case, not a clash. */
 const DEFAULT_PORT = 7788;
@@ -273,7 +273,10 @@ export class Conversation {
    *  agent happened to reply (2026-09-08). */
   private unnamed = new Map<Entry, string>();
 
-  constructor(private readonly ep: CotalEndpoint) {}
+  private readonly ep: CotalEndpoint;
+  constructor(ep: CotalEndpoint) {
+    this.ep = ep;
+  }
 
   entries(): Entry[] {
     for (const [entry, id] of this.unnamed) {
@@ -393,7 +396,9 @@ export class Village {
   private last = new Map<string, { text: string; ts: number }>(); // sender name -> last line
   private seenIds = new Set<string>();
   private readonly meName: string;
-  constructor(private readonly me: string) {
+  private readonly me: string;
+  constructor(me: string) {
+    this.me = me;
     this.meName = HUMAN_PEER;
     this.names.set(me, HUMAN_PEER);
   }

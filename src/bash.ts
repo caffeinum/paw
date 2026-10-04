@@ -18,7 +18,7 @@
  * so nothing here may ever be assembled from anything but what the operator typed.
  */
 import { spawn } from "node:child_process";
-import { bdEnv } from "./tasks.js";
+import { bdEnv } from "./tasks.ts";
 
 /** How long a command may run before it is killed. Long enough for a build step to say something,
  *  short enough that a hung command doesn't wedge the browser waiting on a reply. */

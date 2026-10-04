@@ -16,7 +16,7 @@ Moved verbatim from CLAUDE.md (2026-10-02 split). Index: [CLAUDE.md](../../CLAUD
   bare `create`/`send` fail-loud with redirects (`chat --fresh` / `dm|msg|ask`); unknown command →
   one-line error, exit 1 (no silent fallthrough).
   **`paw cotal <cmd>` namespace:** spawns `bin/cotald.ts` as a SUBPROCESS (node+tsx via
-  `cotaldViaTsx`) with mesh ensured + `--space` injected — control-plane verbs (start/ps/stop/
+  `cotaldViaNode`) with mesh ensured + `--space` injected — control-plane verbs (start/ps/stop/
   attach/spawn/despawn, `COTAL_NEEDS_MANAGER`) also bring the manager up. Bare `paw cotal` prints
   the passthrough hint and exits 0.
 

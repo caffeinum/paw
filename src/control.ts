@@ -47,7 +47,7 @@ import {
   type ResolvedService,
 } from "@cotal-ai/core";
 import { authDir, loadSpaceAuth } from "@cotal-ai/workspace";
-import { pawCotalRoot } from "./cotal-root.js";
+import { pawCotalRoot } from "./cotal-root.ts";
 
 /** A manager reply in paw's shape: `{ok, data, error}`, the same three fields every call site read
  *  off the old `ControlReply`, so the rail swap didn't also become a rewrite of what reads it.
@@ -95,11 +95,15 @@ export class ManagerControl {
    * window — one attempt, no retries, and a healthy manager reported as dead. Ordinary callers want
    * the patient default.
    */
-  constructor(
-    readonly space: string,
-    private readonly server: string,
-    private readonly resolveMs: number = RESOLVE_MS,
-  ) {}
+  readonly space: string;
+  private readonly server: string;
+  private readonly resolveMs: number;
+
+  constructor(space: string, server: string, resolveMs: number = RESOLVE_MS) {
+    this.space = space;
+    this.server = server;
+    this.resolveMs = resolveMs;
+  }
 
   /** `ps` — every managed agent's row. paw's most-called control op by a wide margin (every wake
    *  gate, every readiness poll, `paw status`), which is why the resolve is cached. */

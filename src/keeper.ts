@@ -21,10 +21,10 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { restartAgent } from "./addressing.js";
-import type { ManagerControl } from "./control.js";
-import { collectStatus, inboxStuck, toolLabel, type AgentStatus } from "./status.js";
-import { capturePane, interruptTool, paneShowsPrompt, parseToolThreshold, resumePrompt, sendPrompt, readLastToolUnstick, toolUnstickDecision, writeLastToolUnstick } from "./unstick.js";
+import { restartAgent } from "./addressing.ts";
+import type { ManagerControl } from "./control.ts";
+import { collectStatus, inboxStuck, toolLabel, type AgentStatus } from "./status.ts";
+import { capturePane, interruptTool, paneShowsPrompt, parseToolThreshold, resumePrompt, sendPrompt, readLastToolUnstick, toolUnstickDecision, writeLastToolUnstick } from "./unstick.ts";
 
 /** How long the transcript must be silent, with mail waiting, before the agent counts as stuck. */
 export const STUCK_MS = 10 * 60_000;

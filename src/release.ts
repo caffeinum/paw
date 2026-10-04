@@ -38,8 +38,8 @@ import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, readlinkSync,
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { buildShim, hubEnabled } from "./hub/paths.js";
-import { resolveSpace } from "./space.js";
+import { buildShim, hubEnabled } from "./hub/paths.ts";
+import { resolveSpace } from "./space.ts";
 
 /** paw's checkout root, anchored at THIS file — not process.argv[1], which may be a launcher shim
  *  outside the repo. When the CLI itself runs from a release dir, this IS that release dir. */

@@ -28,18 +28,18 @@ import {
   resolveModel,
   spawnLockPath,
   type PsRow,
-} from "./addressing.js";
-import { claudeProjectDir, latestSession, pinClaudeArgs, pinSession } from "./adopt.js";
-import { withManagerControl } from "./control.js";
-import { pawConnector } from "./connector.js";
-import { pawCotalRoot } from "./cotal-root.js";
-import { confineAndTrustCwd } from "./cwd.js";
-import { attachResolved } from "./open.js";
-import { readForeground, registerForeground, unregisterForeground } from "./foreground.js";
-import { daemonEnv, ensure, resolveSpace } from "./lifecycle.js";
-import { withFileLockAsync } from "./lock.js";
-import { resolveNamedSession } from "./named.js";
-import { readClaudeArgs, readResumeId } from "./session.js";
+} from "./addressing.ts";
+import { claudeProjectDir, latestSession, pinClaudeArgs, pinSession } from "./adopt.ts";
+import { withManagerControl } from "./control.ts";
+import { pawConnector } from "./connector.ts";
+import { pawCotalRoot } from "./cotal-root.ts";
+import { confineAndTrustCwd } from "./cwd.ts";
+import { attachResolved } from "./open.ts";
+import { readForeground, registerForeground, unregisterForeground } from "./foreground.ts";
+import { daemonEnv, ensure, resolveSpace } from "./lifecycle.ts";
+import { withFileLockAsync } from "./lock.ts";
+import { resolveNamedSession } from "./named.ts";
+import { readClaudeArgs, readResumeId } from "./session.ts";
 
 /**
  * Two-zone parse: consume LEADING paw-owned opts (`--space <s>`, `--name <n>`, and `--space=`/`--name=`

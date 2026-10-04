@@ -21,7 +21,7 @@
  *
  * Pure: no tty, no readline, no mesh — chat.ts wires these in; check:chat asserts them.
  */
-import type { Block } from "./transcript.js";
+import type { Block } from "./transcript.ts";
 
 export type ChatView = "logs" | "both" | "chat";
 
@@ -230,7 +230,10 @@ export const HISTORY_CAP = 3000;
 
 export class History {
   readonly entries: Entry[] = [];
-  constructor(private readonly cap = HISTORY_CAP) {}
+  private readonly cap: number;
+  constructor(cap = HISTORY_CAP) {
+    this.cap = cap;
+  }
   push(e: Entry): void {
     this.entries.push(e);
     // Drop the oldest NON-banner entry: the banner is what a reprint opens with.
@@ -252,14 +255,26 @@ export class Painter {
   lastSide: "you" | "peer" | "sys" | "log" | undefined;
   trailingBlank = false;
 
+  private readonly render: (b: Block) => string;
+  private readonly human: string;
+  private readonly dim: (s: string) => string;
+  private readonly pad: string;
+  /** `paw log`'s spacing predicate (src/log.ts attachesAbove): true for a `⎿` result rail. */
+  private readonly attachesAbove: (rendered: string) => boolean;
+
   constructor(
-    private readonly render: (b: Block) => string,
-    private readonly human: string,
-    private readonly dim: (s: string) => string = (s) => s,
-    private readonly pad = "  ",
-    /** `paw log`'s spacing predicate (src/log.ts attachesAbove): true for a `⎿` result rail. */
-    private readonly attachesAbove: (rendered: string) => boolean = () => false,
-  ) {}
+    render: (b: Block) => string,
+    human: string,
+    dim: (s: string) => string = (s) => s,
+    pad = "  ",
+    attachesAbove: (rendered: string) => boolean = () => false,
+  ) {
+    this.render = render;
+    this.human = human;
+    this.dim = dim;
+    this.pad = pad;
+    this.attachesAbove = attachesAbove;
+  }
 
   reset(): void {
     this.lastSide = undefined;
@@ -332,12 +347,22 @@ export class LogFollower {
   /** Agents whose "(no logs …)" note has been shown — once per session, however often you go back. */
   private readonly reported = new Set<string>();
 
+  private readonly open: (name: string) => FollowSource;
+  private readonly out: (e: { kind: "log"; agent: string; blocks: Block[]; backfill: boolean; note?: string }) => void;
+  private readonly onError: (target: string, message: string) => void;
+  private readonly backfill: number;
+
   constructor(
-    private readonly open: (name: string) => FollowSource,
-    private readonly out: (e: { kind: "log"; agent: string; blocks: Block[]; backfill: boolean; note?: string }) => void,
-    private readonly onError: (target: string, message: string) => void,
-    private readonly backfill = 40,
-  ) {}
+    open: (name: string) => FollowSource,
+    out: (e: { kind: "log"; agent: string; blocks: Block[]; backfill: boolean; note?: string }) => void,
+    onError: (target: string, message: string) => void,
+    backfill = 40,
+  ) {
+    this.open = open;
+    this.out = out;
+    this.onError = onError;
+    this.backfill = backfill;
+  }
 
   /** Can the CURRENT target's transcript be read? The logs view needs to know (see entryVisible). */
   readable(target: string | undefined): boolean {
@@ -424,7 +449,7 @@ export class LogFollower {
 
 /** Display width lives in src/width.ts (shared with the markdown tables and `paw status`); re-exported
  *  here because the chat's hint line and its tests reach for it through this module. */
-export { displayWidth, fitWidth } from "./width.js";
+export { displayWidth, fitWidth } from "./width.ts";
 
 /** Clear the visible screen AND the scrollback, cursor home — the start of every redraw. 2J before 3J:
  *  some terminals push the cleared screen INTO scrollback, which 3J then clears. Verified on tmux 3.5a

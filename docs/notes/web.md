@@ -312,7 +312,7 @@ Moved verbatim from CLAUDE.md (2026-10-02 split). Index: [CLAUDE.md](../../CLAUD
   nothing (the client sits on `connecting…` forever), node returns `101 Switching Protocols` instantly.
   Without the socket the browser falls back to its 2s poll, which browsers throttle hard in a BACKGROUND
   tab — so mail appeared to arrive "only on start", which is exactly how it was reported. `web()` now
-  hands the whole command to `pawViaTsx` (now exported) and becomes a passthrough — stdio inherited,
+  hands the whole command to `pawViaNode` (now exported) and becomes a passthrough — stdio inherited,
   exit code forwarded, SIGINT/TERM/HUP forwarded so Ctrl-C stops the child rather than orphaning it.
   Re-exec rather than refuse: the operator asked for a server, and "run it a different way" is paw's job.
   Done BEFORE `ensure()` so nothing runs twice. Verified live through the real bun launcher: a bun parent

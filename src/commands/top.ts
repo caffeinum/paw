@@ -6,10 +6,10 @@
  * hint is a command that exists, for the operator to run. The same table is `paw optimize --dry-run`.
  */
 import { registry, type Command } from "@cotal-ai/core";
-import { withManagerControl } from "../control.js";
-import { resolveSpace } from "../lifecycle.js";
-import { ago, collectStatus } from "../status.js";
-import { writeJson } from "../stdout.js";
+import { withManagerControl } from "../control.ts";
+import { resolveSpace } from "../lifecycle.ts";
+import { ago, collectStatus } from "../status.ts";
+import { writeJson } from "../stdout.ts";
 import {
   color,
   fmtMb,
@@ -23,9 +23,9 @@ import {
   sortRows,
   topRows,
   type Item,
-} from "../fleet.js";
-import { optimizeVerdict } from "./optimize.js";
-import { pawServer } from "../server.js";
+} from "../fleet.ts";
+import { optimizeVerdict } from "./optimize.ts";
+import { pawServer } from "../server.ts";
 
 const DAY = 86_400_000;
 

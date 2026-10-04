@@ -23,8 +23,8 @@ import { randomUUID } from "node:crypto";
 import { DEV_OWNER, CotalEndpoint, dmStream, parsePrincipalKey, principalKey, unicastRecvFilter, unicastSubject } from "@cotal-ai/core";
 import { connect, type NatsConnection, type Subscription } from "@nats-io/transport-node";
 import { DeliverPolicy, jetstream, jetstreamManager } from "@nats-io/jetstream";
-import { agentRecord, ensureAgentSpawned, psRowAlive, wirePrincipal, type PsRow } from "./addressing.js";
-import { sharedManagerControl, withManagerControl } from "./control.js";
+import { agentRecord, ensureAgentSpawned, psRowAlive, wirePrincipal, type PsRow } from "./addressing.ts";
+import { sharedManagerControl, withManagerControl } from "./control.ts";
 import {
   MAX_WAKE_FAILURES,
   clearSleep,
@@ -39,8 +39,8 @@ import {
   standInActor,
   writeWakingRecord,
   type SleepRecord,
-} from "./sleep-state.js";
-import { pawServer } from "./server.js";
+} from "./sleep-state.ts";
+import { pawServer } from "./server.ts";
 
 const TICK_MS = 1000;
 /** How often the tick also reconciles against ps and re-checks undelivered backlog. */

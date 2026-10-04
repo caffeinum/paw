@@ -15,9 +15,9 @@
 import { execFile } from "node:child_process";
 import { cpus, loadavg } from "node:os";
 import { basename } from "node:path";
-import type { Verdict } from "./commands/optimize.js";
-import { ago, hungTool, type AgentStatus } from "./status.js";
-import { UNSTICK_TOOL_DEFAULT_MIN } from "./unstick.js";
+import type { Verdict } from "./commands/optimize.ts";
+import { ago, hungTool, type AgentStatus } from "./status.ts";
+import { UNSTICK_TOOL_DEFAULT_MIN } from "./unstick.ts";
 
 export interface Proc {
   pid: number;

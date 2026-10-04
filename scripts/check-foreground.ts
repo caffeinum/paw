@@ -14,9 +14,9 @@ process.env.PAW_HOME = mkdtempSync(join(tmpdir(), "paw-fg-home-"));
 process.env.PAW_SPACE = "fgtest";
 const space = "fgtest";
 
-const { registerForeground, readForeground, listForeground, unregisterForeground } = await import("../src/foreground.js");
-const { peelArgs, deriveSessionIntent, stripSessionFlags, finalLaunchArgs } = await import("../src/claude.js");
-const { ensureAgentSpawned } = await import("../src/addressing.js");
+const { registerForeground, readForeground, listForeground, unregisterForeground } = await import("../src/foreground.ts");
+const { peelArgs, deriveSessionIntent, stripSessionFlags, finalLaunchArgs } = await import("../src/claude.ts");
+const { ensureAgentSpawned } = await import("../src/addressing.ts");
 
 let failures = 0;
 function assert(cond: boolean, msg: string): void {

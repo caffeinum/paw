@@ -10,7 +10,7 @@ import { join } from "node:path";
 process.env.PAW_HOME = mkdtempSync(join(tmpdir(), "paw-chat-home-"));
 process.env.PAW_SPACE = "chattest";
 
-const { completeMention, shouldFollowDm, parseChatTarget, passesFilter, presenceVisible, activityLine, elsewhereBadge } = await import("../src/chat.js");
+const { completeMention, shouldFollowDm, parseChatTarget, passesFilter, presenceVisible, activityLine, elsewhereBadge } = await import("../src/chat.ts");
 
 let failures = 0;
 function assert(cond: boolean, msg: string): void {
@@ -104,7 +104,7 @@ assert(!shouldFollowDm({ ...base, from: "" }), "a nameless sender can't become a
 const threw = (f: () => unknown): boolean => { try { f(); return false; } catch { return true; } };
 assert(parseChatTarget(undefined).mode === "global", "no positional → global (every conversation)");
 {
-  const { chatTargetArg } = await import("../src/chat.js");
+  const { chatTargetArg } = await import("../src/chat.ts");
   assert(chatTargetArg(undefined, false) === ".", "bare `paw chat` targets this folder, like `paw attach`");
   assert(chatTargetArg("research", false) === "research", "a given target is kept");
   assert(chatTargetArg(undefined, true) === undefined, "--all is every conversation, nothing preselected");
@@ -149,7 +149,7 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
 
 // ── views: logs · logs + chat · chat, the keys, the hint and the picker window (2026-09-23) ─────
 {
-  const { stepView, navKey, hintFor, pickerWindow, logBlockVisible, showsLogs, showsChat, arrowRun } = await import("../src/chat-views.js");
+  const { stepView, navKey, hintFor, pickerWindow, logBlockVisible, showsLogs, showsChat, arrowRun } = await import("../src/chat-views.ts");
   assert(arrowRun("\x1b[B") === 1 && arrowRun("\x1b[A") === -1, "arrows: a single ↓/↑ is one step");
   assert(arrowRun("\x1b[B".repeat(20)) === 20, "arrows: a held ↓ read as ONE chunk is 20 steps, not typing (the collapse-to-1/1 bug)");
   assert(arrowRun("\x1b[B\x1b[A\x1b[B") === 1 && arrowRun("\x1bOB\x1bOB") === 2, "arrows: mixed runs net out; SS3 encodings count");
@@ -189,9 +189,9 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
 
 // ── history / painter / follower: the redraw model behind the views (2026-09-23) ────────────────
 {
-  const { LogFollower, History, Painter, entryVisible, CLEAR_ALL } = await import("../src/chat-views.js");
-  type B = import("../src/transcript.js").Block;
-  type E = import("../src/chat-views.js").Entry;
+  const { LogFollower, History, Painter, entryVisible, CLEAR_ALL } = await import("../src/chat-views.ts");
+  type B = import("../src/transcript.ts").Block;
+  type E = import("../src/chat-views.ts").Entry;
   const render = (b: B) => (b.kind === "tool" ? `TOOL ${b.arg}` : b.kind === "reply" ? `REPLY→${b.to}` : b.kind === "wake" ? `WAKE←${b.from}` : b.kind);
   const tool = (arg: string): B => ({ kind: "tool", name: "Bash", display: "Bash", arg });
 
@@ -291,7 +291,7 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
   assert(errs3.length === 1, "follow: the '(no logs for x)' note is shown ONCE per session, not on every return");
 }
 {
-  const { dropSender, logBlockFor, displayWidth } = await import("../src/chat-views.js");
+  const { dropSender, logBlockFor, displayWidth } = await import("../src/chat-views.ts");
   const drain = "2 messages:\n[DM from you] do this\n[DM from evals] heads up:\nline two of evals";
   assert(dropSender(drain, "you") === "[DM from evals] heads up:\nline two of evals", "drain: drop YOUR messages (and the stale count), keep another agent's — multi-line bodies included");
   assert(dropSender("1 message:\n[DM from you] only mine", "you") === "", "drain: nothing left → empty");
@@ -305,11 +305,11 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
   assert(dropSender("1 message:\n[#general you] only my post", "you") === "", "drain: a channel-only drain is understood too (it used to pass through whole and double your post)");
   // Log spacing = paw log's: blank before each turn, a ⎿ result stays glued to its call (screenshot, 2026-09-23)
   {
-    const { Painter: P2 } = await import("../src/chat-views.js");
-    const { attachesAbove } = await import("../src/log.js");
-    const r = (b: import("../src/transcript.js").Block) => (b.kind === "tool" ? `● Bash(${b.arg})` : b.kind === "result" ? `  ⎿  ${b.lines[0]}` : "?");
+    const { Painter: P2 } = await import("../src/chat-views.ts");
+    const { attachesAbove } = await import("../src/log.ts");
+    const r = (b: import("../src/transcript.ts").Block) => (b.kind === "tool" ? `● Bash(${b.arg})` : b.kind === "result" ? `  ⎿  ${b.lines[0]}` : "?");
     const t = (arg: string) => ({ kind: "tool", name: "Bash", display: "Bash", arg }) as const;
-    const res = (x: string): import("../src/transcript.js").Block => ({ kind: "result", lines: [x], isError: false });
+    const res = (x: string): import("../src/transcript.ts").Block => ({ kind: "result", lines: [x], isError: false });
     const pp = new P2(r, "you", (x) => x, "  ", attachesAbove);
     const a = pp.paint({ kind: "log", agent: "a", blocks: [t("one"), res("ok"), t("two"), res("ok2")], backfill: false }, "logs");
     assert(a === "● Bash(one)\n  ⎿  ok\n\n● Bash(two)\n  ⎿  ok2\n", "spacing: a blank line between turns, none between a call and its ⎿ result");
@@ -319,7 +319,7 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
     assert(c2 === "  ⎿  late\n", "spacing: a result that lands in the NEXT batch stays glued to its call");
   }
   {
-    const { renderBlock } = await import("../src/log.js");
+    const { renderBlock } = await import("../src/log.ts");
     const plain = (x: string) => x.replace(/\x1b\[[0-9;]*m/g, "");
     const one = plain(renderBlock({ kind: "reply", to: "you", text: "done", full: "done" }));
     assert(one === "↩ you done", "dm render: a one-liner stays on the header line, NO ● bullet");
@@ -329,7 +329,7 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
     assert(many.includes("point one") && !many.includes("**"), "dm render: …as markdown (bullets, bold rendered)");
     assert(plain(renderBlock({ kind: "reply", to: "you", text: "gist only" })) === "↩ you gist only", "dm render: an older block with no `full` falls back to the gist");
   }
-  const { fitWidth } = await import("../src/chat-views.js");
+  const { fitWidth } = await import("../src/chat-views.ts");
   assert(fitWidth("日本語テキスト", 7) === "日本語…" && fitWidth("short", 20) === "short", "width: the hint is cut by display columns, not code units");
   assert(displayWidth("abc") === 3 && displayWidth("日本語") === 6 && displayWidth("🐾") === 2 && displayWidth("\x1b") === 0, "width: CJK and emoji take two columns (the hint sat on wrapped CJK input)");
 
@@ -337,7 +337,7 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
 
 // ── plain `paw chat` connects, never creates (operator, 2026-09-24) ─────────────────────────────────
 {
-  const { noAgentMessage } = await import("../src/chat.js");
+  const { noAgentMessage } = await import("../src/chat.ts");
   const m = noAgentMessage("/Users/x/.paw/web/getslash.co", "@getslash.co", ["getslash-co", "evals", "queue"]);
   assert(m.includes("paw chat --fresh @getslash.co") && m.includes("did you mean @getslash-co"), "no agent: points at --fresh AND at the registered name it looks like");
   assert(noAgentMessage("/tmp/new", ".", ["evals"]).includes("`paw status` lists your agents"), "no agent: nothing close → points at paw status, no invented suggestion");

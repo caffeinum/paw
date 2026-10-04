@@ -17,12 +17,12 @@ import {
   folderForName,
   lookupFolderName,
   stopAgent,
-} from "../addressing.js";
-import { withManagerControl } from "../control.js";
-import { readForeground, unregisterForeground } from "../foreground.js";
-import { resolveSpace } from "../lifecycle.js";
-import { sleepState } from "../sleep-state.js";
-import { pawServer } from "../server.js";
+} from "../addressing.ts";
+import { withManagerControl } from "../control.ts";
+import { readForeground, unregisterForeground } from "../foreground.ts";
+import { resolveSpace } from "../lifecycle.ts";
+import { sleepState } from "../sleep-state.ts";
+import { pawServer } from "../server.ts";
 
 /** The success line for `paw stop`, or undefined when nothing was stopped. A sleeping agent has no seat
  *  to stop, but stopping it is real — it no longer wakes on a DM — so say that, not "isn't running". */

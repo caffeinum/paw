@@ -22,9 +22,9 @@
  */
 import { randomUUID } from "node:crypto";
 import { CotalEndpoint, registry, type Command, type CotalMessage, type Delivery, type MessageMeta } from "@cotal-ai/core";
-import { controlCreds, startResilient } from "../addressing.js";
-import { resolveSpace } from "../lifecycle.js";
-import { pawServer } from "../server.js";
+import { controlCreds, startResilient } from "../addressing.ts";
+import { resolveSpace } from "../lifecycle.ts";
+import { pawServer } from "../server.ts";
 
 /** The reserved bind protocol — re-declared locally so this module imports only @cotal-ai/core (the
  *  wire is the contract, not a shared type). Kept byte-identical to endpoint-core/src/bind.ts. */

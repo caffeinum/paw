@@ -24,7 +24,7 @@ import {
   sanitizeImageName,
   stageAttachment,
   tokenizeLine,
-} from "../src/images.js";
+} from "../src/images.ts";
 
 let failures = 0;
 function assert(cond: boolean, label: string): void {

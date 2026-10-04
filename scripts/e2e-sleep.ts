@@ -14,16 +14,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CotalEndpoint, resolvePeer } from "@cotal-ai/core";
 import { removeMesh } from "@cotal-ai/workspace";
-import { ManagerControl } from "../src/control.js";
-import { ensureAgentSpawned, personaFilePath, setFolderName, waitForPeerId } from "../src/addressing.js";
-import { ensure, stop } from "../src/lifecycle.js";
-import { liveSessionProcs } from "../src/named.js";
-import { readResumeId } from "../src/session.js";
-import { collectStatus } from "../src/status.js";
-import { dmLastSeq, extraChannels, readActivity, sleepAgent, sleepDecision } from "../src/sleep.js";
-import { isAsleep, readWakingRecord, standInHolder, writeSleepRecord } from "../src/sleep-state.js";
-import { personaValue } from "../src/session.js";
-import { pawServer } from "../src/server.js";
+import { ManagerControl } from "../src/control.ts";
+import { ensureAgentSpawned, personaFilePath, setFolderName, waitForPeerId } from "../src/addressing.ts";
+import { ensure, stop } from "../src/lifecycle.ts";
+import { liveSessionProcs } from "../src/named.ts";
+import { readResumeId } from "../src/session.ts";
+import { collectStatus } from "../src/status.ts";
+import { dmLastSeq, extraChannels, readActivity, sleepAgent, sleepDecision } from "../src/sleep.ts";
+import { isAsleep, readWakingRecord, standInHolder, writeSleepRecord } from "../src/sleep-state.ts";
+import { personaValue } from "../src/session.ts";
+import { pawServer } from "../src/server.ts";
 
 const space = process.env.PAW_SPACE ?? "";
 if (!process.env.PAW_HOME || !space.startsWith("sleeptest") || process.env.PAW_RELEASE !== "dev" || !process.env.PAW_COTAL_ROOT) {

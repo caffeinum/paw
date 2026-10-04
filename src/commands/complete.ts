@@ -17,9 +17,9 @@ import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { registry, type Command, type CompletionItem } from "@cotal-ai/core";
-import { listAgents } from "../addressing.js";
-import { resolveSpace } from "../lifecycle.js";
-import { expandShortForm } from "../dispatch.js";
+import { listAgents } from "../addressing.ts";
+import { resolveSpace } from "../lifecycle.ts";
+import { expandShortForm } from "../dispatch.ts";
 
 /** Verbs bin/paw.ts handles inline in its own dispatch (cotal/down/help) — NOT registry Commands
  *  (unlike `claude`, which self-registers in src/claude.ts and so is already in commandSurface()

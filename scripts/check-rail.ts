@@ -34,9 +34,9 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { removeMesh } from "@cotal-ai/workspace";
-import { ManagerControl, withManagerControl } from "../src/control.js";
-import { ensure, stop } from "../src/lifecycle.js";
-import { pawServer } from "../src/server.js";
+import { ManagerControl, withManagerControl } from "../src/control.ts";
+import { ensure, stop } from "../src/lifecycle.ts";
+import { pawServer } from "../src/server.ts";
 
 const SETTLE_MS = 3_000; // let the manager finish registering its service before a stranger asks
 const PROBE_DEADLINE_MS = 20_000; // generous; the dead rail's symptom was NO reply at all
@@ -96,13 +96,12 @@ if (process.argv[2] === "--probe") {
 const { space } = assertIsolated();
 process.env.PAW_RUNTIME ??= "pty"; // never take over the operator's tmux/cmux surfaces
 const self = fileURLToPath(import.meta.url);
-const tsx = join(process.cwd(), "node_modules", ".bin", "tsx");
 let agentFolder: string | undefined;
 
 /** Run the probe in a fresh process and return what it saw — or a timeout, which is the real bug. */
 function probe(): { ok: boolean; error?: string; ms: number; names: string[] } {
   try {
-    const out = execFileSync(tsx, [self, "--probe"], {
+    const out = execFileSync(process.execPath, [self, "--probe"], {
       encoding: "utf8",
       // Longer than the probe's own deadline: the probe must be what gives up, not this, so a hang
       // surfaces as "no reply in Nms" rather than as an opaque killed subprocess.
@@ -166,8 +165,8 @@ try {
   //    session and ~a minute — but it is the state a live manager is actually in, and a rail that only
   //    works against an empty manager would be a rail that works in tests and nowhere else.
   if (process.env.PAW_RAIL_SPAWN === "1") {
-    const { ensureAgentSpawned } = await import("../src/addressing.js");
-    const { setFolderName } = await import("../src/addressing.js");
+    const { ensureAgentSpawned } = await import("../src/addressing.ts");
+    const { setFolderName } = await import("../src/addressing.ts");
     agentFolder = mkdtempSync(join(tmpdir(), "pawrail-"));
     const name = setFolderName(space, agentFolder, "railagent").name;
     console.log(`spawning a real agent "${name}" in ${agentFolder} (up to ${SPAWN_READY_MS / 1000}s)…`);

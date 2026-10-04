@@ -31,11 +31,11 @@ function assert(cond: boolean, msg: string): void {
 }
 
 // This check is about PATH and exec resolution, not about which TREE the daemon runs from, so it
-// pins the checkout explicitly (src/release.ts). Without it `cotaldViaTsx` fails loud here for a
+// pins the checkout explicitly (src/release.ts). Without it `cotaldViaNode` fails loud here for a
 // reason that has nothing to do with what's being asserted — release resolution is check:release's job.
 process.env.PAW_RELEASE = "dev";
 
-const { resolveNvmDefault, cotaldViaTsx, daemonEnv } = await import("../src/lifecycle.js");
+const { resolveNvmDefault, cotaldViaNode, daemonEnv } = await import("../src/lifecycle.ts");
 
 /** What Raycast (and a launchd job) actually hands paw. */
 const STRIPPED = "/usr/bin:/bin:/usr/sbin:/sbin";
@@ -43,11 +43,12 @@ const realPath = process.env.PATH;
 
 // --- the spawn command carries no PATH dependency -------------------------------------------------
 process.env.PATH = STRIPPED;
-const [exec, args] = cotaldViaTsx(["up"]);
+const [exec, args] = cotaldViaNode(["up"]);
 assert(isAbsolute(exec), `daemon exec is an ABSOLUTE path, not a bare name resolved from PATH (${exec})`);
 assert(existsSync(exec), "daemon exec exists on disk");
 assert(!exec.endsWith("/.bin/tsx"), "daemon exec is NOT the .bin/tsx shell shim, whose last line is a bare `exec node`");
-assert(args[0].endsWith("cli.mjs") && existsSync(args[0]), "it runs tsx's cli.mjs directly");
+assert(args[0].endsWith("/bin/cotald.ts") && existsSync(args[0]), "node runs the .ts entry directly (native type stripping, no tsx)");
+assert(!args.some((a) => a.includes("tsx")), "no tsx anywhere in the daemon argv");
 
 // --- the env backfills paw's toolchain ------------------------------------------------------------
 const env = daemonEnv();
@@ -74,12 +75,12 @@ assert(!ordered.includes("/zzz-does-not-exist"), "non-existent dirs are skipped 
 
 // --- and it actually runs ------------------------------------------------------------------------
 process.env.PATH = STRIPPED;
-const [runExec, runArgs] = cotaldViaTsx([]);
+const [runExec, runArgs] = cotaldViaNode([]);
 try {
-  // `tsx --version` exercises the whole chain (absolute node → tsx cli) with zero side effects: no
-  // mesh, no manager, no state touched.
-  const out = execFileSync(runExec, [runArgs[0], "--version"], { env: daemonEnv(), encoding: "utf8", timeout: 30_000 });
-  assert(/tsx v/.test(out), `the resolved daemon command RUNS under a stripped PATH (${out.split("\n")[0]})`);
+  // `cotald --help` exercises the whole chain (absolute node → .ts entry → cotal's runCli) with zero
+  // side effects: no mesh, no manager, no state touched.
+  const out = execFileSync(runExec, [...runArgs, "--help"], { env: daemonEnv(), encoding: "utf8", timeout: 30_000 });
+  assert(/lateral agent coordination/.test(out), `the resolved daemon command RUNS under a stripped PATH (${out.split("\n")[0]})`);
 } catch (e) {
   assert(false, `the resolved daemon command runs under a stripped PATH — ${(e as Error).message.split("\n")[0]}`);
 }
@@ -89,7 +90,7 @@ process.env.PATH = realPath;
 
 // ---- reexecUnderNode: the bun→node hand-off for `paw web` ----
 {
-  const { reexecUnderNode } = await import("../src/lifecycle.js");
+  const { reexecUnderNode } = await import("../src/lifecycle.ts");
   // This suite runs under node+tsx, which is the case that must NOT fork: a re-exec here would spawn a
   // second server for every invocation. (The bun branch can't be exercised from node, and is verified
   // live — bun answers a WebSocket upgrade with nothing at all, node with 101.)
@@ -134,7 +135,7 @@ console.log("\nall spawn-env checks passed 🐾");
 
 // ── harness session markers never cross a daemon boundary (the transcript-off leak, 2026-09-08) ──
 {
-  const { daemonEnv, stripHarnessMarkers, HARNESS_SESSION_MARKERS } = await import("../src/lifecycle.js");
+  const { daemonEnv, stripHarnessMarkers, HARNESS_SESSION_MARKERS } = await import("../src/lifecycle.ts");
   const saved: Record<string, string | undefined> = {};
   for (const k of [...HARNESS_SESSION_MARKERS, "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CONFIG_DIR"]) saved[k] = process.env[k];
   for (const k of HARNESS_SESSION_MARKERS) process.env[k] = "leaked";

@@ -32,7 +32,7 @@ const {
   ensurePersonaFile,
   withChannelGrants,
   personaFilePath: personaPath,
-} = await import("../src/addressing.js");
+} = await import("../src/addressing.ts");
 
 let failures = 0;
 function assert(cond: boolean, msg: string): void {
@@ -245,7 +245,7 @@ assert(psRowAlive({ name: "x", status: "exited", mesh: "working" }), "psRowAlive
 assert(spawnAction([{ name: "evals", status: "exited", mesh: "idle" }], "evals") === "reuse", "spawnAction: the split-tmux case REUSES (was: restart a live agent)");
 assert(!psRowAlive({ name: "x", status: "exited", mesh: "absent" }), "psRowAlive: exited and never reached the mesh is dead");
 {
-  const { tmuxSplitAdvice } = await import("../src/native-attach.js");
+  const { tmuxSplitAdvice } = await import("../src/native-attach.ts");
   const adv = tmuxSplitAdvice("evals", { agentServer: 30256, socketServer: 57464, socketPath: "/private/tmp/tmux-501/default" });
   assert(adv.includes("mv /private/tmp/tmux-501/default /private/tmp/tmux-501/default-57464 && kill -USR1 30256"), "split advice: moves the NEWER server's socket aside, then SIGUSR1s the one that lost its own");
   assert(adv.includes("tmux -S /private/tmp/tmux-501/default-57464 attach"), "split advice: says how to still reach the newer server's agents");
@@ -302,7 +302,7 @@ rmSync(process.env.PAW_HOME!, { recursive: true, force: true });
 
 // wake gate busy-guard: an offline row with a recently-written transcript is BUSY, not a zombie.
 {
-  const { restartDespiteOffline, BUSY_GUARD_MS } = await import("../src/addressing.js");
+  const { restartDespiteOffline, BUSY_GUARD_MS } = await import("../src/addressing.ts");
   const now = 1_000_000_000;
   assert(restartDespiteOffline(undefined, now) === true, "busy-guard: no mtime → no evidence → restart proceeds");
   assert(restartDespiteOffline(now - 30_000, now) === false, "busy-guard: written 30s ago → busy → do NOT restart");
@@ -324,7 +324,7 @@ function mkdir(parent: string, name: string): string {
 }
 
 {
-  const { isNameHeldRefusal } = await import("../src/addressing.js");
+  const { isNameHeldRefusal } = await import("../src/addressing.ts");
   const refusal = 'the name "queue-ea" is hard-pinned (--name/identity override) but is already held by a live incarnation (managed here, an unmanaged foreground/connector session, or another manager\'s agent); a pinned same-name collision refuses at accept - pick another name or despawn the existing one';
   if (!isNameHeldRefusal(refusal)) throw new Error("isNameHeldRefusal: the manager's pinned-name collision must be recognised (retry, never `_2`)");
   if (isNameHeldRefusal("unknown connector \"x\"") || isNameHeldRefusal(undefined)) throw new Error("isNameHeldRefusal: other refusals must not be retried");
@@ -333,7 +333,7 @@ function mkdir(parent: string, name: string): string {
 
 // ── registeredAgentFor: a dotted word you already have an agent for is THAT agent (2026-09-24) ─────
 {
-  const { registeredAgentFor, setFolderName: sfn, ensurePersonaFile: epf } = await import("../src/addressing.js");
+  const { registeredAgentFor, setFolderName: sfn, ensurePersonaFile: epf } = await import("../src/addressing.ts");
   const sp = "dotted";
   const base = mkdtempSync(join(tmpdir(), "paw-dotted-"));
   const site = join(base, "caffeinum", "getslash.co");

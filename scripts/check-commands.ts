@@ -14,18 +14,18 @@ process.env.PAW_SPACE = "cmdtest";
 const space = "cmdtest";
 
 // Import AFTER the env isolation is in place — the modules self-register on import.
-const { resolveStopName } = await import("../src/commands/stop.js");
-const { stripChannel, formatWhen, idNames } = await import("../src/commands/history.js");
-const { renderTap } = await import("../src/commands/watch.js");
-const { formatWho, dedupeRoster } = await import("../src/commands/who.js");
-const { extractFileEntry, formatReceived, formatSize } = await import("../src/commands/files.js");
-const { extractBindCode, formatBindOutput, BIND_CODE_PROTO } = await import("../src/commands/bind.js");
-const { parseUnstickArgs } = await import("../src/commands/unstick.js");
-const { tmuxTarget } = await import("../src/unstick.js");
-await import("../src/commands/msg.js");
-await import("../src/commands/ask.js");
-const { folderToName } = await import("../src/addressing.js");
-const { isStaleRefusal } = await import("../src/control.js");
+const { resolveStopName } = await import("../src/commands/stop.ts");
+const { stripChannel, formatWhen, idNames } = await import("../src/commands/history.ts");
+const { renderTap } = await import("../src/commands/watch.ts");
+const { formatWho, dedupeRoster } = await import("../src/commands/who.ts");
+const { extractFileEntry, formatReceived, formatSize } = await import("../src/commands/files.ts");
+const { extractBindCode, formatBindOutput, BIND_CODE_PROTO } = await import("../src/commands/bind.ts");
+const { parseUnstickArgs } = await import("../src/commands/unstick.ts");
+const { tmuxTarget } = await import("../src/unstick.ts");
+await import("../src/commands/msg.ts");
+await import("../src/commands/ask.ts");
+const { folderToName } = await import("../src/addressing.ts");
+const { isStaleRefusal } = await import("../src/control.ts");
 
 // A manager refusal that names a gone incarnation must drop the shared handle; an ordinary refusal must not.
 assert(
@@ -156,7 +156,7 @@ assert(formatWho(you, "human-id").includes("(you)"), "formatWho: the human id is
 
 // lifecycle: manager/mailbox daemon-match patterns are SPACE-EXACT (the ownership-by-signature fix).
 // Proven with a JS RegExp proxy for pgrep's ERE — the escaping + boundary logic is what matters.
-const { managerMatchPattern, mailboxMatchPattern } = await import("../src/lifecycle.js");
+const { managerMatchPattern, mailboxMatchPattern } = await import("../src/lifecycle.ts");
 const mgr1 = new RegExp(managerMatchPattern("owntest-1"));
 const mgrCmd = (s: string) => `node .../tsx/cli.mjs .../bin/cotald.ts supervise --space ${s} --server nats://127.0.0.1:4222`;
 assert(mgr1.test(mgrCmd("owntest-1")), "managerMatchPattern matches its own space's command line");
@@ -167,12 +167,16 @@ const mbCmd = (s: string) => `node .../tsx/cli.mjs .../bin/paw.ts mailbox --spac
 assert(mb1.test(mbCmd("owntest-1")), "mailboxMatchPattern matches its own space (space is the last arg)");
 assert(!mb1.test(mbCmd("owntest-11")), "mailboxMatchPattern is SPACE-EXACT: owntest-1 does NOT match owntest-11");
 assert(new RegExp(mailboxMatchPattern("paw")).test("x .../bin/paw.ts mailbox --space paw"), "mailboxMatchPattern matches the production space `paw` at end-of-arg");
+// Native-TS daemons (no tsx wrapper) carry the same signature — and a still-running tsx-era daemon
+// must keep matching too, or the first `paw restart` after the upgrade would orphan it.
+assert(mgr1.test("/abs/node /rel/abc/bin/cotald.ts supervise --space owntest-1 --server nats://127.0.0.1:4222"), "managerMatchPattern matches a plain-node (native TS) manager argv");
+assert(mb1.test("/abs/node /rel/abc/bin/paw.ts mailbox --space owntest-1"), "mailboxMatchPattern matches a plain-node (native TS) mailbox argv");
 // regex metacharacters in the space value are escaped (never treated as regex operators).
 assert(!new RegExp(managerMatchPattern("a.b")).test(mgrCmd("axb")), "managerMatchPattern escapes regex metachars in the space (a.b ≠ axb)");
 
 // lifecycle: agentSelfName — the "am I running INSIDE a managed agent?" signal that makes `paw restart`
 // detach when self-called. cotal stamps COTAL_NAME/COTAL_SPACE on an agent; an operator shell has neither.
-const { agentSelfName } = await import("../src/lifecycle.js");
+const { agentSelfName } = await import("../src/lifecycle.ts");
 const savedName = process.env.COTAL_NAME;
 const savedSpace = process.env.COTAL_SPACE;
 delete process.env.COTAL_NAME;
@@ -189,7 +193,7 @@ if (savedSpace === undefined) delete process.env.COTAL_SPACE; else process.env.C
 // lifecycle: sanitizeNodeOptions — a cmux-wrapped session carries a NODE_OPTIONS preload pointing into
 // a temp dir cmux later REAPS, so every node child paw spawns dies at preload before running. Drop only
 // what's provably missing; a bare specifier / relative path isn't resolvable from here and must survive.
-const { sanitizeNodeOptions } = await import("../src/lifecycle.js");
+const { sanitizeNodeOptions } = await import("../src/lifecycle.ts");
 const realFile = join(process.env.PAW_HOME as string, "preload.cjs");
 writeFileSync(realFile, "");
 const gone = join(process.env.PAW_HOME as string, "reaped.cjs");
@@ -208,7 +212,7 @@ assert(sanitizeNodeOptions("--require") === "--require", "sanitizeNodeOptions: a
 
 // cotal-root: the space's root must NOT come from the shell's cwd (a checkout with its own `.cotal/`
 // hijacked it — the team2027 trust-bundle/lease incident, 2026-07-29). Registry entry wins; env overrides.
-const { pawCotalRoot } = await import("../src/cotal-root.js");
+const { pawCotalRoot } = await import("../src/cotal-root.ts");
 const savedCotalHome = process.env.COTAL_HOME;
 process.env.COTAL_HOME = mkdtempSync(join(tmpdir(), "paw-cotal-home-"));
 mkdirSync(join(process.env.COTAL_HOME, "meshes"), { recursive: true });
@@ -266,7 +270,7 @@ rmSync(unmapped, { recursive: true, force: true });
 // couldn't be respawned" via chat (reported 2026-08-17). The constants are shared now; this asserts the
 // relationship rather than the numbers, which is the part that must not drift.
 {
-  const { FRESH_SPAWN_MS, LIVE_AGENT_MS } = await import("../src/dm.js");
+  const { FRESH_SPAWN_MS, LIVE_AGENT_MS } = await import("../src/dm.ts");
   assert(FRESH_SPAWN_MS > LIVE_AGENT_MS, "a fresh spawn is allowed longer than reaching an already-live agent");
   assert(FRESH_SPAWN_MS >= 20_000, "a cold start measured ~20s here — anything less calls a booting agent dead");
 }
@@ -274,7 +278,7 @@ rmSync(unmapped, { recursive: true, force: true });
 
 // ---- explainManagerFailure: the manager-startup error names the CAUSE, not tmux ----
 {
-  const { explainManagerFailure } = await import("../src/lifecycle.js");
+  const { explainManagerFailure } = await import("../src/lifecycle.ts");
   const base = { runtime: "tmux", space: "paw", logPath: "/tmp/manager.log" };
 
   // The reported case: 25 lease losses, and the old text asked about tmux.
@@ -305,7 +309,7 @@ rmSync(unmapped, { recursive: true, force: true });
 
 // ---- locks recover from a KILLED holder instead of waiting out a timer ----
 {
-  const { withFileLock } = await import("../src/lock.js");
+  const { withFileLock } = await import("../src/lock.ts");
   const { writeFileSync, existsSync, mkdirSync } = await import("node:fs");
   const { join } = await import("node:path");
   const dir = join(process.env.PAW_HOME as string, "locktest");
@@ -346,7 +350,7 @@ rmSync(unmapped, { recursive: true, force: true });
 
 // ---- spawn pacing (src/pacing.ts) — the anti-thundering-herd gate for revival ----
 {
-  const { hasHeadroom, loadThreshold, awaitSpawnHeadroom } = await import("../src/pacing.js");
+  const { hasHeadroom, loadThreshold, awaitSpawnHeadroom } = await import("../src/pacing.ts");
 
   assert(loadThreshold(10) === 20, "pacing: default threshold is ncpu × 2");
   assert(hasHeadroom(19.9, 10), "pacing: load just under the threshold is headroom");
@@ -386,7 +390,7 @@ rmSync(unmapped, { recursive: true, force: true });
 
 // ---- launchd (src/commands/launchd.ts) — pure arg parse + plist rendering ----
 {
-  const { parseLaunchdArgs, renderPlist, fleetJob, webJob, FLEET_LABEL, WEB_LABEL } = await import("../src/commands/launchd.js");
+  const { parseLaunchdArgs, renderPlist, fleetJob, webJob, FLEET_LABEL, WEB_LABEL } = await import("../src/commands/launchd.ts");
   const threw = (f: () => unknown): boolean => {
     try {
       f();
@@ -404,15 +408,15 @@ rmSync(unmapped, { recursive: true, force: true });
   assert(threw(() => parseLaunchdArgs(["status", "extra"])), "launchd: a positional after status/uninstall throws");
   assert(threw(() => parseLaunchdArgs(["--bogus"])), "launchd: unknown flag throws");
 
-  const cli = ["/usr/bin/node", "/repo/node_modules/tsx/dist/cli.mjs", "/repo/bin/paw.ts"];
+  const cli = ["/usr/bin/node", "/repo/bin/paw.ts"];
   const env = { PATH: "/a:/b", HOME: "/h" };
   const fleet = fleetJob("paw", ["research", "a&b"], { cli, env, log: "/l/launchd.log", cwd: "/h" });
   assert(fleet.label === FLEET_LABEL && !fleet.keepAlive, "launchd: fleet job is one-shot (no KeepAlive)");
-  assert(fleet.args.join(" ") === "/usr/bin/node /repo/node_modules/tsx/dist/cli.mjs /repo/bin/paw.ts start research a&b --space paw", "launchd: fleet job runs `paw start <names> --space`");
+  assert(fleet.args.join(" ") === "/usr/bin/node /repo/bin/paw.ts start research a&b --space paw", "launchd: fleet job runs `paw start <names> --space`");
   const web = webJob("paw", 7788, { cli, env, log: "/l/web.log", cwd: "/h" });
   assert(web.label === WEB_LABEL && web.keepAlive, "launchd: web job is KeepAlive");
-  assert(web.args.slice(3).join(" ") === "web --no-open --port 7788 --space paw", "launchd: web job args");
-  assert(webJob("paw", undefined, { cli, env, log: "/l", cwd: "/h" }).args.slice(3).join(" ") === "web --no-open --space paw", "launchd: web job omits --port when unset");
+  assert(web.args.slice(2).join(" ") === "web --no-open --port 7788 --space paw", "launchd: web job args");
+  assert(webJob("paw", undefined, { cli, env, log: "/l", cwd: "/h" }).args.slice(2).join(" ") === "web --no-open --space paw", "launchd: web job omits --port when unset");
 
   const plist = renderPlist(fleet);
   assert(plist.includes("<key>Label</key>\n  <string>dev.cotal.paw</string>"), "launchd: plist carries the label");
@@ -422,10 +426,10 @@ rmSync(unmapped, { recursive: true, force: true });
   assert(plist.includes("<key>PATH</key>\n    <string>/a:/b</string>"), "launchd: plist writes PATH env");
   assert(plist.includes("<key>RunAtLoad</key>\n  <true/>"), "launchd: RunAtLoad");
   assert(plist.includes("<string>/l/launchd.log</string>"), "launchd: stdout/err → log path");
-  const { globalJob, GLOBAL_LABEL, GLOBAL_INTERVAL_S } = await import("../src/commands/launchd.js");
+  const { globalJob, GLOBAL_LABEL, GLOBAL_INTERVAL_S } = await import("../src/commands/launchd.ts");
   const g = globalJob("paw", { cli, env, log: "/l/g.log", cwd: "/h" });
   assert(g.label === GLOBAL_LABEL && !g.keepAlive && g.startInterval === GLOBAL_INTERVAL_S, "launchd: global keeper is a StartInterval one-shot, not KeepAlive");
-  assert(g.args.slice(3).join(" ") === "global --space paw", "launchd: global keeper runs `paw global --space <s>`");
+  assert(g.args.slice(2).join(" ") === "global --space paw", "launchd: global keeper runs `paw global --space <s>`");
   const gp = renderPlist(g);
   assert(gp.includes(`<key>StartInterval</key>\n  <integer>${GLOBAL_INTERVAL_S}</integer>`), "launchd: keeper plist carries StartInterval");
   assert(!renderPlist(fleet).includes("StartInterval"), "launchd: the fleet job never re-runs on an interval (it would re-wake stopped agents)");
@@ -441,18 +445,19 @@ rmSync(unmapped, { recursive: true, force: true });
   const root = join(dirname(fileURLToPath(import.meta.url)), "..");
   const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as { bin?: { paw?: string } };
   const bin = pkg.bin?.paw;
-  assert(typeof bin === "string" && bin === "./bin/paw.mjs", "package.json bin.paw is the committed tsx launcher, not dist/");
+  assert(typeof bin === "string" && bin === "./bin/paw.mjs", "package.json bin.paw is the committed launcher, not dist/");
   const launcher = join(root, "bin/paw.mjs");
   assert(existsSync(launcher), "bin/paw.mjs exists");
   const body = readFileSync(launcher, "utf8");
   assert(body.startsWith("#!/usr/bin/env node"), "bin/paw.mjs has a node shebang");
-  assert(body.includes("paw.ts") && body.includes("tsx"), "launcher runs the TS composition root through tsx");
+  assert(body.includes("paw.ts") && body.includes("await import("), "launcher imports the TS composition root in-process (native type stripping)");
+  assert(body.includes("node_modules") && body.includes("tsx"), "launcher falls back to tsx where node won't strip types (old node / under node_modules)");
 }
 
 // ── paw type: typing into an agent's terminal (2026-09-23) ──────────────────────────────────────────
 {
-  const { parseTypeArgs, parseTyped, parseKeyNames, paneTail } = await import("../src/commands/type.js");
-  const { paneInput } = await import("../src/unstick.js");
+  const { parseTypeArgs, parseTyped, parseKeyNames, paneTail } = await import("../src/commands/type.ts");
+  const { paneInput } = await import("../src/unstick.ts");
 
   // targeting: @name / folder / none → this folder; a bare word is TEXT
   const t1 = parseTypeArgs(["/model", "claude-fable-5", "--space", "paw"]);
@@ -504,7 +509,7 @@ console.log("\nall paw command checks passed 🐾");
 
 // ── launchd bakes a paw-owned nvm shim, never a versioned (brew Cellar / nvm versions) path ──
 {
-  const { nvmShim, stableNodeBin } = await import("../src/commands/launchd.js");
+  const { nvmShim, stableNodeBin } = await import("../src/commands/launchd.ts");
   const { existsSync, statSync, readFileSync } = await import("node:fs");
   const body = nvmShim("/Users/x/.nvm");
   assert(body.startsWith("#!/bin/sh"), "shim is a sh script launchd can exec directly");
@@ -523,7 +528,7 @@ console.log("\nall paw command checks passed 🐾");
 
 // ---- paw optimize: the cutoff parse and the careful restart verdict ----
 {
-  const { parseWindow, parseOptimizeArgs, optimizeVerdict } = await import("../src/commands/optimize.js");
+  const { parseWindow, parseOptimizeArgs, optimizeVerdict } = await import("../src/commands/optimize.ts");
   const ok = (c: boolean, m: string) => { if (!c) throw new Error(`optimize: ${m}`); console.log(`  ok  optimize: ${m}`); };
   ok(parseWindow("24h", "--since") === 86_400_000 && parseWindow("30m", "--since") === 1_800_000 && parseWindow("2d", "--since") === 172_800_000, "windows parse (m/h/d)");
   let threw = false; try { parseWindow("24", "--since"); } catch { threw = true; }
@@ -552,7 +557,7 @@ console.log("\nall paw command checks passed 🐾");
 // keeps running, stays on the mesh, the next manager's ps is empty, and paw's two-writer guard then
 // refuses to revive it). paw's restart/down/switch therefore despawn every listed agent FIRST.
 {
-  const { despawnManagedAgents } = await import("../src/lifecycle.js");
+  const { despawnManagedAgents } = await import("../src/lifecycle.ts");
   const asked: string[] = [];
   const rail = {
     ps: async () => ({ ok: true, data: [{ name: "a" }, { name: "b" }, { name: "stuck" }, { nope: 1 }] }),
@@ -595,7 +600,7 @@ console.log("\nall paw command checks passed 🐾");
 {
   // 2026-10-02: a plain `paw status` saw a stray pty manager beside the tmux one and "switched" runtimes,
   // despawning all 25 agents. A switch must be asked for.
-  const { runtimeMismatchAction } = await import("../src/lifecycle.js");
+  const { runtimeMismatchAction } = await import("../src/lifecycle.ts");
   assert(runtimeMismatchAction(false, undefined) === "warn", "runtime mismatch: an ordinary ensure() warns, never switches");
   assert(runtimeMismatchAction(true, undefined) === "switch", "runtime mismatch: `paw runtime <r>` switches");
   assert(runtimeMismatchAction(false, "tmux") === "switch", "runtime mismatch: an explicit PAW_RUNTIME switches");

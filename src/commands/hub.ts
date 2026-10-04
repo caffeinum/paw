@@ -13,8 +13,8 @@
  * never stops one. `PAW_COTAL_HUB=1|0` stays a transient override for one process tree.
  */
 import { registry, type Command } from "@cotal-ai/core";
-import { ensure, formatHubLine, hubShimProcs, hubState, resolveSpace, stopHub } from "../lifecycle.js";
-import { hubModeFile, writeHubMode } from "../hub/paths.js";
+import { ensure, formatHubLine, hubShimProcs, hubState, resolveSpace, stopHub } from "../lifecycle.ts";
+import { hubModeFile, writeHubMode } from "../hub/paths.ts";
 
 function parse(argv: string[]): { mode?: "on" | "off"; space?: string } {
   const out: { mode?: "on" | "off"; space?: string } = {};

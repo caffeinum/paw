@@ -7,7 +7,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { gitToplevel, listWorktrees, parseWorktreeRef, resolveWorktreeFolder } from "../src/worktree.js";
+import { gitToplevel, listWorktrees, parseWorktreeRef, resolveWorktreeFolder } from "../src/worktree.ts";
 
 let failures = 0;
 function assert(cond: boolean, msg: string): void {

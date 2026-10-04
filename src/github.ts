@@ -10,7 +10,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { canonicalDir } from "./addressing.js";
+import { canonicalDir } from "./addressing.ts";
 
 export interface GithubHandle {
   owner: string;

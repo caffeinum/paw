@@ -31,16 +31,16 @@ import {
   setPersonaKeys,
   stopAgent,
   waitForMeshLive,
-} from "./addressing.js";
-import { withManagerControl } from "./control.js";
-import { readResumeId } from "./session.js";
-import { adoptInFlight, adoptLogPath, ensure, finishDetachedAdopt, resolveSpace, spawnDetachedAdopt } from "./lifecycle.js";
-import { isSelfAncestor, liveSessionProcs, namesForFolder, resolveNamedSession, selfSessionProc } from "./named.js";
-import { tailRead } from "./transcript.js";
-import { resolveExistingFolderArg } from "./address.js";
-import { gitToplevel, listWorktrees } from "./worktree.js";
-import { attachResolved } from "./open.js";
-import { pawServer } from "./server.js";
+} from "./addressing.ts";
+import { withManagerControl } from "./control.ts";
+import { readResumeId } from "./session.ts";
+import { adoptInFlight, adoptLogPath, ensure, finishDetachedAdopt, resolveSpace, spawnDetachedAdopt } from "./lifecycle.ts";
+import { isSelfAncestor, liveSessionProcs, namesForFolder, resolveNamedSession, selfSessionProc } from "./named.ts";
+import { tailRead } from "./transcript.ts";
+import { resolveExistingFolderArg } from "./address.ts";
+import { gitToplevel, listWorktrees } from "./worktree.ts";
+import { attachResolved } from "./open.ts";
+import { pawServer } from "./server.ts";
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
@@ -103,7 +103,7 @@ export function pinSession(space: string, name: string, sessionId: string): void
 /**
  * Persist the extra claude flags a MANAGED agent should launch with, so a restart reproduces the
  * claude the operator asked for rather than a default one. Stored as JSON (see
- * {@link import("./session.js").readClaudeArgs}); an empty list REMOVES the key rather than writing
+ * {@link import("./session.ts").readClaudeArgs}); an empty list REMOVES the key rather than writing
  * `[]`, so "no extra flags" and "never asked for any" are the same state on disk.
  */
 export function pinClaudeArgs(space: string, name: string, args: string[]): void {

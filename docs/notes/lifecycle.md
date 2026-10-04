@@ -29,9 +29,9 @@ Moved verbatim from CLAUDE.md (2026-10-02 split). Index: [CLAUDE.md](../../CLAUD
   exactness is unit-tested in `check:commands`. Verified live: `paw restart` → exactly one manager
   (no dup), `paw down` → zero managers + zero mailbox, `down` on `ex1` leaves `ex11` untouched.
   **Daemons are pinned to node+tsx.** `ensureMesh`/`ensureManagerUp` start the mesh (`up --detach`)
-  and manager (`supervise`) by driving **bin/cotald.ts** via `cotaldViaTsx` (exported — bin/paw.ts
+  and manager (`supervise`) by driving **bin/cotald.ts** via `cotaldViaNode` (exported — bin/paw.ts
   reuses it for the passthrough); `ensureMailbox` spawns the beacon through **bin/paw.ts** via the
-  private `pawViaTsx` (mailbox is a paw command, not a cotal one). Both use the repo's
+  private `pawViaNode` (mailbox is a paw command, not a cotal one). Both use the repo's
   `node_modules/.bin/tsx` directly, NOT the current CLI runtime — so the **CLI may run under bun**
   (fast startup) while the daemons always run node+tsx (bun can't drive node-pty's ioctl →
   bun-hosted manager = pty stubs, no agents). `isReachable` is the only cotal-core import;

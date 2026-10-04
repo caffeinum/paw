@@ -36,11 +36,11 @@ import { execFileSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { psRowAlive, type PsRow } from "../addressing.js";
-import { withManagerControl } from "../control.js";
-import { nodeBin, resolveSpace, toolDirs } from "../lifecycle.js";
-import { REPO_ROOT } from "../release.js";
-import { pawServer } from "../server.js";
+import { psRowAlive, type PsRow } from "../addressing.ts";
+import { withManagerControl } from "../control.ts";
+import { nodeBin, resolveSpace, toolDirs } from "../lifecycle.ts";
+import { REPO_ROOT } from "../release.ts";
+import { pawServer } from "../server.ts";
 
 export const FLEET_LABEL = "dev.cotal.paw";
 export const WEB_LABEL = "dev.cotal.paw-web";
@@ -168,9 +168,10 @@ function pawHome(): string {
   return process.env.PAW_HOME ?? join(homedir(), ".paw");
 }
 
-/** The CLI invocation every job shares: absolute node, the checkout's tsx, the checkout's bin/paw.ts. */
+/** The CLI invocation every job shares: absolute node + the checkout's bin/paw.ts (node strips the
+ *  types itself — no tsx). */
 function pawCli(): string[] {
-  return [stableNodeBin(), join(REPO_ROOT, "node_modules", "tsx", "dist", "cli.mjs"), join(REPO_ROOT, "bin", "paw.ts")];
+  return [stableNodeBin(), join(REPO_ROOT, "bin", "paw.ts")];
 }
 
 function jobEnv(): Record<string, string> {

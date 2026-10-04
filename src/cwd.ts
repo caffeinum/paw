@@ -10,7 +10,7 @@
 import { existsSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join, sep } from "node:path";
-import { withFileLock } from "./lock.js";
+import { withFileLock } from "./lock.ts";
 
 /**
  * Optional confinement root that paw agent cwds must stay within (after symlink resolution).

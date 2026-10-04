@@ -15,16 +15,16 @@
 import { closeSync, existsSync, openSync, readSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { registry, type Command } from "@cotal-ai/core";
-import { assertUnambiguousTarget, canonicalDir, folderForName, lookupFolderName, personaFilePath, sanitizeAgentName } from "./addressing.js";
-import { claudeProjectDir, latestSession } from "./adopt.js";
-import { CodexParser, findCodexSessionFile, resolveCodexRoots } from "./codex-log.js";
-import { meshAgentSession } from "./named.js";
-import { latestOpencodeSession, opencodeBlocks, resolveOpencodeDb } from "./opencode-log.js";
-import { isClaudeHarness, readAgentType, readResumeId, transcriptPath } from "./session.js";
-import { resolveSpace } from "./lifecycle.js";
-import { inlineMd, renderMarkdown } from "./markdown.js";
-import { oneLine, tailRead, TranscriptParser, type Block } from "./transcript.js";
-import { parseWorktreeRef, resolveWorktreeFolder } from "./worktree.js";
+import { assertUnambiguousTarget, canonicalDir, folderForName, lookupFolderName, personaFilePath, sanitizeAgentName } from "./addressing.ts";
+import { claudeProjectDir, latestSession } from "./adopt.ts";
+import { CodexParser, findCodexSessionFile, resolveCodexRoots } from "./codex-log.ts";
+import { meshAgentSession } from "./named.ts";
+import { latestOpencodeSession, opencodeBlocks, resolveOpencodeDb } from "./opencode-log.ts";
+import { isClaudeHarness, readAgentType, readResumeId, transcriptPath } from "./session.ts";
+import { resolveSpace } from "./lifecycle.ts";
+import { inlineMd, renderMarkdown } from "./markdown.ts";
+import { oneLine, tailRead, TranscriptParser, type Block } from "./transcript.ts";
+import { parseWorktreeRef, resolveWorktreeFolder } from "./worktree.ts";
 
 const TAIL_BYTES = 512 * 1024; // how much of the end of the transcript to read for the initial render
 

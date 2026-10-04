@@ -14,7 +14,7 @@ import { dirname, resolve } from "node:path";
 const here = dirname(fileURLToPath(import.meta.url));
 
 if (process.argv.includes("--child")) {
-  const { runBash } = await import("../src/bash.js");
+  const { runBash } = await import("../src/bash.ts");
   process.stdin.setRawMode(true);
   process.stdin.resume();
   let typed = 0;
@@ -36,8 +36,7 @@ if (!/\/(zsh|bash)$/.test(process.env.SHELL ?? "")) {
   process.exit(0);
 }
 
-const tsx = resolve(here, "../node_modules/tsx/dist/cli.mjs");
-const p = ptySpawn(process.execPath, [tsx, fileURLToPath(import.meta.url), "--child"], {
+const p = ptySpawn(process.execPath, [fileURLToPath(import.meta.url), "--child"], {
   name: "xterm-256color",
   cols: 100,
   rows: 30,

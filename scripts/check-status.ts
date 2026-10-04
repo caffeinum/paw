@@ -11,9 +11,9 @@ import { join } from "node:path";
 const home = mkdtempSync(join(tmpdir(), "paw-status-home-"));
 process.env.HOME = home;
 
-const { formatStatus, meshStatus, ago, inboxText, inboxStuck, contextText, contextShare, planColumns, elideLeft, elideRight, statusTargets, selectRows } = await import("../src/status.js");
-type InboxState = import("../src/status.js").InboxState;
-const { foreignWriters } = await import("../src/named.js");
+const { formatStatus, meshStatus, ago, inboxText, inboxStuck, contextText, contextShare, planColumns, elideLeft, elideRight, statusTargets, selectRows } = await import("../src/status.ts");
+type InboxState = import("../src/status.ts").InboxState;
+const { foreignWriters } = await import("../src/named.ts");
 
 let failures = 0;
 function assert(cond: boolean, msg: string): void {
@@ -205,7 +205,7 @@ assert(foreignWriters("no-such-session").length === 0, "unknown session → no w
 
 // inferBusy — paw's own "mid-turn" guess, which exists because the mesh publishes `working` only on
 // UserPromptSubmit and a DM-woken turn never submits one.
-const { inferBusy } = await import("../src/status.js");
+const { inferBusy } = await import("../src/status.ts");
 const BUSY_NOW = 1_000_000;
 assert(inferBusy("idle", true, BUSY_NOW - 2_000, BUSY_NOW), "a live idle agent whose transcript moved 2s ago reads BUSY");
 assert(!inferBusy("idle", true, BUSY_NOW - 60_000, BUSY_NOW), "a transcript untouched for a minute is not busy");
@@ -217,8 +217,8 @@ assert(!inferBusy("idle", true, BUSY_NOW + 5_000, BUSY_NOW), "an mtime in the FU
 
 // ---- hung tool: status rendering + the keeper's Esc decision ----
 {
-  const { hungTool, toolLabel, HUNG_TOOL_SHOW_MS } = await import("../src/status.js");
-  const { toolUnstickDecision, parseToolThreshold, TOOL_UNSTICK_COOLDOWN_MS, UNSTICK_TOOL_DEFAULT_MIN } = await import("../src/unstick.js");
+  const { hungTool, toolLabel, HUNG_TOOL_SHOW_MS } = await import("../src/status.ts");
+  const { toolUnstickDecision, parseToolThreshold, TOOL_UNSTICK_COOLDOWN_MS, UNSTICK_TOOL_DEFAULT_MIN } = await import("../src/unstick.ts");
   const now = 50_000_000;
   const tool = { id: "toolu_A", name: "Bash", summary: "for j in a b c; do fly ssh console -a queue -C 'cat /data/jobs/result.json'; done", startedMs: now - 51 * 60_000 };
   const row = { name: "queue-ea", folder: "/q", mesh: "idle", live: true, runtime: "tmux" as const, pin: "p", durable: true, activeMs: now - 5_000, busy: true, conflictPids: [] as number[], inbox: lag(0, 6), tool };
@@ -250,7 +250,7 @@ assert(!inferBusy("idle", true, BUSY_NOW + 5_000, BUSY_NOW), "an mtime in the FU
   assert(d({}, now - TOOL_UNSTICK_COOLDOWN_MS - 1).interrupt, "keeper: past the cooldown → eligible again");
   assert(!d({}, undefined, "off").interrupt, "keeper: disabled threshold → never");
   assert(!d({ mesh: "waiting" }).interrupt, "keeper: waiting on a prompt → never Esc (it would reject the call)");
-  const { paneShowsPrompt, resumePrompt } = await import("../src/unstick.js");
+  const { paneShowsPrompt, resumePrompt } = await import("../src/unstick.ts");
   assert(paneShowsPrompt(" Bash command\n rm -rf x\n Do you want to proceed?\n ❯ 1. Yes\n   2. No\n"), "pane: a permission dialog is a prompt");
   assert(!paneShowsPrompt("⏺ Running…\n❯ \n  ⏵⏵ bypass permissions on"), "pane: a running tool is not a prompt");
   assert(/interrupted/.test(resumePrompt("Bash", 31)) && /inbox/.test(resumePrompt("Bash", 31)), "resume: tells the agent what happened and to read its inbox");
@@ -276,7 +276,7 @@ console.log("\nall paw status checks passed 🐾");
 
 // ---- keeper: unstickDecision (src/keeper.ts) — restart only an idle agent that never drains its inbox ----
 {
-  const { unstickDecision, STUCK_MS, UNSTICK_COOLDOWN_MS } = await import("../src/keeper.js");
+  const { unstickDecision, STUCK_MS, UNSTICK_COOLDOWN_MS } = await import("../src/keeper.ts");
   const now = 10_000_000;
   const quiet = now - STUCK_MS - 1;
   const base = { name: "a", folder: "/x", mesh: "idle", live: true, durable: true, conflictPids: [], inbox: { kind: "lag", queued: 0, unread: 6 }, activeMs: quiet } as any;

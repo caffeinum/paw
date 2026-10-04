@@ -27,7 +27,7 @@ import {
   pruneReleases,
   releaseId,
   releasesDir,
-} from "../release.js";
+} from "../release.ts";
 
 const tty = process.stdout.isTTY === true;
 const wrap = (code: string) => (s: string) => (tty ? `\x1b[${code}m${s}\x1b[0m` : s);

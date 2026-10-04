@@ -19,13 +19,13 @@
  */
 import { existsSync } from "node:fs";
 import { registry, type Command } from "@cotal-ai/core";
-import { psRowAlive, restartAgent, stopAgent, type PsRow } from "../addressing.js";
-import { withManagerControl } from "../control.js";
-import { fmtMb, machineLine, pawMb, renderTable, serverPorts, snapshotFleet, sortRows, topRows, verdictText, type Fleet } from "../fleet.js";
-import { ensure, resolveSpace } from "../lifecycle.js";
-import { liveSessionProcs, type LiveSessionProc } from "../named.js";
-import { awaitSpawnHeadroom } from "../pacing.js";
-import { collectStatus, type AgentStatus } from "../status.js";
+import { psRowAlive, restartAgent, stopAgent, type PsRow } from "../addressing.ts";
+import { withManagerControl } from "../control.ts";
+import { fmtMb, machineLine, pawMb, renderTable, serverPorts, snapshotFleet, sortRows, topRows, verdictText, type Fleet } from "../fleet.ts";
+import { ensure, resolveSpace } from "../lifecycle.ts";
+import { liveSessionProcs, type LiveSessionProc } from "../named.ts";
+import { awaitSpawnHeadroom } from "../pacing.ts";
+import { collectStatus, type AgentStatus } from "../status.ts";
 
 export interface OptimizeArgs {
   space?: string;

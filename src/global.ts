@@ -15,10 +15,10 @@ import { mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { registry, type Command } from "@cotal-ai/core";
-import { canonicalDir, ensureAgentSpawned, lookupFolderName, setFolderName } from "./addressing.js";
-import { withManagerControl } from "./control.js";
-import { ensure, resolveSpace } from "./lifecycle.js";
-import { optedIn, sleepSweep } from "./sleep.js";
+import { canonicalDir, ensureAgentSpawned, lookupFolderName, setFolderName } from "./addressing.ts";
+import { withManagerControl } from "./control.ts";
+import { ensure, resolveSpace } from "./lifecycle.ts";
+import { optedIn, sleepSweep } from "./sleep.ts";
 
 /** The always-on agent's fixed mesh name. Exported so other surfaces can reference it without a literal. */
 export const GLOBAL_NAME = "global";

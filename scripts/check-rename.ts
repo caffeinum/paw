@@ -12,9 +12,9 @@ import { join } from "node:path";
 process.env.PAW_HOME = mkdtempSync(join(tmpdir(), "paw-home-"));
 
 const { setFolderName, ensurePersonaFile, personaFilePath, lookupFolderName, registerInstance, agentRecord } =
-  await import("../src/addressing.js");
-const { readResumeId } = await import("../src/session.js");
-const { renameAgentOnDisk } = await import("../src/rename.js");
+  await import("../src/addressing.ts");
+const { readResumeId } = await import("../src/session.ts");
+const { renameAgentOnDisk } = await import("../src/rename.ts");
 
 let failures = 0;
 function assert(cond: boolean, msg: string): void {

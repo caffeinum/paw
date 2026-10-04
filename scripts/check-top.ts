@@ -8,9 +8,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 process.env.PAW_HOME = mkdtempSync(join(tmpdir(), "paw-top-home-"));
-const f = await import("../src/fleet.js");
-const { parseTopArgs } = await import("../src/commands/top.js");
-const { optimizeVerdict } = await import("../src/commands/optimize.js");
+const f = await import("../src/fleet.ts");
+const { parseTopArgs } = await import("../src/commands/top.ts");
+const { optimizeVerdict } = await import("../src/commands/optimize.ts");
 
 let n = 0;
 const ok = (c: boolean, m: string) => {

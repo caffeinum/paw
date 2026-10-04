@@ -12,10 +12,10 @@ import { join } from "node:path";
 
 process.env.PAW_HOME = realpathSync(mkdtempSync(join(tmpdir(), "paw-url-home-")));
 
-const { routeUrl, canonicalizeWebUrl, HOST_RE } = await import("../src/url.js");
-const { sanitizeAgentName, assertUnambiguousTarget, ensurePersonaFile, setFolderName, folderToName } = await import("../src/addressing.js");
-const { resolveAddress, resolveFolderArg, resolveExistingFolderArg, isAddressHandle } = await import("../src/address.js");
-const { confineCwd } = await import("../src/cwd.js");
+const { routeUrl, canonicalizeWebUrl, HOST_RE } = await import("../src/url.ts");
+const { sanitizeAgentName, assertUnambiguousTarget, ensurePersonaFile, setFolderName, folderToName } = await import("../src/addressing.ts");
+const { resolveAddress, resolveFolderArg, resolveExistingFolderArg, isAddressHandle } = await import("../src/address.ts");
+const { confineCwd } = await import("../src/cwd.ts");
 
 const g = (cwd: string, ...args: string[]) =>
   execFileSync("git", ["-C", cwd, "-c", "user.email=t@paw", "-c", "user.name=paw", ...args], { encoding: "utf8" }).trim();

@@ -12,7 +12,7 @@
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { TranscriptParser, primaryArg, resultSummary, tailRead, type Block } from "../src/transcript.js";
+import { TranscriptParser, primaryArg, resultSummary, tailRead, type Block } from "../src/transcript.ts";
 
 let failures = 0;
 function assert(cond: boolean, msg: string): void {
@@ -55,7 +55,7 @@ const mesh = feedAll([
 assert(mesh.length === 1 && mesh[0].kind === "reply", "cotal_* discovery and ToolSearch are hidden; an outgoing DM survives");
 assert(mesh[0].kind === "reply" && mesh[0].to === "helium" && mesh[0].text === "on it", "the reply carries recipient and text");
 {
-  const { meshAction } = await import("../src/transcript.js");
+  const { meshAction } = await import("../src/transcript.ts");
   const long = "short answer: no. " + "x".repeat(400) + "\n\n- point one\n- point two";
   const r = meshAction("mcp__cotal__cotal_dm", { to: "you", text: long }) as { kind: string; text: string; full?: string };
   assert(r.kind === "reply" && r.text.length <= 180 && r.text.endsWith("…"), "reply: `text` is still the one-line gist the web trace shows");
@@ -144,7 +144,7 @@ assert(resultSummary("Bash", {}, "one\ntwo\nthree\nfour", false).length === 3, "
 // turn with system/turn_duration; a running one ends on a tool_use + its tool_result with no closer.
 // This is exact where the mtime heuristic it replaces only meant "wrote something in the last 10s" —
 // which went dark on an agent sitting inside a 45-second command.
-const { turnInFlight } = await import("../src/transcript.js");
+const { turnInFlight } = await import("../src/transcript.ts");
 const finished = [
   rec({ type: "assistant", message: { role: "assistant", stop_reason: "tool_use", content: [] } }),
   rec({ type: "user", message: { role: "user", content: [] } }),
@@ -203,7 +203,7 @@ assert(tailRead(file, 10_000).split("\n")[0] === "AAAAAAAAAA", "a window larger 
 
 // ---- task-notification: render a monitor wake the way Claude Code does ----
 {
-  const { parseTaskNotification } = await import("../src/transcript.js");
+  const { parseTaskNotification } = await import("../src/transcript.ts");
   // The exact envelope from the operator's trace (2026-08-20).
   const raw = [
     "<task-notification>",
@@ -232,7 +232,7 @@ assert(tailRead(file, 10_000).split("\n")[0] === "AAAAAAAAAA", "a window larger 
 
 // ---- failureText: a runtime failure is coloured, not printed as prose ----
 {
-  const { failureText } = await import("../src/transcript.js");
+  const { failureText } = await import("../src/transcript.ts");
   assert(failureText("API Error: Unable to connect to API (UNKNOWN_CERTIFICATE_VERIFICATION_ERROR)") !== undefined, "failure: an API error is a failure, not something the agent said");
   assert(failureText('Background command "Wait for build" failed with exit code 144') !== undefined, "failure: a failed background command too");
   // The direction that matters: mis-flagging real writing is worse than missing one.
@@ -243,7 +243,7 @@ assert(tailRead(file, 10_000).split("\n")[0] === "AAAAAAAAAA", "a window larger 
 
 // ── turnState: WHICH tool a running turn is inside, and since when ─────────────────────────────
 {
-  const { turnState, turnInFlight: tif, toolResultFor } = await import("../src/transcript.js");
+  const { turnState, turnInFlight: tif, toolResultFor } = await import("../src/transcript.ts");
   const T0 = "2026-09-15T07:18:56.000Z";
   const toolUse = (id: string, name: string, input: object, ts = T0) =>
     rec({ type: "assistant", timestamp: ts, message: { role: "assistant", stop_reason: "tool_use", content: [{ type: "tool_use", id, name, input }] } });
@@ -297,7 +297,7 @@ assert(tailRead(file, 10_000).split("\n")[0] === "AAAAAAAAAA", "a window larger 
 
 // ── context-window fill (recordUsage / lastUsage / inferWindow) ────────────────────────────────
 {
-  const { recordUsage, lastUsage, inferWindow } = await import("../src/transcript.js");
+  const { recordUsage, lastUsage, inferWindow } = await import("../src/transcript.ts");
   const turn = (read: number, extra: Record<string, unknown> = {}, ts = "2026-09-17T00:00:00Z") =>
     JSON.stringify({ type: "assistant", timestamp: ts, message: { role: "assistant", model: "claude-opus-5", usage: { input_tokens: 2, cache_creation_input_tokens: 268, cache_read_input_tokens: read, output_tokens: 205 } }, ...extra });
 
@@ -340,7 +340,7 @@ console.log("\nall paw transcript checks passed 🐾");
 
 // ── runtime failures the model never produced (recordFailure / lastFailure) ─────────────────────
 {
-  const { recordFailure, lastFailure, failureText } = await import("../src/transcript.js");
+  const { recordFailure, lastFailure, failureText } = await import("../src/transcript.ts");
   const synth = (text: string, extra: Record<string, unknown> = {}) => JSON.stringify({ type: "assistant", timestamp: "2026-09-04T00:00:00Z", message: { role: "assistant", model: "<synthetic>", content: [{ type: "text", text }] }, ...extra });
   const real = (text: string) => JSON.stringify({ type: "assistant", timestamp: "2026-09-04T00:01:00Z", message: { role: "assistant", model: "claude-x", content: [{ type: "text", text }] } });
   const limit = "You've hit your session limit · resets 2:50am (America/Los_Angeles)\n/usage-credits to finish what you're working on.";

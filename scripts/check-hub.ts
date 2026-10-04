@@ -20,11 +20,11 @@ import { fileURLToPath } from "node:url";
 // Short: the hub socket lives under PAW_HOME and unix socket paths are capped at 103 bytes.
 process.env.PAW_HOME = mkdtempSync("/tmp/pawhubchk-");
 const REPO = fileURLToPath(new URL("..", import.meta.url));
-const { hubEnabled, hubSocketPath, buildShim, writeHubMode, readHubMode, hubModePath, hubModeFile } = await import("../src/hub/paths.js");
-const { routeCotalToHub } = await import("../src/hub/route.js");
+const { hubEnabled, hubSocketPath, buildShim, writeHubMode, readHubMode, hubModePath, hubModeFile } = await import("../src/hub/paths.ts");
+const { routeCotalToHub } = await import("../src/hub/route.ts");
 const { parseHandshake, EXIT_LINE } = await import("../src/hub/daemon.mjs");
-const { hubMatchPattern, formatHubLine, daemonEnv } = await import("../src/lifecycle.js");
-const { fleetJob } = await import("../src/commands/launchd.js");
+const { hubMatchPattern, formatHubLine, daemonEnv } = await import("../src/lifecycle.ts");
+const { fleetJob } = await import("../src/commands/launchd.ts");
 
 let fails = 0;
 const ok = (label: string, cond: boolean, detail = "") => {
@@ -293,21 +293,18 @@ ok("shim builds with the system cc", spawnSync(shim, [], { stdio: "ignore" }).st
 
 // ── the stall watchdog ──────────────────────────────────────────────────────────────────────────
 {
-  const tsx = join(REPO, "node_modules", "tsx", "dist", "cli.mjs");
   const f = join(process.env.PAW_HOME!, "stall.mts");
   writeFileSync(f, `const { startWatchdog } = await import(${JSON.stringify(join(REPO, "src", "hub", "daemon.mjs"))}); startWatchdog(1500); setTimeout(() => { const t = Date.now(); while (Date.now() - t < 20000); console.log("survived"); }, 300);`);
-  const r = spawnSync(process.execPath, [tsx, f], { encoding: "utf8", timeout: 30000 });
-  // tsx runs the script in a child and relays its fate: a SIGKILLed child surfaces as signal or 137.
+  const r = spawnSync(process.execPath, [f], { encoding: "utf8", timeout: 30000 });
   ok("a stalled event loop is SIGKILLed by the watchdog", (r.signal === "SIGKILL" || r.status === 137) && !r.stdout.includes("survived"), `signal=${r.signal} status=${r.status}`);
 }
 
 {
   // Laptop sleep freezes BOTH threads. SIGSTOP is the same thing seen from outside: after SIGCONT
   // the loop is healthy, and the watchdog must not count the frozen interval as a stall.
-  const tsx = join(REPO, "node_modules", "tsx", "dist", "cli.mjs");
   const f = join(process.env.PAW_HOME!, "sleep.mts");
   writeFileSync(f, `const { startWatchdog } = await import(${JSON.stringify(join(REPO, "src", "hub", "daemon.mjs"))}); startWatchdog(2000); setTimeout(() => { console.log("survived"); process.exit(0); }, 9000);`);
-  const p = spawn(process.execPath, [tsx, f], { stdio: ["ignore", "pipe", "pipe"] });
+  const p = spawn(process.execPath, [f], { stdio: ["ignore", "pipe", "pipe"] });
   let so = "";
   p.stdout!.on("data", (d) => (so += d));
   await sleep(2500);

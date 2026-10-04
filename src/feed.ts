@@ -13,8 +13,8 @@
  * them into one "connection factory" would hide the distinction that matters most.
  */
 import { CotalEndpoint, type CotalMessage } from "@cotal-ai/core";
-import { controlCreds, stableHumanId } from "./addressing.js";
-import { HUMAN_PEER } from "./names.js";
+import { controlCreds, stableHumanId } from "./addressing.ts";
+import { HUMAN_PEER } from "./names.ts";
 
 /** How deep to read a backlog. cotal's dmHistory returns the OLDEST N, so to surface the NEWEST we
  *  fetch up to this many and take the tail. Bounds the read on a busy mesh; a history deeper than this

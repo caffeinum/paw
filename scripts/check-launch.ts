@@ -19,9 +19,9 @@ writeFileSync(join(home, ".claude.json"), "{}");
 // count as in-root. The dedicated confinement tests at the end override this to exercise the guard.
 process.env.PAW_ROOT = realpathSync(tmpdir());
 
-const { pawConnector } = await import("../src/connector.js");
-const { readResumeId } = await import("../src/session.js");
-const { confineAndTrustCwd } = await import("../src/cwd.js");
+const { pawConnector } = await import("../src/connector.ts");
+const { readResumeId } = await import("../src/session.ts");
+const { confineAndTrustCwd } = await import("../src/cwd.ts");
 
 let failures = 0;
 function assert(cond: boolean, msg: string): void {

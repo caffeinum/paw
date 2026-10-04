@@ -10,7 +10,7 @@
  */
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
-import type { Entry } from "./feed.js";
+import type { Entry } from "./feed.ts";
 
 export interface MessageHit {
   kind: "dm" | "channel";

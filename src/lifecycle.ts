@@ -3,8 +3,8 @@
  * never runs `paw up` / `paw supervise` by hand, and tear down only what paw itself started.
  *
  * This builds on cotal — it never forks it. The mesh/manager are started by DRIVING cotal's public
- * `up`/`supervise` commands through bin/cotald.ts (the cotal composition root) under node+tsx
- * (cotaldViaTsx) — never the current CLI runtime, which may be bun (bun can't host the mesh
+ * `up`/`supervise` commands through bin/cotald.ts (the cotal composition root) under plain node
+ * (cotaldViaNode) — never the current CLI runtime, which may be bun (bun can't host the mesh
  * manager's native node-pty). Reachability is
  * probed with cotal's isReachable, and the control plane with a real `ps` round-trip over a CotalEndpoint.
  * paw layers on top: a machine-wide default space (one shared mesh for all folder-named agents),
@@ -12,7 +12,7 @@
  * `start` can't race, and per-space ownership markers under ~/.paw so stop() only kills paw's own
  * daemons — never the operator's hand-run mesh.
  */
-import { spawn, spawnSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { createConnection } from "node:net";
 import {
   closeSync,
@@ -39,12 +39,12 @@ import {
 // The machine-local workstation layer (auth paths, mesh registry) split out of core into
 // @cotal-ai/workspace in cotal v0.8 (#120).
 import { authDir, loadSpaceAuth, saveSpaceAuth } from "@cotal-ai/workspace";
-import { daemonRoot } from "./release.js";
-import { pawCotalRoot } from "./cotal-root.js";
-import { withManagerControl } from "./control.js";
-import { withFileLock } from "./lock.js";
-import { customServer, pawServer } from "./server.js";
-import { ensureShim, hubEnabled, hubModeFile, hubSocketPath } from "./hub/paths.js";
+import { daemonRoot } from "./release.ts";
+import { pawCotalRoot } from "./cotal-root.ts";
+import { withManagerControl } from "./control.ts";
+import { withFileLock } from "./lock.ts";
+import { customServer, pawServer } from "./server.ts";
+import { ensureShim, hubEnabled, hubModeFile, hubSocketPath } from "./hub/paths.ts";
 
 export interface EnsureOpts {
   /** Bring up (or adopt) the NATS mesh. Commands that talk to the mesh need this. */
@@ -63,7 +63,7 @@ export interface EnsureOpts {
  *  shares ONE mesh and can address its peers. PAW_SPACE overrides for an isolated mesh. */
 
 /** The single space all paw agents share unless explicitly overridden. */
-import { resolveSpace } from "./space.js";
+import { resolveSpace } from "./space.ts";
 export { resolveSpace };
 
 /** The manager runtimes bin/cotald.ts registers (pty ships with the manager; tmux/cmux are the
@@ -265,28 +265,11 @@ async function withLock<T>(space: string, fn: () => Promise<T>): Promise<T> {
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /**
- * Build the argv to drive `entry` (one of paw's composition roots) under **node+tsx, regardless of
- * how this CLI process was launched**. The CLI may run under bun (fast startup), but the daemons
- * MUST be node+tsx: bun can't drive @lydell/node-pty's native ioctl, so a bun-spawned manager
- * produces pty stubs that never become claude (it bricked every agent twice). Invoke the repo's tsx
- * bin directly (what the launcher itself uses); fall back to the current runtime + process.execArgv
- * only if the bin is missing. Returns [exec, args].
- */
-/**
- * The node binary to run the daemons with, resolved ABSOLUTELY — never via PATH.
- *
- * WHY (2026-08-04): `node_modules/.bin/tsx` is a shell shim whose last line is a bare `exec node …`,
- * so spawning a daemon through it needs `node` resolvable in the CHILD's PATH. paw's launcher already
- * resolves bun absolutely, so the CLI itself runs from anywhere — which is exactly what hid this: paw
- * works right up until it has to START a daemon, and then dies with
- * `tsx: line 20: exec: node: not found` in mesh.log/manager.log while the operator's terminal shows a
- * generic "mesh failed to start". The caller that exposed it is the Raycast extension, which invokes
- * paw with Raycast's minimal PATH (no shell rc, no nvm, no /opt/homebrew/bin) — but a launchd job or
- * any stripped environment does the same.
- *
- * Order: the runtime we're already in (when that IS node — the common case under tsx), then the usual
- * absolute installs, then nvm's default alias. Fails LOUD rather than handing back a bare "node" that
- * would fail later, in a log, as somebody else's error.
+ * The node binary the DAEMONS run with, resolved ABSOLUTELY — never via PATH (see nodeBin). The CLI
+ * may run under bun (fast startup), but the daemons MUST be node: bun can't drive @lydell/node-pty's
+ * native ioctl, so a bun-spawned manager produces pty stubs that never become claude (it bricked every
+ * agent twice). WHY absolute (2026-08-04): Raycast, launchd and any stripped env have no node on PATH,
+ * and paw used to work right up until it had to START a daemon, then die in a log.
  */
 /** Resolve nvm's DEFAULT node the way nvm does, without sourcing nvm.sh: follow the alias chain
  *  (`default` → `stable` / `lts/*` / `24` / `v24.13.0`) to a versioned install under `<nvmDir>/versions/node`.
@@ -341,25 +324,52 @@ export function nodeBin(): string {
   if (!found) {
     throw new Error(
       `paw: can't find a node binary to run the daemons with (no nvm default under ~/.nvm; looked in ${candidates.join(", ")}). ` +
-        `paw's daemons must run under node+tsx; install node via nvm (\`nvm alias default <v>\`) or put it at one of those paths.`,
+        `paw's daemons must run under plain node; install node via nvm (\`nvm alias default <v>\`) or put it at one of those paths.`,
     );
   }
   return found;
 }
 
+/** Does node `version` strip TypeScript by default (no flag)? 22.18+ on the 22 line, 23.6+ after. */
+export function stripsTypesNatively(version: string): boolean {
+  const [maj, min] = version.replace(/^v/, "").split(".").map(Number);
+  if (maj === 22) return min >= 18;
+  if (maj === 23) return min >= 6;
+  return maj > 23;
+}
+
+const nodeVersions = new Map<string, string>();
+/** The version of the DAEMONS' node, which need not be this process's runtime (the CLI may be bun).
+ *  One exec per binary per process — cheap next to the spawn it guards. */
+function nodeVersionOf(node: string): string {
+  if (node === process.execPath && !process.versions.bun) return process.versions.node;
+  let v = nodeVersions.get(node);
+  if (!v) {
+    v = execFileSync(node, ["-p", "process.versions.node"], { encoding: "utf8", timeout: 10_000 }).trim();
+    nodeVersions.set(node, v);
+  }
+  return v;
+}
+
 /**
- * Build the argv to run `entry` under node+tsx. Invokes tsx's cli.mjs with an ABSOLUTE node rather
- * than the `.bin/tsx` shell shim, so the spawn carries no PATH dependency at all (see nodeBin).
+ * Build the argv to run `entry` (a .ts composition root) under PLAIN node, which strips the types
+ * itself. No tsx and no wrapper process: tsx's require hook cost ~460MB just loading cotal's 4MB
+ * mcp.cjs (20MB under plain node, measured), and every tsx launch was TWO processes (cli.mjs plus the
+ * node child it re-execs). Node is ABSOLUTE (see nodeBin), so the spawn has no PATH dependency, and
+ * the entry comes from the RELEASE with its own node_modules beside it — one self-consistent tree.
+ * Fails loud on a node too old to strip types: otherwise the daemon dies at line one with
+ * ERR_UNKNOWN_FILE_EXTENSION in a log while the terminal says "mesh failed to start".
  */
-function viaTsx(entry: string, sub: string[]): [string, string[]] {
-  // The RELEASE's tsx, not the checkout's (src/release.ts): a daemon must be ONE self-consistent
-  // tree — an entry file from one paw paired with node_modules from another mid-install is exactly
-  // the version split that put two incompatible managers on the mesh and took the fleet down.
-  const root = daemonRoot();
-  const tsxCli = join(root, "node_modules", "tsx", "dist", "cli.mjs");
-  if (existsSync(tsxCli)) return [nodeBin(), [tsxCli, entry, ...sub]];
-  const tsxBin = join(root, "node_modules", ".bin", "tsx");
-  return existsSync(tsxBin) ? [tsxBin, [entry, ...sub]] : [process.argv[0], [...process.execArgv, entry, ...sub]];
+function viaNode(entry: string, sub: string[]): [string, string[]] {
+  const node = nodeBin();
+  const version = nodeVersionOf(node);
+  if (!stripsTypesNatively(version)) {
+    throw new Error(
+      `paw: the daemons' node (${node}, v${version}) can't run TypeScript natively — it needs node >= 22.18 ` +
+        `(or >= 23.6). Install a newer node with nvm and \`nvm alias default <v>\`.`,
+    );
+  }
+  return [node, [entry, ...sub]];
 }
 
 /** Resolve one of paw's composition roots INSIDE the pinned release, never inside the operator's
@@ -372,20 +382,20 @@ function daemonEntry(...parts: string[]): string {
 /** Drive a raw cotal verb through bin/cotald.ts — the COTAL composition root (runCli + manager +
  *  connector). Used for the daemons (`up`, `supervise`) and exported for bin/paw.ts's
  *  `paw cotal <verb>` passthrough (runtime coordination, never a compile-time import). */
-export function cotaldViaTsx(sub: string[]): [string, string[]] {
-  return viaTsx(daemonEntry("bin", "cotald.ts"), sub);
+export function cotaldViaNode(sub: string[]): [string, string[]] {
+  return viaNode(daemonEntry("bin", "cotald.ts"), sub);
 }
 
 /** Drive a PAW command through bin/paw.ts — for daemons that ARE paw commands (the mailbox beacon,
  *  and `paw web` re-execing itself off bun — see {@link reexecUnderNode}). */
-export function pawViaTsx(sub: string[]): [string, string[]] {
-  return viaTsx(daemonEntry("bin", "paw.ts"), sub);
+export function pawViaNode(sub: string[]): [string, string[]] {
+  return viaNode(daemonEntry("bin", "paw.ts"), sub);
 }
 
 /**
- * Re-exec a paw command under node+tsx when the CLI is running under bun, and return true if we did.
+ * Re-exec a paw command under plain node when the CLI is running under bun, and return true if we did.
  *
- * paw's rule has always been "the CLI may run under bun, the DAEMONS must be node+tsx" — written for
+ * paw's rule has always been "the CLI may run under bun, the DAEMONS must be node" — written for
  * node-pty's ioctl, which bun cannot drive. `paw web` is a long-running daemon started through that
  * same CLI, so it inherited bun, and hit a SECOND incompatibility: **bun's node:http server never
  * emits `upgrade`**, so the WebSocket handshake gets no reply at all. Measured side by side on the same
@@ -400,7 +410,7 @@ export function pawViaTsx(sub: string[]): [string, string[]] {
  */
 export function reexecUnderNode(sub: string[]): boolean {
   if (!process.versions.bun) return false;
-  const [cmd, args] = pawViaTsx(sub);
+  const [cmd, args] = pawViaNode(sub);
   const child = spawn(cmd, args, { stdio: "inherit", env: daemonEnv(process.env) });
   child.on("exit", (code, signal) => process.exit(signal ? 1 : (code ?? 0)));
   // Forward the signals an operator actually sends a foreground server, so Ctrl-C stops the CHILD
@@ -443,7 +453,7 @@ export function restartInFlight(space: string): boolean {
  * Hand the fleet restart to a DETACHED child that outlives this process. `paw restart` run from INSIDE a
  * managed agent (see {@link agentSelfName}) can't finish synchronously: the bounce's revive step kills
  * its own caller mid-command → half-restart / stacked managers. So the caller spawns a detached
- * `paw restart` (node+tsx, reparented to launchd, COTAL_* stripped so the child isn't seen as an agent
+ * `paw restart` (plain node, reparented to launchd, COTAL_* stripped so the child isn't seen as an agent
  * and can't re-detach) that completes bounce + revive, then wakes `wakeAgent` back into a turn (a
  * respawned claude session sits idle until messaged). Pidfile-guarded so it can't stack. Returns false
  * if a restart is already in flight.
@@ -452,7 +462,7 @@ export function spawnDetachedRestart(space: string, runtime: Runtime | undefined
   if (restartInFlight(space)) return false;
   const out = openSync(restartLogPath(space), "a");
   try {
-    const [cmd, args] = pawViaTsx(["restart", ...(runtime ? [runtime] : []), "--space", space]);
+    const [cmd, args] = pawViaNode(["restart", ...(runtime ? [runtime] : []), "--space", space]);
     const env = daemonEnv({ PAW_WAKE_AGENT: wakeAgent });
     for (const k of Object.keys(env)) if (k.startsWith("COTAL_")) delete env[k]; // not an agent → don't re-detach
     const child = spawn(cmd, args, { detached: true, stdio: ["ignore", out, out], env });
@@ -469,7 +479,7 @@ export function spawnDetachedRestart(space: string, runtime: Runtime | undefined
  *  it rides the same ensure/resolve/retry path a normal DM does. */
 export function finishDetachedRestart(space: string, agent: string): void {
   try {
-    const [cmd, args] = pawViaTsx(["dm", agent, "↻ restarted onto the latest code — resume where you left off", "--space", space]);
+    const [cmd, args] = pawViaNode(["dm", agent, "↻ restarted onto the latest code — resume where you left off", "--space", space]);
     spawnSync(cmd, args, { stdio: "inherit", timeout: 90_000, env: daemonEnv() });
   } catch {
     /* best-effort wake — a delivery failure must not strand the pidfile */
@@ -497,7 +507,7 @@ export function adoptInFlight(space: string): boolean {
  * Hand a self-adopt to a DETACHED child that outlives the claude it's about to kill. `paw adopt .` run
  * from INSIDE a claude session can't finish synchronously: making the session a mesh agent means killing
  * the very claude whose Bash tool is running this command. So the caller spawns a detached `paw adopt`
- * (node+tsx, reparented to launchd, COTAL_* stripped so it isn't seen as an agent, PAW_ADOPT_INFLIGHT
+ * (plain node, reparented to launchd, COTAL_* stripped so it isn't seen as an agent, PAW_ADOPT_INFLIGHT
  * set so it drops the pidfile when done) that runs the SYNCHRONOUS make-before-break takeover — it has
  * no claude ancestor, so it brings the new agent up, confirms it live, THEN kills the old claude.
  * Pidfile-guarded so it can't stack. Returns false if an adopt is already in flight.
@@ -512,7 +522,7 @@ export function spawnDetachedAdopt(space: string, folder: string, sessionId: str
     try {
       const sub = ["adopt", folder, "--resume", sessionId, "--force", "--no-attach", "--space", space];
       if (name) sub.push("--name", name);
-      const [cmd, args] = pawViaTsx(sub);
+      const [cmd, args] = pawViaNode(sub);
       const env = daemonEnv({ PAW_ADOPT_INFLIGHT: "1" });
       for (const k of Object.keys(env)) if (k.startsWith("COTAL_")) delete env[k]; // child isn't an agent
       const child = spawn(cmd, args, { detached: true, stdio: ["ignore", out, out], env });
@@ -767,7 +777,7 @@ async function meshConnectable(space: string, server: string, creds?: string): P
  * Order:
  *  1. reachable -> reuse (nothing to do).
  *  2. a paw mesh.pid that's alive-but-unreachable (hung) -> SIGTERM once, then respawn ONCE.
- *  3. otherwise -> drive `up --detach` (node+tsx) and adopt the nats pid it records.
+ *  3. otherwise -> drive `up --detach` (plain node) and adopt the nats pid it records.
  * On a respawn that still fails, surface the mesh log tail and throw — NO retry loop.
  */
 async function ensureMesh(space: string, server: string): Promise<void> {
@@ -802,11 +812,11 @@ async function ensureMesh(space: string, server: string): Promise<void> {
     rmSync(meshPidPath(space), { force: true });
   }
 
-  // Start the mesh by DRIVING the registered `up` command through bin/cotald.ts under node+tsx (never
+  // Start the mesh by DRIVING the registered `up` command through bin/cotald.ts under plain node (never
   // the current runtime — the CLI may be bun, which can't host the mesh manager's native node-pty).
   // `up --detach` boots nats in the background and writes .cotal/nats.pid; adopt that pid as paw-owned
   // so stop() tears down only the mesh paw started. spawnSync: `up` is a short-lived bootstrapper.
-  const [meshExec, upArgs] = cotaldViaTsx([
+  const [meshExec, upArgs] = cotaldViaNode([
     "up",
     "--detach",
     "--space",
@@ -858,7 +868,7 @@ const MANAGER_READY_MS = 20_000;
 const READY_PROBE_MS = 1500;
 
 /**
- * Spawn the `supervise` daemon under `runtime` through bin/cotald.ts under node+tsx (NOT the current
+ * Spawn the `supervise` daemon under `runtime` through bin/cotald.ts under plain node (NOT the current
  * runtime — a bun-hosted manager can't drive node-pty, so its agents never boot). Detached + paw
  * owns the child pid. `--runtime` only for non-pty: pty is supervise's default (auto→pty), and the
  * known-good path stays flag-free. Records the runtime marker so a later ensure() can detect a switch.
@@ -866,7 +876,7 @@ const READY_PROBE_MS = 1500;
  */
 function startManagerDaemon(space: string, server: string, runtime: Runtime): void {
   const mgrFd = openSync(managerLogPath(space), "a");
-  const [mgrExec, supArgs] = cotaldViaTsx([
+  const [mgrExec, supArgs] = cotaldViaNode([
     "supervise",
     "--space",
     space,
@@ -1074,8 +1084,8 @@ export function hubMatchPattern(space: string): string {
 export function hubProcs(space: string): number[] {
   return pgrepF(hubMatchPattern(space));
 }
-/** All live pids of paw's manager daemon for `space` (tsx wrapper + its re-exec child, plus any
- *  duplicates left by prior churn). The signature-based source of truth for stop/restart ownership. */
+/** All live pids of paw's manager daemon for `space` (one node process each since the
+ *  tsx wrapper went away — older managers still show two — plus any duplicates left by prior churn). The signature-based source of truth for stop/restart ownership. */
 export function managerProcs(space: string): number[] {
   return pgrepF(managerMatchPattern(space));
 }
@@ -1140,9 +1150,9 @@ export function explainManagerFailure(o: { logTail: string; runtime: string; spa
 
   // A SECOND manager is a different fault with a different fix, and it says so itself in the log.
   //
-  // Detected ONLY from that self-report, never from a process count: a healthy manager is TWO
-  // processes — the tsx wrapper and the node child it re-execs — so `managerProcs().length > 1` is
-  // true on every working install. I shipped that heuristic and it would have called every single
+  // Detected ONLY from that self-report, never from a process count: a healthy manager USED to be
+  // TWO processes (the tsx wrapper + its node child), so `managerProcs().length > 1` was true on
+  // every working install — and a manager still running from a pre-native-TS release is two today. I shipped that heuristic and it would have called every single
   // failure a duplicate-manager fault (caught the same day, by reading `ps` on a healthy box).
   if (lines.some((l) => l.includes("already serves space"))) {
     return `${head}\n\n  another manager is already serving this space — they compete and neither wins.\n  fix: \`paw down\` and try again.\n\n  log: ${o.logPath}`;
@@ -1275,7 +1285,7 @@ async function stopMailbox(space: string): Promise<void> {
  *       - it's ours but a DIFFERENT runtime -> the operator switched the preference; the manager is a
  *         background daemon so the setting alone can't change it -> RESTART it into the new runtime.
  *         paw agents are durable (resume pins), so they re-wake on the next chat/open.
- *  2. DRIVE the registered `supervise` daemon (node+tsx, detached) under the runtime, own its pid,
+ *  2. DRIVE the registered `supervise` daemon (plain node, detached) under the runtime, own its pid,
  *     and record the runtime marker.
  *  3. poll `ps` until it serves, or ~8s — a readiness gate so a following `start` doesn't race a
  *     not-yet-listening manager. On timeout surface the manager log tail and throw — NO loop.
@@ -1393,7 +1403,7 @@ async function ensureManagerUp(space: string, server: string, switchRuntime = fa
  * Ensure the persistent "you" mailbox beacon is up: a paw-owned daemon that holds the human's "you"
  * identity online so agents can always resolve + deliver replies to you (read with `paw inbox`).
  * Cheap when already up (a pid-alive check); otherwise spawn it DETACHED — same runtime + entrypoint
- * as this process (`node <execArgv> bin/paw.ts mailbox --space <s>`), stdout/stderr to mailbox.log, then
+ * as the other daemons (`<abs node> bin/paw.ts mailbox --space <s>`), stdout/stderr to mailbox.log, then
  * unref so it outlives this command. Best-effort + non-blocking: the beacon comes up in ~1s, long
  * before an agent could reply, so we don't gate on it (keeps `paw ps` snappy). NOT under JWT auth's
  * critical path — a beacon failure must never block a real command, so errors here are swallowed.
@@ -1404,11 +1414,10 @@ function ensureMailbox(space: string): void {
     if (recorded !== undefined && alive(recorded)) return; // already present
     const out = openSync(mailboxLogPath(space), "a");
     try {
-      // Spawn the beacon under node+tsx no matter how this process was launched (see viaTsx) — a
-      // bare `node bin/paw.ts` child dies with ERR_MODULE_NOT_FOUND on the first .ts import, and a
+      // Spawn the beacon under plain node no matter how this process was launched (see viaNode) — a
       // dead "you" beacon silently drops replies. The mailbox is a PAW command, so it runs through
       // bin/paw.ts (the paw composition root), not cotald.
-      const [cmd, args] = pawViaTsx(["mailbox", "--space", space]);
+      const [cmd, args] = pawViaNode(["mailbox", "--space", space]);
       const child = spawn(cmd, args, {
         detached: true,
         stdio: ["ignore", out, out],

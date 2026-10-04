@@ -10,14 +10,14 @@
  */
 import { existsSync, rmSync } from "node:fs";
 import { registry, type Command } from "@cotal-ai/core";
-import { agentNamesForFolder, assertUnambiguousTarget, canonicalDir, folderForName, listAgents, lookupFolderName, personaFilePath, stopAgent } from "./addressing.js";
-import { withManagerControl } from "./control.js";
-import { readForeground, unregisterForeground } from "./foreground.js";
-import { parseGithubHandle, repoDir } from "./github.js";
-import { resolveSpace } from "./lifecycle.js";
-import { readResumeId } from "./session.js";
-import { parseWorktreeRef, resolveWorktreeFolder } from "./worktree.js";
-import { pawServer } from "./server.js";
+import { agentNamesForFolder, assertUnambiguousTarget, canonicalDir, folderForName, listAgents, lookupFolderName, personaFilePath, stopAgent } from "./addressing.ts";
+import { withManagerControl } from "./control.ts";
+import { readForeground, unregisterForeground } from "./foreground.ts";
+import { parseGithubHandle, repoDir } from "./github.ts";
+import { resolveSpace } from "./lifecycle.ts";
+import { readResumeId } from "./session.ts";
+import { parseWorktreeRef, resolveWorktreeFolder } from "./worktree.ts";
+import { pawServer } from "./server.ts";
 
 function parseArgs(argv: string[]): { space?: string; target?: string } {
   const out: { space?: string; target?: string } = {};

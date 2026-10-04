@@ -16,11 +16,11 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { defaultTmuxEnv } from "./lifecycle.js";
-import { tmuxSession } from "./native-attach.js";
-import { transcriptPath } from "./session.js";
-import { tailRead, toolResultFor, type PendingTool } from "./transcript.js";
-import type { AgentStatus } from "./status.js";
+import { defaultTmuxEnv } from "./lifecycle.ts";
+import { tmuxSession } from "./native-attach.ts";
+import { transcriptPath } from "./session.ts";
+import { tailRead, toolResultFor, type PendingTool } from "./transcript.ts";
+import type { AgentStatus } from "./status.ts";
 
 /** Default keeper threshold: a single tool call running this long gets an Esc. */
 export const UNSTICK_TOOL_DEFAULT_MIN = 30;

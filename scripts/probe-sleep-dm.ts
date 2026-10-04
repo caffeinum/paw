@@ -13,10 +13,10 @@ import { CotalEndpoint, dmStream } from "@cotal-ai/core";
 import { removeMesh } from "@cotal-ai/workspace";
 import { connect } from "@nats-io/transport-node";
 import { jetstreamManager } from "@nats-io/jetstream";
-import { ManagerControl } from "../src/control.js";
-import { ensureAgentSpawned, setFolderName } from "../src/addressing.js";
-import { ensure, stop } from "../src/lifecycle.js";
-import { pawServer } from "../src/server.js";
+import { ManagerControl } from "../src/control.ts";
+import { ensureAgentSpawned, setFolderName } from "../src/addressing.ts";
+import { ensure, stop } from "../src/lifecycle.ts";
+import { pawServer } from "../src/server.ts";
 
 const space = process.env.PAW_SPACE!;
 if (!process.env.PAW_HOME || !space || space === "paw" || !space.startsWith("sleeptest")) throw new Error("isolated PAW_HOME + PAW_SPACE=sleeptest-* required");

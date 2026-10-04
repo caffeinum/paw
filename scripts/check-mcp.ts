@@ -22,8 +22,8 @@ import { join } from "node:path";
 process.env.PAW_HOME = mkdtempSync(join(tmpdir(), "paw-mcp-home-"));
 
 const { PAW_CONNECTOR, withServer, withoutServer, buildSpec, isValidServerName, agentsSharing, withShareTools, readConfig } =
-  await import("../src/commands/mcp.js");
-const { readShareTools, readAgentType } = await import("../src/session.js");
+  await import("../src/commands/mcp.ts");
+const { readShareTools, readAgentType } = await import("../src/session.ts");
 
 let failures = 0;
 function assert(cond: boolean, msg: string): void {

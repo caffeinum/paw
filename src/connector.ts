@@ -3,10 +3,10 @@ import { registry, type Connector, type LaunchOpts, type LaunchSpec } from "@cot
 import { homedir } from "node:os";
 import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { HUMAN_PEER } from "./names.js";
-import { readClaudeArgs, readResumeId, transcriptExists } from "./session.js";
-import { ensureShim, hubEnabled, hubSocketPath } from "./hub/paths.js";
-import { routeCotalToHub } from "./hub/route.js";
+import { HUMAN_PEER } from "./names.ts";
+import { readClaudeArgs, readResumeId, transcriptExists } from "./session.ts";
+import { ensureShim, hubEnabled, hubSocketPath } from "./hub/paths.ts";
+import { routeCotalToHub } from "./hub/route.ts";
 
 /** Claude Code's permission modes — PAW_PERMISSION must be one of these (fail loud otherwise). */
 const PERMISSION_MODES = ["default", "acceptEdits", "bypassPermissions", "plan"] as const;

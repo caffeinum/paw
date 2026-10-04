@@ -15,12 +15,12 @@
  *                advance the shared cursor past each. Ctrl-C to exit. Still a pure reader (no durable bind).
  */
 import { registry, type Command } from "@cotal-ai/core";
-import { advanceCursor, readCursor } from "./cursor.js";
-import { observerEndpoint, pollLoop, readConversation, type Entry } from "./feed.js";
-import { resolveSpace } from "./lifecycle.js";
-import { HUMAN_PEER } from "./names.js";
-import { writeJson } from "./stdout.js";
-import { pawServer } from "./server.js";
+import { advanceCursor, readCursor } from "./cursor.ts";
+import { observerEndpoint, pollLoop, readConversation, type Entry } from "./feed.ts";
+import { resolveSpace } from "./lifecycle.ts";
+import { HUMAN_PEER } from "./names.ts";
+import { writeJson } from "./stdout.ts";
+import { pawServer } from "./server.ts";
 
 const tty = process.stdout.isTTY === true;
 const wrap = (code: string) => (s: string) => (tty ? `\x1b[${code}m${s}\x1b[0m` : s);

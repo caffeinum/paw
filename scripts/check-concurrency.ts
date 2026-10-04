@@ -12,7 +12,7 @@ import { join } from "node:path";
 // Child mode: resolve one folder and print its name. Uses the PAW_HOME/PAW_SPACE inherited from parent.
 const childIdx = process.argv.indexOf("--child");
 if (childIdx !== -1) {
-  const { folderToName, canonicalDir } = await import("../src/addressing.js");
+  const { folderToName, canonicalDir } = await import("../src/addressing.ts");
   console.log(folderToName(process.env.PAW_SPACE as string, canonicalDir(process.argv[childIdx + 1])));
   process.exit(0);
 }
@@ -21,7 +21,7 @@ if (childIdx !== -1) {
 // print the name. Proves extras serialize on the SAME registry lock as defaults.
 const instIdx = process.argv.indexOf("--instance");
 if (instIdx !== -1) {
-  const { registerInstance, canonicalDir } = await import("../src/addressing.js");
+  const { registerInstance, canonicalDir } = await import("../src/addressing.ts");
   const folder = canonicalDir(process.argv[instIdx + 1]);
   console.log(registerInstance(process.env.PAW_SPACE as string, folder, process.argv[instIdx + 2]));
   process.exit(0);
@@ -43,7 +43,7 @@ const names = await Promise.all(
   folders.map(
     (f) =>
       new Promise<string>((resolveP, rejectP) => {
-        const child = spawn("pnpm", ["exec", "tsx", "scripts/check-concurrency.ts", "--child", f], {
+        const child = spawn(process.execPath, ["scripts/check-concurrency.ts", "--child", f], {
           cwd: process.cwd(),
           env: { ...process.env, PAW_HOME: home, PAW_SPACE: space },
           stdio: ["ignore", "pipe", "ignore"],
@@ -69,7 +69,7 @@ assert(unique.size === N, `all ${N} racing resolutions got distinct names (got $
 assert(names.every((n) => /^[A-Za-z0-9_-]+$/.test(n)), "every name is a valid bare token");
 
 process.env.PAW_HOME = home;
-const { listAgents } = await import("../src/addressing.js");
+const { listAgents } = await import("../src/addressing.ts");
 const defaults = listAgents(space).filter((r) => !r.extra);
 assert(defaults.length === N, `registry persisted all ${N} folder→name entries (no lost update; got ${defaults.length})`);
 assert(new Set(defaults.map((r) => r.folder)).size === N, "no two folders share a name in the persisted registry");
@@ -81,7 +81,7 @@ mkdirSync(shared, { recursive: true });
 const instNames = await Promise.all(
   Array.from({ length: N }, (_, i) =>
     new Promise<string>((resolveP, rejectP) => {
-      const child = spawn("pnpm", ["exec", "tsx", "scripts/check-concurrency.ts", "--instance", shared, `w${i}`], {
+      const child = spawn(process.execPath, ["scripts/check-concurrency.ts", "--instance", shared, `w${i}`], {
         cwd: process.cwd(),
         env: { ...process.env, PAW_HOME: home, PAW_SPACE: space },
         stdio: ["ignore", "pipe", "ignore"],

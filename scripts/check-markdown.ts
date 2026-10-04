@@ -4,7 +4,7 @@
  * exactly the property that matters: piping paw must give clean text, and nothing may be lost or
  * mangled on the way through. Run: pnpm check:markdown
  */
-import { inlineMd, renderMarkdown, renderMarkdownBlock } from "../src/markdown.js";
+import { inlineMd, renderMarkdown, renderMarkdownBlock } from "../src/markdown.ts";
 
 let failures = 0;
 function assert(cond: boolean, msg: string): void {
@@ -70,7 +70,7 @@ assert(twoFences[0].includes("a") && twoFences[2].includes("c"), "both fenced bo
 // agent writes compact markdown. One cell of a different length (`opus-5` vs `sonnet-5`) shifts every
 // column after it on that row. Monospace preserves whatever alignment exists; it creates none.
 {
-  const { splitRow, parseAlign, visibleWidth } = await import("../src/markdown.js");
+  const { splitRow, parseAlign, visibleWidth } = await import("../src/markdown.ts");
 
   assert(splitRow("| a | b |").join(",") === "a,b", "outer pipes are delimiters, not empty cells");
   assert(splitRow("| a \\| b | c |").join(",") === "a | b,c", "an escaped pipe stays inside its cell");
@@ -102,7 +102,7 @@ assert(twoFences[0].includes("a") && twoFences[2].includes("c"), "both fenced bo
 
 // ── tables fit the terminal ─────────────────────────────────────────────────────────────────────
 {
-  const { fitWidths, wrapCell, visibleWidth } = await import("../src/markdown.js");
+  const { fitWidths, wrapCell, visibleWidth } = await import("../src/markdown.ts");
   assert(fitWidths([5, 10], 100).join() === "5,10", "a table that fits keeps its natural widths");
   const fit = fitWidths([10, 80, 60], 90);
   assert(fit[0] === 10 && fit[1] + fit[2] + fit[0] <= 90, "the widest columns are capped first; a narrow one keeps its width");
@@ -120,7 +120,7 @@ assert(twoFences[0].includes("a") && twoFences[2].includes("c"), "both fenced bo
 
 // ── display width: emoji/CJK take two columns (the misaligned ✅/❌ table, 2026-09-23) ─────────────
 {
-  const { displayWidth, sliceWidth, fitWidth } = await import("../src/width.js");
+  const { displayWidth, sliceWidth, fitWidth } = await import("../src/width.ts");
   for (const [str, want] of [["abc", 3], ["✅", 2], ["❌", 2], ["✓", 1], ["⚠️", 2], ["日本", 4], ["🐾", 2], ["👩‍💻", 2], ["\u001b[1mbold\u001b[0m", 4], ["e\u0301", 1]] as const) {
     assert(displayWidth(str) === want, `width: ${JSON.stringify(str)} is ${want} column(s)`);
   }

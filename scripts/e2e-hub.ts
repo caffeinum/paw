@@ -40,16 +40,16 @@ process.env.PAW_RUNTIME ??= "tmux";
 process.env.PAW_MODEL ??= "haiku";
 const nats = spawn("nats-server", ["-js", "-p", String(port), "-a", "127.0.0.1", "-sd", mkdtempSync(join(tmpdir(), "pawhubjs-"))], { stdio: "ignore" });
 
-const { ManagerControl } = await import("../src/control.js");
-const { ensureAgentSpawned, personaFilePath, setFolderName, waitForPeerId } = await import("../src/addressing.js");
-const { ensure, stop, hubProcs, managerProcs, mailboxProcs, hubState, formatHubLine } = await import("../src/lifecycle.js");
-const { hubSocketPath } = await import("../src/hub/paths.js");
-const { liveSessionProcs } = await import("../src/named.js");
-const { readResumeId, personaValue } = await import("../src/session.js");
-const { collectStatus, inboxText } = await import("../src/status.js");
-const { dmLastSeq, extraChannels, readActivity, sleepAgent, sleepDecision } = await import("../src/sleep.js");
-const { isAsleep, standInHolder } = await import("../src/sleep-state.js");
-const { pawServer } = await import("../src/server.js");
+const { ManagerControl } = await import("../src/control.ts");
+const { ensureAgentSpawned, personaFilePath, setFolderName, waitForPeerId } = await import("../src/addressing.ts");
+const { ensure, stop, hubProcs, managerProcs, mailboxProcs, hubState, formatHubLine } = await import("../src/lifecycle.ts");
+const { hubSocketPath } = await import("../src/hub/paths.ts");
+const { liveSessionProcs } = await import("../src/named.ts");
+const { readResumeId, personaValue } = await import("../src/session.ts");
+const { collectStatus, inboxText } = await import("../src/status.ts");
+const { dmLastSeq, extraChannels, readActivity, sleepAgent, sleepDecision } = await import("../src/sleep.ts");
+const { isAsleep, standInHolder } = await import("../src/sleep-state.ts");
+const { pawServer } = await import("../src/server.ts");
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 let fails = 0;
@@ -94,8 +94,7 @@ try {
     if (r.status === 0) break;
     await sleep(100);
   }
-  const tsx = join(REPO, "node_modules", "tsx", "dist", "cli.mjs");
-  const cli = (...a: string[]) => spawnSync(process.execPath, [tsx, join(REPO, "bin", "paw.ts"), ...a, "--space", space], { encoding: "utf8", env: process.env, timeout: 900_000 }); // revival paces itself on load (up to 90s per agent)
+  const cli = (...a: string[]) => spawnSync(process.execPath, [join(REPO, "bin", "paw.ts"), ...a, "--space", space], { encoding: "utf8", env: process.env, timeout: 900_000 }); // revival paces itself on load (up to 90s per agent)
   const on = cli("hub", "on");
   ok("`paw hub on` (no env var) turns the hub on and starts it", on.status === 0 && /cotal hub: on · hub pid/.test(on.stdout), (on.stdout + on.stderr).split("\n").slice(-3).join(" | "));
   await ensure({ needMesh: true, needManager: true, space });

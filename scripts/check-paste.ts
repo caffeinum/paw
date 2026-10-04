@@ -15,7 +15,7 @@ import {
   pastePreview,
   shouldCollapse,
   submittedLineCount,
-} from "../src/paste.js";
+} from "../src/paste.ts";
 
 let failures = 0;
 function assert(cond: boolean, msg: string): void {
@@ -155,7 +155,7 @@ assert(composePastes("", [makeBlock(1, "solo")]).startsWith("--- [Pasted text #1
 // The other half of paste: pasting several lines was handled, TYPING them had no answer at all — you
 // got one line, or you sent three messages.
 {
-  const { isContinueKey, peelContinuation, joinLines, CONTINUE_KEYS } = await import("../src/multiline.js");
+  const { isContinueKey, peelContinuation, joinLines, CONTINUE_KEYS } = await import("../src/multiline.ts");
   const ESC = String.fromCharCode(27);
 
   // Measured under a real pty before being relied on: readline DROPS all of these as unrecognised

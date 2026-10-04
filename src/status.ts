@@ -6,23 +6,23 @@
  * mtime), and durability/two-writer warnings. `ps` was a native reimpl of the manager's ps (still at
  * `paw cotal ps` for the raw view); status now carries the liveness column too, so there's one command.
  */
-import { sleepState } from "./sleep-state.js";
+import { sleepState } from "./sleep-state.ts";
 import { CotalEndpoint, dmDurable, dmStream, parsePrincipalKey, type Command, registry } from "@cotal-ai/core";
 import { JetStreamApiCodes, JetStreamApiError, jetstreamManager } from "@nats-io/jetstream";
 import { connect, credsAuthenticator } from "@nats-io/transport-node";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
-import { agentNamesForFolder, canonicalDir, controlCreds, listAgents, personaFilePath, psRowAlive, terminalLost, type PsRow, wirePrincipal } from "./addressing.js";
-import { withManagerControl, type ManagerControl } from "./control.js";
-import { listForeground } from "./foreground.js";
-import { formatHubLine, hubState, readRuntimeMarker, resolveSpace, type Runtime } from "./lifecycle.js";
-import { writeJson } from "./stdout.js";
-import { liveSessionProcs, nameForSession } from "./named.js";
-import { isClaudeHarness, readAgentType, readResumeId, transcriptExists, transcriptMtime, transcriptPath } from "./session.js";
-import { lastFailure, lastUsage, type ContextUsage } from "./transcript.js";
-import { tailRead, turnState, type PendingTool, type TurnState } from "./transcript.js";
-import { gitInfoMany, type GitInfo } from "./git.js";
-import { pawServer } from "./server.js";
+import { agentNamesForFolder, canonicalDir, controlCreds, listAgents, personaFilePath, psRowAlive, terminalLost, type PsRow, wirePrincipal } from "./addressing.ts";
+import { withManagerControl, type ManagerControl } from "./control.ts";
+import { listForeground } from "./foreground.ts";
+import { formatHubLine, hubState, readRuntimeMarker, resolveSpace, type Runtime } from "./lifecycle.ts";
+import { writeJson } from "./stdout.ts";
+import { liveSessionProcs, nameForSession } from "./named.ts";
+import { isClaudeHarness, readAgentType, readResumeId, transcriptExists, transcriptMtime, transcriptPath } from "./session.ts";
+import { lastFailure, lastUsage, type ContextUsage } from "./transcript.ts";
+import { tailRead, turnState, type PendingTool, type TurnState } from "./transcript.ts";
+import { gitInfoMany, type GitInfo } from "./git.ts";
+import { pawServer } from "./server.ts";
 
 const tty = process.stdout.isTTY === true;
 const wrap = (code: string) => (s: string) => (tty ? `\x1b[${code}m${s}\x1b[0m` : s);

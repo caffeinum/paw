@@ -12,11 +12,11 @@
  */
 import { existsSync } from "node:fs";
 import { registry, type Command } from "@cotal-ai/core";
-import { ensureAgentSpawned, folderForName, listAgents, psRowAlive, type PsRow } from "./addressing.js";
-import { withManagerControl } from "./control.js";
-import { ensure, resolveSpace } from "./lifecycle.js";
-import { awaitSpawnHeadroom } from "./pacing.js";
-import { pawServer } from "./server.js";
+import { ensureAgentSpawned, folderForName, listAgents, psRowAlive, type PsRow } from "./addressing.ts";
+import { withManagerControl } from "./control.ts";
+import { ensure, resolveSpace } from "./lifecycle.ts";
+import { awaitSpawnHeadroom } from "./pacing.ts";
+import { pawServer } from "./server.ts";
 
 function parseArgs(argv: string[]): { space?: string; names: string[] } {
   const out: { space?: string; names: string[] } = { names: [] };

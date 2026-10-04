@@ -9,8 +9,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { registry, type Command } from "@cotal-ai/core";
-import { expandEqFlags, stripCotalNamespace, withDefaultSpace } from "../src/dispatch.js";
-import { assertRuntimeUsable, resolveRuntime, runtimePreferencePath, writeRuntimePreference } from "../src/lifecycle.js";
+import { expandEqFlags, stripCotalNamespace, withDefaultSpace } from "../src/dispatch.ts";
+import { assertRuntimeUsable, resolveRuntime, runtimePreferencePath, writeRuntimePreference } from "../src/lifecycle.ts";
 
 let failures = 0;
 function assert(cond: boolean, msg: string): void {
@@ -160,13 +160,13 @@ else process.env.PAW_RUNTIME = savedRT;
 
 // The endpoint-native commands self-register into core's registry on import. (`ps` was merged into
 // `status`; the raw manager ps stays at `paw cotal ps`.)
-await import("../src/commands/stop.js");
-await import("../src/commands/msg.js");
-await import("../src/commands/ask.js");
-await import("../src/commands/who.js");
-await import("../src/commands/history.js");
-await import("../src/commands/watch.js");
-await import("../src/commands/runtime.js");
+await import("../src/commands/stop.ts");
+await import("../src/commands/msg.ts");
+await import("../src/commands/ask.ts");
+await import("../src/commands/who.ts");
+await import("../src/commands/history.ts");
+await import("../src/commands/watch.ts");
+await import("../src/commands/runtime.ts");
 for (const name of ["stop", "msg", "ask", "who", "history", "watch", "runtime", "restart"]) {
   let found: Command | undefined;
   try {
@@ -193,10 +193,10 @@ for (const name of ["stop", "msg", "ask", "who", "history", "watch", "runtime", 
 
 // ── short forms: `paw a` = `paw attach` (2026-09-23) ─────────────────────────────────────────────
 {
-  const { SHORT_FORMS, expandShortForm } = await import("../src/dispatch.js");
+  const { SHORT_FORMS, expandShortForm } = await import("../src/dispatch.ts");
   // Load every module that registers a verb a short form points at, so the check is against the REAL
   // registry, not a list typed out here that could drift from it.
-  for (const m of ["chat", "open", "status", "log", "dm", "inbox", "web"]) await import(`../src/${m}.js`);
+  for (const m of ["chat", "open", "status", "log", "dm", "inbox", "web"]) await import(`../src/${m}.ts`);
   const verbs = new Set(registry.all<Command>("command").map((c) => c.name));
   for (const [k, v] of Object.entries(SHORT_FORMS)) {
     assert(verbs.has(v), `short: ${k} → ${v} is a registered command (a typo here would be a dead alias)`);
