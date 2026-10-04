@@ -1,0 +1,65 @@
+docs/notes/company-simple-1.html
+  s_ed25aaaf9c7e77::t_9f5121f5691fd8 1-210
+docs/notes/company-simple-2.html
+  s_ed25aaaf9c7e77::t_f0ad5d42ee7bbe 1-210
+docs/notes/company-simple-3.html
+  s_ed25aaaf9c7e77::t_2adbe97155a82e 1-210
+docs/notes/company-spec.md
+  s_ed25aaaf9c7e77::t_c9f158a33c2b51 1-669
+docs/notes/tasks.md
+  s_ed25aaaf9c7e77::t_8d5db101741642 168-176
+scripts/check-web.ts
+  s_ed25aaaf9c7e77::t_85a04aebc660b6 1343-1462
+scripts/e2e-company.ts
+  s_ed25aaaf9c7e77::t_7ebe68a2b74d69 1-234
+src/company-service.ts
+  s_ed25aaaf9c7e77::t_44af63c398cd6a 1-177
+src/company.ts
+  s_ed25aaaf9c7e77::t_fd46fbeae3b86e 1-193
+src/connector.ts
+  s_ed25aaaf9c7e77::t_038383db2aaf3a 6,227
+src/tasks.ts
+  s_ed25aaaf9c7e77::t_8bb7008a6155ca 15,42-50,72-96,122-125,139,168-174,234-243,245-248,253,260,262-264,272,277-299,302,348
+src/web.ts
+  s_ed25aaaf9c7e77::t_f797926f92f83c 48,94-95,688-721,939-940,1113,1125-1137,1140,1148,1170-1205,1386,1616-1629
+web/app/app.js
+  s_ed25aaaf9c7e77::t_6745860ce61a81 27-28,41-43,72,901,915-920,924,1209-1246,1347-1362,1372-1373,1594-1602,1610-1612,2018-2030,2069,2071-2081,2088-2099
+web/app/company-model.d.ts
+  s_ed25aaaf9c7e77::t_6c2a2399d0b210 1-26
+web/app/company-model.js
+  s_ed25aaaf9c7e77::t_6fe42e9e736d81 1-128
+web/app/company.d.ts
+  s_ed25aaaf9c7e77::t_311f56e98aaabe 1-22
+web/app/company.js
+  s_ed25aaaf9c7e77::t_29254969a8e478 1-617
+web/app/index.html
+  s_ed25aaaf9c7e77::t_1ccdd51a160917 238-330,808-809,834,868
+scripts/e2e-company-ui.py
+  s_ec372c4be1ee89::t_1fb480db637117 1-129
+src/beads-dir.ts
+  s_ec372c4be1ee89::t_0b86342aaf23b6 1-16
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "2393b60e791faf10c27738d0eadbcad054ec5a2e",
+  "prompts": {},
+  "sessions": {
+    "s_ec372c4be1ee89": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-a1343f3b13ee98ae8",
+        "model": "unknown"
+      },
+      "human_author": "Aleksey Bykhun <theisease@gmail.com>"
+    },
+    "s_ed25aaaf9c7e77": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "90dd1251-161e-469a-96db-040d1e555035",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Aleksey Bykhun <theisease@gmail.com>"
+    }
+  }
+}
