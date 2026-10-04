@@ -236,97 +236,124 @@
   #board { position:absolute; inset:0; z-index:30; background:var(--content); display:flex; flex-direction:column; overflow:hidden; }
   #board[hidden] { display:none; }
 
-  /* ── company pages (/new, /company/<slug>) — the "Simple" look (docs/notes/company-simple-*.html) ──
-     The operator's pick: system font, white / near-black, ONE blue accent, lots of air. Its own tokens,
-     scoped to #company, following the app's theme switch (data-theme beats prefers-color-scheme).
-     Status colours stay tokens the pad/board can share later. */
-  :root { --prog:#4a9eda; --blocked:#d05548; --done:#4caf7d; }
-  #company { --co-bg:#FFFFFF; --co-fg:#111111; --co-dim:#767676; --co-line:#ECECEC; --co-soft:#F6F6F6; --co-acc:#2563EB; --co-bad:#D93025; --co-warn:#B26A00; }
-  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) #company { --co-bg:#111111; --co-fg:#EDEDED; --co-dim:#8A8A8A; --co-line:#262626; --co-soft:#1A1A1A; --co-acc:#6EA0FF; --co-bad:#FF7B72; --co-warn:#E3B341; } }
-  :root[data-theme="dark"] #company { --co-bg:#111111; --co-fg:#EDEDED; --co-dim:#8A8A8A; --co-line:#262626; --co-soft:#1A1A1A; --co-acc:#6EA0FF; --co-bad:#FF7B72; --co-warn:#E3B341; }
-  #company { position:absolute; inset:0; z-index:30; background:var(--co-bg); color:var(--co-fg); overflow:hidden;
-             font:15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; -webkit-font-smoothing:antialiased; }
-  #company[hidden] { display:none; }
+  /* ── company pages (docs/notes/company-spec.md §0, look S1–S9 / company-simple-views.html) ──────
+     Quiet: paw's CONTENT tokens only (--content/--txt/--txt-dim/--line), ONE accent (--link: links,
+     "+ Add", "on you"), --red for errors only, no aubergine inside the page. Status is a dim glyph.
+     #company paints home/tasks//new over the main pane; on the home page at ≥1100px it leaves the
+     right 400px to paw's REAL chat (.main.cohome), and over Dialog/Trace it only carries the bead
+     panel (.co-overlay-only) while #cobar holds the breadcrumb + tabs above the real renderers. */
+  #company { position:absolute; inset:0; z-index:30; background:var(--content); color:var(--txt); overflow:hidden;
+             font:15px/1.5 var(--font); color-scheme:light dark; }
+  #company[hidden], .cobar[hidden] { display:none; }
+  #company.co-overlay-only { background:transparent; pointer-events:none; }
+  #company.co-overlay-only .co-panel { pointer-events:auto; }
   #company button, #company input, #company textarea, #company select { font:inherit; color:inherit; }
-  #company a, .co-link { color:var(--co-acc); text-decoration:none; cursor:pointer; background:none; border:0; padding:0; }
-  #company :focus-visible { outline:2px solid var(--co-acc); outline-offset:2px; }
+  #company a, .co-link, .cobar a { color:var(--link); text-decoration:none; cursor:pointer; background:none; border:0; padding:0; }
+  #company :focus-visible { outline:2px solid var(--link); outline-offset:2px; }
   .co-wrap, .co-form { height:100%; overflow:auto; overscroll-behavior:contain; }
   .co-wrap { padding:56px 32px 96px; }
-  .co-wrap > * { max-width:680px; margin-left:auto; margin-right:auto; }
-  .co-header { display:flex; align-items:baseline; gap:16px; margin-bottom:40px; }
+  .co-col, .co-formcol { max-width:680px; margin:0 auto; }
+  .co-formcol { max-width:420px; }
+  .co-header { display:flex; align-items:baseline; gap:16px; margin-bottom:24px; }
   .co-title { flex:1; min-width:0; }
   #company h1 { font-size:28px; font-weight:600; margin:0; letter-spacing:-.01em; }
-  .co-mission { color:var(--co-dim); margin:4px 0 0; }
-  .co-hright { display:flex; align-items:baseline; gap:14px; flex-wrap:wrap; justify-content:flex-end; }
-  .co-views { display:inline-flex; gap:2px; font-size:13px; }
-  .co-views button { background:none; border:0; color:var(--co-dim); padding:2px 6px; border-radius:4px; cursor:pointer; }
-  .co-views button[aria-pressed="true"] { color:var(--co-fg); background:var(--co-soft); }
-  .co-dim { color:var(--co-dim); } .co-faint { opacity:.7; } .co-small { font-size:13px; } .co-norm { font-weight:400; }
-  .co-bad { color:var(--co-bad); } .co-warn { color:var(--co-warn); } .co-acc { color:var(--co-acc); }
-  .co-warnline { color:var(--co-warn); font-size:14px; margin:0 auto 24px; }
-  .co-dot { display:inline-block; width:7px; height:7px; border-radius:50%; background:var(--co-dim); opacity:.35; margin-left:6px; vertical-align:middle; }
-  .co-dot.live { background:var(--co-fg); opacity:.8; }
-  .co-group { margin-bottom:36px; }
-  .co-group h2 { font-size:13px; font-weight:600; margin:0 0 8px; padding-bottom:8px; border-bottom:1px solid var(--co-line); }
-  .co-sub { font-size:12px; font-weight:600; color:var(--co-dim); margin:14px 0 2px; }
+  .co-mission { color:var(--txt-dim); margin:4px 0 0; }
+  .co-dim { color:var(--txt-dim); } .co-faint { opacity:.7; } .co-small { font-size:13px; } .co-norm { font-weight:400; }
+  .co-bad { color:var(--red); } .co-acc { color:var(--link); }
+  .co-team { color:var(--txt-dim); font-size:14px; margin:0 0 36px; }
+  #company .co-team .co-name, #company .co-group h2 a { color:var(--txt); } /* names are navigation, not accents (S1) */
+  .co-dot { display:inline-block; width:7px; height:7px; border-radius:50%; background:var(--txt-dim); opacity:.35; margin-left:6px; vertical-align:middle; }
+  .co-dot.live { background:var(--txt); opacity:.8; }
+  .co-group, .co-work { margin-bottom:36px; }
+  .co-group h2, .co-workhead h2 { font-size:13px; font-weight:600; margin:0 0 8px; padding-bottom:8px; border-bottom:1px solid var(--line); }
+  .co-workhead { display:flex; align-items:baseline; gap:16px; border-bottom:1px solid var(--line); margin-bottom:16px; }
+  .co-workhead h2 { flex:1; border:0; padding-bottom:8px; margin:0; }
+  .co-sub { font-size:13px; font-weight:400; color:var(--txt-dim); margin:14px 0 2px; }
+  .co-views { display:flex; gap:20px; font-size:14px; }
+  .co-views button { border:0; background:none; padding:0 0 3px; color:var(--txt-dim); cursor:pointer; border-bottom:1px solid transparent; }
+  .co-views button[aria-pressed="true"] { color:var(--txt); border-bottom-color:var(--txt); }
+  .co-views button:hover { color:var(--txt); }
+  .co-tabs { margin:12px 0 28px; }
+  .co-crumbs { font-size:13px; color:var(--txt-dim); }
+  .co-agenth { margin-bottom:24px !important; }
   .co-bead { display:flex; gap:10px; align-items:baseline; padding:7px 0; cursor:pointer; }
-  .co-st { width:14px; flex:none; text-align:center; color:var(--co-dim); }
+  .co-st { width:14px; flex:none; text-align:center; color:var(--txt-dim); }
   .co-t { flex:1; min-width:0; }
-  .co-bead:hover .co-t { text-decoration:underline; text-decoration-color:var(--co-line); text-underline-offset:3px; }
-  .co-bead.done .co-t { color:var(--co-dim); text-decoration:line-through; }
-  .co-bead.sel .co-t { color:var(--co-acc); }
-  .co-tag { font-size:13px; color:var(--co-dim); white-space:nowrap; max-width:45%; overflow:hidden; text-overflow:ellipsis; }
-  .co-tag.co-acc { color:var(--co-acc); } .co-tag.co-bad { color:var(--co-bad); } .co-tag.co-warn { color:var(--co-warn); }
+  .co-bead:hover .co-t { text-decoration:underline; text-decoration-color:var(--line); text-underline-offset:3px; }
+  .co-bead.done .co-t { color:var(--txt-dim); text-decoration:line-through; }
+  .co-bead.sel .co-t { color:var(--link); }
+  .co-tag { font-size:13px; color:var(--txt-dim); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; flex:none; }
+  .co-tag.co-ms { max-width:140px; }
+  .co-tag.co-acc { color:var(--link); } .co-tag.co-bad { color:var(--red); }
   .co-add, .co-fold { display:block; margin-top:6px; font-size:14px; }
-  .co-fold { color:var(--co-dim); }
-  .co-addin { width:100%; border:0; border-bottom:1px solid var(--co-line); background:none; padding:6px 0; outline:none; }
-  .co-addin:focus { border-color:var(--co-acc); }
-  .co-members { color:var(--co-dim); font-size:14px; margin:-24px auto 28px; }
-  .co-addbar { display:flex; gap:10px; align-items:baseline; margin-bottom:36px; }
-  .co-addbar input { flex:1; }
-  .co-addbar select { border:0; border-bottom:1px solid var(--co-line); background:none; color:var(--co-dim); padding:6px 0; max-width:40%; }
-  .co-build { font-size:11px; color:var(--co-dim); opacity:.6; margin-top:48px; }
-  .co-menu { display:none; background:none; border:0; color:var(--co-fg); font-size:18px; cursor:pointer; padding:0 8px 0 0; }
-  .co-panel { position:absolute; top:0; right:0; bottom:0; width:min(440px,100%); background:var(--co-bg); border-left:1px solid var(--co-line); padding:32px 32px 24px; display:flex; flex-direction:column; z-index:5; }
-  .co-panel[hidden] { display:none; }
-  .co-close { position:absolute; top:22px; right:24px; color:var(--co-dim); font-size:20px; background:none; border:0; cursor:pointer; }
+  .co-fold { color:var(--txt-dim) !important; }
+  .co-addin { width:100%; border:0; border-bottom:1px solid var(--line); background:none; padding:6px 0; outline:none; }
+  .co-addin:focus { border-color:var(--link); }
+  .co-addbar { display:flex; gap:10px; align-items:baseline; margin-bottom:28px; }
+  .co-addbar input { flex:1; min-width:0; }
+  .co-addbar select { border:0; border-bottom:1px solid var(--line); background:none; color:var(--txt-dim); padding:6px 0; max-width:40%; }
+  .co-chatslot { margin:0 0 36px; }
+  .co-chatrow { display:block; width:100%; text-align:left; background:none; border:0; border-top:1px solid var(--line); border-bottom:1px solid var(--line); padding:10px 0; cursor:pointer; color:var(--link) !important; }
+  .co-last { display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; font-size:13px; margin-top:2px; }
+  .co-ms-row { display:flex; gap:12px; align-items:baseline; padding:7px 0; cursor:pointer; }
+  .co-bar { width:120px; height:2px; background:var(--line); align-self:center; flex:none; }
+  .co-bar i { display:block; height:2px; background:var(--txt); }
+  .co-count { font-variant-numeric:tabular-nums; font-size:13px; color:var(--txt-dim); width:44px; text-align:right; flex:none; }
+  .co-ms-beads { padding-left:24px; margin-bottom:8px; }
+  .co-build { font-size:12px; color:var(--txt-dim); margin-top:48px; }
+  .co-menu { display:none; background:none; border:0; color:var(--txt); font-size:18px; cursor:pointer; padding:0 8px 0 0; }
+  .co-panel { position:absolute; top:0; right:0; bottom:0; width:min(440px,100%); background:var(--content); border-left:1px solid var(--line); padding:32px 32px 24px; display:flex; flex-direction:column; z-index:5; }
+  .co-close { position:absolute; top:22px; right:24px; color:var(--txt-dim); font-size:20px; background:none; border:0; cursor:pointer; }
   .co-panel h3 { font-size:20px; font-weight:600; margin:0 32px 6px 0; line-height:1.3; }
   .co-scroll { flex:1; overflow:auto; min-height:0; }
   .co-desc { margin:20px 0 28px; white-space:pre-wrap; }
   .co-comment { margin:0 0 16px; }
   .co-comment p { margin:0; }
-  .co-who { font-size:13px; color:var(--co-dim); }
-  .co-panel textarea { width:100%; border:1px solid var(--co-line); border-radius:6px; background:none; padding:10px; resize:none; outline:none; margin-top:8px; }
-  .co-panel textarea:focus { border-color:var(--co-acc); }
-  .co-panelfoot { margin-top:10px; }
-  .co-closebar { display:flex; gap:10px; align-items:baseline; margin-top:8px; }
-  .co-btn { border:0; background:var(--co-fg); color:var(--co-bg); border-radius:6px; padding:7px 16px; cursor:pointer; font-weight:500; }
+  .co-who { font-size:13px; color:var(--txt-dim); }
+  .co-panel textarea { width:100%; border:1px solid var(--line); border-radius:6px; background:none; padding:10px; resize:none; outline:none; margin-top:8px; }
+  .co-panel textarea:focus { border-color:var(--link); }
+  .co-panelfoot { margin-top:10px; display:flex; gap:16px; align-items:baseline; }
+  #company .co-btn { border:0; background:var(--txt); color:var(--content); border-radius:6px; padding:7px 16px; cursor:pointer; font-weight:500; }
   .co-btn:disabled { opacity:.35; cursor:not-allowed; }
-  .co-btn.co-ghost { background:none; color:var(--co-fg); border:1px solid var(--co-line); }
   .co-form { padding:72px 32px; }
-  .co-form > * { max-width:420px; margin-left:auto; margin-right:auto; }
-  .co-f { display:block; font-size:13px; color:var(--co-dim); margin-top:28px; margin-bottom:6px; }
-  .co-form input[type=text] { display:block; width:100%; border:0; border-bottom:1px solid var(--co-line); background:none; padding:6px 0; font-size:18px; outline:none; }
-  .co-form input[type=text]:focus { border-color:var(--co-acc); }
+  .co-f { display:block; font-size:13px; color:var(--txt-dim); margin-top:28px; margin-bottom:6px; }
+  .co-form input[type=text] { display:block; width:100%; border:0; border-bottom:1px solid var(--line); background:none; padding:6px 0; font-size:18px; outline:none; }
+  .co-form input[type=text]:focus { border-color:var(--link); }
   .co-form input.co-filter { font-size:14px; margin-bottom:6px; }
   .co-picks { max-height:320px; overflow:auto; }
   .co-pick { display:flex; gap:10px; align-items:center; padding:6px 0; }
   .co-pick label { display:flex; gap:10px; align-items:center; cursor:pointer; }
-  .co-pick input { accent-color:var(--co-acc); margin:0; }
-  .co-leadpick { margin-left:auto; font-size:13px; color:var(--co-dim); }
-  .co-leadpick.on { color:var(--co-acc); }
+  .co-pick input { accent-color:var(--link); margin:0; }
+  .co-leadpick { margin-left:auto; font-size:13px; color:var(--txt-dim); }
   .co-form .co-btn { margin-top:32px; }
   .co-note { margin-top:12px; }
-  .co-slugin { border:0; border-bottom:1px solid var(--co-line); background:none; font:inherit; font-weight:600; padding:0; outline:none; min-width:4ch; }
-  .co-steps { list-style:none; padding:0; margin:20px auto 0; font-size:13px; }
+  .co-slugin { border:0; border-bottom:1px solid var(--line); background:none; font:inherit; font-weight:600; padding:0; outline:none; min-width:4ch; }
+  .co-steps { list-style:none; padding:0; margin:20px 0 0; font-size:13px; }
   .co-steps li { padding:2px 0; }
+  /* the bar over the REAL Dialog/Trace renderers, and their 760px column */
+  .cobar { padding:14px 20px 0; background:var(--content); font:15px/1.5 var(--font); }
+  .cobar .co-tabs { margin:10px 0 0; }
+  .main.inco { grid-template-rows:auto auto 1fr auto; }
+  .main.inco .chead .modes { display:none; }
+  .main.inco .msgs, .main.inco .tbody { padding-left:max(20px, calc((100% - 760px) / 2)); padding-right:max(20px, calc((100% - 760px) / 2)); }
+  .tag.co-route { font-size:13px; color:var(--txt-dim); }
+  .main.cohome .chead .modes { display:none; }
+  @media (min-width: 1101px) {
+    /* home: the right 400px is paw's own lead chat (chead + messages + composer), untouched */
+    #company.co-home { right:400px; border-right:1px solid var(--line); }
+    .main.cohome > .chead, .main.cohome > .msgs, .main.cohome > .comp { margin-left:calc(100% - 400px); }
+    .main.cohome > .chead .topic { display:none; }
+    .co-chatslot { display:none; }
+  }
   @media (max-width: 860px) {
     .co-menu { display:inline-block; }
     .co-wrap { padding:24px 20px 64px; }
-    .co-header { margin-bottom:28px; flex-wrap:wrap; }
-    .co-members { margin:-12px auto 24px; }
+    .co-header { flex-wrap:wrap; }
     .co-panel { padding:24px 20px 20px; border-left:0; }
     .co-form { padding:32px 20px; }
+    .co-bar { width:64px; }
+    .co-tag.co-ms { max-width:90px; }
+    .cobar { padding:10px 16px 0; }
   }
   #village { position:absolute; inset:0; z-index:30; background:var(--content); display:flex; flex-direction:column; overflow:hidden;
              --vbg:var(--content); --vink:var(--txt); --vdim:var(--txt-dim); --vfold:color-mix(in srgb, var(--txt) 55%, transparent); }
@@ -832,6 +859,7 @@
       </div>
       <div id="village" hidden></div>
       <div id="company" hidden></div>
+      <div class="cobar" id="cobar" hidden></div>
       <div class="chead">
         <button class="menu" id="menu" aria-label="Show agents" aria-expanded="false">☰</button>
         <h1 id="title">inbox</h1>

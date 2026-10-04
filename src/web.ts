@@ -93,6 +93,7 @@ import { collectStatus, type AgentStatus } from "./status.ts";
 import { dropSharedManagerControl, sharedManagerControl } from "./control.ts";
 import { companyService, HttpError, type CompanyService } from "./company-service.ts";
 import { SLUG_RE, operatorName } from "./company.ts";
+import { DialogTail, dialogChannel, dialogDms, namesFrom, type DialogEntry, type RawMessage } from "./dialog.ts";
 import { closeTask, commentTask, createTaskGetId, listComments, listTasks, taskPrRows, updateTask } from "./tasks.ts";
 import { gitToplevel, listWorktrees } from "./worktree.ts";
 import type { Block } from "./transcript.ts";
@@ -938,6 +939,9 @@ export interface WebDeps {
   village?: () => VillageData;
   /** Companies (docs/notes/company-spec.md). OPTIONAL — without it the routes answer 501. */
   company?: CompanyService;
+  /** An agent's dialog (src/dialog.ts): its DMs both ways incl. agent↔agent, + a channel's posts by/
+   *  mentioning it. `error` = the history read was refused (said verbatim, never an empty dialog). */
+  dialog?: (agent: string, limit: number, channel?: string) => Promise<{ agent: string; messages: DialogEntry[]; error?: string }>;
   clientRoot?: string;
 }
 
@@ -1165,6 +1169,18 @@ export async function startWebServer(deps: WebDeps): Promise<WebServer> {
           } catch (e) {
             return sendJson(res, 502, { error: (e as Error).message });
           }
+        }
+
+        if (path.startsWith("/api/dialog/")) {
+          const agent = decodeURIComponent(path.slice("/api/dialog/".length));
+          if (!agent) return sendJson(res, 400, { error: "paw: dialog needs an agent name" });
+          if (!deps.dialog) return sendJson(res, 501, { error: "paw: this server was started without the dialog reader" });
+          const limitParam = url.searchParams.get("limit");
+          const limit = limitParam === null ? INBOX_DEFAULT_LIMIT : Number(limitParam);
+          if (!Number.isInteger(limit) || limit < 1) return sendJson(res, 400, { error: "paw: limit needs a positive integer" });
+          const channel = url.searchParams.get("channel") ?? undefined;
+          if (channel !== undefined && !/^[a-z0-9][a-z0-9_-]{0,63}$/i.test(channel)) return sendJson(res, 400, { error: "paw: a channel name is letters, digits, dash or underscore" });
+          return sendJson(res, 200, await deps.dialog(agent, limit, channel));
         }
 
         if (path === "/api/companies" || path.startsWith("/api/company/")) {
@@ -1534,6 +1550,15 @@ async function web(argv: string[]): Promise<void> {
 
   const convo = new Conversation(ep);
   const channels = new Channels();
+  const dialogTail = new DialogTail();
+  /** dmHistory is the whole space's DM backlog — cached briefly, since a dialog view polls it. */
+  let dmCache: { at: number; msgs: RawMessage[] } | undefined;
+  const dmHistoryCached = async (): Promise<RawMessage[]> => {
+    if (dmCache && Date.now() - dmCache.at < 10_000) return dmCache.msgs;
+    const msgs = (await ep.dmHistory({ limit: FETCH_CAP })) as unknown as RawMessage[];
+    dmCache = { at: Date.now(), msgs };
+    return msgs;
+  };
   const village = new Village(ep.card.id);
   /** Whether this mesh is AUTHED. Read once at startup because it decides how to interpret an empty
    *  channel backlog — see {@link channelMessages}. */
@@ -1613,6 +1638,26 @@ async function web(argv: string[]): Promise<void> {
       channelMembers: () => channels.members(),
       village: () => village.snapshot(),
       channelActivity: (seen) => channels.activity(seen),
+      dialog: async (agent, limit, channel) => {
+        let history: RawMessage[] = [];
+        let error: string | undefined;
+        try {
+          history = await dmHistoryCached();
+        } catch (e) {
+          error = `dialog unreadable: ${(e as Error).message}`;
+        }
+        const all = [...history, ...dialogTail.tail()];
+        const names = namesFrom(all, ep.card.id, new Map(dialogTail.names));
+        for (const p of ep.getRoster()) if (!names.has(p.card.id)) names.set(p.card.id, p.card.name);
+        let posts: DialogEntry[] = [];
+        if (channel) {
+          const ch = await channelMessages(ep, channels, channel, FETCH_CAP, authed);
+          if (ch.historyError) error = [error, ch.historyError].filter(Boolean).join("; ");
+          posts = dialogChannel(ch.messages, agent, channel);
+        }
+        const messages = [...dialogDms(all, agent, names, ep.card.id), ...posts].sort((a, b) => a.ts - b.ts).slice(-limit);
+        return { agent, messages, ...(error ? { error } : {}) };
+      },
       company: companyService({
         operator: operatorName(),
         rows: async () => {
@@ -1693,6 +1738,7 @@ async function web(argv: string[]): Promise<void> {
       const chEntry = channels.accept(m);
       if (chEntry) push.broadcast({ type: "message", entry: chEntry });
       village.note(m); // record DM edges + last-spoken lines for the Village view
+      dialogTail.accept(m); // every DM, for the company pages' per-agent Dialog (its own store)
     } catch (e) {
       console.error(c.red("! " + (e as Error).message));
     }

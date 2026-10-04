@@ -1,22 +1,25 @@
+import type { CompanyLoc } from "./company-model.js";
+
 export function initCompany(deps: {
   api: (path: string, opts?: unknown) => Promise<any>;
   el: (id: string) => HTMLElement;
   rows: () => Array<{ name: string; folder?: string; mesh: string; live: boolean; busy?: boolean }>;
-  avatarColor: (name: string) => string;
   md?: (text: string) => string;
   build: string;
   navigate: (path: string) => void;
   onSubState?: () => void;
   onOpenChannel: (slug: string) => void;
-  onFocusAgent?: (name: string) => void;
   openNav?: () => void;
+  onLoaded?: (payload: any) => void;
+  openLeadChat?: (lead: string | undefined) => void;
+  lastMessage?: (name: string) => string | undefined;
 }): {
-  showCompany: (slug: string, sub?: { layout?: string; issue?: string; fromUrl?: boolean }) => void;
-  showNew: (prefill?: string) => void;
+  show: (loc: { page: "new"; prefill?: string } | CompanyLoc, sub?: { bead?: string; view?: string; fromUrl?: boolean }) => void;
   close: () => void;
   isOpen: () => boolean;
   query: () => URLSearchParams;
   onKey: (e: KeyboardEvent) => boolean;
+  data: () => any;
   tick: () => void;
-  loadCompanies: () => Promise<Array<{ slug: string; name: string; members?: string[] }>>;
+  loadCompanies: () => Promise<Array<{ slug: string; name: string; members?: string[]; onYou?: number }>>;
 };

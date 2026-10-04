@@ -155,7 +155,9 @@ export function companyService(deps: CompanyDeps) {
         if (!title) throw new HttpError(400, "issue-create needs a title");
         const assignee = str("assignee");
         if (assignee && assignee !== deps.operator && !c.members.includes(assignee)) throw new HttpError(400, `${assignee} isn't a member of ${slug}`);
-        const id = await createTaskGetId(title, str("description"), c.epic, assignee, { labels: [`company:${slug}`] });
+        const parent = str("parent") ?? c.epic;
+        if (parent !== c.epic && !(await page(slug, true)).issues.some((i) => i.id === parent)) throw new HttpError(400, `${parent} isn't one of ${slug}'s beads`);
+        const id = await createTaskGetId(title, str("description"), parent, assignee, { labels: [`company:${slug}`] });
         if (!assignee || assignee === deps.operator) return { id };
         try {
           await deps.dm(assignee, assignmentText(c.name, id, title));

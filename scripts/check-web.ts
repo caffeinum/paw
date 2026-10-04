@@ -1387,6 +1387,27 @@ const stillAligned = async (ws: RawWs, label: string, ...setup: Buffer[]): Promi
   const { parseTasks } = await import("../src/tasks.ts");
   const parsed = parseTasks(JSON.stringify([{ id: "a", title: "t", status: "open", dependencies: [{ issue_id: "a", depends_on_id: "p", type: "parent-child" }, { issue_id: "a", depends_on_id: "b", type: "blocks" }], metadata: { company: "x" } }]));
   assert(parsed[0].waitsOn?.join() === "b" && parsed[0].metadata?.company === "x", "tasks: parseTasks passes `blocks` deps (only) and metadata through");
+  const dg = await import("../src/dialog.ts");
+  const P = (text: string) => [{ kind: "text", text }] as never;
+  const raw = [
+    { id: "1", from: { id: "me.x", name: "paw-web" }, to: "a.1", ts: 1, parts: P("op→alpha") },
+    { id: "2", from: { id: "a.1", name: "alpha" }, to: "b.2", ts: 2, parts: P("alpha→beta") },
+    { id: "3", from: { id: "b.2", name: "beta" }, to: "a.1", ts: 3, parts: P("beta→alpha") },
+    { id: "4", from: { id: "b.2", name: "beta" }, to: "c.3", ts: 4, parts: P("beta→gamma") },
+    { id: "2", from: { id: "a.1", name: "alpha" }, to: "b.2", ts: 2, parts: P("alpha→beta") },
+  ];
+  const names = dg.namesFrom(raw, "me.x");
+  const dms = dg.dialogDms(raw, "alpha", names, "me.x");
+  assert(dms.map((e) => `${e.from}>${e.to}`).join() === "you>alpha,alpha>beta,beta>alpha", "dialog: DMs both ways INCLUDING agent↔agent, the operator as 'you', deduped, others' DMs out");
+  assert(dg.dialogDms([{ id: "9", from: { id: "a.1", name: "alpha" }, to: "zz.9", ts: 1, parts: P("x") }], "alpha", names, "me.x")[0].to === "zz.9", "dialog: an unresolved recipient stays its id — never a guessed name");
+  const posts = dg.dialogChannel([{ from: "alpha", text: "hi", ts: 1 }, { from: "beta", text: "@alpha look", ts: 2 }, { from: "beta", text: "@alphabet no", ts: 3 }, { from: "beta", text: "unrelated", ts: 4 }], "alpha", "test-co");
+  assert(posts.map((p) => p.ts).join() === "1,2" && posts.every((p) => p.channel === "test-co"), "dialog: channel posts BY the agent or @mentioning it (not a longer name)");
+  const tail = new dg.DialogTail();
+  tail.accept(undefined);
+  tail.accept({ from: { id: "a.1", name: "alpha" }, channel: "general", id: "c1", ts: 1, parts: P("x") } as never);
+  tail.accept({ from: { id: "a.1", name: "alpha" }, to: "b.2", id: "d1", ts: 2, parts: P("x") } as never);
+  tail.accept({ from: { id: "a.1", name: "alpha" }, to: "b.2", id: "d1", ts: 2, parts: P("x") } as never);
+  assert(tail.tail().length === 1 && tail.names.get("a.1") === "alpha", "dialog: the live tail keeps DMs only, once, and survives control frames");
   console.log("✓ company model (server)");
 }
 
@@ -1413,8 +1434,28 @@ const stillAligned = async (ws: RawWs, label: string, ...setup: Buffer[]): Promi
   assert(m.leadOf({ members: ["A", "B"], lead: "B" }) === "B" && m.leadOf({ members: ["A", "B"], lead: "Z" }) === "A" && m.leadOf({ members: [] }) === undefined, "company UI: /new lead = the chosen one while picked, else the first picked");
   assert(m.newCompanyProblems({ name: "X", slug: "x", members: ["A"] }, new Set()).length === 0 && m.newCompanyProblems({ name: "X", slug: "x", members: ["A"] }, new Set(["x"]))[0].includes("already exists"), "company UI: /new problems");
   assert(m.parseMention("@beta please look") ?.to === "beta" && m.parseMention("no tag") === undefined, "company UI: @agent at the start = comment + DM");
-  const pc = m.parsePath("/company/vibeos");
-  assert(pc?.page === "company" && (pc as { slug: string }).slug === "vibeos" && m.parsePath("/new")?.page === "new" && m.parsePath("/") === undefined, "company UI: /new and /company/<slug> paths");
+  const home = m.parsePath("/company/vibeos") as import("../web/app/company-model.js").CompanyLoc;
+  const tasks = m.parsePath("/company/vibeos/vibeos-pm") as import("../web/app/company-model.js").CompanyLoc;
+  const dlg = m.parsePath("/company/vibeos/vibeos-pm/dialog") as import("../web/app/company-model.js").CompanyLoc;
+  const trc = m.parsePath("/company/vibeos/vibeos-pm/trace") as import("../web/app/company-model.js").CompanyLoc;
+  assert(home.level === "home" && home.slug === "vibeos" && !home.agent, "company UI: /company/<slug> = home (level 0)");
+  assert(tasks.level === "tasks" && tasks.agent === "vibeos-pm" && dlg.level === "dialog" && trc.level === "trace", "company UI: /company/<slug>/<agent>[/dialog|/trace] = levels 1–3");
+  assert(m.parsePath("/new")?.page === "new" && m.parsePath("/") === undefined && m.parsePath("/company/x/y/z") === undefined, "company UI: /new; anything else isn't a company path");
+  assert([home, tasks, dlg, trc].every((l) => m.parsePath(m.companyPath(l))!.page === "company" && m.companyPath(m.parsePath(m.companyPath(l)) as typeof l) === m.companyPath(l)), "company UI: companyPath is parsePath's inverse");
+  const MS = (o: Record<string, unknown>) => ({ status: "open", title: "x", ...o }) as import("../web/app/company-model.js").CoBead & { parent?: string; type?: string };
+  const tree = [
+    MS({ id: "m1", parent: "E", type: "epic", title: "Launch" }),
+    MS({ id: "m1.1", parent: "m1", status: "closed" }),
+    MS({ id: "m1.2", parent: "m1" }),
+    MS({ id: "m1.2.1", parent: "m1.2", status: "closed" }),
+    MS({ id: "m2", parent: "E", type: "epic", title: "Docs", labels: ["goal"] }),
+    MS({ id: "loose", parent: "E" }),
+  ];
+  const mss = m.milestones(tree, "E");
+  assert(mss.length === 3 && mss.find((x) => x.id === "m1")!.done === 2 && mss.find((x) => x.id === "m1")!.total === 3, "company UI: milestone = epic under the company epic; done/total over the WHOLE subtree");
+  assert(mss.find((x) => x.id === "m2")!.total === 0 && mss[mss.length - 1].id === undefined && mss[mss.length - 1].title === "No milestone", "company UI: an empty milestone is 0/0; loose beads land in a final 'No milestone' row");
+  assert(m.milestoneOf(tree[3], new Map(tree.map((t) => [t.id, t])), "E")?.id === "m1" && m.milestoneOf(tree[5], new Map(tree.map((t) => [t.id, t])), "E") === undefined, "company UI: milestoneOf walks up to the nearest milestone");
+  assert(m.workBeads(tree, "E").every((t) => t.id !== "m1" && t.id !== "m2"), "company UI: Work lists beads, not the milestones themselves");
   console.log("✓ company model (client)");
 }
 

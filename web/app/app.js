@@ -25,7 +25,7 @@ import { initTaskspad } from "./taskspad.js";
 import { initBoard } from "./board.js";
 import { initVillage } from "./village.js";
 import { initCompany } from "./company.js";
-import { parsePath } from "./company-model.js";
+import { parsePath, companyPath } from "./company-model.js";
 import { initPalette } from "./palette.js";
 import { composeQuote, quotable } from "./quote.js";
 
@@ -38,9 +38,12 @@ const TASKS = "~tasks";
 const BOARD = "~board"; // the kanban view of the same list — a sibling of Tasks in the focus model
 const SEARCH = "~search"; // results of the last search, a view like Tasks/Board (the composer hides)
 const VILLAGE = "~village"; // the transit-map view of the fleet — a sibling of Tasks/Board in the focus model
-const COMPANY = "~co:"; // + slug: a company page (/company/<slug>) — a focus target like Board
-const NEWCO = "~new"; // the /new company form
-const isCompanyFocus = (f) => typeof f === "string" && (f === NEWCO || f.startsWith(COMPANY));
+/** The company pages (company.js) are a LOCATION, not a focus: `state.co` = {page:"new"} or
+ *  {page:"company", slug, agent?, level: home|tasks|dialog|trace}. state.focus still names whose chat
+ *  /trace is on screen — the lead on the home page, the agent on Dialog/Trace — so the real renderers,
+ *  composer, drafts and pending logic do the work. A company page with no chat of its own (new, tasks,
+ *  home before the lead is known) parks focus on the CO sentinel. Any ordinary navigation clears it. */
+const CO = "~co";
 
 /**
  * Any uncaught error becomes VISIBLE — a red banner with the message, on the page itself. "The tab
@@ -69,7 +72,7 @@ window.addEventListener("unhandledrejection", (e) => showFault(`unhandled: ${e.r
 // The client names its own build, loudly, so "which code is this tab running" is answered by any
 // screenshot instead of a forensic session (the 2026-08-25 evening: three rounds of fixes debugged
 // against tabs of unknown vintage). Stamped by paw-folder at edit time; shown in the header hint.
-const CLIENT_BUILD = "company-1";
+const CLIENT_BUILD = "company-3";
 console.log("[paw] client build", CLIENT_BUILD);
 
 const state = {
@@ -320,7 +323,7 @@ function renderAgents(now) {
       const n = unreadBy.get(r.name) ?? 0;
       // While the pad is the open view, NOTHING else reads as current — the same one-view rule as
       // Activity (a lit agent row under an open pad was the "double selected" report).
-      const active = state.focus === r.name ? " active" : "";
+      const active = state.focus === r.name && !state.co ? " active" : ""; // on a company page the company row is the lit one
       const strong = n > 0 ? " unread" : "";
       const filed = state.archive[r.name] !== undefined;
       // The control says what it DOES, in the direction it will go. One glyph, revealed on hover, so a
@@ -483,16 +486,22 @@ function renderMessages(now) {
   if (state.focus === SEARCH) return renderSearch(now);
   const el = $("msgs");
   const inChannel = String(state.focus ?? "").startsWith("#");
-  const list = inChannel
-    ? state.channelMessages
-    : state.focus
-      ? state.messages.filter((m) => m.from === state.focus || (m.dir === "out" && m.to === state.focus))
-      : state.messages;
+  // A company agent's DIALOG: the same renderer over a wider, separate message set (src/dialog.ts) —
+  // its DMs both ways incl. agent↔agent, and its #slug posts. Rows say `from → to` / `#slug`.
+  const dialog = state.co?.level === "dialog" ? (state.dialog?.agent === state.focus ? state.dialog : undefined) : undefined;
+  const list = state.co?.level === "dialog"
+    ? (dialog?.messages ?? []).map((m) => ({ ...m, dialog: true }))
+    : inChannel
+      ? state.channelMessages
+      : state.focus
+        ? state.messages.filter((m) => m.from === state.focus || (m.dir === "out" && m.to === state.focus))
+        : state.messages;
+  const dialogNote = dialog?.error ? `<div class="empty" style="color:var(--red)">${esc(dialog.error)}</div>` : "";
 
   if (!list.length) {
     // "Nothing here" is only true once we have actually read. Before that it is not-yet-known, and
     // flashing an empty state reads as a dead mesh.
-    el.innerHTML = `<div class="empty">${state.loaded ? "no messages yet" : "loading…"}</div>`;
+    el.innerHTML = dialogNote + (state.co?.level === "dialog" && !dialog ? `<div class="empty">loading…</div>` : `<div class="empty">${state.loaded ? "no messages yet" : "loading…"}</div>`);
     return;
   }
   const rows = state.focus ? [...list, ...state.pending.filter((p) => p.to === state.focus)] : [...list, ...state.pending];
@@ -521,23 +530,25 @@ function renderMessages(now) {
   }
   state.pendingRender = false;
   state.forceRender = false;
-  el.innerHTML = rows
+  el.innerHTML = dialogNote + rows
     .map((m) => {
       const divider =
         !drawn && state.unreadMark !== null && m.dir !== "out" && m.ts >= state.unreadMark
           ? ((drawn = true), `<div class="newmark" data-newmark="1"><span>new</span></div>`)
           : "";
-      const who = m.dir === "out" ? "you" : m.from;
+      const who = m.dialog ? m.from : m.dir === "out" ? "you" : m.from;
       // In Activity — every conversation at once — an outgoing row saying only "you" leaves out the one
       // thing the mixed feed can't tell you: WHICH agent you said it to. In a focused conversation the
       // answer is the view itself, so the chip would be noise on every row.
       const sentTo = m.dir === "out" && state.focus === null ? recipientLabel(m.to, state.rows?.map((r) => r.name) ?? []) : "";
       // Group by RECIPIENT as well as sender, so two consecutive sends to different agents don't merge
       // into one block under a single avatar — in Activity that's exactly the confusion being fixed.
-      const key = m.dir === "out" ? `you→${m.to ?? ""}` : m.from;
+      const key = m.dialog ? `${m.from}→${m.to ?? "#" + (m.channel ?? "")}` : m.dir === "out" ? `you→${m.to ?? ""}` : m.from;
       const cont = key === last ? " cont" : "";
       last = key;
-      const tag = m.dir === "out"
+      const tag = m.dialog
+        ? `<span class="tag co-route">${m.channel ? `#${esc(m.channel)}` : `→ ${esc(m.to ?? "?")}`}</span>`
+        : m.dir === "out"
         ? sentTo
           ? `<span class="tag who" data-open="${esc(m.to ?? sentTo)}">→ ${esc(sentTo)}</span>`
           : ""
@@ -641,7 +652,7 @@ function renderMessages(now) {
   //
   // With an agent focused the other conversations are off screen, so they stay unread too.
   const lookedAt = document.visibilityState === "visible" && document.hasFocus();
-  if (lookedAt && !inChannel) void markVisibleRead(list);
+  if (lookedAt && !inChannel && !dialog && state.co?.level !== "dialog") void markVisibleRead(list); // a dialog isn't your inbox
   if (lookedAt && inChannel) markChannelSeen(String(state.focus).slice(1));
 }
 
@@ -898,7 +909,7 @@ function render() {
         ? esc(state.search ? `search "${state.search.q}" · ${state.search.phase === "done" ? "done" : state.search.phase + "…"}` : "search")
         : esc(`${state.rows.length} agents · ${state.unread} unread`);
   renderComposerMode();
-  $("main").classList.toggle("nofocus", !state.focus || state.focus === TASKS || state.focus === BOARD || state.focus === SEARCH || state.focus === VILLAGE || isCompanyFocus(state.focus));
+  $("main").classList.toggle("nofocus", !state.focus || state.focus === TASKS || state.focus === BOARD || state.focus === SEARCH || state.focus === VILLAGE || state.focus === CO);
   // The pad follows FOCUS — it is never opened or closed on its own. (Render is the one place that
   // reconciles it, so a deep link, a poll, and a click all end in the same state.)
   if (state.focus === TASKS) {
@@ -912,12 +923,14 @@ function render() {
     village.update(state.space, state.rows, state.village || {});
     void loadVillage(); // refresh edges/last-lines from /api/village; re-renders on arrival
   } else if (village.isOpen()) village.close();
-  if (state.focus === NEWCO) company.showNew(state.newPrefill);
-  else if (isCompanyFocus(state.focus)) {
-    company.showCompany(state.focus.slice(COMPANY.length), state.companySub ?? {});
+  if (state.co) {
+    company.show(state.co, state.companySub ?? {});
     state.companySub = undefined;
     company.tick();
   } else if (company.isOpen()) company.close();
+  $("main").classList.toggle("cohome", state.co?.page === "company" && state.co.level === "home");
+  $("main").classList.toggle("inco", state.co?.page === "company" && (state.co.level === "dialog" || state.co.level === "trace"));
+  if (state.co?.level === "dialog" && (!state.dialog || state.dialog.agent !== state.co.agent || Date.now() - state.dialog.at > 4000)) void loadDialog();
   $("input").placeholder = state.focus ? `message ${state.focus}` : "";
   renderSidebarExtras();
   renderTasks();
@@ -931,7 +944,7 @@ function render() {
   if (state.mode === "trace") renderTrace();
   {
     // The right sidebar: this agent's tasks beside its chat. Never for channels/Activity/the pad/board.
-    const agentFocused = !!state.focus && !String(state.focus).startsWith("#") && !String(state.focus).startsWith("~");
+    const agentFocused = !state.co && !!state.focus && !String(state.focus).startsWith("#") && !String(state.focus).startsWith("~");
     $("grid").classList.toggle("withaside", agentFocused);
     $("aside").hidden = !agentFocused;
     if (agentFocused) renderAgentTasks();
@@ -1223,25 +1236,62 @@ function renderCompanies() {
   const list = state.companies ?? [];
   $("companiesCount").textContent = state.folded.companies && list.length ? String(list.length) : "";
   $("companies").innerHTML =
-    list.map((c) => `<div class="row${state.focus === COMPANY + c.slug ? " active" : ""}" data-company="${esc(c.slug)}"><span class="hash">▣</span><span class="nm">${esc(c.slug)}</span></div>`).join("") +
-    `<div class="row addrow${state.focus === NEWCO ? " active" : ""}" data-newco="1"><span class="hash">+</span><span class="nm">new company</span></div>`;
-  for (const r of $("companies").querySelectorAll("[data-company]")) r.addEventListener("click", () => focusTarget(COMPANY + r.dataset.company));
-  $("companies").querySelector("[data-newco]").addEventListener("click", () => {
-    state.newPrefill = undefined;
-    focusTarget(NEWCO);
-  });
+    list
+      .map(
+        (c) =>
+          `<div class="row${state.co?.slug === c.slug ? " active" : ""}" data-company="${esc(c.slug)}"><span class="hash">▣</span><span class="nm">${esc(c.slug)}</span>${c.onYou ? `<span class="count" style="background:none;color:var(--sidebar-txt);font-weight:400" title="beads blocked on you">${c.onYou} on you</span>` : ""}</div>`,
+      )
+      .join("") + `<div class="row addrow${state.co?.page === "new" ? " active" : ""}" data-newco="1"><span class="hash">+</span><span class="nm">new company</span></div>`;
+  for (const r of $("companies").querySelectorAll("[data-company]")) r.addEventListener("click", () => navigatePath(`/company/${r.dataset.company}`));
+  $("companies").querySelector("[data-newco]").addEventListener("click", () => navigatePath("/new"));
 }
 
-/** Path navigation from inside the company pages (`/new`, `/company/x`, `/`). */
+/** Path navigation from inside the company pages (`/new`, `/company/x[/agent[/dialog|/trace]]`, `/`). */
 function navigatePath(path) {
   const u = new URL(path, location.origin);
   const p = parsePath(u.pathname);
-  if (p?.page === "new") {
-    state.newPrefill = u.searchParams.get("name") ?? undefined;
-    return focusTarget(NEWCO);
+  if (!p) return focusTarget(null);
+  goCompany(p.page === "new" ? { page: "new", prefill: u.searchParams.get("name") ?? undefined } : p);
+}
+
+/** Move to a company location: pick whose chat/trace the shell shows, then focus it with `co` set. */
+function goCompany(co) {
+  let focus = CO;
+  if (co.page === "company" && (co.level === "dialog" || co.level === "trace")) focus = co.agent;
+  if (co.page === "company" && co.level === "home") {
+    const d = company.data();
+    if (d && d.company.slug === co.slug && d.company.lead) focus = d.company.lead;
   }
-  if (p?.page === "company") return focusTarget(COMPANY + p.slug);
-  focusTarget(null);
+  state.mode = co.page === "company" && co.level === "trace" ? "trace" : "chat";
+  $("main").classList.toggle("tracing", state.mode === "trace");
+  focusTarget(focus, co);
+}
+
+/** The company home learned its lead: the shell's chat becomes the lead's conversation. */
+function onCompanyLoaded(d) {
+  if (state.co?.page !== "company" || state.co.slug !== d.company.slug || state.co.level !== "home") return;
+  const lead = d.company.lead;
+  if (!lead || state.focus === lead) return;
+  switchDraft(state.focus, lead);
+  markUnreadBoundary(lead);
+  state.focus = lead;
+  render();
+}
+
+/** An agent's Dialog (src/dialog.ts): its DMs both ways (agent↔agent too) + its #slug posts. */
+async function loadDialog() {
+  const co = state.co;
+  if (co?.level !== "dialog" || state.dialogInflight) return;
+  state.dialogInflight = true;
+  try {
+    const d = await api(`/api/dialog/${encodeURIComponent(co.agent)}?limit=300&channel=${encodeURIComponent(co.slug)}`);
+    state.dialog = { agent: co.agent, messages: d.messages ?? [], error: d.error, at: Date.now() };
+  } catch (e) {
+    state.dialog = { agent: co.agent, messages: [], error: String(e?.message ?? e), at: Date.now() };
+  } finally {
+    state.dialogInflight = false;
+  }
+  render();
 }
 
 /**
@@ -1348,16 +1398,23 @@ const company = initCompany({
   api,
   el: $,
   rows: () => state.rows,
-  avatarColor,
   md,
   build: CLIENT_BUILD,
   navigate: (path) => navigatePath(path),
   onSubState: () => syncUrl(),
   onOpenChannel: (slug) => focusTarget("#" + slug),
   openNav: () => openNav(),
-  onFocusAgent: (name) => {
+  onLoaded: (d) => onCompanyLoaded(d),
+  // Below 1100px the home page shows a row instead of the side chat; it opens the real agent chat
+  // full-size, and Back returns (a pushState, because the path changes).
+  openLeadChat: (lead) => {
+    if (!lead) return;
     state.mode = "chat";
-    focusTarget(name);
+    focusTarget(lead);
+  },
+  lastMessage: (name) => {
+    const m = [...state.messages].reverse().find((x) => x.from === name || (x.dir === "out" && x.to === name));
+    return m ? `${m.dir === "out" ? "you: " : ""}${m.text.replace(/\s+/g, " ").slice(0, 140)}` : undefined;
   },
 });
 const village = initVillage({ onFocusAgent: (name) => { state.mode = "chat"; focusTarget(name); } }); // a village click opens the CHAT, not whatever mode was last active (a codex worker has no trace)
@@ -1369,12 +1426,13 @@ const palette = initPalette({
     { target: TASKS, label: "Tasks", kind: "view" },
     { target: BOARD, label: "Board", kind: "view" },
     { target: VILLAGE, label: "Village", kind: "view" },
-    { target: NEWCO, label: "New company", kind: "view" },
-    ...(state.companies ?? []).map((c) => ({ target: COMPANY + c.slug, label: "▣ " + c.slug, kind: "view" })),
+    { target: "/new", label: "New company", kind: "view" },
+    ...(state.companies ?? []).map((c) => ({ target: `/company/${c.slug}`, label: "▣ " + c.slug, kind: "view" })),
     ...state.channels.map((ch) => ({ target: "#" + ch, label: "#" + ch, kind: "channel" })),
     ...state.rows.map((r) => ({ target: r.name, label: r.name, kind: "agent", live: r.live, busy: r.busy, status: r.mesh, hint: shortPath(r.folder || "") })),
   ],
   onPick: (target, kind) => {
+    if (typeof target === "string" && target.startsWith("/")) return navigatePath(target); // a company page
     if (kind === "agent") state.mode = "chat"; // an agent pick opens the chat, like a village click
     focusTarget(target);
   },
@@ -1520,7 +1578,8 @@ function toggleArchive(name) {
 }
 
 /** Point the view at an agent, a `#channel`, or null for Activity. */
-function focusTarget(target) {
+function focusTarget(target, co) {
+  state.co = co; // a company location rides along; every other navigation clears it
   // Command mode is per conversation: it names a FOLDER, and switching changes which one. Carrying it
   // across would leave a `$` pointed at somewhere you did not choose.
   if (target !== state.focus) state.bang = false;
@@ -1591,9 +1650,9 @@ function focusAgent(name) {
  * Back to leave the page.
  */
 function syncUrl() {
-  if (isCompanyFocus(state.focus)) {
-    const path = state.focus === NEWCO ? "/new" : `/company/${encodeURIComponent(state.focus.slice(COMPANY.length))}`;
-    const q = state.focus === NEWCO ? new URLSearchParams(state.newPrefill ? { name: state.newPrefill } : {}) : company.query();
+  if (state.co) {
+    const path = state.co.page === "new" ? "/new" : companyPath(state.co);
+    const q = state.co.page === "new" ? new URLSearchParams(state.co.prefill ? { name: state.co.prefill } : {}) : company.query();
     const url = path + (q.toString() ? `?${q}` : "");
     // A page change is a history entry (Back works); a sub-state change (tab, drawer) replaces it.
     if (location.pathname !== path) history.pushState(null, "", url);
@@ -2020,7 +2079,7 @@ function stepConversation(delta) {
 document.addEventListener(
   "keydown",
   (e) => {
-    if (isCompanyFocus(state.focus) && document.getElementById("palette")?.hidden !== false &&company.onKey(e)) {
+    if (state.co && document.getElementById("palette")?.hidden !== false && company.onKey(e)) {
       e.preventDefault();
       e.stopImmediatePropagation();
     }
@@ -2069,14 +2128,17 @@ applyTheme((() => {
 function readUrl() {
   const q = new URLSearchParams(location.search);
   const p = parsePath(location.pathname);
+  state.co = undefined;
   if (p?.page === "new") {
-    state.focus = NEWCO;
-    state.newPrefill = q.get("name") ?? undefined;
+    state.co = { page: "new", prefill: q.get("name") ?? undefined };
+    state.focus = CO;
     return;
   }
   if (p?.page === "company") {
-    state.focus = COMPANY + p.slug;
-    state.companySub = { layout: q.get("layout") ?? undefined, issue: q.get("issue") ?? undefined, fromUrl: true };
+    state.co = p;
+    state.focus = p.level === "dialog" || p.level === "trace" ? p.agent : CO;
+    state.mode = p.level === "trace" ? "trace" : "chat";
+    state.companySub = { bead: q.get("bead") ?? undefined, view: q.get("view") ?? undefined, fromUrl: true };
     return;
   }
   if (q.get("at") === "tasks") state.focus = TASKS;
@@ -2092,6 +2154,12 @@ window.addEventListener("popstate", () => {
   state.focus = null;
   readUrl();
   const f = state.focus;
+  const co = state.co;
+  $("main").classList.toggle("tracing", state.mode === "trace");
+  if (co) {
+    state.focus = before;
+    return goCompany(co);
+  }
   if (f !== before) {
     state.focus = before;
     focusTarget(f);

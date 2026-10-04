@@ -85,6 +85,56 @@ export function groupByStatus(issues, onYouIds = new Set()) {
   return cols;
 }
 
+/** A milestone = an epic whose parent is the company epic (the `goal` label is optional — agents make
+ *  them with plain `bd create -t epic --parent`). Each carries done/total over its WHOLE subtree, from
+ *  the company list (which includes closed beads, so the count isn't cut to a week), and its direct +
+ *  deeper beads. Beads directly under the epic that aren't milestones form a final "No milestone" row
+ *  (`id: undefined`), only when there are any. Pure. */
+export function milestones(issues, epic) {
+  const kids = new Map();
+  for (const i of issues) if (i.parent) (kids.get(i.parent) ?? kids.set(i.parent, []).get(i.parent)).push(i);
+  const subtree = (id) => {
+    const out = [];
+    const walk = (p, depth) => {
+      for (const k of kids.get(p) ?? []) {
+        out.push(k);
+        if (depth < 12) walk(k.id, depth + 1);
+      }
+    };
+    walk(id, 0);
+    return out;
+  };
+  const isMilestone = (i) => i.parent === epic && i.type === "epic";
+  const rows = issues
+    .filter(isMilestone)
+    .map((m) => {
+      const beads = subtree(m.id);
+      return { id: m.id, title: m.title, assignee: m.assignee, status: m.status, beads: beads.sort(beadOrder), done: beads.filter((b) => b.status === "closed").length, total: beads.length };
+    })
+    .sort((a, b) => (a.status === "closed") - (b.status === "closed") || a.title.localeCompare(b.title));
+  const loose = issues.filter((i) => i.parent === epic && !isMilestone(i));
+  if (loose.length) {
+    const beads = loose.flatMap((l) => [l, ...subtree(l.id)]);
+    rows.push({ id: undefined, title: "No milestone", beads: beads.sort(beadOrder), done: beads.filter((b) => b.status === "closed").length, total: beads.length });
+  }
+  return rows;
+}
+
+/** The beads the Work views list: everything but the milestones themselves (they have their own block). */
+export function workBeads(issues, epic) {
+  return issues.filter((i) => !(i.parent === epic && i.type === "epic"));
+}
+
+/** The milestone a bead sits under (its nearest ancestor that is a milestone), or undefined. */
+export function milestoneOf(bead, byId, epic) {
+  let cur = bead.parent ? byId.get(bead.parent) : undefined;
+  for (let i = 0; cur && i < 12; i++) {
+    if (cur.parent === epic && cur.type === "epic") return cur;
+    cur = cur.parent ? byId.get(cur.parent) : undefined;
+  }
+  return undefined;
+}
+
 /** A stored view name → itself, or "agent" (the default) when nothing/something stale is stored. A
  *  remembered UI preference, not data — a stale value falls back rather than failing the page. */
 export function parseView(v) {
@@ -118,11 +168,20 @@ export function parseMention(text) {
 /** The parsed path: `/new` → {page:"new"}, `/company/<slug>` → {page:"company", slug}, else undefined. */
 export function parsePath(pathname) {
   if (pathname === "/new" || pathname === "/new/") return { page: "new" };
-  const m = /^\/company\/([^/]+)\/?$/.exec(pathname);
+  const m = /^\/company\/([^/]+)(?:\/([^/]+)(?:\/(dialog|trace))?)?\/?$/.exec(pathname);
   if (!m) return undefined;
   try {
-    return { page: "company", slug: decodeURIComponent(m[1]) };
+    const slug = decodeURIComponent(m[1]);
+    if (!m[2]) return { page: "company", slug, level: "home" };
+    return { page: "company", slug, agent: decodeURIComponent(m[2]), level: m[3] ?? "tasks" };
   } catch {
     return undefined;
   }
+}
+
+/** The inverse of parsePath for a company location. */
+export function companyPath(loc) {
+  const base = `/company/${encodeURIComponent(loc.slug)}`;
+  if (!loc.agent || loc.level === "home") return base;
+  return `${base}/${encodeURIComponent(loc.agent)}${loc.level === "dialog" || loc.level === "trace" ? `/${loc.level}` : ""}`;
 }

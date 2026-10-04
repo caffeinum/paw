@@ -23,4 +23,11 @@ export function leadOf(form: { members?: string[]; lead?: string }): string | un
 export function parseView(v: unknown): "agent" | "status";
 export function newCompanyProblems(form: { name?: string; slug?: string; members?: string[]; lead?: string }, takenSlugs: Set<string>): string[];
 export function parseMention(text: string): { to: string; text: string } | undefined;
-export function parsePath(pathname: string): { page: "new" } | { page: "company"; slug: string } | undefined;
+export interface Milestone<T = CoBead> { id: string | undefined; title: string; assignee?: string; status?: string; beads: T[]; done: number; total: number }
+export function milestones<T extends CoBead & { parent?: string; type?: string }>(issues: T[], epic: string): Milestone<T>[];
+export function milestoneOf<T extends CoBead & { parent?: string; type?: string }>(bead: T, byId: Map<string, T>, epic: string): T | undefined;
+export function workBeads<T extends { parent?: string; type?: string }>(issues: T[], epic: string): T[];
+export type CompanyLevel = "home" | "tasks" | "dialog" | "trace";
+export interface CompanyLoc { page: "company"; slug: string; agent?: string; level: CompanyLevel }
+export function parsePath(pathname: string): { page: "new" } | CompanyLoc | undefined;
+export function companyPath(loc: { slug: string; agent?: string; level: CompanyLevel }): string;

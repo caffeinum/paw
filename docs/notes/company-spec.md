@@ -46,7 +46,8 @@ banner.
 
 ### 0.3 Level 0 — company home `/company/<slug>`
 Operator: "the CEO agent talks to me and I give it tasks in random order; I can see progress on all
-milestones." Three blocks:
+milestones." Blocks below are by function; on-screen ORDER and placement are the designer's S2
+(header → team → You → lead chat [right column ≥1100px, a link row below] → milestones → Work):
 
 - **(a) Chat with the lead** — the EXISTING paw web DM conversation + composer for the lead agent
   (same message list, pending/retry, drafts, `!cmd`, images, `/task` — whatever the agent chat view
@@ -62,13 +63,20 @@ milestones." Three blocks:
   No milestone UI for creating them in MVP: the CEO creates milestones (the §6 brief says how); a
   plain "+ milestone" input is allowed if trivial (`bd create -t epic --parent <epic> -l goal`).
 - **(c) You** — the "You / waiting on you" items (§0.8), with Close/comment via the bead panel.
+- **(d) Work — By agent | By status toggle** (operator wants both; toggle persisted in localStorage):
+  the whole company's beads. **By agent** (Simple 2): one group per member — You first, then the
+  lead, then the rest, then Unassigned — rows title + status + milestone chip, done collapsed.
+  **By status** (Simple 3): groups In progress / Blocked (incl. "on you") / Open / Done (collapsed,
+  7 days), each row tagged with its assignee. Clicking a row opens the bead panel; clicking a group's
+  agent name goes to that agent's level 1.
 - **Team strip** — each member: name, live pip, ★ for the lead, `N open · M in progress`; click →
   level 1 for that agent.
 
 ### 0.4 Level 1 — TASKS `/company/<slug>/<agent>`
 "I can look at any agent's current tasks and comment on them. Its state, not actions. All work
-happens via beads/tickets." = the agent's company beads (assignee == agent), grouped by status
-(in progress → blocked/waiting → open → done collapsed), each row title + status + milestone chip.
+happens via beads/tickets." = the agent's company beads (assignee == agent), in the **By status**
+grouping (in progress → blocked/waiting → open → done collapsed — the same component as level 0's
+By status, filtered to one agent; the By agent toggle is hidden here since there is one agent), each row title + status + milestone chip.
 Click → **bead panel**: title, status, description, comments, add comment (plain = `bd comment`;
 `@agent` = comment + DM, existing contract); on an operator bead also **Close** (optional reason).
 **"+ add"** creates a bead assigned to this agent under the company (`bd create <t> --parent <epic or
@@ -147,7 +155,7 @@ existing `/api/dm`, `/api/trace/<name>`, `/api/channel/<slug>`, `/api/tasks` ops
 ### 0.11 LATER (do not build now)
 Channel join state, nudge state on cards, roles, reports-to, org chart, changing the lead, member
 add/remove after creation, mission editing, activity feed, Untriaged + filing, ⚠ unlabelled fixing,
-lane grouping switch / By-status company board, drag-and-drop, reassign/reparent UI, keyboard
+the old GLOBAL Board fixes (`?at=board`), drag-and-drop, By-goal grouping, reassign/reparent UI, keyboard
 shortcuts, milestone due dates.
 
 ## 1. Why the Board doesn't work (observed, live `?at=board`, 2026-10-03, read-only)
@@ -472,15 +480,117 @@ with `bd init` (the live `~/.beads` must not be written by tests). A paw web on 
 
 ## Visual & interaction
 
-(company-designer owns everything below this heading: layouts desktop+phone, components, nav fit,
-keyboard, board fixes. PM owns everything above. Where this section and the flows above disagree on
-look, this section wins; on data/scope, the flows win.)
+(company-designer owns everything below this heading; PM owns everything above. On look this
+section wins; on data/scope the flows, and §0 first, win.)
 
-Mock: [company-mock.html](company-mock.html) — static, fake data, open it in a browser. Top-left
-switcher: `/company/vibeos` · `/new` · empty company. Keys work in the mock. Resize below 1100px and
-860px to see tablet and phone.
+**Status 2026-10-03:** the operator picked the **Simple** look and wants **Simple 2 + Simple 3 as two
+views of the same beads, with a toggle** (By agent default, By status second). Columns (Simple 1)
+is LATER. Everything in S1–S9 is MVP. The earlier full design (V1–V11) is kept at the bottom under
+LATER for reference only — do not build it.
 
-### V1. Principles
+Mocks (static, fake data, open in a browser; also on tracepaper, canvas `github.com/caffeinum/paw`):
+- [company-simple-views.html](company-simple-views.html) — **the one to build from**: By agent /
+  By status toggle, + add, bead panel, `/new` (open with `#new`, `#dark` forces dark).
+- [company-simple-1.html](company-simple-1.html) / [-2](company-simple-2.html) /
+  [-3](company-simple-3.html) — the three single-idea versions it came from.
+- [company-ia.html](company-ia.html) — the §0 IA in this style: home (lead chat, You / waiting on you,
+  milestones, Work toggle), agent Tasks / Dialog / Trace, Dialog unreadable, `/new` with the lead radio
+  (`#tasks`, `#dialog`, `#dialogerr`, `#trace`, `#new`). By status also offers "You" in the agent select.
+
+### S1. Look
+- **Quiet.** Content-palette only: background `--content`, text `--txt`, secondary `--txt-dim`,
+  hairlines `--line`, and ONE accent, `--link`, used only for links, "+ Add" and the "on you"
+  word (the active toggle's underline is `--txt`, not the accent). Errors use `--red`: failing loud
+  beats the one-accent rule. No aubergine inside the
+  page; paw's sidebar and top bar stay as they are (the shell).
+- Font: paw's `--font`. Body 15px/1.5. Company name 28px/600. Group headings 13px/600 with a
+  1px `--line` rule under them. Meta text 13px `--txt-dim`.
+- Status is a glyph in `--txt-dim`: ○ open · ◐ in progress · ⊘ blocked · ✓ done (struck through,
+  dim). No per-status colours. "on you" is the only coloured status word (accent).
+- Lots of white space: content column max-width 680px, centred in the main pane, 56px top
+  padding, 36px between groups. Rows 7px vertical padding, no borders between rows, no cards.
+- New CSS scoped under `#company` in index.html; `#company[hidden]{display:none}` (taskspad lesson).
+
+### S2. Home `/company/<slug>` (§0.3), top to bottom
+1. **Header**: name (h1), mission (one dim line), "New company" link right-aligned (accent, 13px).
+2. **Team** line: `vibeos-ceo ★ · vibeos-pm · …`, each name followed by its live dot (7px; live =
+   `--txt` at .8, asleep = `--txt-dim` at .35) and a dim `2 open` count; click a name → that agent's
+   Tasks.
+3. **You · N**: rendered only when N > 0. Heading count in accent. Rows = operator beads, then a
+   "waiting on you" sub-heading (13px dim) with the waiting beads, each followed by
+   `← <blocker title>` in dim.
+4. **Chat with the lead**: at ≥1100px a right-hand column (400px, full height of the main pane,
+   1px `--line` on its left) holding paw web's existing conversation + composer for the lead; header
+   `vibeos-ceo ★` + live dot. Below 1100px it becomes one row — `Chat with vibeos-ceo →` plus the
+   last message, two lines, dim — that opens the existing agent chat view full-size; back returns.
+5. **Milestones**: one row each: title · assignee (dim) · a 2px bar (done part `--txt`, rest
+   `--line`, 120px; 64px on phone) · `7/12` tabular-nums. Click toggles the milestone open to its
+   beads (same row component as Work). "No milestone" last. No percentages.
+6. **Work** with the view toggle (S3).
+
+### S3. The view toggle: By agent | By status
+- Sits on the Work heading line, right-aligned (mock puts it under the mission because the mock has
+  no other blocks). Two plain words, 14px, 20px apart: inactive `--txt-dim`; active `--txt` with a
+  1px `--txt` underline 3px below; hover → `--txt`. `<nav aria-label="View">` with two `<button
+  aria-pressed>`; Tab + Enter/Space work. No icons, no pill, no segmented box.
+- Default **By agent**. Persist in localStorage `paw.company.<slug>.view` = `agent|status` (try/catch;
+  default when storage throws); `?view=status` overrides for deep links. Switching re-renders in
+  place: no animation, scroll position kept at the Work heading.
+- **By agent** (Simple 2): one group per member — the lead (★) first, then the rest, then Unassigned.
+  The operator's beads are not repeated here: the You block above is their group. Group heading = name + live dot. Rows: glyph · title · milestone (dim, right, 13px,
+  ellipsis at 140px). Done beads fold into a dim `✓ 3 done` line per group, collapsed. `+ Add`
+  (accent, 14px) under each group's rows → becomes an inline input with a hairline under it
+  ("New bead for vibeos-pm"); Enter creates + nudges, Esc or blur-when-empty cancels.
+- **By status** (Simple 3): groups In progress / Blocked (includes "on you") / To do / Done (folded,
+  last 7 days), heading + dim count. Rows: glyph · title · assignee (dim, right). The single add
+  control here is one input at the top of Work: `Add a bead…` + an agent select (hairline under
+  both, no box). Empty groups aren't rendered.
+- Agent Tasks (level 1) reuses By status filtered to that agent, toggle hidden.
+
+### S4. Bead panel (`?bead=<id>`)
+Right panel, `min(440px,100%)`, full height, `--content` with a 1px `--line` left edge, no shadow
+beyond that. Close = `×` top-right + Esc. Content: title 20px/600; meta line 13px dim
+`◐ In progress · vibeos-vercel · beads-k2q`; description (pre-wrap; "No description." dim); comments
+(13px dim author line, then text; 16px apart; "No comments yet." dim); textarea (1px `--line`
+border, 6px radius, accent border on focus); `Comment` button (filled `--txt` on `--content`,
+6px radius). On an operator bead a secondary `Close…` text button next to Comment (asks for an
+optional reason inline). The selected row's title turns accent while the panel is open. Phone:
+full-screen, 20px gutters.
+
+### S5. Agent views (levels 1–3)
+Breadcrumb `vibeOS › vibeos-pm` (13px dim, company name is a link). Under it the three tabs
+**Tasks · Dialog · Trace** in exactly the S3 toggle style, so the page has one tab idiom. Dialog and
+Trace reuse paw web's renderers unchanged inside a 760px column; `from → to` on Dialog rows is
+13px dim.
+
+### S6. `/new`
+As the mock: one narrow column (420px) — "New company" (28px/600), **Name** (bottom-hairline
+input, 18px), **Mission (optional)**, **Agents** (checkbox list, native checkboxes with
+`accent-color: var(--link)`, live dot after each name; once ≥1 is picked a small `lead` radio
+appears at the right of each picked row, first picked = lead), `Create` (filled, disabled until a
+name and ≥1 agent), one dim line `Creates #acme-labs with these agents · Cancel`. After Create the
+step list appears under it, one line per step: `✓ company bead filed`, `✓ channel #acme-labs
+created`, `✕ invited 1/2 — mail: <server error verbatim>  retry` (the ✕ line in `--red`).
+
+### S7. Empty, loading, error
+- A group with no beads: just its `+ Add`. A company with no beads: one dim line "No beads yet." +
+  the add control.
+- Loading: render header + team from `/api/companies` immediately; groups fill in. No spinners; a
+  write in flight shows `saving…` (dim, 12px) at the end of that one row.
+- Errors in place, verbatim, `--red`, one line, with `retry` where it makes sense; never a toast.
+
+### S8. Phone (≤860px) and dark
+20px gutters, same order as desktop, lead chat collapses per S2.4, toggle stays on the Work line,
+bead panel full-screen, no horizontal scroll at 390px (verified in the mocks). Dark mode comes free
+from paw's tokens; native controls get `color-scheme: light dark`.
+
+### S9. LATER
+Columns view (Simple 1) as a third toggle option; everything in the archived V1–V11 below
+(needs-you box, goal tree filters, activity rail, org chart, cards, drag, keyboard map, Board fixes).
+The Random 1–6 explorations on tracepaper are exploration only.
+
+### LATER — the earlier full design (V1–V11), archived, do not build
+#### V1. Principles
 - **Reuse paw web, don't invent a design system.** Every colour is an existing token (`--content`,
   `--content-alt`, `--line`, `--txt`, `--txt-dim`, `--link`, `--selected`, `--green`, `--amber`,
   `--red`). Status colours are the ones already in tasks/board CSS (`#4a9eda` progress, `#d05548`
@@ -497,7 +607,7 @@ switcher: `/company/vibeos` · `/new` · empty company. Keys work in the mock. R
 - **Density:** 13–14px body in cards, 11–12px meta, 15px for page body text. One line of meta per
   card, max 2 lines of title (`-webkit-line-clamp:2`). Nothing in a card grows with data.
 
-### V2. Navigation
+#### V2. Navigation
 - Sidebar: new **Companies** section between the Tasks/Board/Village rows and Channels, same `.sec`
   fold header with count. Row = `▣` glyph (in the `.hash` slot) + company slug + open-issue count
   (dim, like the Tasks count — NOT the red unread badge; open work isn't unread). Last row `+ new
@@ -507,7 +617,7 @@ switcher: `/company/vibeos` · `/new` · empty company. Keys work in the mock. R
 - `#slug ↗` button in the header right opens the channel in the normal chat view (same app, no new tab).
 - ⌘K palette: companies listed as `▣ vibeos` targets, plus "New company".
 
-### V3. `/company/<slug>` layout
+#### V3. `/company/<slug>` layout
 Header (`.chead`): `h1` = display name · `.topic` = `#slug · N agents · N open · N goals` · right:
 `.modes` tabs **Work · Org · Activity** (keys 1/2/3, URL `?v=`) + `#slug ↗`.
 
@@ -558,7 +668,7 @@ input + reports-to select (member-set). MVP: no drag.
 **Activity** tab — the same feed as the rail, centered at max-width 760, plus agent filter chip and
 a composer at the bottom that posts to `#slug` (reuse the chat composer component, not a new one).
 
-### V4. Phone (≤860px) and tablet (≤1100px)
+#### V4. Phone (≤860px) and tablet (≤1100px)
 - ≤1100: the Activity rail is dropped (Work = one column); Activity tab is its home. Same rule as
   `.aside`.
 - ≤860: sidebar becomes the existing drawer (☰). Header wraps like chat (`.right` stays on the title
@@ -570,7 +680,7 @@ a composer at the bottom that posts to `#slug` (reuse the chat composer componen
   Drawer = full-screen sheet with ✕ top-right. Drag is desktop-only; on touch, reassign/status/
   reparent are in the drawer (pickers) — every drag action has a non-drag path.
 
-### V5. Issue card
+#### V5. Issue card
 Grid `16px 1fr`. Col 1: status glyph (click = cycle ○→◐→✓, blocked→○; same optimistic + revert-with-
 bd's-words contract as the pad; refusal text shows under the card in `--red` 11px for 6s and stays
 in `title`). Col 2: title 13px/600, 2-line clamp. Meta line 11px dim, single line, in this order and
@@ -582,7 +692,7 @@ avatar (the lane IS the assignee; in status/goal grouping, a 16px `.av` + name r
 Hover: border darkens; selected (keyboard): 2px `--selected` outline. Dragging: .5 opacity, lane
 under the pointer gets a dashed `--selected` border.
 
-### V6. Issue drawer
+#### V6. Issue drawer
 Right-side panel over the page (not a centered modal — the Board's modal hid the context you were
 deciding in): width `min(520px,100%)`, full height, `--content`, left border + soft shadow; the
 lanes stay visible and keyboard-navigable behind it (j/k with the drawer open moves the selection
@@ -597,14 +707,14 @@ source tag — `💬 bead` grey or `# slug` link-blue — time, body via md.js).
 bottom: textarea (placeholder "comment on <id> — @agent pings them"), `☐ also post in #slug`,
 `⏎ send · ⇧⏎ newline`, green `Comment` button. Draft per issue id persists (localStorage).
 
-### V7. Activity feed
+#### V7. Activity feed
 Rows: 22px avatar · **who** · dim verb · link-blue mono id (opens drawer) · `· 12m`; optional quote
 line (2-line clamp, 2px left rule) for comments, channel messages and close reasons. Day dividers
 ("TODAY", "YESTERDAY", date) in 11px caps. Filter chips `all · issues · chat` (+ agent on the full
 tab). A "new since you last looked" red line (the chat `.newline` style) at the last-seen timestamp
 (localStorage). Newest first in the rail and the tab.
 
-### V8. `/new`
+#### V8. `/new`
 Single centered column, max-width 620, page padding 32/20. Title "New company" 22px/900 + one-line
 lede. Fields: **Name** (display) → derived **slug** row under it (`#` + small mono input, "derived
 from the name until you edit it"; once edited it stops following) → live help line: valid → "becomes
@@ -624,7 +734,7 @@ Footer: green **Create company** (disabled until name valid + not taken + ≥1 a
 the company page after 600ms, carrying any failure into the page banner (amber left edge, text +
 `retry channel setup`). The form draft persists until created.
 
-### V9. Empty, loading, error states
+#### V9. Empty, loading, error states
 - **No companies** (sidebar): Companies section shows only `+ new company`.
 - **Company with no goals**: Goals block = dashed box "No goals yet — a goal is what the crew is
   for" + `+ add the first goal`. Lanes still render.
@@ -638,7 +748,7 @@ the company page after 600ms, carrying any failure into the page banner (amber l
   <slug>" + `create it` → `/new?name=<slug>`; duplicate roots → red banner naming every id.
 - Visible `CLIENT_BUILD` stamp in the Work filter line hint (dim, right), like the pad.
 
-### V10. Keyboard
+#### V10. Keyboard
 Active only when focus is not in an input/textarea/select/contenteditable (Esc there = blur/revert).
 | key | does |
 |---|---|
@@ -655,7 +765,7 @@ Active only when focus is not in an input/textarea/select/contenteditable (Esc t
 | `⌘⏎` | on /new: create; in the drawer composer: send |
 Option-↑/↓ keeps its existing meaning (steps sidebar targets, Companies included).
 
-### V11. What this fixes from the Board (maps to §1)
+#### V11. What this fixes from the Board (maps to §1)
 1. No scope → the page IS a scope (company), plus goal filter chip.
 2. No "who" → lanes are people: full name, pip, role, channel state, and what they're on now; stale
    names get their own amber lane instead of hiding behind initials.

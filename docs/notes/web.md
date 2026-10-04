@@ -319,3 +319,31 @@ Moved verbatim from CLAUDE.md (2026-10-02 split). Index: [CLAUDE.md](../../CLAUD
   with a node child, `101` on the handshake, `status` frames arriving, socket staying open. Test:
   `check:spawn-env` (the node branch must NOT fork; the bun branch is unreachable from node and was
   verified live).
+
+## companies (/new, /company/<slug>) — as built 2026-10-03
+
+- Spec + look: [company-spec.md](company-spec.md) §0 (IA, scope) and S1–S9 (the "Simple" look,
+  [company-simple-views.html](company-simple-views.html)). Storage is ONLY bd + cotal: a company = one
+  epic labelled `company:<slug>` (inherited by every child) with the roster in `metadata.org` (does NOT
+  inherit), lead = assignee, mission = description; one channel `#slug` (registry card + /invite +
+  kickoff brief). Milestones = epics directly under the company epic. "On you" = open beads assigned to
+  the operator (`PAW_OPERATOR`, else the OS login) or waiting on one via a `blocks` dep — straight from
+  `bd list --json`'s `dependencies`, no extra call.
+- Server: `src/company.ts` (pure), `src/company-service.ts` (bd/mesh behind injected deps; ops
+  `issue-create` with ONE DM nudge, never to the operator, and `retry-channel`), `src/dialog.ts` (an
+  agent's DMs both ways incl. agent↔agent + its #slug posts — its OWN store; the human-scoped
+  `Conversation` admitter is untouched). Routes `GET/POST /api/companies`, `GET/POST
+  /api/company/<slug>`, `GET /api/dialog/<agent>?channel=`.
+- Client: inside the existing shell. `state.co` is a LOCATION; `state.focus` stays "whose chat/trace":
+  home focuses the lead, so the 400px lead chat at ≥1100px is paw's real `#msgs` + composer
+  (`.main.cohome`); Dialog renders `/api/dialog` through `renderMessages` (rows `→ to` / `#slug`, never
+  marks your inbox read); Trace is `renderTrace` unchanged. `#company` paints home/tasks//new and only
+  the bead panel over Dialog/Trace (`.co-overlay-only`, pointer-events none); `#cobar` is the
+  breadcrumb + Tasks·Dialog·Trace tabs. Paths `/company/<slug>[/<agent>[/dialog|/trace]]`, `?bead=`,
+  `?view=`; pushState so Back walks the levels. The asset URL is ABSOLUTE (`/app.js`) or /company/x 404s it.
+- Tests: `check:web` (model, dialog, routes over a fake service). `scripts/e2e-company.ts` = the full
+  loop on an isolated stack (own nats, PAW_HOME, space, cotal root, `PAW_BEADS_DIR` temp db, two haiku
+  agents); `PAW_E2E_HOLD=1` keeps it up for `scripts/e2e-company-ui.py` (system Chrome via
+  `channel="chrome"` — playwright 1.29 has no bundled browser here), which asserts computed style.
+- Gotcha hit: `#company button { color:inherit }` beat `.co-btn`'s colour and the Comment button
+  rendered black-on-black; the browser check now asserts the label colour differs from its fill.

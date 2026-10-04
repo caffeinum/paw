@@ -1,22 +1,46 @@
 /**
- * The company pages (docs/notes/company-spec.md §0 MVP, look = the "Simple" mocks): `/new` and
- * `/company/<slug>`. A FOCUS TARGET like the board — app.js's render() opens/closes it from state;
- * this module owns everything inside `#company`.
+ * The company pages (docs/notes/company-spec.md §0, look S1–S9 / company-simple-views.html), inside
+ * paw web's own shell so the lead chat, Dialog and Trace are the REAL renderers (app.js owns those):
  *
- * Data: GET /api/company/<slug> (the epic + members + their beads), POST op `issue-create` (+ ONE DM
- * nudge, server-side) and `retry-channel`; bead details via the existing /api/tasks ops
- * (`comments`, `comment`). Views (VIEWS in company-model.js) render the SAME groups: "By agent"
- * (default) and "By status"; the choice is remembered per company in localStorage.
+ *   /new                              create a company
+ *   /company/<slug>                   home: team, You, chat with the lead (app.js's chat in a right
+ *                                     column ≥1100px), milestones, Work (By agent | By status)
+ *   /company/<slug>/<agent>           Tasks — that agent's beads, By status
+ *   /company/<slug>/<agent>/dialog    Dialog — app.js renders /api/dialog in #msgs; this draws the bar
+ *   /company/<slug>/<agent>/trace     Trace — app.js's renderTrace; this draws the bar
+ *   …?bead=<id>                       the bead panel over any of them
  *
- * Rules carried over from the pad/board: never rebuild under the caret (a poll skips the render while
- * a field inside #company has focus); a refused write shows the server's own words; nothing is
- * fabricated — an empty state says what is empty.
+ * This module owns `#company` (home/tasks/new) and `#cobar` (the breadcrumb + Tasks·Dialog·Trace tabs
+ * over Dialog/Trace). Data: GET /api/company/<slug>, POST op `issue-create` (+ ONE DM nudge,
+ * server-side, never to the operator) / `retry-channel`; beads via /api/tasks `comments`/`comment`/
+ * `close`. Never rebuilds under the caret; refusals show the server's own words; nothing is invented.
  */
-import { GLYPH, STATUS_LABEL, VIEWS, SLUG_RE, groupByAgent, groupByStatus, leadOf, newCompanyProblems, parseMention, parseView, slugify } from "./company-model.js";
+import {
+  GLYPH,
+  STATUS_LABEL,
+  VIEWS,
+  SLUG_RE,
+  groupByAgent,
+  groupByStatus,
+  leadOf,
+  milestoneOf,
+  milestones,
+  newCompanyProblems,
+  parseMention,
+  parseView,
+  slugify,
+  workBeads,
+  companyPath,
+} from "./company-model.js";
 
 const esc = (s) => String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 const POLL_MS = 15_000;
 const VIEW_LABEL = { agent: "By agent", status: "By status" };
+const TABS = [
+  ["tasks", "Tasks"],
+  ["dialog", "Dialog"],
+  ["trace", "Trace"],
+];
 
 function rel(t, now = Date.now()) {
   if (!Number.isFinite(t)) return "";
@@ -55,16 +79,21 @@ const store = {
 
 export function initCompany(deps) {
   const root = deps.el("company");
+  const bar = deps.el("cobar");
   const s = {
     page: undefined, // "company" | "new"
     slug: undefined,
+    agent: undefined,
+    level: "home",
     data: undefined,
     error: undefined,
     view: "agent",
-    issue: undefined,
+    bead: undefined,
     thread: undefined, // {id, comments?, error?}
-    adding: undefined, // member name whose "+ Add" input is open
-    note: new Map(), // bead id / "add:<agent>" / "err:<id>" → {ok, text}
+    adding: undefined, // whose "+ Add" input is open
+    open: new Set(), // expanded milestone ids (this visit)
+    note: new Map(), // bead id / "add:<who>" / "err:<id>" → {ok, text}
+    closing: false,
     banner: undefined,
     companies: [],
     form: undefined,
@@ -79,6 +108,7 @@ export function initCompany(deps) {
     const a = document.activeElement;
     return !!a && root.contains(a) && (a.tagName === "INPUT" || a.tagName === "TEXTAREA" || a.tagName === "SELECT");
   };
+  const isMember = (d, name) => name === d.operator || d.members.some((m) => m.name === name);
 
   async function load(fresh = false) {
     if (s.page !== "company") return;
@@ -88,6 +118,7 @@ export function initCompany(deps) {
       if (mine !== seq) return; // a newer read, or a navigation, superseded this one
       s.data = d;
       s.error = undefined;
+      deps.onLoaded?.(d);
     } catch (e) {
       if (mine !== seq) return;
       s.error = String(e?.message ?? e);
@@ -105,35 +136,40 @@ export function initCompany(deps) {
     return s.companies;
   }
 
-  /* ── open / close ───────────────────────────────────────────────────────────────────────── */
+  /* ── navigation ─────────────────────────────────────────────────────────────────────────── */
 
-  function showCompany(slug, sub = {}) {
-    root.hidden = false;
-    const same = s.page === "company" && s.slug === slug;
-    if (same && !sub.fromUrl) return;
-    if (!same) {
+  /** Show a location: {page:"new", prefill} or {page:"company", slug, agent?, level} (+ sub-state
+   *  from the URL: bead, view). Idempotent for the same location — render() calls it every tick. */
+  function show(loc, sub = {}) {
+    if (loc.page === "new") return showNew(loc.prefill);
+    const sameCompany = s.page === "company" && s.slug === loc.slug;
+    const sameLoc = sameCompany && s.agent === loc.agent && s.level === loc.level;
+    if (sameLoc && !sub.fromUrl) return place();
+    if (!sameCompany) {
       s.page = "company";
-      s.slug = slug;
+      s.slug = loc.slug;
       s.data = undefined;
       s.error = undefined;
-      s.adding = undefined;
-      s.view = parseView(store.get(k("view"), undefined));
+      s.open = new Set();
       s.banner = store.get(k("banner"), undefined);
       clearInterval(pollTimer);
       pollTimer = setInterval(() => void load(), POLL_MS);
       void load(true);
     }
-    if (sub.issue !== s.issue) {
-      s.issue = sub.issue;
-      if (s.issue) void loadThread(s.issue);
+    s.agent = loc.agent;
+    s.level = loc.level;
+    s.adding = undefined;
+    s.view = sub.view ? parseView(sub.view) : parseView(store.get(k("view"), undefined));
+    if (sub.fromUrl && sub.bead !== s.bead) {
+      s.bead = sub.bead;
+      if (s.bead) void loadThread(s.bead);
     }
     paint(true);
   }
 
   function showNew(prefill) {
     clearInterval(pollTimer);
-    root.hidden = false;
-    if (s.page === "new") return;
+    if (s.page === "new") return place();
     s.page = "new";
     s.slug = undefined;
     s.steps = undefined;
@@ -153,25 +189,40 @@ export function initCompany(deps) {
     clearInterval(pollTimer);
     s.page = undefined;
     s.slug = undefined;
-    s.issue = undefined;
+    s.bead = undefined;
     root.hidden = true;
     root.innerHTML = "";
+    bar.hidden = true;
+    bar.innerHTML = "";
   }
 
-  /** The URL sub-state this page owns (`?issue=`); app.js writes the path. */
+  /** The URL sub-state this page owns; app.js writes the path. */
   function query() {
     const q = new URLSearchParams();
-    if (s.page === "company" && s.issue) q.set("issue", s.issue);
+    if (s.page === "company" && s.bead) q.set("bead", s.bead);
     return q;
   }
+  const go = (loc) => deps.navigate(companyPath({ slug: s.slug, ...loc }));
 
   /* ── painting ───────────────────────────────────────────────────────────────────────────── */
 
+  /** Which surface is visible: #company for new/home/tasks (and the not-a-member page), #cobar over
+   *  app.js's own Dialog/Trace. The bead panel rides #company, so it can open over Dialog/Trace too. */
+  function place() {
+    const overDialog = s.page === "company" && (s.level === "dialog" || s.level === "trace");
+    root.hidden = !s.page;
+    root.classList.toggle("co-overlay-only", overDialog); // only the panel paints over the real chat/trace
+    root.classList.toggle("co-home", s.page === "company" && s.level === "home");
+    bar.hidden = !overDialog;
+  }
+
   function paint(force = false) {
     if (!s.page) return;
+    place();
     if (!force && editing()) return; // never under the caret — the next poll catches up
     const keep = [...root.querySelectorAll("[data-scroll]")].map((el) => [el.dataset.scroll, el.scrollTop]);
     root.innerHTML = s.page === "new" ? newHtml() : companyHtml();
+    bar.innerHTML = s.page === "company" && (s.level === "dialog" || s.level === "trace") ? crumbsHtml() : "";
     for (const [key, top] of keep) {
       const el = root.querySelector(`[data-scroll="${key}"]`);
       if (el) el.scrollTop = top;
@@ -185,97 +236,158 @@ export function initCompany(deps) {
     return `<span class="co-dot${live ? " live" : ""}" title="${esc(!r ? "not in this space's roster" : live ? r.mesh : "asleep — a DM wakes it")}"></span>`;
   }
   const menu = `<button class="co-menu" data-act="menu" aria-label="Show sidebar">☰</button>`;
+  const errLine = (text, retry) => `<p class="co-bad">${esc(text)}${retry ? ` <button class="co-link" data-act="${retry}">retry</button>` : ""}</p>`;
+
+  function crumbsHtml() {
+    const name = s.data?.company.name ?? s.slug;
+    const tabs = TABS.map(([lv, label]) => `<button data-level="${lv}" aria-pressed="${s.level === lv}">${label}</button>`).join("");
+    return `<div class="co-crumbs">${menu}<a href="${esc(companyPath({ slug: s.slug, level: "home" }))}" data-nav="${esc(companyPath({ slug: s.slug, level: "home" }))}">${esc(name)}</a> › ${esc(s.agent === s.data?.operator ? `You (${s.agent})` : s.agent)}</div><nav class="co-views co-tabs" aria-label="Agent view">${tabs}</nav>`;
+  }
 
   function companyHtml() {
     const d = s.data;
     if (!d) {
       if (s.error && /^no company "/.test(s.error))
-        return `<div class="co-wrap" data-scroll="page">${menu}<h1>No company “${esc(s.slug)}”</h1><p class="co-dim"><a href="/new?name=${encodeURIComponent(s.slug)}" data-nav="/new?name=${esc(encodeURIComponent(s.slug))}">Create it</a></p></div>`;
-      return `<div class="co-wrap" data-scroll="page">${menu}<h1>${esc(s.slug)}</h1>${s.error ? `<p class="co-bad">${esc(s.error)} <button class="co-link" data-act="retry">retry</button></p>` : `<p class="co-dim">Loading…</p>`}</div>`;
+        return `<div class="co-wrap" data-scroll="page"><div class="co-col">${menu}<h1>No company “${esc(s.slug)}”</h1><p class="co-dim"><a href="/new?name=${encodeURIComponent(s.slug)}" data-nav="/new?name=${esc(encodeURIComponent(s.slug))}">Create it</a></p></div></div>`;
+      return `<div class="co-wrap" data-scroll="page"><div class="co-col">${menu}<h1>${esc(s.slug)}</h1>${s.error ? errLine(s.error, "retry") : ""}</div></div>`;
     }
-    const c = d.company;
-    const toggle = `<div class="co-views" role="group" aria-label="View">${VIEWS.map((v) => `<button data-view="${v}" aria-pressed="${s.view === v}">${VIEW_LABEL[v]}</button>`).join("")}</div>`;
-    const banners = [
-      s.error ? `<p class="co-bad">${esc(s.error)} <button class="co-link" data-act="retry">retry</button></p>` : "",
-      ...(d.errors ?? []).map((e) => `<p class="co-bad">${esc(e)}</p>`),
-      s.banner ? `<p class="co-warnline">${esc(s.banner)} <button class="co-link" data-act="retry-channel">Retry channel setup</button> · <button class="co-link" data-act="dismiss">Dismiss</button></p>` : "",
-    ].join("");
-    return `<div class="co-wrap" data-scroll="page">
-      <header class="co-header">${menu}<div class="co-title"><h1>${esc(c.name)}</h1>${c.mission ? `<p class="co-mission">${esc(c.mission)}</p>` : ""}</div>
-        <div class="co-hright"><button class="co-link co-chan" data-act="channel" title="open the channel in the chat view">#${esc(c.slug)}</button>${toggle}</div></header>
-      ${banners}
-      <main class="co-main" data-view="${s.view}">${s.view === "status" ? statusHtml(d) : agentHtml(d)}</main>
-      <p class="co-build">build ${esc(deps.build)}</p>
-    </div>
-    ${panelHtml(d)}`;
+    if (s.agent && !isMember(d, s.agent))
+      return `<div class="co-wrap" data-scroll="page"><div class="co-col">${menu}<h1>${esc(s.agent)} is not in ${esc(s.slug)}</h1><p><a href="${esc(companyPath({ slug: s.slug, level: "home" }))}" data-nav="${esc(companyPath({ slug: s.slug, level: "home" }))}">Back to ${esc(d.company.name)}</a></p></div></div>`;
+    if (s.level === "dialog" || s.level === "trace") return panelHtml(d); // app.js paints the body
+    return `${s.level === "tasks" ? tasksHtml(d) : homeHtml(d)}${panelHtml(d)}`;
   }
 
-  function beadRow(b, { tag = false, waitingOn } = {}) {
+  function banners(d) {
+    return [s.error ? errLine(s.error, "retry") : "", ...(d.errors ?? []).map((e) => errLine(e)), s.banner ? `<p class="co-bad">${esc(s.banner)} <button class="co-link" data-act="retry-channel">retry</button> · <button class="co-link" data-act="dismiss">dismiss</button></p>` : ""].join("");
+  }
+
+  function beadRow(b, d, { who = false, milestone = false, waitingOn } = {}) {
     const note = s.note.get(b.id);
-    const onYouTag = b.onYou || waitingOn ? `<span class="co-tag co-acc" title="${esc(waitingOn ? `waits on ${waitingOn.id} — ${waitingOn.title}` : "blocked on you")}">${waitingOn ? `waits on: ${esc(waitingOn.title)}` : "on you"}</span>` : "";
-    return `<div class="co-bead${b.status === "closed" ? " done" : ""}${s.issue === b.id ? " sel" : ""}" data-open="${esc(b.id)}">
+    const byId = new Map(d.issues.map((i) => [i.id, i]));
+    const ms = milestone ? milestoneOf(b, byId, d.company.epic) : undefined;
+    const onYou = b.onYou ? `<span class="co-acc co-tag">on you</span>` : "";
+    return `<div class="co-bead${b.status === "closed" ? " done" : ""}${s.bead === b.id ? " sel" : ""}" data-open="${esc(b.id)}">
       <span class="co-st" title="${esc(STATUS_LABEL[b.status] ?? b.status)}">${GLYPH[b.status] ?? "?"}</span>
-      <span class="co-t">${esc(b.title)}</span>
-      ${b.unlabelled ? `<span class="co-tag co-warn" title="under the company epic but missing the company:${esc(s.slug)} label">unlabelled</span>` : ""}
-      ${note ? `<span class="co-tag ${note.ok ? "" : "co-bad"}" title="${esc(note.text)}">${note.ok ? "nudged" : "nudge failed"}</span>` : ""}
-      ${onYouTag}${tag ? `<span class="co-tag">${b.assignee ? esc(b.assignee) : "unassigned"}</span>` : ""}</div>`;
+      <span class="co-t">${esc(b.title)}${waitingOn ? ` <span class="co-dim">← ${esc(waitingOn.title)}</span>` : ""}</span>
+      ${onYou}
+      ${b.unlabelled ? `<span class="co-tag co-bad" title="under the company epic but missing the company:${esc(s.slug)} label">unlabelled</span>` : ""}
+      ${note ? `<span class="co-tag${note.ok ? "" : " co-bad"}" title="${esc(note.text)}">${note.ok ? "nudged" : "nudge failed"}</span>` : ""}
+      ${ms ? `<span class="co-tag co-ms">${esc(ms.title)}</span>` : ""}
+      ${who ? `<span class="co-tag">${b.assignee ? esc(b.assignee === d.operator ? "you" : b.assignee) : "unassigned"}</span>` : ""}</div>`;
   }
 
-  function adder(name) {
+  function adder(name, d) {
     const note = s.note.get(`add:${name}`);
     const err = note ? `<p class="co-bad co-small">${esc(note.text)}</p>` : "";
-    if (s.adding === name)
-      return `<input class="co-addin" data-input="add" data-agent="${esc(name)}" placeholder="New bead for ${esc(name)} — Enter to add" value="${esc(store.get(k(`draft.add.${name}`), ""))}">${err}`;
+    const label = name === d.operator ? "yourself" : name;
+    if (s.adding === name) return `<input class="co-addin" data-input="add" data-agent="${esc(name)}" placeholder="New bead for ${esc(label)}" value="${esc(store.get(k(`draft.add.${name}`), ""))}">${err}`;
     return `<button class="co-link co-add" data-act="add" data-agent="${esc(name)}">+ Add</button>${err}`;
   }
 
-  function agentHtml(d) {
-    const waitsOn = new Map(groupByAgent([], d.issues, d.operator, d.onYou)[0].waiting.map((w) => [w.bead.id, w.blocker]));
-    return groupByAgent(d.members, d.issues, d.operator, d.onYou)
+  function homeHtml(d) {
+    const c = d.company;
+    const work = workBeads(d.issues, c.epic);
+    const counts = (n) => {
+      const mine = work.filter((b) => b.assignee === n && b.status !== "closed");
+      return mine.length ? ` <span class="co-dim">${mine.length} open</span>` : "";
+    };
+    const team = `<p class="co-team">${d.members.map((m) => `<a class="co-name" href="${esc(companyPath({ slug: c.slug, agent: m.name, level: "tasks" }))}" data-nav="${esc(companyPath({ slug: c.slug, agent: m.name, level: "tasks" }))}">${esc(m.name)}${m.name === c.lead ? " ★" : ""}</a>${dot(m.name)}${counts(m.name)}`).join(" &nbsp;·&nbsp; ")}</p>`;
+    const byId = new Map(d.issues.map((i) => [i.id, i]));
+    const mine = d.onYou.assigned.map((id) => byId.get(id)).filter(Boolean);
+    const waiting = d.onYou.waiting.map((w) => ({ bead: byId.get(w.id), blocker: byId.get(w.blocker) })).filter((w) => w.bead && w.blocker);
+    const you = d.onYou.count
+      ? `<section class="co-group co-you"><h2>You <span class="co-acc co-norm">· ${d.onYou.count}</span> <span class="co-dim co-norm">(${esc(d.operator)})</span></h2>${mine.map((b) => beadRow(b, d)).join("")}${waiting.length ? `<h3 class="co-sub">waiting on you</h3>${waiting.map((w) => beadRow(w.bead, d, { who: true, waitingOn: w.blocker })).join("")}` : ""}</section>`
+      : "";
+    const lead = c.lead;
+    const last = lead ? deps.lastMessage?.(lead) : undefined;
+    const chatRow = lead ? `<button class="co-chatrow" data-act="lead-chat"><span>Chat with ${esc(lead)} →</span>${last ? `<span class="co-dim co-last">${esc(last)}</span>` : ""}</button>` : `<p class="co-bad">this company has no lead (the epic has no assignee)</p>`;
+    const ms = milestones(d.issues, c.epic);
+    const msHtml = ms.length
+      ? `<section class="co-group"><h2>Milestones</h2>${ms
+          .map((m) => {
+            const key = m.id ?? "none";
+            const open = s.open.has(key);
+            const pct = m.total ? (100 * m.done) / m.total : 0;
+            return `<div class="co-ms-row" data-act="ms" data-ms="${esc(key)}" aria-expanded="${open}"><span class="co-t">${esc(m.title)}</span>${m.assignee ? `<span class="co-dim co-small">${esc(m.assignee)}</span>` : ""}<span class="co-bar"><i style="width:${pct}%"></i></span><span class="co-count">${m.done}/${m.total}</span></div>${
+              open ? `<div class="co-ms-beads">${m.beads.map((b) => beadRow(b, d, { who: true })).join("") || `<p class="co-dim co-small">No beads yet.</p>`}</div>` : ""
+            }`;
+          })
+          .join("")}</section>`
+      : "";
+    const toggle = `<nav class="co-views" aria-label="View">${VIEWS.map((v) => `<button data-view="${v}" aria-pressed="${s.view === v}">${VIEW_LABEL[v]}</button>`).join("")}</nav>`;
+    return `<div class="co-wrap" data-scroll="page"><div class="co-col">
+      <header class="co-header">${menu}<div class="co-title"><h1>${esc(c.name)}</h1>${c.mission ? `<p class="co-mission">${esc(c.mission)}</p>` : ""}</div><a class="co-small" href="/new" data-nav="/new">New company</a></header>
+      ${banners(d)}
+      ${team}
+      ${you}
+      <div class="co-chatslot">${chatRow}</div>
+      ${msHtml}
+      <section class="co-work"><div class="co-workhead"><h2>Work</h2>${toggle}</div>${s.view === "status" ? statusHtml(d, work) : agentHtml(d, work)}</section>
+      <p class="co-build">build ${esc(deps.build)} · #${esc(c.slug)} <button class="co-link" data-act="channel">open channel</button></p>
+    </div></div>`;
+  }
+
+  function agentHtml(d, work) {
+    const waiting = new Map(d.onYou.waiting.map((w) => [w.id, w.blocker]));
+    const onYou = new Set([...d.onYou.assigned, ...d.onYou.waiting.map((w) => w.id)]);
+    // The operator's own beads are NOT repeated here — the You block above is their group (S3).
+    const groups = groupByAgent(d.members, work, d.operator, d.onYou).filter((g) => g.kind !== "operator");
+    if (!work.length) return `<p class="co-dim">No beads yet.</p>${groups.filter((g) => g.kind === "member" || g.kind === "operator").map((g) => `<section class="co-group"><h2>${groupHead(g, d)}</h2>${adder(g.name, d)}</section>`).join("")}`;
+    return groups
       .map((g) => {
         const open = !!store.get(k(`done.${g.key}`), false);
-        if (g.kind === "operator") {
-          const count = d.onYou.count;
-          const waiting = g.waiting.length ? `<h3 class="co-sub">Waiting on you</h3>${g.waiting.map((w) => beadRow(w.bead, { tag: true, waitingOn: w.blocker })).join("")}` : "";
-          const done = g.done.length ? `<button class="co-link co-fold" data-act="done" data-key="you">${open ? "Hide" : "Show"} ${g.done.length} done</button>${open ? g.done.map((b) => beadRow(b)).join("") : ""}` : "";
-          const empty = !g.open.length && !g.waiting.length && !g.done.length ? `<p class="co-dim co-small">Nothing on you.</p>` : "";
-          return `<section class="co-group co-you" data-group="you"><h2>You <span class="co-dim co-norm">(${esc(g.name)})</span>${count ? ` <span class="co-acc co-norm">${count} on you</span>` : ""}</h2>${g.open.map((b) => beadRow(b)).join("")}${waiting}${empty}${done}${adder(g.name)}</section>`;
-        }
-        const head =
-          g.kind === "member"
-            ? `${esc(g.name)}${dot(g.name)}${g.name === d.company.lead ? ` <span class="co-dim co-norm">★ lead</span>` : ""}${g.member.known ? "" : ` <span class="co-bad co-norm">not in this space</span>`}`
-            : g.kind === "other"
-              ? `${esc(g.name)} <span class="co-warn co-norm" title="holds company beads but isn't on the roster">not a member</span>`
-              : `Unassigned`;
-        const done = g.done.length ? `<button class="co-link co-fold" data-act="done" data-key="${esc(g.key)}">${open ? "Hide" : "Show"} ${g.done.length} done</button>${open ? g.done.map((b) => beadRow(b)).join("") : ""}` : "";
-        const empty = !g.open.length && !g.done.length && g.kind === "member" ? `<p class="co-dim co-small">Nothing yet.</p>` : "";
-        return `<section class="co-group" data-group="${esc(g.key)}"><h2>${head}</h2>${g.open.map((b) => beadRow(b, { waitingOn: waitsOn.get(b.id) })).join("")}${empty}${done}${g.kind === "member" ? adder(g.name) : ""}</section>`;
+        const done = g.done.length ? `<button class="co-link co-fold" data-act="done" data-key="${esc(g.key)}">✓ ${g.done.length} done</button>${open ? g.done.map((b) => beadRow(b, d, { milestone: true })).join("") : ""}` : "";
+        const rows = g.open.map((b) => beadRow(onYou.has(b.id) ? { ...b, onYou: true } : b, d, { milestone: true, waitingOn: waiting.has(b.id) ? d.issues.find((i) => i.id === waiting.get(b.id)) : undefined })).join("");
+        const canAdd = g.kind === "member" || g.kind === "operator";
+        return `<section class="co-group" data-group="${esc(g.key)}"><h2>${groupHead(g, d)}</h2>${rows}${done}${canAdd ? adder(g.name, d) : ""}</section>`;
       })
       .join("");
   }
 
-  function statusHtml(d) {
-    const members = `<p class="co-members">You (${esc(d.operator)})${d.onYou.count ? ` <span class="co-acc">${d.onYou.count} on you</span>` : ""} &nbsp;·&nbsp; ${d.members.map((m) => `${esc(m.name)}${m.name === d.company.lead ? " ★" : ""}${dot(m.name)}`).join(" &nbsp;·&nbsp; ")}</p>`;
-    const pick = store.get(k("addAgent"), d.company.lead ?? d.members[0]?.name);
-    const whom = [{ value: d.operator, label: `You (${d.operator})` }, ...d.members.map((m) => ({ value: m.name, label: m.name }))];
-    const bar = `<div class="co-addbar"><input class="co-addin" data-input="add" data-agent="" placeholder="Add a bead…" value="${esc(store.get(k("draft.add.bar"), ""))}"><select data-input="add-agent" aria-label="assign to">${whom.map((w) => `<option value="${esc(w.value)}"${w.value === pick ? " selected" : ""}>${esc(w.label)}</option>`).join("")}</select></div>${s.note.get("add:bar") ? `<p class="co-bad co-small">${esc(s.note.get("add:bar").text)}</p>` : ""}`;
+  function groupHead(g, d) {
+    const link = (name, label) => `<a href="${esc(companyPath({ slug: s.slug, agent: name, level: "tasks" }))}" data-nav="${esc(companyPath({ slug: s.slug, agent: name, level: "tasks" }))}">${label}</a>`;
+    if (g.kind === "operator") return `${link(g.name, "You")} <span class="co-dim co-norm">(${esc(g.name)})</span>`;
+    if (g.kind === "member") return `${link(g.name, esc(g.name))}${g.name === d.company.lead ? " ★" : ""}${dot(g.name)}${g.member.known ? "" : ` <span class="co-bad co-norm">not in this space</span>`}`;
+    if (g.kind === "other") return `${esc(g.name)} <span class="co-dim co-norm">— not a member</span>`;
+    return "Unassigned";
+  }
+
+  function statusHtml(d, work, { only } = {}) {
+    const onYouIds = new Set([...d.onYou.assigned, ...d.onYou.waiting.map((w) => w.id)]);
+    const list = only ? work.filter((b) => b.assignee === only) : work;
+    const whom = only ? [only] : [d.operator, ...d.members.map((m) => m.name)];
+    const pick = only ?? store.get(k("addAgent"), d.company.lead ?? whom[0]);
+    const label = (n) => (n === d.operator ? `you (${n})` : n);
+    const addbar = `<div class="co-addbar"><input class="co-addin" data-input="add" data-agent="${only ? esc(only) : ""}" placeholder="Add a bead${only ? ` for ${esc(label(only))}` : "…"}" value="${esc(store.get(k(only ? `draft.add.${only}` : "draft.add.bar"), ""))}">${only ? "" : `<select data-input="add-agent" aria-label="assign to">${whom.map((n) => `<option value="${esc(n)}"${n === pick ? " selected" : ""}>${esc(label(n))}</option>`).join("")}</select>`}</div>${s.note.get(only ? `add:${only}` : "add:bar") ? `<p class="co-bad co-small">${esc(s.note.get(only ? `add:${only}` : "add:bar").text)}</p>` : ""}`;
     const doneOpen = !!store.get(k("done.status"), false);
-    const groups = groupByStatus(d.issues, new Set([...d.onYou.assigned, ...d.onYou.waiting.map((w) => w.id)]))
+    const groups = groupByStatus(list, onYouIds)
       .filter((c) => c.beads.length)
       .map((c) => {
         const fold = c.key === "closed" && !doneOpen;
-        return `<section class="co-group" data-group="status:${c.key}"><h2>${esc(c.name)} <span class="co-dim co-norm">${c.beads.length}</span></h2>${
-          fold ? `<button class="co-link co-fold" data-act="done" data-key="status">Show ${c.beads.length} done</button>` : c.beads.map((b) => beadRow(b, { tag: true })).join("")
-        }${c.key === "closed" && !fold ? `<button class="co-link co-fold" data-act="done" data-key="status">Hide done</button>` : ""}</section>`;
+        const head = `<h2>${esc(c.name)} <span class="co-dim co-norm">${c.beads.length}</span></h2>`;
+        if (c.key === "closed") return `<section class="co-group">${head}<button class="co-link co-fold" data-act="done" data-key="status">${fold ? "Show" : "Hide"} done</button>${fold ? "" : c.beads.map((b) => beadRow(b, d, { who: !only, milestone: true })).join("")}</section>`;
+        return `<section class="co-group">${head}${c.beads.map((b) => beadRow(b, d, { who: !only, milestone: true })).join("")}</section>`;
       })
       .join("");
-    return members + bar + (groups || `<p class="co-dim">No beads yet.</p>`);
+    return addbar + (groups || `<p class="co-dim">No beads yet.</p>`);
+  }
+
+  function tasksHtml(d) {
+    const work = workBeads(d.issues, d.company.epic);
+    const isYou = s.agent === d.operator;
+    return `<div class="co-wrap" data-scroll="page"><div class="co-col">
+      <div class="co-crumbs">${menu}<a href="${esc(companyPath({ slug: s.slug, level: "home" }))}" data-nav="${esc(companyPath({ slug: s.slug, level: "home" }))}">${esc(d.company.name)}</a> › ${esc(isYou ? `You (${s.agent})` : s.agent)}</div>
+      ${isYou ? "" : `<nav class="co-views co-tabs" aria-label="Agent view">${TABS.map(([lv, label]) => `<button data-level="${lv}" aria-pressed="${s.level === lv}">${label}</button>`).join("")}</nav>`}
+      <h1 class="co-agenth">${esc(isYou ? "You" : s.agent)}${s.agent === d.company.lead ? " ★" : ""}${isYou ? "" : dot(s.agent)}</h1>
+      ${banners(d)}
+      ${statusHtml(d, work, { only: s.agent })}
+    </div></div>`;
   }
 
   function panelHtml(d) {
-    if (!s.issue) return `<aside class="co-panel" hidden></aside>`;
-    const b = d.issues.find((i) => i.id === s.issue);
-    if (!b) return `<aside class="co-panel" role="dialog"><button class="co-close" data-act="close" aria-label="close">×</button><h3>${esc(s.issue)}</h3><p class="co-bad">Not one of ${esc(s.slug)}'s beads.</p></aside>`;
+    if (!s.bead) return "";
+    const b = d.issues.find((i) => i.id === s.bead);
+    if (!b) return `<aside class="co-panel" role="dialog"><button class="co-close" data-act="close" aria-label="close">×</button><h3>${esc(s.bead)}</h3><p class="co-bad">Not one of ${esc(s.slug)}'s beads.</p></aside>`;
     const th = s.thread?.id === b.id ? s.thread : undefined;
     const err = s.note.get(`err:${b.id}`);
     const comments = th?.error
@@ -285,15 +397,16 @@ export function initCompany(deps) {
         : th.comments.length
           ? th.comments.map((c) => `<div class="co-comment"><div class="co-who">${esc(c.author)} · ${rel(Date.parse(c.createdAt))}</div>${deps.md ? deps.md(c.text) : esc(c.text)}</div>`).join("")
           : `<p class="co-dim co-small">No comments yet.</p>`;
+    const canClose = b.assignee === d.operator && b.status !== "closed";
     return `<aside class="co-panel" role="dialog" aria-label="${esc(b.id)}">
       <button class="co-close" data-act="close" aria-label="close">×</button>
       <h3>${esc(b.title)}</h3>
       <div class="co-dim co-small">${GLYPH[b.status] ?? "?"} ${esc(STATUS_LABEL[b.status] ?? b.status)} · ${b.assignee ? esc(b.assignee) : "unassigned"} · ${esc(b.id)}</div>
       <div class="co-scroll" data-scroll="panel"><p class="co-desc${b.description ? "" : " co-dim"}">${esc(b.description || "No description.")}</p>${comments}</div>
       ${err ? `<p class="co-bad co-small">${esc(err.text)}</p>` : ""}
-      ${b.assignee === d.operator && b.status !== "closed" ? `<div class="co-closebar"><input class="co-addin" data-input="reason" placeholder="Reason (optional) — closing unblocks what waits on it"><button class="co-btn co-ghost" data-act="close-bead">Close</button></div>` : ""}
       <textarea data-input="comment" rows="3" placeholder="Write a comment… (@agent pings them)">${esc(store.get(k(`draft.c.${b.id}`), ""))}</textarea>
-      <div class="co-panelfoot"><button class="co-btn" data-act="comment">Comment</button></div>
+      ${canClose && s.closing ? `<input class="co-addin" data-input="reason" placeholder="Reason (optional) — closing unblocks what waits on it">` : ""}
+      <div class="co-panelfoot"><button class="co-btn" data-act="comment">Comment</button>${canClose ? `<button class="co-link co-closebtn" data-act="${s.closing ? "close-bead" : "closing"}">${s.closing ? "Close it" : "Close…"}</button>` : ""}</div>
     </aside>`;
   }
 
@@ -309,14 +422,16 @@ export function initCompany(deps) {
   }
 
   function openBead(id) {
-    s.issue = id;
+    s.bead = id;
+    s.closing = false;
     deps.onSubState?.();
     paint(true);
     void loadThread(id);
   }
   function closePanel() {
-    s.issue = undefined;
+    s.bead = undefined;
     s.thread = undefined;
+    s.closing = false;
     deps.onSubState?.();
     paint(true);
   }
@@ -330,11 +445,11 @@ export function initCompany(deps) {
     const q = f.filter.trim().toLowerCase();
     const rows = deps.rows() ?? [];
     const shown = rows.filter((r) => !q || r.name.toLowerCase().includes(q));
+    const lead = leadOf(f);
     const picks = shown
       .map((r) => {
         const on = f.members.includes(r.name);
-        const lead = on && leadOf(f) === r.name;
-        return `<div class="co-pick"><label><input type="checkbox" data-pick="${esc(r.name)}"${on ? " checked" : ""}> ${esc(r.name)}${dot(r.name)}</label>${on ? `<label class="co-leadpick${lead ? " on" : ""}"><input type="radio" name="co-lead" data-lead="${esc(r.name)}"${lead ? " checked" : ""}> ${lead ? "★ lead" : "lead"}</label>` : ""}</div>`;
+        return `<div class="co-pick"><label><input type="checkbox" data-pick="${esc(r.name)}"${on ? " checked" : ""}> ${esc(r.name)}${dot(r.name)}</label>${on ? `<label class="co-leadpick"><input type="radio" name="co-lead" data-lead="${esc(r.name)}"${lead === r.name ? " checked" : ""}> lead</label>` : ""}</div>`;
       })
       .join("");
     const slugLine = !f.slug
@@ -343,22 +458,22 @@ export function initCompany(deps) {
         ? `<span class="co-bad">#${esc(f.slug)} isn't a valid channel name — lowercase letters, digits, dashes.</span>`
         : taken.has(f.slug)
           ? `<span class="co-bad">#${esc(f.slug)} already exists — <a href="/company/${esc(f.slug)}" data-nav="/company/${esc(f.slug)}">open it</a>.</span>`
-          : `Creates <b>#<input class="co-slugin" data-nf="slug" value="${esc(f.slug)}" size="${Math.max(4, f.slug.length)}" aria-label="channel name"></b> with these agents.`;
-    const steps = s.steps ? `<ol class="co-steps">${s.steps.map((st) => `<li class="${st.bad ? "co-bad" : st.wait ? "co-dim" : ""}">${st.bad ? "✕" : st.wait ? "…" : "✓"} ${esc(st.text)}</li>`).join("")}</ol>` : "";
-    return `<div class="co-form" data-scroll="page">${menu}
+          : `Creates <b>#<input class="co-slugin" data-nf="slug" value="${esc(f.slug)}" size="${Math.max(4, f.slug.length)}" aria-label="channel name"></b> with these agents`;
+    const steps = s.steps ? `<ol class="co-steps">${s.steps.map((st) => `<li class="${st.bad ? "co-bad" : st.wait ? "co-dim" : ""}">${st.bad ? "✕" : st.wait ? "…" : "✓"} ${esc(st.text)}${st.retry ? ` <button class="co-link" data-act="steps-retry">retry</button>` : ""}</li>`).join("")}</ol>` : "";
+    return `<div class="co-form" data-scroll="page"><div class="co-formcol">${menu}
       <h1>New company</h1>
       <label class="co-f" for="co-name">Name</label>
       <input type="text" id="co-name" data-nf="name" value="${esc(f.name)}" placeholder="Acme Labs" autocomplete="off">
       <label class="co-f" for="co-mission">Mission <span class="co-faint">(optional)</span></label>
       <input type="text" id="co-mission" data-nf="mission" value="${esc(f.mission)}" placeholder="What is it for?" autocomplete="off">
-      <label class="co-f">Agents <span class="co-faint">— pick the lead (CEO); the others report to them</span></label>
+      <label class="co-f">Agents</label>
       ${rows.length > 8 ? `<input type="text" class="co-filter" data-nf="filter" value="${esc(f.filter)}" placeholder="Filter" autocomplete="off">` : ""}
       <div class="co-picks" data-scroll="picks">${picks || `<p class="co-dim co-small">${rows.length ? "No agent matches." : "No agents in this space."}</p>`}</div>
       <button class="co-btn" data-act="create"${problems.length || s.steps ? " disabled" : ""} title="${esc(problems.join(" · "))}">Create</button>
-      <p class="co-dim co-small co-note">${slugLine} <a href="/" data-nav="/">Cancel</a></p>
+      <p class="co-dim co-small co-note">${slugLine} · <a href="/" data-nav="/">Cancel</a></p>
       ${s.companiesError ? `<p class="co-bad co-small">Couldn't check existing companies: ${esc(s.companiesError)}</p>` : ""}
       ${steps}
-    </div>`;
+    </div></div>`;
   }
 
   const saveDraft = () => store.set("paw.company.new.draft", s.form);
@@ -367,7 +482,7 @@ export function initCompany(deps) {
     const f = s.form;
     if (s.steps || newCompanyProblems(f, new Set(s.companies.map((c) => c.slug))).length) return;
     // The server runs these IN ORDER: bead → channel card → invites → kickoff; the list shows that order.
-    s.steps = [{ text: "Filing the company bead…", wait: true }];
+    s.steps = [{ text: "filing the company bead…", wait: true }];
     paint(true);
     try {
       const r = await post("/api/companies", { name: f.name.trim(), slug: f.slug, mission: f.mission.trim(), members: f.members, lead: leadOf(f) });
@@ -377,13 +492,13 @@ export function initCompany(deps) {
         { text: `company bead filed (${r.epic})` },
         /channel registry/.test(chErr) ? { text: `channel #${f.slug}: ${chErr}`, bad: true } : { text: `channel #${f.slug} created` },
         { text: `invited ${(r.invited ?? []).length}/${f.members.length}${failed.length ? ` — ${failed.join(" · ")}` : ""}`, bad: failed.length > 0 || /invite:/.test(chErr) },
-        /kickoff/.test(chErr) ? { text: chErr, bad: true } : { text: "kickoff posted" },
+        ...(/kickoff/.test(chErr) ? [{ text: chErr, bad: true }] : [{ text: "kickoff posted" }]),
       ];
       const problems = [chErr, ...failed].filter(Boolean);
       if (problems.length) store.set(`paw.company.${f.slug}.banner`, `Setup didn't finish: ${problems.join(" · ")}`);
       store.del("paw.company.new.draft");
       paint(true);
-      setTimeout(() => deps.navigate(`/company/${f.slug}`), problems.length ? 1500 : 600);
+      setTimeout(() => deps.navigate(`/company/${f.slug}`), problems.length ? 2500 : 600);
     } catch (e) {
       s.steps = [{ text: String(e?.message ?? e), bad: true }];
       paint(true);
@@ -411,19 +526,19 @@ export function initCompany(deps) {
       if (r.nudgeError) s.note.set(r.id, { ok: false, text: r.nudgeError });
     } catch (e) {
       s.note.set(noteKey, { ok: false, text: `Not added: ${e?.message ?? e}` }); // the draft stays in storage
-      if (noteKey !== "add:bar") s.adding = agent;
     }
     await load(true);
     paint(true);
   }
 
   async function closeBead() {
-    const id = s.issue;
+    const id = s.bead;
     if (!id) return;
     const reason = root.querySelector('[data-input="reason"]')?.value.trim();
     s.note.delete(`err:${id}`);
     try {
       await post("/api/tasks", { op: "close", id, ...(reason ? { reason } : {}) });
+      s.closing = false;
     } catch (e) {
       s.note.set(`err:${id}`, { ok: false, text: `Not closed: ${e?.message ?? e}` }); // bd's words
     }
@@ -434,7 +549,7 @@ export function initCompany(deps) {
   async function sendComment() {
     const ta = root.querySelector('[data-input="comment"]');
     const text = ta?.value.trim();
-    const id = s.issue;
+    const id = s.bead;
     if (!text || !id) return;
     s.note.delete(`err:${id}`);
     try {
@@ -451,9 +566,9 @@ export function initCompany(deps) {
     }
   }
 
-  /* ── events ─────────────────────────────────────────────────────────────────────────────── */
+  /* ── events (on both #company and #cobar) ───────────────────────────────────────────────── */
 
-  root.addEventListener("click", (e) => {
+  function onClick(e) {
     const t = e.target;
     const nav = t.closest("[data-nav]");
     if (nav) {
@@ -467,6 +582,8 @@ export function initCompany(deps) {
       if (act === "create") void createCompany();
       return;
     }
+    const lv = t.closest("[data-level]");
+    if (lv) return go({ agent: s.agent, level: lv.dataset.level });
     const v = t.closest("[data-view]");
     if (v) {
       s.view = parseView(v.dataset.view);
@@ -478,6 +595,8 @@ export function initCompany(deps) {
         return void load(true);
       case "channel":
         return deps.onOpenChannel(s.slug);
+      case "lead-chat":
+        return deps.openLeadChat?.(s.data?.company.lead);
       case "dismiss":
         s.banner = undefined;
         store.del(k("banner"));
@@ -494,6 +613,12 @@ export function initCompany(deps) {
             s.banner = `Setup retry failed: ${err?.message ?? err}`;
           })
           .finally(() => paint(true));
+      case "ms": {
+        const key = el.dataset.ms;
+        if (s.open.has(key)) s.open.delete(key);
+        else s.open.add(key);
+        return paint(true);
+      }
       case "add":
         s.adding = el.dataset.agent;
         paint(true);
@@ -507,12 +632,18 @@ export function initCompany(deps) {
         return closePanel();
       case "comment":
         return void sendComment();
+      case "closing":
+        s.closing = true;
+        paint(true);
+        return root.querySelector('[data-input="reason"]')?.focus();
       case "close-bead":
         return void closeBead();
     }
     const open = t.closest("[data-open]");
     if (open) return openBead(open.dataset.open);
-  });
+  }
+  root.addEventListener("click", onClick);
+  bar.addEventListener("click", onClick);
 
   root.addEventListener("change", (e) => {
     const t = e.target;
@@ -556,7 +687,7 @@ export function initCompany(deps) {
       return;
     }
     if (t.dataset.input === "add") store.set(k(t.dataset.agent ? `draft.add.${t.dataset.agent}` : "draft.add.bar"), t.value);
-    if (t.dataset.input === "comment" && s.issue) store.set(k(`draft.c.${s.issue}`), t.value);
+    if (t.dataset.input === "comment" && s.bead) store.set(k(`draft.c.${s.bead}`), t.value);
   });
 
   root.addEventListener("keydown", (e) => {
@@ -571,13 +702,13 @@ export function initCompany(deps) {
     if (t.dataset.input === "add" && e.key === "Enter") {
       e.preventDefault();
       const title = t.value.trim();
-      const bar = !t.dataset.agent;
-      const agent = bar ? root.querySelector('[data-input="add-agent"]')?.value : t.dataset.agent;
+      const barAdd = !t.dataset.agent;
+      const agent = barAdd ? root.querySelector('[data-input="add-agent"]')?.value : t.dataset.agent;
       if (!title || !agent) return;
       t.value = "";
       t.blur();
-      if (!bar) s.adding = undefined;
-      return void addBead(agent, title, bar ? "add:bar" : `add:${agent}`);
+      s.adding = undefined;
+      return void addBead(agent, title, barAdd ? "add:bar" : `add:${agent}`);
     }
     if (t.dataset.input === "comment" && e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
       e.preventDefault();
@@ -585,31 +716,42 @@ export function initCompany(deps) {
     }
   });
 
-  /** Esc: blur a field (closing an open "+ Add"), else close the panel. Never leaves the page — it's
-   *  a page, not an overlay. */
+  root.addEventListener("focusout", (e) => {
+    // "Esc or blur-when-empty cancels" an open + Add
+    const t = e.target;
+    if (t.dataset?.input === "add" && t.dataset.agent && s.adding === t.dataset.agent && !t.value.trim())
+      setTimeout(() => {
+        if (s.adding === t.dataset.agent) {
+          s.adding = undefined;
+          paint(true);
+        }
+      }, 0);
+  });
+
+  /** Esc: blur a field, else close the bead panel. Never leaves the page — it's a page, not an overlay. */
   function onKey(e) {
-    if (!s.page || root.hidden || e.key !== "Escape") return false;
+    if (!s.page || e.key !== "Escape") return false;
     const a = document.activeElement;
     if (a && root.contains(a) && (a.tagName === "INPUT" || a.tagName === "TEXTAREA" || a.tagName === "SELECT")) {
-      if (a.dataset.input === "add" && a.dataset.agent) s.adding = undefined;
+      if (a.dataset.input === "add") s.adding = undefined;
       a.blur();
       paint(true);
       return true;
     }
-    if (s.page === "company" && s.issue) {
+    if (s.page === "company" && s.bead) {
       closePanel();
       return true;
     }
-    return s.page === "company";
+    return s.page === "company" && s.level !== "dialog" && s.level !== "trace";
   }
 
   return {
-    showCompany,
-    showNew,
+    show,
     close,
     isOpen: () => !!s.page,
     query,
     onKey,
+    data: () => s.data,
     /** app.js's render tick: repaint for fresh roster dots (never under the caret). */
     tick: () => paint(),
     loadCompanies,

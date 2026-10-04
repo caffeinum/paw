@@ -1,0 +1,321 @@
+<!doctype html>
+<html lang="en" data-screen="home">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>vibeOS — company</title>
+<!-- IA mock in the picked Simple style (spec §0 + Visual S1–S9): home (lead chat, milestones, You,
+     team, Work By agent | By status), agent Tasks / Dialog / Trace, /new with a lead radio.
+     Static, fake data. Shown without paw's sidebar shell. -->
+<style>
+  :root { color-scheme:light dark; --bg:#FFFFFF; --fg:#1D1C1D; --dim:#6B6B6B; --line:#EAEAEA; --soft:#F7F7F7; --acc:#1264A3; --red:#C4314B; --green:#2BAC76;
+    --font:"Lato", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; --mono:Monaco, Menlo, Consolas, monospace; }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg:#1A1D21; --fg:#D1D2D3; --dim:#9A9B9D; --line:#2C2F33; --soft:#222529; --acc:#4FA8E8; --red:#F07A8E; } }
+  :root[data-theme="dark"] { color-scheme:dark; --bg:#1A1D21; --fg:#D1D2D3; --dim:#9A9B9D; --line:#2C2F33; --soft:#222529; --acc:#4FA8E8; --red:#F07A8E; }
+  :root[data-theme="light"] { color-scheme:light; }
+  * { box-sizing:border-box; }
+  html, body { margin:0; background:var(--bg); color:var(--fg); }
+  body { font:15px/1.5 var(--font); -webkit-font-smoothing:antialiased; }
+  button, input, textarea, select { font:inherit; color:inherit; }
+  a, .link { color:var(--acc); text-decoration:none; cursor:pointer; background:none; border:0; padding:0; }
+  :focus-visible { outline:2px solid var(--acc); outline-offset:2px; }
+  .dim { color:var(--dim); } .small { font-size:13px; }
+  .screen { display:none; }
+  html[data-screen="home"] #home, html[data-screen="tasks"] #agent, html[data-screen="dialog"] #agent, html[data-screen="dialogerr"] #agent,
+  html[data-screen="trace"] #agent, html[data-screen="new"] #new { display:block; }
+
+  /* home: content column + the lead chat on the right */
+  #home { min-height:100vh; }
+  .homegrid { display:grid; grid-template-columns:minmax(0,1fr) 400px; min-height:100vh; }
+  .col { max-width:680px; width:100%; margin:0 auto; padding:56px 32px 96px; }
+  header { display:flex; align-items:baseline; gap:16px; }
+  header div { flex:1; min-width:0; }
+  h1 { font-size:28px; font-weight:600; margin:0; letter-spacing:-.01em; }
+  .mission { color:var(--dim); margin:4px 0 0; }
+  .team { margin:20px 0 0; font-size:14px; color:var(--dim); line-height:1.9; }
+  .team a { color:var(--fg); } .team .mem { white-space:nowrap; } .team .sep { margin:0 8px; color:var(--line); }
+  .dot { display:inline-block; width:7px; height:7px; border-radius:50%; background:var(--dim); opacity:.35; margin:0 4px 0 5px; vertical-align:middle; }
+  .dot.live { background:var(--fg); opacity:.8; }
+  section.block { margin-top:44px; }
+  h2 { font-size:13px; font-weight:600; margin:0 0 8px; padding-bottom:8px; border-bottom:1px solid var(--line); display:flex; align-items:baseline; gap:8px; }
+  h2 .n { font-weight:400; color:var(--dim); } h2 .on { color:var(--acc); font-weight:600; }
+  h2 .right { margin-left:auto; font-weight:400; }
+  .sub { font-size:13px; color:var(--dim); margin:14px 0 2px; }
+  .bead { display:flex; gap:10px; align-items:baseline; padding:7px 0; cursor:pointer; }
+  .bead .st { width:14px; flex:none; text-align:center; color:var(--dim); }
+  .bead .t { flex:1; min-width:0; }
+  .bead .r { font-size:13px; color:var(--dim); white-space:nowrap; max-width:160px; overflow:hidden; text-overflow:ellipsis; }
+  .bead .onyou { font-size:13px; color:var(--acc); white-space:nowrap; }
+  .bead .why { display:block; font-size:13px; color:var(--dim); }
+  .bead:hover .t > span:first-child { text-decoration:underline; text-decoration-color:var(--line); text-underline-offset:3px; }
+  .bead.done .t { color:var(--dim); text-decoration:line-through; }
+  .bead.sel .t { color:var(--acc); }
+  .fold { font-size:13px; color:var(--dim); padding:4px 0 0 24px; cursor:pointer; }
+  .add { display:block; margin-top:6px; font-size:14px; }
+  .addin { width:100%; border:0; border-bottom:1px solid var(--line); background:none; padding:6px 0; outline:none; }
+  .addin:focus { border-color:var(--acc); }
+  .addbar { display:flex; gap:10px; margin:4px 0 12px; } .addbar input { flex:1; }
+  .addbar select { border:0; border-bottom:1px solid var(--line); background:none; color:var(--dim); padding:6px 0; }
+  .views { display:flex; gap:20px; font-size:14px; }
+  .views button { border:0; background:none; padding:0 0 3px; color:var(--dim); cursor:pointer; border-bottom:1px solid transparent; font-weight:400; }
+  .views button[aria-pressed="true"] { color:var(--fg); border-bottom-color:var(--fg); }
+  .grp { margin-top:22px; } .grp h3 { font-size:13px; font-weight:600; margin:0 0 2px; }
+  /* milestones */
+  .ms { display:grid; grid-template-columns:minmax(0,1fr) auto 120px 48px; gap:14px; align-items:center; padding:8px 0; cursor:pointer; }
+  .ms .mt { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .ms .mt::before { content:"▸"; display:inline-block; width:16px; color:var(--dim); font-size:11px; transition:transform .12s; }
+  .ms.open .mt::before { transform:rotate(90deg); }
+  .ms .who { font-size:13px; color:var(--dim); }
+  .bar { height:2px; background:var(--line); } .bar i { display:block; height:100%; background:var(--fg); }
+  .ms .nn { font-size:13px; color:var(--dim); text-align:right; font-variant-numeric:tabular-nums; }
+  .msbeads { padding:0 0 8px 16px; display:none; } .ms.open + .msbeads { display:block; }
+
+  /* lead chat = paw's agent conversation */
+  .chat { border-left:1px solid var(--line); display:flex; flex-direction:column; height:100vh; position:sticky; top:0; }
+  .chathead { padding:16px 20px; border-bottom:1px solid var(--line); font-weight:700; display:flex; align-items:center; gap:4px; }
+  .chathead .dim { font-weight:400; font-size:13px; margin-left:6px; }
+  .msgs { flex:1; overflow:auto; padding:12px 0; }
+  .m { display:grid; grid-template-columns:36px 1fr; gap:8px; padding:6px 20px; }
+  .m:hover { background:var(--soft); }
+  .av { width:36px; height:36px; border-radius:4px; color:#fff; font-weight:900; display:flex; align-items:center; justify-content:center; font-size:15px; }
+  .m .hdr { display:flex; gap:8px; align-items:baseline; flex-wrap:wrap; } .m .hdr b { font-weight:900; } .m .hdr .time { font-size:12px; color:var(--dim); }
+  .m .to { font-size:12px; color:var(--dim); } .m .chan { font-size:12px; color:var(--acc); }
+  .m p { margin:2px 0 0; }
+  .comp { padding:0 20px 16px; }
+  .comp .box { border:1px solid var(--line); border-radius:8px; padding:8px 10px; }
+  .comp textarea { width:100%; border:0; background:none; resize:none; outline:none; }
+  .comp .hint { font-size:12px; color:var(--dim); margin-top:4px; }
+  .chatrow { display:none; margin-top:28px; padding:12px 0; border-top:1px solid var(--line); border-bottom:1px solid var(--line); cursor:pointer; }
+  .chatrow .last { color:var(--dim); font-size:14px; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
+
+  /* agent views */
+  .agentcol { max-width:760px; margin:0 auto; padding:40px 32px 120px; }
+  .crumb { font-size:13px; color:var(--dim); } .crumb a { color:var(--dim); text-decoration:underline; text-decoration-color:var(--line); }
+  .agenthead { display:flex; align-items:baseline; gap:6px; margin:6px 0 18px; }
+  .agenthead h1 { font-size:24px; }
+  .agentcol .views { margin-bottom:8px; padding-bottom:12px; border-bottom:1px solid var(--line); }
+  .pane { display:none; } html[data-screen="tasks"] #p-tasks, html[data-screen="dialog"] #p-dialog, html[data-screen="dialogerr"] #p-dialogerr, html[data-screen="trace"] #p-trace { display:block; }
+  .agentcol .m { padding:6px 0; } .agentcol .m:hover { background:none; }
+  .agentcol .comp { padding:16px 0 0; }
+  .err { color:var(--red); margin:24px 0; }
+  .trace { font-family:var(--mono); font-size:12.5px; line-height:1.6; padding-top:8px; }
+  .trace .tu { color:var(--dim); margin-top:14px; } .trace .tu::before { content:"> "; }
+  .trace .tt { margin-top:10px; } .trace .tt::before { content:"● "; color:var(--green); }
+  .trace .tr { color:var(--dim); padding-left:16px; position:relative; white-space:pre-wrap; } .trace .tr::before { content:"⎿"; position:absolute; left:0; }
+  .trace .older { font-family:var(--font); font-size:13px; margin-bottom:6px; }
+
+  /* bead panel */
+  #panel { position:fixed; top:0; right:0; bottom:0; width:min(440px,100%); background:var(--bg); border-left:1px solid var(--line); padding:32px 32px 24px; display:none; flex-direction:column; z-index:5; }
+  #panel.on { display:flex; }
+  #panel .x { position:absolute; top:22px; right:24px; color:var(--dim); font-size:20px; background:none; border:0; cursor:pointer; }
+  #panel h3 { font-size:20px; font-weight:600; margin:0 32px 6px 0; line-height:1.3; }
+  #panel .desc { margin:20px 0 24px; white-space:pre-wrap; }
+  #panel .scroll { flex:1; overflow:auto; }
+  .cmt { margin:0 0 16px; } .cmt .who { font-size:13px; color:var(--dim); }
+  #panel textarea { width:100%; border:1px solid var(--line); border-radius:6px; background:none; padding:10px; resize:none; outline:none; }
+  #panel textarea:focus { border-color:var(--acc); }
+  .btn { border:0; background:var(--fg); color:var(--bg); border-radius:6px; padding:7px 16px; cursor:pointer; font-weight:500; }
+  .btn:disabled { opacity:.35; cursor:not-allowed; }
+  .btn2 { border:1px solid var(--line); background:none; border-radius:6px; padding:6px 14px; cursor:pointer; margin-left:8px; }
+
+  /* /new */
+  .form { max-width:420px; margin:0 auto; padding:72px 32px; }
+  .form label.f { display:block; font-size:13px; color:var(--dim); margin:28px 0 6px; }
+  .form input[type=text] { width:100%; border:0; border-bottom:1px solid var(--line); background:none; padding:6px 0; font-size:18px; outline:none; }
+  .form input[type=text]:focus { border-color:var(--acc); }
+  .pick { display:flex; gap:10px; align-items:center; padding:6px 0; }
+  .pick input[type=checkbox] { accent-color:var(--acc); margin:0; }
+  .pick .lead { margin-left:auto; font-size:13px; color:var(--dim); display:flex; gap:5px; align-items:center; }
+  .pick .lead input { accent-color:var(--acc); margin:0; }
+  .form .btn { margin-top:32px; }
+  .steps { list-style:none; padding:0; margin:20px 0 0; font-size:13px; } .steps li { padding:2px 0; } .steps .bad { color:var(--red); }
+
+  @media (max-width:1100px) {
+    .homegrid { grid-template-columns:1fr; }
+    .chat { display:none; } .chatrow { display:block; }
+  }
+  @media (max-width:640px) {
+    .col, .agentcol { padding:32px 20px 64px; }
+    .ms { grid-template-columns:minmax(0,1fr) 64px 40px; } .ms .who { display:none; }
+    .bead .r { max-width:96px; }
+    #panel { padding:24px 20px 20px; border-left:0; }
+    .form { padding:40px 20px; }
+  }
+</style>
+</head>
+<body>
+<div id="home" class="screen"><div class="homegrid">
+  <div class="col">
+    <header><div><h1>vibeOS</h1><p class="mission">Ship vibeOS so a builder can hand an AI a real computer in one click.</p></div><a href="#" data-go="new" class="small">New company</a></header>
+    <div class="team" id="team"></div>
+    <div class="chatrow" data-go="dialog"><div class="small"><b>Chat with vibeos-ceo</b> ★ <span class="dot live"></span> →</div><div class="last" id="lastmsg"></div></div>
+    <section class="block" id="you"></section>
+    <section class="block"><h2>Milestones</h2><div id="milestones"></div></section>
+    <section class="block"><h2>Work<span class="right"><nav class="views" aria-label="View"><button data-view="agent" aria-pressed="true">By agent</button><button data-view="status" aria-pressed="false">By status</button></nav></span></h2><div id="work"></div></section>
+  </div>
+  <aside class="chat">
+    <div class="chathead">vibeos-ceo ★<span class="dot live"></span><span class="dim">lead</span></div>
+    <div class="msgs" id="leadchat"></div>
+    <div class="comp"><div class="box"><textarea rows="2" placeholder="Message vibeos-ceo"></textarea></div><div class="hint">⏎ send · ⇧⏎ newline</div></div>
+  </aside>
+</div></div>
+
+<div id="agent" class="screen"><div class="agentcol">
+  <div class="crumb"><a href="#" data-go="home">vibeOS</a> › vibeos-pm</div>
+  <div class="agenthead"><h1>vibeos-pm</h1><span class="dot live"></span><span class="dim small">2 open</span></div>
+  <nav class="views" aria-label="Agent view"><button data-go="tasks">Tasks</button><button data-go="dialog">Dialog</button><button data-go="trace">Trace</button></nav>
+  <div class="pane" id="p-tasks"></div>
+  <div class="pane" id="p-dialog"></div>
+  <div class="pane" id="p-dialogerr"><p class="err">Dialog unreadable: dmHistory refused: permission denied — this mesh requires auth for history reads.</p><p class="dim small">Nothing is shown rather than a partial conversation. The composer still sends.</p>
+    <div class="comp"><div class="box"><textarea rows="2" placeholder="Message vibeos-pm"></textarea></div></div></div>
+  <div class="pane" id="p-trace"></div>
+</div></div>
+
+<div id="new" class="screen"><div class="form">
+  <h1>New company</h1>
+  <label class="f" for="name">Name</label><input type="text" id="name" value="Acme Labs" autocomplete="off">
+  <label class="f" for="mission">Mission (optional)</label><input type="text" id="mission" placeholder="What is it for?" autocomplete="off">
+  <label class="f">Agents</label><div id="picks"></div>
+  <button class="btn" id="create">Create</button>
+  <p class="dim small" style="margin-top:12px">Creates #<span id="slug">acme-labs</span> with these agents. <a href="#" data-go="home">Cancel</a></p>
+  <ol class="steps" id="steps" hidden></ol>
+</div></div>
+
+<aside id="panel" role="dialog" aria-label="Bead"></aside>
+
+<script>
+const ME = "aleks", LEAD = "vibeos-ceo";
+const AGENTS = [{ name: "vibeos-ceo", live: true }, { name: "vibeos-pm", live: true }, { name: "vibeos-vercel", live: true }, { name: "vibeos-docker", live: false }, { name: "vibeos-hexclave", live: true }];
+const MS = { beta: "Public beta", onb: "Onboarding without a call", b10: "10 paying builders" };
+const BEADS = [
+  { id: "z32", who: ME, st: "open", t: "Decide: hosted AI or bring-your-own-key for the beta?", ms: "beta", d: "vibeos-ceo: options are (1) we host the model and bill per minute, (2) users paste their own key. Recommendation: (2) for the beta, (1) later.", c: [["vibeos-ceo", "r7m is waiting on this."]] },
+  { id: "c6a", who: ME, st: "open", t: "Approve outreach to ten builders", ms: "b10" },
+  { id: "c1a", who: "vibeos-ceo", st: "prog", t: "Triage what blocks the beta", ms: "beta" },
+  { id: "c9e", who: "vibeos-ceo", st: "open", t: "Review PR #212", ms: "onb" },
+  { id: "r7m", who: "vibeos-pm", st: "open", waits: "z32", t: "API key flow: paste, validate, store", ms: "onb", d: "Users paste a key, we test it against the provider, store it encrypted.", c: [["vibeos-pm", "waiting on the hosted-vs-own-key decision"]] },
+  { id: "m4n", who: "vibeos-pm", st: "open", t: "Five onboarding interviews", ms: "onb" },
+  { id: "w2e", who: "vibeos-pm", st: "closed", t: "Write the onboarding script", ms: "onb" },
+  { id: "k2q", who: "vibeos-vercel", st: "prog", t: "Onboarding step 5 never actually connects", ms: "onb", d: "Step 4 checks the key format with a regex and never calls the backend.", c: [["vibeos-vercel", "test endpoint is in, PR #212 green."]] },
+  { id: "v8d", who: "vibeos-vercel", st: "open", t: "Preview deploys for every PR", ms: "beta" },
+  { id: "d2k", who: "vibeos-docker", st: "open", t: "Pin the image digest in the README", ms: "beta" },
+  { id: "q2d", who: "vibeos-hexclave", st: "prog", t: "Compare e2b and daytona cold starts", ms: "b10" },
+  { id: "n0w", who: "vibeos-hexclave", st: "open", t: "Sandbox pricing per minute or per seat", ms: "b10" },
+  { id: "p0x", who: null, st: "open", t: "Pricing page copy" },
+];
+const MILESTONES = [{ k: "beta", who: "vibeos-ceo", done: 9, total: 20 }, { k: "onb", who: "vibeos-pm", done: 1, total: 5 }, { k: "b10", who: "vibeos-hexclave", done: 1, total: 10 }];
+const GLYPH = { open: "○", prog: "◐", blocked: "⊘", closed: "✓" };
+const WORD = { prog: "In progress", blocked: "Blocked", open: "To do", closed: "Done" };
+const ORDER = ["prog", "blocked", "open", "closed"];
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const hue = (n) => { let h = 0; for (const c of n) h = (h * 31 + c.charCodeAt(0)) % 360; return h; };
+const av = (n) => `<span class="av" style="background:hsl(${hue(n)} 45% 42%)">${n[0].toUpperCase()}</span>`;
+const byId = (id) => BEADS.find((b) => b.id === id);
+const waitingOnMe = (b) => b.waits && byId(b.waits)?.who === ME && byId(b.waits).st !== "closed";
+const status = (b) => waitingOnMe(b) ? "blocked" : b.st;
+const mine = (w) => BEADS.filter((b) => b.who === w).sort((a, z) => ORDER.indexOf(status(a)) - ORDER.indexOf(status(z)));
+if (location.hash.length > 1) document.documentElement.dataset.screen = location.hash.slice(1).replace("dark", "home");
+if (location.hash === "#dark") document.documentElement.dataset.theme = "dark";
+
+function row(b, right = "ms") {
+  const s = status(b);
+  const r = right === "ms" ? (b.ms ? MS[b.ms] : "") : right === "who" ? (b.who === ME ? "you" : b.who || "unassigned") : "";
+  return `<div class="bead ${s === "closed" ? "done" : ""}" data-id="${b.id}"><span class="st" title="${WORD[s]}">${GLYPH[s]}</span><span class="t"><span>${esc(b.t)}</span>${right === "why" && b.waits ? `<span class="why">← ${esc(byId(b.waits).t)}</span>` : ""}</span>${waitingOnMe(b) && right !== "why" ? '<span class="onyou">on you</span>' : ""}${r ? `<span class="r">${esc(r)}</span>` : ""}</div>`;
+}
+function renderHome() {
+  document.getElementById("team").innerHTML = AGENTS.map((a) => `<span class="mem"><a href="#" data-go="tasks">${a.name}</a>${a.name === LEAD ? " ★" : ""}<span class="dot ${a.live ? "live" : ""}" title="${a.live ? "online" : "asleep"}"></span>${BEADS.filter((b) => b.who === a.name && b.st !== "closed").length} open</span>`).join('<span class="sep">|</span>');
+  const myBeads = mine(ME).filter((b) => b.st !== "closed"), waiting = BEADS.filter(waitingOnMe);
+  document.getElementById("you").innerHTML = myBeads.length + waiting.length ? `<h2>You (aleks) <span class="on">${myBeads.length}</span></h2>${myBeads.map((b) => row(b)).join("")}
+    ${waiting.length ? `<div class="sub">waiting on you</div>${waiting.map((b) => row(b, "why")).join("")}` : ""}<button class="link add" data-add="${ME}">+ Add</button>` : "";
+  document.getElementById("milestones").innerHTML = MILESTONES.map((m, i) => `<div class="ms ${i === 1 ? "open" : ""}"><span class="mt">${MS[m.k]}</span><span class="who">${m.who}</span><span class="bar"><i style="width:${m.done / m.total * 100}%"></i></span><span class="nn">${m.done}/${m.total}</span></div>
+    <div class="msbeads">${BEADS.filter((b) => b.ms === m.k).sort((a, z) => ORDER.indexOf(status(a)) - ORDER.indexOf(status(z))).map((b) => row(b, "who")).join("")}</div>`).join("") +
+    `<div class="ms"><span class="mt">No milestone</span><span class="who"></span><span class="bar"><i style="width:0"></i></span><span class="nn">0/1</span></div><div class="msbeads">${BEADS.filter((b) => !b.ms).map((b) => row(b, "who")).join("")}</div>`;
+  renderWork();
+  const chat = [["aleks", "10:02", "what's blocking the beta right now?"], ["vibeos-ceo", "10:03", "Two things. The key flow (r7m) waits on your hosted-vs-own-key call — I filed it to you as z32 with a recommendation. And step 5 of onboarding (k2q) is almost done."], ["aleks", "10:05", "ok, also get docker to pin the digest today"], ["vibeos-ceo", "10:05", "Assigned d2k to vibeos-docker. It's asleep; the bead wakes it."]];
+  document.getElementById("leadchat").innerHTML = chat.map(([w, t, m]) => `<div class="m">${av(w === "aleks" ? "you" : w)}<div><div class="hdr"><b>${w === "aleks" ? "you" : w}</b><span class="time">${t}</span></div><p>${esc(m)}</p></div></div>`).join("");
+  document.getElementById("lastmsg").textContent = "vibeos-ceo: " + chat[3][2];
+}
+let VIEW = "agent";
+try { VIEW = localStorage.getItem("paw.company.vibeos.view") === "status" ? "status" : "agent"; } catch {}
+function renderWork() {
+  for (const b of document.querySelectorAll("[data-view]")) b.setAttribute("aria-pressed", String(b.dataset.view === VIEW));
+  const w = document.getElementById("work");
+  if (VIEW === "agent") {
+    const order = [...AGENTS.filter((a) => a.name === LEAD), ...AGENTS.filter((a) => a.name !== LEAD)];
+    w.innerHTML = order.map((a) => { const list = mine(a.name), open = list.filter((b) => b.st !== "closed"), done = list.length - open.length;
+      return `<div class="grp"><h3>${a.name}${a.name === LEAD ? " ★" : ""}<span class="dot ${a.live ? "live" : ""}"></span></h3>${open.map((b) => row(b)).join("")}${done ? `<div class="fold">✓ ${done} done</div>` : ""}<button class="link add" data-add="${a.name}">+ Add</button></div>`; }).join("") +
+      `<div class="grp"><h3 class="dim">Unassigned</h3>${mine(null).map((b) => row(b)).join("")}</div>`;
+  } else {
+    w.innerHTML = `<div class="addbar"><input class="addin" id="addq" placeholder="Add a bead…"><select id="addwho"><option value="${ME}">You</option>${AGENTS.map((a) => `<option>${a.name}</option>`).join("")}</select></div>` +
+      ORDER.map((s) => { const list = BEADS.filter((b) => status(b) === s && b.who !== ME); return list.length ? `<div class="grp"><h3>${WORD[s]} <span class="dim" style="font-weight:400">${list.length}</span></h3>${s === "closed" ? `<div class="fold">✓ ${list.length} done this week</div>` : list.map((b) => row(b, "who")).join("")}</div>` : ""; }).join("");
+  }
+}
+function renderAgent() {
+  const a = "vibeos-pm", list = mine(a);
+  document.getElementById("p-tasks").innerHTML = ORDER.map((s) => { const l = list.filter((b) => status(b) === s); return l.length ? `<div class="grp"><h3>${WORD[s]} <span class="dim" style="font-weight:400">${l.length}</span></h3>${s === "closed" ? `<div class="fold">✓ ${l.length} done this week</div>` : l.map((b) => row(b)).join("")}</div>` : ""; }).join("") + `<button class="link add" data-add="${a}" style="margin-top:16px">+ Add</button>`;
+  const dlg = [
+    ["vibeos-ceo", "vibeos-pm", "09:40", "Take the key flow (r7m). Spec is on the bead."],
+    ["vibeos-pm", "vibeos-ceo", "09:52", "On it. It depends on hosted vs own key — that's a call for aleks?"],
+    ["vibeos-ceo", "vibeos-pm", "09:53", "Yes, I filed it to aleks as z32 and linked r7m to it. Park r7m until it closes."],
+    ["vibeos-pm", "#vibeos", "10:10", "five onboarding interviews booked for thursday — notes will go on m4n"],
+    ["you", "vibeos-pm", "10:20", "can you send me the interview questions before thursday?"],
+  ];
+  document.getElementById("p-dialog").innerHTML = dlg.map(([f, t, tm, m]) => `<div class="m">${av(f)}<div><div class="hdr"><b>${f}</b>${t.startsWith("#") ? `<span class="chan">${t}</span>` : `<span class="to">→ ${t}</span>`}<span class="time">${tm}</span></div><p>${esc(m)}</p></div></div>`).join("") +
+    `<div class="comp"><div class="box"><textarea rows="2" placeholder="Message vibeos-pm"></textarea></div><div class="hint">⏎ send · DMs vibeos-pm</div></div>`;
+  document.getElementById("p-trace").innerHTML = `<div class="trace"><div class="older"><a href="#">load older turns</a></div>
+    <div class="tu">vibeos-ceo: Take the key flow (r7m). Spec is on the bead.</div>
+    <div class="tt">Bash(bd show beads-r7m)</div><div class="tr">beads-r7m · API key flow: paste, validate, store · open · vibeos-pm</div>
+    <div class="tt">Bash(bd dep list beads-r7m)</div><div class="tr">blocked by beads-z32 (open, aleks)</div>
+    <div class="tt">I'll park r7m until the decision on z32 lands and pick up the interviews meanwhile.</div>
+    <div class="tt">Bash(bd update beads-m4n --status in_progress)</div><div class="tr">✓ Updated beads-m4n</div>
+    <div class="tu">#vibeos · five onboarding interviews booked for thursday</div></div>`;
+  for (const b of document.querySelectorAll("#agent .views button")) b.setAttribute("aria-pressed", String(document.documentElement.dataset.screen.startsWith(b.dataset.go)));
+}
+const panel = document.getElementById("panel");
+function open(id) {
+  const b = byId(id), s = status(b);
+  for (const r of document.querySelectorAll(".bead")) r.classList.toggle("sel", r.dataset.id === id);
+  panel.innerHTML = `<button class="x" data-close aria-label="close">×</button><h3>${esc(b.t)}</h3>
+    <div class="dim small">${GLYPH[s]} ${WORD[s]}${waitingOnMe(b) ? ` · <span style="color:var(--acc)">on you</span> — waits on ${esc(byId(b.waits).t)}` : ""} · ${b.who === ME ? "you" : b.who || "unassigned"} · beads-${b.id}</div>
+    <div class="scroll"><p class="desc ${b.d ? "" : "dim"}">${esc(b.d || "No description.")}</p>
+    ${(b.c || []).map(([w, t]) => `<div class="cmt"><div class="who">${w}</div>${esc(t)}</div>`).join("") || `<p class="dim small">No comments yet.</p>`}</div>
+    <textarea rows="3" placeholder="Write a comment…"></textarea><div style="margin-top:10px"><button class="btn">Comment</button>${b.who === ME ? '<button class="btn2">Close…</button>' : ""}</div>`;
+  panel.classList.add("on");
+}
+const close = () => { panel.classList.remove("on"); for (const r of document.querySelectorAll(".bead.sel")) r.classList.remove("sel"); };
+function go(s) { document.documentElement.dataset.screen = s; close(); renderAgent(); scrollTo(0, 0); }
+document.addEventListener("click", (e) => {
+  const g = e.target.closest("[data-go]"); if (g) { e.preventDefault(); return go(g.dataset.go); }
+  const v = e.target.closest("[data-view]"); if (v) { VIEW = v.dataset.view; try { localStorage.setItem("paw.company.vibeos.view", VIEW); } catch {} return renderWork(); }
+  if (e.target.closest("[data-close]")) return close();
+  const m = e.target.closest(".ms"); if (m) return m.classList.toggle("open");
+  const b = e.target.closest(".bead"); if (b) return open(b.dataset.id);
+  const a = e.target.closest("[data-add]");
+  if (a) { const i = document.createElement("input"); i.className = "addin"; i.placeholder = a.dataset.add === ME ? "New bead for you (no one is pinged)" : `New bead for ${a.dataset.add}`; a.replaceWith(i); i.focus();
+    i.addEventListener("keydown", (k) => { if (k.key === "Enter" && i.value.trim()) { BEADS.push({ id: Math.random().toString(36).slice(2, 5), who: a.dataset.add, st: "open", t: i.value.trim() }); renderHome(); renderAgent(); } if (k.key === "Escape") { renderHome(); renderAgent(); } }); }
+  if (e.target.id === "create") {
+    const n = [...document.querySelectorAll("#picks input[type=checkbox]:checked")].map((x) => x.value), st = document.getElementById("steps"); st.hidden = false;
+    st.innerHTML = `<li>✓ company bead filed</li><li>✓ channel #acme-labs created</li>` + (n.length > 1 ? `<li class="bad">✕ invited ${n.length - 1}/${n.length} — ${n[n.length - 1]}: dm publish failed: nats: timeout <button class="link">retry</button></li>` : `<li>✓ invited ${n.length}/${n.length}</li>`);
+  }
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && !e.target.closest("input,textarea")) close();
+  if (e.target.id === "addq" && e.key === "Enter" && e.target.value.trim()) { BEADS.push({ id: Math.random().toString(36).slice(2, 5), who: document.getElementById("addwho").value, st: "open", t: e.target.value.trim() }); renderHome(); }
+});
+// /new: lead radio appears on picked rows; first picked is the lead
+const POOL = [["vibeos-ceo", true], ["vibeos-pm", true], ["research", true], ["mail", true], ["paw-folder", true], ["supertelegram", false]];
+const picked = ["research", "mail"]; let lead = "research";
+function renderPicks() {
+  document.getElementById("picks").innerHTML = POOL.map(([n, live]) => `<label class="pick"><input type="checkbox" value="${n}" ${picked.includes(n) ? "checked" : ""}> ${n}<span class="dot ${live ? "live" : ""}"></span>${picked.includes(n) ? `<span class="lead"><input type="radio" name="lead" value="${n}" ${lead === n ? "checked" : ""}> lead</span>` : ""}</label>`).join("");
+  document.getElementById("create").disabled = !picked.length;
+}
+document.getElementById("picks").addEventListener("change", (e) => {
+  if (e.target.type === "checkbox") { const i = picked.indexOf(e.target.value); i < 0 ? picked.push(e.target.value) : picked.splice(i, 1); if (!picked.includes(lead)) lead = picked[0] || null; }
+  if (e.target.type === "radio") lead = e.target.value;
+  renderPicks();
+});
+document.getElementById("name").addEventListener("input", (e) => { document.getElementById("slug").textContent = e.target.value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "…"; });
+renderHome(); renderAgent(); renderPicks();
+if (new URLSearchParams(location.search).get("bead")) open(new URLSearchParams(location.search).get("bead"));
+</script>
+</body>
+</html>
