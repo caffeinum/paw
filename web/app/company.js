@@ -913,6 +913,15 @@ export function initCompany(deps) {
     const nav = t.closest("[data-nav]");
     if (nav) {
       e.preventDefault();
+      // A link inside the bead modal (assignee, "by <agent>") leaves the bead: drop the modal first.
+      // No history.back() — the navigation pushes its own entry, and Back returns to the bead.
+      if (s.bead !== undefined) {
+        s.bead = undefined;
+        s.thread = undefined;
+        s.closing = false;
+        s.returnTo = undefined;
+        s.pushed = false;
+      }
       return deps.navigate(nav.dataset.nav);
     }
     const el = t.closest("[data-act]");
