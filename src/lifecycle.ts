@@ -12,7 +12,7 @@
  * `start` can't race, and per-space ownership markers under ~/.paw so stop() only kills paw's own
  * daemons — never the operator's hand-run mesh.
  */
-import { execFileSync, spawn, spawnSync } from "node:child_process";
+import { execFile, execFileSync, spawn, spawnSync } from "node:child_process";
 import { createConnection } from "node:net";
 import {
   closeSync,
@@ -57,6 +57,11 @@ export interface EnsureOpts {
    *  an explicit PAW_RUNTIME) asks for this: a switch despawns every agent, so a status/dm/keeper ensure()
    *  that merely notices a mismatch must never do it on its own. */
   switchRuntime?: boolean;
+  /** The caller's own "does the manager answer?" probe, used in place of ensure's. `paw status` passes
+   *  its ps read here so ONE resolved control rail serves both the probe and the status read — a
+   *  resolve is ~0.5s of Ajv compile, and doing it twice was a third of `paw status`'s wall time. Must
+   *  behave like the default probe: true iff a manager answered ok, never a throw. */
+  managerProbe?: () => Promise<boolean>;
 }
 
 /** Machine-wide default space. A folder maps to an agent NAME, not a space, so every paw agent
@@ -865,7 +870,7 @@ const MANAGER_READY_MS = 20_000;
  *  of the fix above: the probe runs in a RETRY LOOP, so an attempt made before the manager registers
  *  must FAIL FAST and let the next attempt run. With the default 10s resolve deadline a single early
  *  attempt outlived the entire readiness window — one probe, no retries, a false "didn't answer". */
-const READY_PROBE_MS = 1500;
+export const READY_PROBE_MS = 1500;
 
 /**
  * Spawn the `supervise` daemon under `runtime` through bin/cotald.ts under plain node (NOT the current
@@ -1057,10 +1062,31 @@ function escapeRegex(s: string): string {
 function pgrepF(pattern: string): number[] {
   const r = spawnSync("pgrep", ["-f", pattern], { encoding: "utf8" });
   if (r.error || typeof r.stdout !== "string") return [];
-  return r.stdout
+  return parsePids(r.stdout);
+}
+function parsePids(stdout: string): number[] {
+  return stdout
     .split("\n")
     .map((l) => Number(l.trim()))
     .filter((n) => Number.isFinite(n) && n > 0);
+}
+/** {@link pgrepF} without blocking the event loop, so several scans (and other I/O) overlap. */
+function pgrepFAsync(pattern: string): Promise<number[]> {
+  return new Promise((resolve) =>
+    execFile("pgrep", ["-f", pattern], { encoding: "utf8" }, (_err, stdout) => resolve(typeof stdout === "string" ? parsePids(stdout) : [])),
+  );
+}
+/** pid → command line (`env` adds the environment, `ps -E`), one `ps -p <pid>` per pid run CONCURRENTLY.
+ *  Not one `ps -p a,b`: macOS ps given a pid LIST walks every process and costs ~130ms, where a single
+ *  pid is ~15ms. A pid that exited in between is just absent. Never throws. */
+async function psCommandsAsync(pids: number[], env = false): Promise<Map<number, string>> {
+  const one = (pid: number) =>
+    new Promise<[number, string] | undefined>((resolve) =>
+      execFile("ps", [...(env ? ["-E"] : []), "-o", "command=", "-p", String(pid)], { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 }, (err, stdout) =>
+        resolve(!err && typeof stdout === "string" ? [pid, stdout.trim()] : undefined),
+      ),
+    );
+  return new Map((await Promise.all(pids.map(one))).filter((e): e is [number, string] => e !== undefined));
 }
 /** The pgrep -f regex that matches paw's manager daemon (`cotald supervise`) for exactly `space`.
  *  Space-EXACT via the trailing ` --server` (always emitted right after `--space <space>`), so
@@ -1102,8 +1128,8 @@ export function mailboxProcs(space: string): number[] {
  * already-cmux and never restart (the 2026-07-12 empty-cmux-tabs bug). Undefined when no owned
  * manager proc is alive.
  */
-export function actualManagerRuntime(space: string): Runtime | undefined {
-  for (const pid of managerProcs(space)) {
+export function actualManagerRuntime(space: string, pids: number[] = managerProcs(space)): Runtime | undefined {
+  for (const pid of pids) {
     const res = spawnSync("ps", ["-o", "command=", "-p", String(pid)], { encoding: "utf8" });
     const cmd = res.status === 0 ? res.stdout : "";
     if (!cmd.includes("supervise")) continue;
@@ -1301,12 +1327,12 @@ export function runtimeMismatchAction(switchRuntime: boolean, envRuntime: string
   return switchRuntime || envRuntime !== undefined ? "switch" : "warn";
 }
 
-async function ensureManagerUp(space: string, server: string, switchRuntime = false): Promise<void> {
+async function ensureManagerUp(space: string, server: string, switchRuntime = false, probe?: () => Promise<boolean>): Promise<void> {
   const runtime = resolveRuntime(space);
   const creds = await probeCreds(space);
   let previous: Runtime | undefined; // the known-good runtime we killed on a switch — the rollback target
 
-  if (await managerAnswers(space, server)) {
+  if (await (probe ? probe().catch(() => false) : managerAnswers(space, server))) {
     // OWNERSHIP BY SIGNATURE, not the recorded pid: only paw starts a `cotald supervise` for a space,
     // so a running one IS paw's even when the pid marker went stale (the whole bug). The RUNNING
     // runtime comes from the live process's own command line (actualManagerRuntime) — NEVER the
@@ -1315,8 +1341,9 @@ async function ensureManagerUp(space: string, server: string, switchRuntime = fa
     // agent headless while `paw runtime cmux` reported "already running cmux" (2026-07-12). A manager
     // answering ps that has NO cotald supervise proc is a foreign one paw didn't start — stays
     // unidentified, never killed.
-    const ownedByUs = managerProcs(space).length > 0;
-    const running: Runtime | undefined = ownedByUs ? (actualManagerRuntime(space) ?? "pty") : undefined;
+    const owned = managerProcs(space);
+    const ownedByUs = owned.length > 0;
+    const running: Runtime | undefined = ownedByUs ? (actualManagerRuntime(space, owned) ?? "pty") : undefined;
     // ADOPT a running manager whose runtime matches (or one we don't own) — no surface needed to
     // merely talk to a live manager, so `paw ps`/`dm` from a NON-cmux shell reach a running cmux
     // manager fine. The assertRuntimeUsable gate is only for STARTING/SWITCHING cmux (below).
@@ -1465,7 +1492,10 @@ done`;
 
 /** Live shims connected to (or retrying) this space's hub — one per claude in hub mode. */
 export function hubShimProcs(space: string): number[] {
-  return pgrepF(`cotal-shim ${escapeRegex(hubSocketPath(space))}$`);
+  return pgrepF(hubShimPattern(space));
+}
+function hubShimPattern(space: string): string {
+  return `cotal-shim ${escapeRegex(hubSocketPath(space))}$`;
 }
 
 export interface HubState {
@@ -1483,18 +1513,28 @@ export interface HubState {
 }
 
 export async function hubState(space: string): Promise<HubState> {
-  const pids = hubProcs(space);
+  // Every process scan runs CONCURRENTLY and none blocks the event loop: `paw status` overlaps this
+  // with its own collect. Same answers as hubProcs/hubShimProcs/managerProcs, one `ps` per question.
+  const [pids, shims, managers] = await Promise.all([
+    pgrepFAsync(hubMatchPattern(space)),
+    pgrepFAsync(hubShimPattern(space)),
+    pgrepFAsync(managerMatchPattern(space)),
+  ]);
+  const [cmds, managerEnvs, answers] = await Promise.all([
+    psCommandsAsync(pids),
+    psCommandsAsync(managers, true),
+    pids.length > 0 ? hubAnswers(hubSocketPath(space)) : Promise.resolve(false),
+  ]);
   const file = hubModeFile(space);
-  const cmd = (pid: number) => spawnSync("ps", ["-o", "command=", "-p", String(pid)], { encoding: "utf8" }).stdout?.trim() ?? "";
-  const supervisor = pids.filter((p) => cmd(p).startsWith("/bin/sh"));
+  const supervisor = pids.filter((p) => (cmds.get(p) ?? "").startsWith("/bin/sh"));
   return {
     on: hubEnabled(space),
     source: process.env.PAW_COTAL_HUB?.trim() ? "env" : file === "garbage" ? "garbage" : file ? "sticky" : "default",
-    managerPinned: managerHubEnv(space),
+    managerPinned: managerHubEnv(managers.map((p) => managerEnvs.get(p) ?? "")),
     supervisor,
     hub: pids.filter((p) => !supervisor.includes(p)),
-    answers: pids.length > 0 && (await hubAnswers(hubSocketPath(space))),
-    shims: hubShimProcs(space).length,
+    answers,
+    shims: shims.length,
   };
 }
 
@@ -1510,10 +1550,9 @@ export function formatHubLine(h: HubState): string | undefined {
   return `cotal hub: ${mode} · ${proc} · ${sup} · ${sock} · ${h.shims} agent${h.shims === 1 ? "" : "s"} on shims${warn}${pinned}`;
 }
 
-/** PAW_COTAL_HUB as seen in the running manager's own environment (`ps -E`), if any. */
-function managerHubEnv(space: string): string | undefined {
-  for (const pid of managerProcs(space)) {
-    const out = spawnSync("ps", ["-E", "-o", "command=", "-p", String(pid)], { encoding: "utf8" }).stdout ?? "";
+/** PAW_COTAL_HUB as seen in a running manager's own environment (`ps -E` lines, one per manager), if any. */
+function managerHubEnv(psE: string[]): string | undefined {
+  for (const out of psE) {
     const m = /(?:^|\s)PAW_COTAL_HUB=(\S*)/.exec(out);
     if (m) return m[1];
   }
@@ -1588,7 +1627,7 @@ export async function ensure(opts: EnsureOpts = {}): Promise<{ space: string; se
     if (opts.needMesh || opts.needManager) await ensureMesh(space, server);
     // The hub before the manager: the connector points every agent the manager spawns at it.
     if (opts.needMesh || opts.needManager) await ensureHub(space);
-    if (opts.needManager) await ensureManagerUp(space, server, opts.switchRuntime);
+    if (opts.needManager) await ensureManagerUp(space, server, opts.switchRuntime, opts.managerProbe);
     // Any mesh-up context keeps "you" reachable — so a fire-and-forget `paw dm` gets a reply later.
     if (opts.needMesh || opts.needManager) ensureMailbox(space);
   });

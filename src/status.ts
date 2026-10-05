@@ -10,15 +10,15 @@ import { sleepState } from "./sleep-state.ts";
 import { dmDurable, dmStream, parsePrincipalKey, type Command, registry } from "@cotal-ai/core";
 import { JetStreamApiCodes, JetStreamApiError, jetstreamManager } from "@nats-io/jetstream";
 import { connect, credsAuthenticator } from "@nats-io/transport-node";
-import { existsSync } from "node:fs";
+import { closeSync, existsSync, openSync, readSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { agentNamesForFolder, canonicalDir, controlCreds, listAgents, personaFilePath, psRowAlive, terminalLost, type PsRow, wirePrincipal } from "./addressing.ts";
 import { withManagerControl, type ManagerControl } from "./control.ts";
 import { listForeground } from "./foreground.ts";
-import { formatHubLine, hubState, readRuntimeMarker, resolveSpace, type Runtime } from "./lifecycle.ts";
+import { ensure, formatHubLine, hubState, READY_PROBE_MS, readRuntimeMarker, resolveSpace, type HubState, type Runtime } from "./lifecycle.ts";
 import { writeJson } from "./stdout.ts";
-import { liveSessionProcs, nameForSession } from "./named.ts";
-import { isClaudeHarness, readAgentType, readResumeId, transcriptExists, transcriptMtime, transcriptPath } from "./session.ts";
+import { liveSessionProcsMany, nameForSession, readIndex as readSessionIndex, type LiveSessionProc } from "./named.ts";
+import { isClaudeHarness, readAgentType, readResumeId, transcriptPath, transcriptPaths } from "./session.ts";
 import { lastFailure, lastUsage, type ContextUsage } from "./transcript.ts";
 import { tailRead, turnState, type PendingTool, type TurnState } from "./transcript.ts";
 import { gitInfoMany, type GitInfo } from "./git.ts";
@@ -113,12 +113,76 @@ const BUSY_WINDOW_MS = 10_000;
  * Falls back to that heuristic when the markers cannot be read (no pin, no transcript yet, or hooks
  * disabled so no turn_duration was ever written). The agent's OWN `working` claim still wins over both.
  */
-function liveTurn(pin: string | undefined, mesh: string): { busy: boolean; tool?: PendingTool } {
-  const state = pin ? readTurnState(pin) : undefined;
+function liveTurn(t: TranscriptRead | undefined, mesh: string): { busy: boolean; tool?: PendingTool } {
+  const state = t?.turn();
   const tool = state?.inFlight ? state.tool : undefined;
   if (mesh === "working" || mesh === "waiting") return { busy: true, tool }; // what the agent said beats what we infer
   if (state?.inFlight !== undefined) return { busy: state.inFlight, tool };
-  return { busy: inferBusy(mesh, true, pin ? transcriptMtime(pin) : undefined, Date.now()) };
+  return { busy: inferBusy(mesh, true, t?.mtimeMs, Date.now()) };
+}
+
+const TAIL_SMALL = 64 * 1024;
+const TAIL_CONTEXT = 128 * 1024;
+const TAIL_TURN_WIDE = 2 * 1024 * 1024;
+
+/** The last 128KB and the last 64KB of a transcript from ONE read — byte-for-byte what
+ *  `tailRead(file, 128K)` and `tailRead(file, 64K)` return (the partial first line dropped from each),
+ *  so the failure, context and turn readers below see exactly what they did when each read its own. */
+export function transcriptTails(file: string): { small: string; context: string } {
+  const size = statSync(file).size;
+  const start = Math.max(0, size - TAIL_CONTEXT);
+  const fd = openSync(file, "r");
+  try {
+    const buf = Buffer.alloc(size - start);
+    readSync(fd, buf, 0, buf.length, start);
+    const from = (offset: number) => {
+      const s = buf.subarray(offset - start).toString("utf8");
+      return offset > 0 ? s.slice(s.indexOf("\n") + 1) : s;
+    };
+    return { small: from(Math.max(0, size - TAIL_SMALL)), context: from(start) };
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/** One transcript, read once: its mtime eagerly, its tails once, and each derived reading on demand
+ *  (the turn state is only wanted for a LIVE agent). Undefined ⇔ no transcript (not durable). */
+interface TranscriptRead {
+  mtimeMs: number;
+  failure(): { text: string; ts: number } | undefined;
+  context(): ContextUsage | undefined;
+  turn(): TurnState | undefined;
+}
+
+function readTranscript(file: string | undefined): TranscriptRead | undefined {
+  if (!file) return undefined;
+  const mtimeMs = statSync(file).mtimeMs;
+  let tails: { small: string; context: string } | undefined;
+  try {
+    tails = transcriptTails(file);
+  } catch {
+    tails = undefined; // unreadable → every reading below is "no claim", as each was on its own
+  }
+  const lines = (s: string) => s.split("\n").filter(Boolean);
+  const attempt = <T>(fn: () => T): T | undefined => {
+    try {
+      return fn();
+    } catch {
+      return undefined;
+    }
+  };
+  return {
+    mtimeMs,
+    failure: () => (tails ? attempt(() => lastFailure(lines(tails!.small))) : undefined),
+    context: () => (tails ? attempt(() => lastUsage(lines(tails!.context))) : undefined),
+    turn: () => (tails ? attempt(() => turnStateFrom(file, tails!.small)) : undefined),
+  };
+}
+
+/** {@link readTurnState} over an already-read 64KB tail. */
+function turnStateFrom(file: string, small: string): TurnState {
+  const st = turnState(small);
+  return st.inFlight !== undefined ? st : turnState(tailRead(file, TAIL_TURN_WIDE));
 }
 
 /**
@@ -132,8 +196,7 @@ export function readTurnState(pin: string): TurnState | undefined {
   const file = transcriptPath(pin);
   if (!file) return undefined;
   try {
-    const small = turnState(tailRead(file, 64 * 1024));
-    return small.inFlight !== undefined ? small : turnState(tailRead(file, 2 * 1024 * 1024));
+    return turnStateFrom(file, tailRead(file, TAIL_SMALL));
   } catch {
     return undefined; // unreadable → no claim either way
   }
@@ -164,7 +227,7 @@ export function transcriptFailure(pin: string): { text: string; ts: number } | u
   const file = transcriptPath(pin);
   if (!file) return undefined;
   try {
-    return lastFailure(tailRead(file, 64 * 1024).split("\n").filter(Boolean));
+    return lastFailure(tailRead(file, TAIL_SMALL).split("\n").filter(Boolean));
   } catch {
     return undefined;
   }
@@ -182,14 +245,13 @@ export function transcriptContext(pin: string): ContextUsage | undefined {
   const file = transcriptPath(pin);
   if (!file) return undefined;
   try {
-    return lastUsage(tailRead(file, 128 * 1024).split("\n").filter(Boolean));
+    return lastUsage(tailRead(file, TAIL_CONTEXT).split("\n").filter(Boolean));
   } catch {
     return undefined;
   }
 }
 
-function sessionConflicts(pin: string): number[] {
-  const all = liveSessionProcs(pin);
+function sessionConflicts(all: LiveSessionProc[]): number[] {
   return (all.length > 1 ? all : all.filter((p) => !p.mesh)).map((p) => p.pid); // one index read, not two
 }
 
@@ -581,21 +643,19 @@ export function rowMatches(r: StateFields, state: RowState): boolean {
 }
 
 /**
- * Per-agent durable DM-consumer lag, straight from JetStream: `dm_<id>` on `DM_<space>`, where `id`
- * is the nkey the manager minted at spawn (it's in the ps row — the same id in the agent's mesh
- * card). CotalEndpoint keeps its JetStreamManager private, so this opens its own short-lived NATS
- * connection to the same server (core's exact client libs) for the read-only `consumers.info` calls.
- * Missing consumer / missing stream → "none" (a legit never-connected state); any OTHER failure →
- * "error" + a message pushed to `errors` (surfaced on stderr — never fabricated as a healthy 0).
+ * Every consumer on the space's DM stream, from ONE listing. It used to be one full listing PER AGENT
+ * (each walked every consumer looking for its own prefix), so the cost grew with the square of the
+ * fleet. CotalEndpoint keeps its JetStreamManager private, so this opens its own short-lived NATS
+ * connection to the same server (core's exact client libs). Started before the agents needing it are
+ * known, so it overlaps the roster read — {@link inboxLag} turns it into per-agent answers.
  */
-async function fetchInboxLag(
-  space: string,
-  server: string,
-  agents: Array<{ name: string; id: string }>,
-  errors: string[],
-): Promise<Map<string, InboxState>> {
-  const lag = new Map<string, InboxState>();
-  if (agents.length === 0) return lag;
+export type DmConsumerListing =
+  | { kind: "ok"; consumers: Array<{ name: string; num_pending: number; num_ack_pending: number }> }
+  | { kind: "no-stream" }
+  | { kind: "unreachable"; message: string }
+  | { kind: "failed"; message: string };
+
+async function listDmConsumers(space: string, server: string): Promise<DmConsumerListing> {
   let nc;
   try {
     const creds = await controlCreds(space);
@@ -604,58 +664,89 @@ async function fetchInboxLag(
       ...(creds ? { authenticator: credsAuthenticator(new TextEncoder().encode(creds)) } : {}),
     });
   } catch (e) {
-    errors.push(`paw: can't reach JetStream at ${server} for inbox lag (${(e as Error).message})`);
-    for (const a of agents) lag.set(a.name, { kind: "error" });
-    return lag;
+    return { kind: "unreachable", message: (e as Error).message };
   }
   try {
     const jsm = await jetstreamManager(nc);
-    const stream = dmStream(space);
-    await Promise.all(
-      agents.map(async ({ name, id }) => {
-        // cotal 0.11 keys the DM inbox durable by the (owner, actor) PRINCIPAL, not a single nkey. The
-        // ps `id` is the manager's RAW nkey (open mesh) — normalize to the wire principal (`local.<nkey>`),
-        // then re-split to name the durable `dm_<owner>-<actor>`. Fail LOUD (never a fabricated 0) if it
-        // isn't a valid principal.
-        const principal = parsePrincipalKey(wirePrincipal(id));
-        if (!principal) {
-          lag.set(name, { kind: "error" });
-          errors.push(`paw: can't parse principal "${id}" for "${name}" inbox lag`);
-          return;
-        }
-        try {
-          // cotal 0.13 keys the DM inbox durable by (owner, actor, lifecycleUid): dm_<owner>-<actor>-<uid>
-          // (lifecycle-scoped — a successor incarnation gets a fresh consumer). The ps row doesn't carry the
-          // lifecycleUid, so LIST the stream's consumers and match this (owner,actor)'s durable by its
-          // lifecycle-agnostic prefix (`dm_<owner>-<actor>-`). dmDurable VALIDATES the uid ([a-z0-9]{26,32})
-          // and appends it last, so build with a valid dummy uid and strip exactly its length — the format
-          // never drifts from core. At most one live consumer matches.
-          const dummyUid = "a".repeat(26);
-          const prefix = dmDurable(principal.owner, principal.actor, dummyUid).slice(0, -dummyUid.length);
-          let match: { num_pending: number; num_ack_pending: number } | undefined;
-          for await (const ci of jsm.consumers.list(stream)) {
-            if (ci.name.startsWith(prefix)) {
-              match = ci;
-              break;
-            }
-          }
-          if (match) lag.set(name, { kind: "lag", queued: match.num_pending, unread: match.num_ack_pending });
-          else lag.set(name, { kind: "none" }); // no consumer for this principal — never connected (normal)
-        } catch (e) {
-          const code = e instanceof JetStreamApiError ? e.code : undefined;
-          if (code === JetStreamApiCodes.StreamNotFound) {
-            lag.set(name, { kind: "none" }); // no DM stream yet — a normal state, not an error
-          } else {
-            lag.set(name, { kind: "error" });
-            errors.push(`paw: inbox lag query failed for "${name}" (${(e as Error).message})`);
-          }
-        }
-      }),
-    );
+    try {
+      const consumers: Array<{ name: string; num_pending: number; num_ack_pending: number }> = [];
+      for await (const ci of jsm.consumers.list(dmStream(space))) consumers.push({ name: ci.name, num_pending: ci.num_pending, num_ack_pending: ci.num_ack_pending });
+      return { kind: "ok", consumers };
+    } catch (e) {
+      const code = e instanceof JetStreamApiError ? e.code : undefined;
+      if (code === JetStreamApiCodes.StreamNotFound) return { kind: "no-stream" }; // no DM stream yet — a normal state
+      return { kind: "failed", message: (e as Error).message };
+    }
   } finally {
     await nc.close().catch(() => {});
   }
+}
+
+/**
+ * Per-agent durable DM-consumer lag from a {@link listDmConsumers} listing: `dm_<owner>-<actor>-<uid>`
+ * on `DM_<space>`, where the principal comes from the nkey the manager minted at spawn (it's in the ps
+ * row — the same id in the agent's mesh card). Missing consumer / missing stream → "none" (a legit
+ * never-connected state); any OTHER failure → "error" + a message pushed to `errors` (surfaced on
+ * stderr — never fabricated as a healthy 0).
+ */
+export function inboxLag(listing: DmConsumerListing, server: string, agents: Array<{ name: string; id: string }>, errors: string[]): Map<string, InboxState> {
+  const lag = new Map<string, InboxState>();
+  if (agents.length === 0) return lag;
+  if (listing.kind === "unreachable") {
+    errors.push(`paw: can't reach JetStream at ${server} for inbox lag (${listing.message})`);
+    for (const a of agents) lag.set(a.name, { kind: "error" });
+    return lag;
+  }
+  for (const { name, id } of agents) {
+    // cotal 0.11 keys the DM inbox durable by the (owner, actor) PRINCIPAL, not a single nkey. The
+    // ps `id` is the manager's RAW nkey (open mesh) — normalize to the wire principal (`local.<nkey>`),
+    // then re-split to name the durable `dm_<owner>-<actor>`. Fail LOUD (never a fabricated 0) if it
+    // isn't a valid principal.
+    const principal = parsePrincipalKey(wirePrincipal(id));
+    if (!principal) {
+      lag.set(name, { kind: "error" });
+      errors.push(`paw: can't parse principal "${id}" for "${name}" inbox lag`);
+      continue;
+    }
+    if (listing.kind === "no-stream") {
+      lag.set(name, { kind: "none" });
+      continue;
+    }
+    if (listing.kind === "failed") {
+      lag.set(name, { kind: "error" });
+      errors.push(`paw: inbox lag query failed for "${name}" (${listing.message})`);
+      continue;
+    }
+    // cotal 0.13 keys the DM inbox durable by (owner, actor, lifecycleUid): dm_<owner>-<actor>-<uid>
+    // (lifecycle-scoped — a successor incarnation gets a fresh consumer). The ps row doesn't carry the
+    // lifecycleUid, so match this (owner,actor)'s durable by its lifecycle-agnostic prefix
+    // (`dm_<owner>-<actor>-`). dmDurable VALIDATES the uid ([a-z0-9]{26,32}) and appends it last, so
+    // build with a valid dummy uid and strip exactly its length — the format never drifts from core.
+    // At most one live consumer matches.
+    const dummyUid = "a".repeat(26);
+    const prefix = dmDurable(principal.owner, principal.actor, dummyUid).slice(0, -dummyUid.length);
+    const match = listing.consumers.find((ci) => ci.name.startsWith(prefix));
+    lag.set(name, match ? { kind: "lag", queued: match.num_pending, unread: match.num_ack_pending } : { kind: "none" });
+  }
   return lag;
+}
+
+/** The manager's ps rows by name — the liveness source every status row is judged against. */
+export async function readManagerPs(ctl: ManagerControl, opts: { timeoutMs?: number; resolveMs?: number } = {}): Promise<Map<string, PsRow>> {
+  const ps = await ctl.ps(opts.timeoutMs ?? 4000, opts.resolveMs);
+  if (!ps.ok) throw new Error(`paw: manager isn't answering (${ps.error ?? "no reply"})`);
+  return new Map(((ps.data as PsRow[]) ?? []).map((r) => [r.name, r]));
+}
+
+export interface CollectOpts {
+  /** Local git info per folder (`git` on each row). Off for the table, which never renders it. */
+  git?: boolean;
+  /** The manager's ps, already read by the caller (`paw status` reads it as ensure()'s probe). */
+  ps?: Map<string, PsRow>;
+  /** Narrow the collect to these names, given every name known (registered + manager-listed). The
+   *  expensive per-row reads then run only for the rows asked for — `paw status <name>` used to read
+   *  the whole fleet and throw all but one row away. */
+  only?: (names: string[]) => Set<string>;
 }
 
 /**
@@ -664,17 +755,24 @@ async function fetchInboxLag(
  * Split out so a second surface (the web UI) shows exactly what the table shows. The rows and the
  * inbox-lag `errors` travel together on purpose: an error here means a lag figure is UNKNOWN, and a
  * consumer that got the rows without the errors would render "—" as if it were a measured zero.
+ *
+ * Cost discipline (a 126-agent fleet took ~3.5s): every per-agent question is asked ONCE for the whole
+ * fleet — one session-index read, one `ps` for its pids, one listing of the transcript dirs, one tail
+ * read per transcript, one DM-consumer listing — and the network reads run concurrently.
  */
-export async function collectStatus(space: string, ctl?: ManagerControl, opts: { git?: boolean } = {}): Promise<{ rows: AgentStatus[]; errors: string[] }> {
-  const agents = listAgents(space);
+export async function collectStatus(space: string, ctl?: ManagerControl, opts: CollectOpts = {}): Promise<{ rows: AgentStatus[]; errors: string[] }> {
+  const server = pawServer();
+  const consumers = listDmConsumers(space, server); // independent of everything below — start it now
+  consumers.catch(() => {}); // awaited later; never an unhandled rejection meanwhile
+  let agents = listAgents(space);
   const runtime = readRuntimeMarker(space);
-  const readPs = async (c: ManagerControl) => {
-    const ps = await c.ps();
-    if (!ps.ok) throw new Error(`paw: manager isn't answering (${ps.error ?? "no reply"})`);
-    return new Map(((ps.data as PsRow[]) ?? []).map((r) => [r.name, r]));
-  };
   // A caller that polls (paw web) passes its long-lived handle; a one-shot CLI opens and closes one.
-  const psByName = ctl ? await readPs(ctl) : await withManagerControl(space, pawServer(), readPs);
+  let psByName = opts.ps ?? (ctl ? await readManagerPs(ctl) : await withManagerControl(space, server, (c) => readManagerPs(c)));
+  if (opts.only) {
+    const keep = opts.only([...new Set([...agents.map((a) => a.name), ...psByName.keys()])]);
+    agents = agents.filter((a) => keep.has(a.name));
+    psByName = new Map([...psByName].filter(([name]) => keep.has(name)));
+  }
   // Foreground `paw claude` agents (live in a terminal, not under the manager). A registered agent that's
   // ABSENT from ps but present here is LIVE — its mesh status + card.id come from the roster, not ps.
   const fgByName = new Map(listForeground(space).map((e) => [e.name, e]));
@@ -682,7 +780,28 @@ export async function collectStatus(space: string, ctl?: ManagerControl, opts: {
   // agent's presence + card.id live there, and so does an agent a previous manager spared on its way
   // down (cotal >=0.49) — running and reachable, but invisible to this manager's ps.
   const unlisted = agents.map(({ name }) => name).filter((name) => !psByName.has(name));
-  const rosterByName = await readMeshRoster(space, pawServer(), await controlCreds(space), new Set(unlisted));
+  const roster = controlCreds(space).then((creds) => readMeshRoster(space, server, creds, new Set(unlisted)));
+  roster.catch(() => {});
+  // One CONCURRENT pass over every folder before the rows are built. Serially, 54 agents × 5 git
+  // processes was 2.5s of a 3.9s collect — what the Raycast roster sat on showing "Reading the roster…".
+  const git = opts.git === false ? Promise.resolve(new Map<string, GitInfo | undefined>()) : gitInfoMany(agents.map(({ folder }) => folder));
+  git.catch(() => {});
+
+  // The local reads, done while the roster/consumer/git reads are in flight.
+  const local = new Map(
+    agents.map(({ name }) => {
+      const file = personaFilePath(space, name);
+      const has = existsSync(file);
+      return [name, { pin: has ? readResumeId(file) : undefined, harness: has ? readAgentType(file) : undefined }];
+    }),
+  );
+  const pins = [...new Set([...local.values()].flatMap((l) => (l.pin ? [l.pin] : [])))];
+  const sessionIndex = readSessionIndex();
+  const procsByPin = liveSessionProcsMany(pins, sessionIndex);
+  const files = transcriptPaths(pins);
+  const transcripts = new Map(pins.map((pin) => [pin, readTranscript(files.get(pin))]));
+
+  const rosterByName = await roster;
   const now = Date.now();
   const unmanagedLive = (name: string) => {
     const ros = rosterByName.get(name);
@@ -695,15 +814,12 @@ export async function collectStatus(space: string, ctl?: ManagerControl, opts: {
     .concat([...psByName.values()].filter((r) => !agents.some((a) => a.name === r.name)).map((r) => ({ name: r.name, id: r.id })))
     .filter((a): a is { name: string; id: string } => typeof a.id === "string" && a.id.length > 0);
   const inboxErrors: string[] = [];
-  const inboxByName = await fetchInboxLag(space, pawServer(), withIds, inboxErrors);
-  // One CONCURRENT pass over every folder before the rows are built. Serially, 54 agents × 5 git
-  // processes was 2.5s of a 3.9s collect — what the Raycast roster sat on showing "Reading the roster…".
-  const gitByFolder = opts.git === false ? new Map<string, GitInfo>() : await gitInfoMany(agents.map(({ folder }) => folder));
+  const inboxByName = inboxLag(withIds.length ? await consumers : { kind: "no-stream" }, server, withIds, inboxErrors);
+  const gitByFolder = await git;
   const rows: AgentStatus[] = agents.map(({ folder, name }) => {
-    const file = personaFilePath(space, name);
-    const pin = existsSync(file) ? readResumeId(file) : undefined;
-    const harness = existsSync(file) ? readAgentType(file) : undefined;
-    const sessionName = pin ? nameForSession(pin) : undefined;
+    const { pin, harness } = local.get(name)!;
+    const sessionName = pin ? nameForSession(pin, sessionIndex) : undefined;
+    const t = pin ? transcripts.get(pin) : undefined;
     const psRow = psByName.get(name);
     const fg = psRow ? undefined : fgByName.get(name); // ps wins; a foreground agent is only surfaced when not managed
     let mesh: string;
@@ -734,20 +850,20 @@ export async function collectStatus(space: string, ctl?: ManagerControl, opts: {
       pin,
       harness,
       sessionName,
-      durable: pin ? transcriptExists(pin) : false,
-      activeMs: pin ? transcriptMtime(pin) : undefined,
-      failure: pin ? transcriptFailure(pin) : undefined,
+      durable: !!t,
+      activeMs: t?.mtimeMs,
+      failure: t?.failure(),
       terminalLost: psRow ? terminalLost(psRow) : undefined,
       ...(unmanaged ? { unmanaged: true } : {}),
-      context: pin ? transcriptContext(pin) : undefined,
+      context: t?.context(),
       // A standalone claude on the pin, OR more than one process of any kind (a leftover `<name>_2` mesh
       // duplicate resuming the same session) — both put two writers on one transcript.
-      conflictPids: pin ? sessionConflicts(pin) : [],
+      conflictPids: pin ? sessionConflicts(procsByPin.get(pin) ?? []) : [],
       inbox: inboxByName.get(name) ?? { kind: "none" },
       // Computed HERE, not at render time. It used to live only inside formatStatus, so `paw status`
       // printed "busy" while `--json` and the web UI — reading the very same rows — saw a plain "idle"
       // and drew a working agent as merely online. Every surface now gets the same answer.
-      ...(live ? liveTurn(pin, mesh) : { busy: false }),
+      ...(live ? liveTurn(t, mesh) : { busy: false }),
       // Local git only; the PR lookup is network and stays lazy. Read CONCURRENTLY above rather than
       // one folder at a time here — see gitInfoMany.
       git: gitByFolder.get(folder),
@@ -787,13 +903,39 @@ async function status(argv: string[]): Promise<void> {
   // reads exactly this). Deliberately the SAME rows the table renders, so the two can never disagree.
   const asJson = argv.includes("--json");
   const targets = statusTargets(argv); // parsed BEFORE the collect, so a bad flag fails in ms, not after a roster read
-  const all = await collectStatus(space);
-  const rows = selectRows(all.rows, targets, (t) => {
+  const folderAgents = (t: string) => {
     const folder = canonicalDir(t);
     return { folder, names: agentNamesForFolder(space, folder) };
-  });
+  };
+  // Names and folders say WHICH rows before anything is read, so only those rows are collected. A
+  // STATE word (`busy`, `live`…) is judged on collected rows, so it still reads the whole fleet.
+  const byState = targets.some((t) => !isPathTarget(t) && STATE_WORDS[t]);
+  const only = targets.length && !byState ? (names: string[]) => new Set(selectRows(names.map((name) => ({ name })), targets, folderAgents).map((r) => r.name)) : undefined;
+  const { all, hub } = await withManagerControl(space, pawServer(), async (ctl) => {
+    // ONE control rail for both ensure()'s "is the manager up?" probe and the status read: the probe
+    // IS the ps this command needs. (`bin/paw.ts` used to ensure() first and status then resolved the
+    // service a second time — ~0.65s of Ajv compile and a round trip, twice.) ensure() still runs in
+    // full: mesh, hub, mailbox, and the manager started if the probe fails. Same space ensure() always
+    // used (the default one), so the probe is only shared when that is the space being read.
+    let ps: Map<string, PsRow> | undefined;
+    let hubAtProbe: Promise<HubState> | undefined;
+    const managerProbe = async () => {
+      // ensure() probes the manager AFTER bringing the hub up, and once the probe answers nothing else
+      // in it touches hub or manager — so the hub read can run during the ps round trip.
+      hubAtProbe = hubState(space);
+      hubAtProbe.catch(() => {});
+      ps = await readManagerPs(ctl, { timeoutMs: 2000, resolveMs: READY_PROBE_MS });
+      return true;
+    };
+    await ensure({ needMesh: true, needManager: true, ...(space === resolveSpace() ? { managerProbe } : {}) });
+    // A failed probe means ensure() went on to start a manager — read the hub (its manager env) afresh.
+    const hub = ps && hubAtProbe ? hubAtProbe : hubState(space);
+    hub.catch(() => {});
+    const all = await collectStatus(space, ctl, { ps, git: asJson, only });
+    return { all, hub: await hub };
+  }, { only: ["ps"] }); // status sends nothing but ps — resolve just its contract (control.ts resolveCommands)
+  const rows = selectRows(all.rows, targets, folderAgents);
   const { errors } = all;
-  const hub = await hubState(space);
   if (asJson) {
     writeJson({ space, rows, errors, hub }); // writeJson, NOT console.log — see src/stdout.ts
     return; // errors ride IN the payload — a consumer must see them, not have them land on stderr only

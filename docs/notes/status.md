@@ -23,7 +23,7 @@ Moved verbatim from CLAUDE.md (2026-10-02 split). Index: [CLAUDE.md](../../CLAUD
   durability/two-writer note (`⚠ two writers (pid …)` from `foreignWriters`, `⚠ no pin` (claude-only —
   an opencode/codex agent has no claude `resume:` so the warning is a lie), `fresh`, or
   quiet when durable). Rows sort live-first then most-recently-active. `formatStatus`/`meshStatus`/`ago`/
-  `inboxText`/`inboxStuck` are pure/unit-tested. In NEEDS_MANAGER (reads the manager ps for liveness).
+  `inboxText`/`inboxStuck` are pure/unit-tested. Runs ensure() ITSELF (not via NEEDS_MANAGER — see "speed" below).
   Test: `check:status`.
 - **`live (unmanaged)`:** every registered agent missing from ps is looked up on the presence roster
   (`readMeshRoster`, waits for the KV snapshot, not a fixed sleep); a live, fresh-heartbeat entry →
@@ -83,3 +83,51 @@ Moved verbatim from CLAUDE.md (2026-10-02 split). Index: [CLAUDE.md](../../CLAUD
   never advances the shared `inbox.cursor`** — a GUI polling every second would otherwise silently
   mark everything read out from under `paw inbox`/`paw chat`, which share that one unread marker;
   `--watch` + `--json` fail loud (one-shot vs feed).
+
+## speed
+
+- **2026-10-05: `paw status <name>` 3.6s → ~0.5s, full `paw status` 3.5s → ~0.65s** (126 registered,
+  18 live, bun CLI, load ~15; medians of 5, interleaved with the old build). Profiled with
+  `bun --cpu-prof` and phase timers; where the time went and what fixed it:
+  - **The control-rail resolve, twice (~1.3s).** `bin/paw.ts` ran `ensure()` (whose manager probe is a
+    full `ps`) and then status opened a SECOND `ManagerControl` and resolved the service again. A
+    resolve is NOT one round trip: cotal's `resolveService` recompiles the input+output contract of
+    EVERY command the manager serves (31 in 0.66 → 62 Ajv compiles, each building a fresh Ajv that
+    re-compiles the 2020-12 meta-schema) — ~0.5s of CPU. Fixes: (1) `status` left NEEDS_MANAGER and
+    calls `ensure({ managerProbe })` itself — the probe IS status's ps read, on status's own control
+    (`EnsureOpts.managerProbe`; ensure otherwise unchanged — mesh, hub, mailbox, manager start if the
+    probe fails; only shared when the read space is the space ensure() targets); (2)
+    `withManagerControl(…, { only: ["ps"] })` resolves just `ps` via `resolveCommands` in
+    src/control.ts — cotal's own walk (describe → contract store → closure fetch → profile compile,
+    same tamper checks) over its exported pieces, stopped after the named commands. 429ms → ~65ms. A
+    command outside `only` fails loud as `not-found` (`check:rail` 5b). Asked upstream as an `only`
+    option on `resolveService`; drop the local copy when it lands.
+  - **`status <name>` collected the whole fleet then filtered.** Names/folders now resolve FIRST
+    (`CollectOpts.only`, the same `selectRows` over name stubs, so unknown names fail loud with the
+    same did-you-mean); per-row reads run only for the asked rows. State words (`busy`, `live`…) still
+    read everything — they are judged on collected rows.
+  - **git for 126 folders (~1s, 600+ subprocesses) for a column the table never shows.** The table
+    collects with `git: false`; `--json` keeps it (Raycast reads it) — the JSON shape is unchanged.
+  - **Per-agent rereads.** `transcriptPath` scanned all ~290 `~/.claude/projects` dirs per call, ~5
+    calls per agent; the session index (`~/.claude/sessions`) was re-read per agent twice; failure,
+    context and turn state each did their own tail read. Now: `transcriptPaths` (one listing of each
+    project dir, same first-dir-wins answer), `readIndex()` once, and `transcriptTails` (ONE 128KB
+    read, sliced so it is byte-for-byte `tailRead(64K)`/`tailRead(128K)`). Turn state is still only
+    computed for live rows.
+  - **Process scans.** `liveSessionProcs` ran `ps` per live pid; now one `ps -A` for all
+    (`liveSessionProcsMany`). NOTE macOS ps: `-p a,b,c` (a pid LIST) costs ~130ms — it walks every
+    process — while `-p <one>` is ~15ms and `-A` ~50ms. `hubState` was 3 sync pgreps + a ps per pid;
+    it is now async + concurrent (per-pid `ps -p`), and runs during the probe's ps round trip.
+    `ensureManagerUp` reuses its `managerProcs` result instead of a second pgrep.
+  - **Inbox lag** listed every DM consumer once PER AGENT; now one listing, started at the top of
+    the collect so it overlaps the roster read (`listDmConsumers` + pure `inboxLag`, same
+    none/error/`?` rules — `check:status`).
+  - **Startup.** `bin/paw.ts` loads command modules lazily: `status` imports only src/status.ts
+    (~0.15s less evaluation); every other command still loads all of them, in the old order.
+- **What's left (~0.5s):** bun start + imports ~0.15s, the manager's own reply latency ~0.14s per
+  request (ps and inspect alike — manager side, not paw), the narrowed resolve ~65ms, ensure's
+  pgreps ~70ms. Getting to ~0.2s needs the manager to answer faster or a long-lived holder of a
+  resolved rail (paw web's `sharedManagerControl` is one) to answer `status` for the CLI.
+- Verified identical: `paw status --json` (all rows, every field but `activeMs`), the table (every
+  line but ACTIVE), `status <name>`, `status live`, `status <folder>`, and the unknown-name error,
+  against the previous build on the live fleet.

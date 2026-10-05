@@ -161,6 +161,16 @@ try {
     ok("despawn of an unknown agent is REFUSED, not hung", !d.ok && ms2 < 10_000, `ok=${d.ok} in ${ms2}ms (${d.error ?? "no error"})`);
   });
 
+  // 5b. The NARROWED resolve (`paw status` resolves only `ps`): the same answer as the full surface, and
+  //     a command outside it fails loud as not-found rather than being sent unvalidated.
+  {
+    const full = await withManagerControl(space, pawServer(), (ctl) => ctl.ps(PROBE_DEADLINE_MS));
+    const narrow = await withManagerControl(space, pawServer(), (ctl) => ctl.ps(PROBE_DEADLINE_MS), { only: ["ps"] });
+    ok("ps over a ps-only resolve answers like the full one", narrow.ok && full.ok && JSON.stringify(narrow.data) === JSON.stringify(full.data), `ok=${narrow.ok} (${narrow.error ?? "same rows"})`);
+    const outside = await withManagerControl(space, pawServer(), (ctl) => ctl.inspect("no-such-agent-here"), { only: ["ps"] });
+    ok("a command outside a narrowed resolve fails loud", !outside.ok && /not in .*visible surface|not-found/.test(outside.error ?? ""), outside.error ?? "no error");
+  }
+
   // 6. Optional: with a REAL agent in the space. Off by default because it launches claude — an API
   //    session and ~a minute — but it is the state a live manager is actually in, and a rail that only
   //    works against an empty manager would be a rail that works in tests and nowhere else.
