@@ -225,22 +225,24 @@ export function entryVisible(e: Entry, view: ChatView, target: string | undefine
   }
 }
 
-/** The history's bound. A reprint writes all of it, and a day-long chat must not grow without limit. */
-export const HISTORY_CAP = 3000;
+/** How many TRACE (`log`) entries the history keeps. Conversation — messages, echoes, the banner — is
+ *  never dropped: the operator wants every message for the life of the chat. Only the followed agent's
+ *  trace blocks, which arrive every second and can be large, are bounded (oldest trace first). */
+export const LOG_CAP = 3000;
 
 export class History {
   readonly entries: Entry[] = [];
   private readonly cap: number;
-  constructor(cap = HISTORY_CAP) {
+  private logs = 0;
+  constructor(cap = LOG_CAP) {
     this.cap = cap;
   }
   push(e: Entry): void {
     this.entries.push(e);
-    // Drop the oldest NON-banner entry: the banner is what a reprint opens with.
-    if (this.entries.length > this.cap) {
-      const i = this.entries.findIndex((x) => x.kind !== "banner");
-      this.entries.splice(i < 0 ? 0 : i, 1);
-    }
+    if (e.kind !== "log" || ++this.logs <= this.cap) return;
+    const i = this.entries.findIndex((x) => x.kind === "log");
+    this.entries.splice(i, 1);
+    this.logs--;
   }
 }
 

@@ -232,11 +232,17 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
   pr.paint({ kind: "chat", text: "reply", side: "peer", tight: false }, "chat");
   assert(pr.paint({ kind: "chat", text: "joined", side: "sys", tight: false }, "chat") === "joined\n", "painter: after a trailing blank, a side change adds no second blank");
 
-  // History — bounded, banner survives
-  const h = new History(3);
+  // History — conversation kept forever, only trace (log) entries bounded
+  const h = new History(2);
   h.push({ kind: "banner", text: "B" });
-  for (let i = 0; i < 5; i++) h.push({ kind: "chat", text: `m${i}`, side: "sys", tight: true });
-  assert(h.entries.length === 3 && h.entries[0].kind === "banner" && (h.entries[2] as { text: string }).text === "m4", "history: capped, oldest non-banner dropped, the banner kept");
+  for (let i = 0; i < 5; i++) {
+    h.push({ kind: "chat", text: `m${i}`, side: "peer", tight: true });
+    h.push({ kind: "log", agent: "a", blocks: [], backfill: false, note: `l${i}` });
+  }
+  const kinds = h.entries.map((e) => e.kind);
+  const notes = h.entries.filter((e) => e.kind === "log").map((e) => (e as { note?: string }).note);
+  assert(kinds.filter((k) => k === "chat").length === 5 && kinds[0] === "banner", "history: every message and the banner kept");
+  assert(notes.join() === "l3,l4", "history: only the newest trace entries kept, oldest trace dropped");
 
   // LogFollower — hands over RAW blocks as log entries
   const mkSrc = (history: B[]) => {
