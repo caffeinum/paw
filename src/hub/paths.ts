@@ -74,6 +74,14 @@ export function hubSocketPath(space: string): string {
   return p;
 }
 
+/** A headless agent's pipe dir: `in` (the FIFO its `claude -p` reads stream-json from) and
+ *  `out.jsonl` (its stream-json output). The hub derives the same path from its socket's dir
+ *  (src/hub/headless.mjs `headlessDirFor`) — keep the two in step. */
+export function headlessDir(space: string, name: string): string {
+  if (!/^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(name) || name.includes("..")) throw new Error(`paw: "${name}" is not a safe agent name for a headless pipe dir`);
+  return join(spaceDir(space), "headless", name);
+}
+
 export function shimSourcePath(root = TREE_ROOT): string {
   return join(root, "src", "hub", "cotal-shim.c");
 }

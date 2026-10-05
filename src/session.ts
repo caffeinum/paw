@@ -70,6 +70,16 @@ export function readAgentType(configPath: string | undefined): string | undefine
   return scalar(configPath, "agent");
 }
 
+/** The persona's `headless:` flag — run this claude agent as `claude -p` (stream-json) with no TUI
+ *  (docs/notes/headless.md). Absent ⇒ false (the TUI). Anything but `true`/`false` throws: a typo must
+ *  not silently boot the other mode. */
+export function readHeadless(configPath: string | undefined): boolean {
+  const v = scalar(configPath, "headless");
+  if (v === undefined || v === "false") return false;
+  if (v === "true") return true;
+  throw new Error(`paw: headless: in ${configPath} is "${v}" — expected true or false`);
+}
+
 /** True when this agent writes a claude jsonl that `paw log` / the web trace can tail.
  *  Absent `agent:` is paw's default claude connector. `cotal`/`paw` are aliases of the same harness. */
 export function isClaudeHarness(agentType: string | undefined): boolean {

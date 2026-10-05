@@ -42,6 +42,7 @@
     "check:top": "node scripts/check-top.ts",
     "check:sleep": "node scripts/check-sleep.ts",
     "check:hub": "node scripts/check-hub.ts",
+    "check:headless": "node scripts/check-headless.ts",
     "check:trust": "node scripts/check-trust.ts"
   },
   "dependencies": {

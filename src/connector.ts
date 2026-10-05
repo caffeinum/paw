@@ -4,8 +4,9 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { HUMAN_PEER } from "./names.ts";
 import { beadsDir } from "./beads-dir.ts";
-import { readClaudeArgs, readResumeId, transcriptExists } from "./session.ts";
-import { ensureShim, hubEnabled, hubSocketPath } from "./hub/paths.ts";
+import { readClaudeArgs, readHeadless, readResumeId, transcriptExists } from "./session.ts";
+import { ensureShim, headlessDir, hubEnabled, hubSocketPath } from "./hub/paths.ts";
+import { headlessLaunch } from "./headless.ts";
 import { routeCotalToHub } from "./hub/route.ts";
 
 /** Claude Code's permission modes — PAW_PERMISSION must be one of these (fail loud otherwise). */
@@ -236,6 +237,15 @@ export const pawConnector: Connector = {
     // agent-filed task reads "created by Aleksey Bykhun" — the one fact the operator's hover card
     // exists to answer ("which agent filed this?") fabricated away by a default.
     const env = { ...spec.env, BEADS_DIR: beadsDir(), BEADS_ACTOR: opts.name };
+
+    // `headless: true` in the persona: the same launch, run as `claude -p` stream-json with no TUI
+    // (docs/notes/headless.md). -p drops the channel push, so the HUB is what wakes it — no hub, no
+    // way to deliver a DM, so refuse rather than boot a deaf agent.
+    if (readHeadless(opts.configPath)) {
+      if (!hubEnabled(opts.space))
+        throw new Error(`paw: "${opts.name}" is headless, which needs the cotal hub to deliver its messages — \`paw hub on --space ${opts.space}\` first`);
+      return headlessLaunch({ ...spec, args, env }, headlessDir(opts.space, opts.name));
+    }
 
     return { ...spec, args, env };
   },

@@ -13,7 +13,7 @@ import { attachTmux, tmuxSession, tmuxSplit, tmuxSplitAdvice, tmuxWindowExists }
 import { liveSessionProcs } from "./named.ts";
 import { existsSync } from "node:fs";
 import { assertUnambiguousTarget, canonicalDir, ensureAgentSpawned, folderForName, personaFilePath, registerInstance, resolveFolderAgent, setFolderName, type Kind } from "./addressing.ts";
-import { readAgentType, readResumeId } from "./session.ts";
+import { readAgentType, readHeadless, readResumeId } from "./session.ts";
 import { withManagerControl } from "./control.ts";
 import { readForeground } from "./foreground.ts";
 import { isAddressHandle, resolveAddress } from "./address.ts";
@@ -120,6 +120,16 @@ export async function attachResolved(
   // One control round-trip: spawn if we resolved a folder. Attaching is per-runtime below.
   if (folder && !windowOpen) {
     await withManagerControl(space, pawServer(), (ctl) => ensureAgentSpawned(ctl, { space, name, cwd: folder, model, brief, kind }));
+  }
+
+  // A HEADLESS agent (`claude -p`, docs/notes/headless.md) has no TUI anywhere: its window holds only
+  // stderr, and its stdin is the hub's FIFO. Say so instead of dropping the operator into a blank pane.
+  if (readHeadless(personaFilePath(space, name))) {
+    process.stdout.write(
+      `"${name}" is headless (claude -p, no TUI) — there is nothing to attach to. ` +
+        `\`paw log ${name}\` shows what it does, \`paw dm ${name} "…"\` talks to it, \`paw stop ${name}\` ends it.\n`,
+    );
+    return;
   }
 
   if (runtime === "tmux") {
