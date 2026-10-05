@@ -47,7 +47,16 @@ Moved verbatim from CLAUDE.md (2026-10-02 split). Index: [CLAUDE.md](../../CLAUD
   POST takes `op: create|update|close|comment` (+`parent`, `text`), and writes return `{ok}`/`{id}`
   WITHOUT re-listing (a re-list doubled every write's cost — each bd call boots an embedded dolt
   engine, ~1s). **bd calls are SERIALIZED** (`chain` in tasks.ts): dolt is single-writer and two
-  overlapping pad writes made one fail. Pure parts tested in `check:web` (treeOrder/taskDepth/
+  overlapping pad writes made one fail. **Reads take their own lane** (`bdRead`, 2 at a time, `urgent`
+  jumps the queue — 2026-10-05): a bead modal's `bd comments` used to wait behind the company page's
+  list refresh, 0.4–2.2s live. Reads overlapping writes are safe (probed: 36 reads × 24 writes across
+  processes, zero failures); caches capture `writeGeneration()` at the START of a read and don't store
+  rows a mid-read paw write may have outdated. **Comments:** `allComments()` = ONE `bd export` (~1s
+  for the whole db; `bd show <ids…> --include-comments` is ~0.6s PER id, `bd sql` refuses in embedded
+  mode), 15s cache; `GET /api/company/<slug>/comments` serves a company's threads from it, the page
+  keeps them in localStorage and re-reads only when bd's comment counts move, prefetches a row's
+  thread on hover/focus, and the modal paints the thread in hand at once (measured modal→comments:
+  median 670ms/max 1.05s → ~50ms). Pure parts tested in `check:web` (treeOrder/taskDepth/
   pasteOutline/relTime/cycleStatus/deletionPlan); DOM behaviour is verified with **python playwright
   (1.29, `/opt/homebrew/bin/playwright`) against the live daemon, asserting COMPUTED STYLE** — see
   the lesson below.

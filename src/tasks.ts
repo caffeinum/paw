@@ -139,9 +139,9 @@ export function bdEnv(): NodeJS.ProcessEnv {
   return { ...process.env, BEADS_DIR: beadsDir(), PATH: dirs.join(":") };
 }
 
-function bdExec(args: string[], timeoutMs: number): Promise<string> {
+function bdExec(args: string[], timeoutMs: number, maxBuffer = 4 * 1024 * 1024): Promise<string> {
   return new Promise((resolve, reject) => {
-    execFile("bd", args, { env: bdEnv(), timeout: timeoutMs, maxBuffer: 4 * 1024 * 1024 }, (err, stdout, stderr) => {
+    execFile("bd", args, { env: bdEnv(), timeout: timeoutMs, maxBuffer }, (err, stdout, stderr) => {
       if (err) reject(new Error(`bd ${args[0]}: ${(stderr || err.message).trim().split("\n")[0]}`));
       else resolve(stdout);
     });
@@ -161,6 +161,35 @@ function bd(args: string[], timeoutMs = 30_000): Promise<string> {
   );
   chain = next.catch(() => {});
   return next;
+}
+
+/**
+ * READS take their own lane, never the write chain: a bead modal's `bd comments` used to queue behind
+ * the company page's list refresh (one `bd show` per blocked bead), 0.4–2.2s on the live db. Reads
+ * overlapping writes are safe — bd locks across processes, and every agent's bd already overlaps
+ * paw's (probed 2026-10-05: 36 reads interleaved with 24 writes, zero failures). Two at a time, so a
+ * burst can't boot a dozen dolt engines at once; `urgent` (someone is waiting on screen) jumps the queue.
+ * A read that overlaps a paw write may return pre-write rows — caches check {@link writeGeneration}
+ * at the START of their read before storing.
+ */
+const READ_LANES = 2;
+let reading = 0;
+const readQueue: Array<() => void> = [];
+function bdRead(args: string[], opts: { urgent?: boolean; timeoutMs?: number; maxBuffer?: number } = {}): Promise<string> {
+  return new Promise<string>((resolve, reject) => {
+    const run = () => {
+      reading++;
+      bdExec(args, opts.timeoutMs ?? 30_000, opts.maxBuffer)
+        .then(resolve, reject)
+        .finally(() => {
+          reading--;
+          readQueue.shift()?.();
+        });
+    };
+    if (reading < READ_LANES) run();
+    else if (opts.urgent) readQueue.unshift(run);
+    else readQueue.push(run);
+  });
 }
 
 const TASKS_TTL_MS = 15_000;
@@ -202,10 +231,11 @@ export async function listTasks(): Promise<Task[]> {
   // Open work (bd's default filter; `-n 0` lifts bd's silent 50-row cap) PLUS the last week's closed
   // beads, so done work stays on screen at the bottom instead of vanishing the moment it's ticked.
   const since = new Date(Date.now() - CLOSED_WINDOW_DAYS * 86_400_000).toISOString().slice(0, 10);
-  const open = parseTasks(await bd(["list", "--json", "-n", "0"]));
+  const gen = writes;
+  const open = parseTasks(await bdRead(["list", "--json", "-n", "0"]));
   let closed: Task[] = [];
   try {
-    closed = parseTasks(await bd(["list", "--json", "-n", "0", "--status", "closed", "--closed-after", since]));
+    closed = parseTasks(await bdRead(["list", "--json", "-n", "0", "--status", "closed", "--closed-after", since]));
   } catch {
     /* an older bd without --closed-after: the open list is still the list */
   }
@@ -217,7 +247,7 @@ export async function listTasks(): Promise<Task[]> {
   for (const t of tasks) {
     if (!t.blockedBy || !isOpen(t)) continue;
     try {
-      const shown: unknown = JSON.parse(await bd(["show", t.id, "--json"]));
+      const shown: unknown = JSON.parse(await bdRead(["show", t.id, "--json"]));
       const d = (Array.isArray(shown) ? shown[0] : shown) as { dependencies?: Array<{ id?: unknown }> };
       t.blockedBy = (d.dependencies ?? [])
         .map((x) => (typeof x.id === "string" ? x.id : ""))
@@ -241,7 +271,7 @@ export async function listTasks(): Promise<Task[]> {
         }
       }),
   );
-  cache = { at: Date.now(), tasks };
+  if (gen === writes) cache = { at: Date.now(), tasks }; // a paw write landed mid-read: these rows may predate it
   return tasks;
 }
 
@@ -303,7 +333,7 @@ export async function updateTask(id: string, fields: { title?: string; descripti
  *  returns the ids moved. Closed work keeps its historical assignee. For `paw rename`: without it the
  *  renamed agent stopped seeing its own queue (9 open beads stayed on vibeos-landing, 2026-10-03). */
 export async function reassignOpenTasks(from: string, to: string): Promise<string[]> {
-  const ids = parseTasks(await bd(["list", "-n", "0", "-a", from, "--json"]))
+  const ids = parseTasks(await bdRead(["list", "-n", "0", "-a", from, "--json"]))
     .filter((t) => isOpen(t) && t.assignee === from)
     .map((t) => t.id);
   for (const id of ids) await updateTask(id, { assignee: to });
@@ -316,7 +346,7 @@ export async function listLabelled(labels: string[]): Promise<Task[]> {
   if (!labels.length) throw new Error("listLabelled: at least one label");
   const args = ["list", "--json", "-n", "0", "--all"];
   for (const l of labels) args.push("-l", l);
-  return parseTasks(await bd(args));
+  return parseTasks(await bdRead(args));
 }
 
 /** Beads by metadata: `{hasKey}` → `--has-metadata-key`, `{field: [k, v]}` → `--metadata-field k=v`. Closed included. */
@@ -326,7 +356,7 @@ export async function listByMetadata(q: { hasKey?: string; field?: [string, stri
   if (!q.hasKey && !q.field) throw new Error("listByMetadata: give hasKey or field");
   if (q.hasKey) args.push("--has-metadata-key", q.hasKey);
   if (q.field) args.push("--metadata-field", `${q.field[0]}=${q.field[1]}`);
-  return parseTasks(await bd(args));
+  return parseTasks(await bdRead(args));
 }
 
 /** Attach a comment to a bead — durable, part of the task's record (`bd show`/`bd comments`), unlike
@@ -392,10 +422,54 @@ export function parseComments(json: string): TaskComment[] {
   return out;
 }
 
-/** The comment thread on a bead, oldest first (bd's order). Not cached: it's read on demand when a
- *  card opens, and the operator just posted to it. */
+/** Every bead's thread from `bd export` (JSONL, one issue per line, comments inline), keyed by id —
+ *  beads without comments are absent. Pure. A line that isn't JSON is an error: bd said something
+ *  we don't understand, and "no comments" would hide it. */
+export function parseExportComments(jsonl: string): Map<string, TaskComment[]> {
+  const out = new Map<string, TaskComment[]>();
+  for (const line of jsonl.split("\n")) {
+    if (!line.trim()) continue;
+    const row: unknown = JSON.parse(line);
+    if (!row || typeof row !== "object") continue;
+    const r = row as { id?: unknown; comments?: unknown };
+    if (typeof r.id !== "string" || !Array.isArray(r.comments) || !r.comments.length) continue;
+    out.set(r.id, parseComments(JSON.stringify(r.comments)));
+  }
+  return out;
+}
+
+/** How long one `bd export` stands in for every bead's `bd comments`. Comments by agents (other
+ *  processes) show up within this; paw's own comment drops it at once (writeGeneration). */
+const COMMENTS_TTL_MS = 15_000;
+let commentsCache: { at: number; gen: number; byId: Map<string, TaskComment[]> } | undefined;
+let commentsLoading: Promise<Map<string, TaskComment[]>> | undefined;
+const commentsFresh = (): boolean => !!commentsCache && commentsCache.gen === writes && Date.now() - commentsCache.at < COMMENTS_TTL_MS;
+
+/**
+ * Every bead's comments in ONE bd call: `bd export` is ~1s for the whole live db (899 beads, 1.1MB),
+ * where `bd show <ids…> --include-comments` costs ~0.6s PER id and there's no `bd sql` in embedded
+ * mode. Single-flight; served from cache within COMMENTS_TTL_MS of the last export.
+ */
+export async function allComments(): Promise<Map<string, TaskComment[]>> {
+  if (commentsFresh()) return (commentsCache as NonNullable<typeof commentsCache>).byId;
+  commentsLoading ??= (async () => {
+    const gen = writes;
+    try {
+      const byId = parseExportComments(await bdRead(["export"], { maxBuffer: 256 * 1024 * 1024, timeoutMs: 60_000 }));
+      if (gen === writes) commentsCache = { at: Date.now(), gen, byId };
+      return byId;
+    } finally {
+      commentsLoading = undefined;
+    }
+  })();
+  return commentsLoading;
+}
+
+/** The comment thread on a bead, oldest first (bd's order). From the export cache when it's fresh
+ *  (and no paw write since), else its own `bd comments`, urgent — someone is looking at the modal. */
 export async function listComments(id: string): Promise<TaskComment[]> {
-  return parseComments(await bd(["comments", id, "--json"]));
+  if (commentsFresh()) return (commentsCache as NonNullable<typeof commentsCache>).byId.get(id) ?? [];
+  return parseComments(await bdRead(["comments", id, "--json"], { urgent: true }));
 }
 
 export async function closeTask(id: string, reason?: string, actor?: string): Promise<void> {

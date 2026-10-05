@@ -38,6 +38,8 @@ import {
   setupFrom,
   retryPlan,
   mergeRetry,
+  staleThreads,
+  presence,
 } from "./company-model.js";
 
 const esc = (s) => String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
@@ -99,7 +101,9 @@ export function initCompany(deps) {
     error: undefined,
     view: "agent",
     bead: undefined,
-    thread: undefined, // {id, comments?, error?}
+    thread: undefined, // {id, comments?, error?} — the open bead's own refresh
+    threads: {}, // bead id → comments, every company bead's thread (one bd export), cached in localStorage
+    threadsSig: undefined, // the comment counts the threads were read against — a change re-reads them
     adding: undefined, // whose "+ Add" input is open
     open: new Set(), // expanded milestone ids (this visit)
     note: new Map(), // bead id / "add:<who>" / "err:<id>" → {ok, text}
@@ -164,6 +168,9 @@ export function initCompany(deps) {
    */
   const cacheKey = (slug) => `paw.company.${deps.space?.() ?? ""}.${slug}.cache`;
   const listKey = () => `paw.company.${deps.space?.() ?? ""}.list.cache`;
+  const threadsKey = (slug) => `paw.company.${deps.space?.() ?? ""}.${slug}.comments`;
+  /** bd's comment counts for the company's beads, as one string: when it changes, a thread changed. */
+  const countSig = (d) => d.issues.map((b) => `${b.id}:${b.comments ?? 0}`).join(",");
 
   /** Paint from the localStorage copy (payload + company list) when the space is known and there is one. */
   function adoptCache() {
@@ -175,6 +182,10 @@ export function initCompany(deps) {
         s.cachedAt = cached.at; // set ⇒ what's on screen is a copy awaiting its refresh
         deps.onLoaded?.(s.data);
       }
+    }
+    if (!Object.keys(s.threads).length) {
+      const t = store.get(threadsKey(s.slug), undefined);
+      if (t && typeof t.threads === "object" && t.threads) s.threads = t.threads;
     }
     if (!s.companies.length) {
       const list = store.get(listKey(), []);
@@ -193,6 +204,8 @@ export function initCompany(deps) {
       s.error = undefined;
       store.set(cacheKey(s.slug), { at: Date.now(), data: d });
       deps.onLoaded?.(d);
+      // the threads ride the counts: re-read only when this visit hasn't yet, or a count moved
+      if (s.threadsSig !== countSig(d)) void loadThreads(d);
     } catch (e) {
       if (mine !== seq) return;
       s.error = String(e?.message ?? e);
@@ -202,6 +215,48 @@ export function initCompany(deps) {
       }
     }
     paint();
+  }
+
+  /** Every thread on the company's beads in one request (server: one `bd export`), so opening a bead
+   *  never waits on bd. Kept in localStorage per space like the page payload. */
+  let threadsBusy = false;
+  async function loadThreads(d) {
+    if (threadsBusy) return;
+    threadsBusy = true;
+    const slug = s.slug;
+    const sig = countSig(d);
+    try {
+      const r = await deps.api(`/api/company/${encodeURIComponent(slug)}/comments`);
+      if (s.slug !== slug) return;
+      s.threads = r.comments ?? {};
+      s.threadsSig = sig;
+      s.threadsError = undefined;
+      store.set(threadsKey(slug), { at: Date.now(), threads: s.threads });
+    } catch (e) {
+      if (s.slug === slug) s.threadsError = String(e?.message ?? e);
+    } finally {
+      threadsBusy = false;
+    }
+    paint();
+  }
+
+  /** Hover/focus on a row whose thread isn't in hand (or is behind bd's count): read just that one. */
+  const prefetching = new Set();
+  function prefetch(id) {
+    const b = s.data?.issues.find((i) => i.id === id);
+    if (!b || !b.comments || s.threads[id]?.length === b.comments || prefetching.has(id)) return;
+    prefetching.add(id);
+    post("/api/tasks", { op: "comments", id })
+      .then((r) => {
+        if (Array.isArray(r.comments)) keepThread(id, r.comments);
+      })
+      .catch(() => {}) // a prefetch is a head start; the modal's own read says what failed
+      .finally(() => prefetching.delete(id));
+  }
+
+  function keepThread(id, comments) {
+    s.threads = { ...s.threads, [id]: comments };
+    store.set(threadsKey(s.slug), { at: Date.now(), threads: s.threads });
   }
 
   async function loadCompanies() {
@@ -230,6 +285,9 @@ export function initCompany(deps) {
       s.data = undefined;
       s.cachedAt = undefined;
       s.error = undefined;
+      s.threads = {};
+      s.threadsSig = undefined;
+      s.threadsError = undefined;
       adoptCache();
       s.open = new Set();
       store.del(k("banner")); // the pre-structured banner string; gone members now come from the server
@@ -333,10 +391,12 @@ export function initCompany(deps) {
   }
 
   const rowsByName = () => new Map((deps.rows() ?? []).map((r) => [r.name, r]));
+  /** The agent's presence after its name: a dot (idle solid, asleep a ring, offline faint), and while
+   *  it's WORKING a small accent pill with a pulsing dot — the one state worth catching from across the room. */
   function dot(name) {
-    const r = rowsByName().get(name);
-    const live = !!r && r.live && r.mesh !== "offline";
-    return `<span class="co-dot${live ? " live" : ""}" title="${esc(!r ? "not in this space's roster" : live ? r.mesh : "asleep — a DM wakes it")}"></span>`;
+    const p = presence(rowsByName().get(name));
+    if (p.kind === "working") return `<span class="co-state co-working" title="${esc(p.title)}"><i class="co-dot"></i>working</span>`;
+    return `<span class="co-dot co-${p.kind}" title="${esc(p.title)}"></span>`;
   }
   const errLine = (text, retry) => `<p class="co-bad">${esc(text)}${retry ? ` <button class="co-link" data-act="${retry}">retry</button>` : ""}</p>`;
 
@@ -489,7 +549,7 @@ export function initCompany(deps) {
       : "";
     const lead = c.lead;
     const last = lead ? deps.lastMessage?.(lead) : undefined;
-    const chatRow = lead ? `<button class="co-chatrow" data-act="lead-chat"><span>Chat with ${esc(lead)} →</span>${last ? `<span class="co-dim co-last">${esc(last)}</span>` : ""}</button>` : `<p class="co-bad">this company has no lead (the epic has no assignee)</p>`;
+    const chatRow = lead ? `<button class="co-chatrow" data-act="lead-chat"><span>Chat with ${esc(lead)}${dot(lead)} →</span>${last ? `<span class="co-dim co-last">${esc(last)}</span>` : ""}</button>` : `<p class="co-bad">this company has no lead (the epic has no assignee)</p>`;
     const ms = milestones(d.issues, c.epic);
     const msHtml = ms.length
       ? `<section class="co-group"><h2>Milestones</h2>${ms
@@ -583,13 +643,19 @@ export function initCompany(deps) {
     if (!b) return shell(`<div class="co-mhead"><h3>${esc(s.bead)}</h3><button class="co-close" data-act="close" aria-label="close">×</button></div><div class="co-mbody"><p class="co-bad">Not one of ${esc(s.slug)}'s beads.</p></div>`);
     const th = s.thread?.id === b.id ? s.thread : undefined;
     const err = s.note.get(`err:${b.id}`);
-    const comments = th?.error
-      ? `<p class="co-bad">${esc(th.error)}</p>`
-      : !th?.comments
-        ? `<p class="co-dim co-small">Loading comments…</p>`
-        : th.comments.length
-          ? th.comments.map((c) => `<div class="co-comment"><div class="co-who">${esc(c.author)} · <span title="${esc(c.createdAt)}">${rel(Date.parse(c.createdAt))}</span></div>${deps.md ? deps.md(c.text) : esc(c.text)}</div>`).join("")
-          : `<p class="co-dim co-small">No comments yet.</p>`;
+    // The thread in hand paints at once: this bead's own fresh read, else the company-wide copy, else —
+    // when bd's count says there are none — "No comments yet." without asking anyone.
+    const list = th?.comments ?? s.threads[b.id] ?? (b.comments ? undefined : []);
+    const comments = [
+      th?.error ? `<p class="co-bad co-small">${esc(list ? `couldn't refresh comments: ${th.error}` : th.error)}</p>` : "",
+      !list
+        ? th?.error
+          ? ""
+          : `<p class="co-dim co-small">Loading comments…</p>`
+        : list.length
+          ? list.map((c) => `<div class="co-comment"><div class="co-who">${esc(c.author)} · <span title="${esc(c.createdAt)}">${rel(Date.parse(c.createdAt))}</span></div>${deps.md ? deps.md(c.text) : esc(c.text)}</div>`).join("")
+          : `<p class="co-dim co-small co-nocomments">No comments yet.</p>`,
+    ].join("");
     const sending = s.sending?.id === b.id;
     const draft = sending ? s.sending.text : store.get(k(`draft.c.${b.id}`), "");
     return shell(`
@@ -597,7 +663,7 @@ export function initCompany(deps) {
         <div class="co-dim co-small co-mmeta">${metaLine(b, d)}</div></div>
       <div class="co-mbody" data-scroll="modal">
         ${statusHtml_(b, d)}
-        ${(() => { const u = prUrls(b, th?.comments ?? []); return u.length ? `<p class="co-prline">Pull requests: ${prChips(u)}</p>` : ""; })()}
+        ${(() => { const u = prUrls(b, list ?? []); return u.length ? `<p class="co-prline">Pull requests: ${prChips(u)}</p>` : ""; })()}
         <p class="co-desc${b.description ? "" : " co-dim"}">${esc(b.description || "No description.")}</p>
         <h4 class="co-sub">Comments</h4>${comments}
       </div>
@@ -651,11 +717,14 @@ export function initCompany(deps) {
     return `<div class="co-stchips">${chips}</div>${reason}`;
   }
 
+  /** The open bead's own read, behind whatever is already painted (never blanks a cached thread). */
   async function loadThread(id) {
     s.thread = { id };
     try {
       const r = await post("/api/tasks", { op: "comments", id });
-      if (s.thread?.id === id) s.thread = { id, comments: r.comments ?? [] };
+      if (!Array.isArray(r.comments)) throw new Error("the comments reply carried no list");
+      keepThread(id, r.comments);
+      if (s.thread?.id === id) s.thread = { id, comments: r.comments };
     } catch (e) {
       if (s.thread?.id === id) s.thread = { id, error: String(e?.message ?? e) };
     }
@@ -928,6 +997,12 @@ export function initCompany(deps) {
   }
   root.addEventListener("click", onClick);
   modal.addEventListener("click", onClick);
+  const warm = (e) => {
+    const row = e.target.closest?.(".co-bead[data-open]");
+    if (row) prefetch(row.dataset.open);
+  };
+  root.addEventListener("pointerover", warm);
+  root.addEventListener("focusin", warm);
   modal.addEventListener("input", (e) => {
     if (e.target.dataset?.input === "comment" && s.bead) store.set(k(`draft.c.${s.bead}`), e.target.value);
   });
