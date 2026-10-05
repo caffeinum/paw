@@ -911,6 +911,7 @@ function render() {
   const row = state.focus ? state.rows.find((r) => r.name === state.focus) : undefined;
   $("title").textContent = state.focus === CO ? "" : (state.focus ?? "inbox"); // CO is a sentinel, never a name
   $("pip").className = `pip ${!row ? "off" : row.mesh === "offline" ? "off" : row.busy || row.mesh === "working" ? "busy" : "on"}`;
+  $("pip").style.visibility = state.focus === CO ? "hidden" : ""; // no pip for "nobody yet"
   const chFocus = String(state.focus ?? "").startsWith("#") ? String(state.focus).slice(1) : undefined;
   $("topic").innerHTML = row
     ? headerTopic(row)
@@ -941,6 +942,12 @@ function render() {
     company.show(state.co, state.companySub ?? {});
     state.companySub = undefined;
     company.tick();
+    // home opened before anything local knew the lead (a reload: the space-keyed caches load late) —
+    // switch the chat column to the lead the moment it is known, from any source
+    if (state.co.page === "company" && state.co.level === "home" && state.focus === CO) {
+      const lead = company.leadFor(state.co.slug);
+      if (lead) return onCompanyLoaded({ company: { slug: state.co.slug, lead } });
+    }
   } else if (company.isOpen()) company.close();
   $("main").classList.toggle("cohome", state.co?.page === "company" && state.co.level === "home");
   $("main").classList.toggle("inco", state.co?.page === "company" && (state.co.level === "dialog" || state.co.level === "trace"));
@@ -1275,10 +1282,9 @@ function navigatePath(path) {
 function goCompany(co) {
   let focus = CO;
   if (co.page === "company" && (co.level === "dialog" || co.level === "trace")) focus = co.agent;
-  if (co.page === "company" && co.level === "home") {
-    const d = company.data();
-    if (d && d.company.slug === co.slug && d.company.lead) focus = d.company.lead;
-  }
+  // home: the chat column is the lead's conversation from the first frame — the lead is known from the
+  // payload, its cached copy or the company list; only when NOTHING local knows it does CO stand in
+  if (co.page === "company" && co.level === "home") focus = company.leadFor(co.slug) ?? CO;
   state.mode = co.page === "company" && co.level === "trace" ? "trace" : "chat";
   $("main").classList.toggle("tracing", state.mode === "trace");
   focusTarget(focus, co);

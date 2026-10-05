@@ -132,7 +132,8 @@ export function companyService(deps: CompanyDeps) {
       globalError = `couldn't read the global list for unlabelled descendants: ${(e as Error).message}`;
     }
     const byEpic = new Map<string, Company>();
-    for (const c of companiesFrom([...labelled, ...global])) if (c.slug === slug) byEpic.set(c.epic, c);
+    // global first, labelled last: the labelled list was JUST read, the global one may be minutes old (SWR)
+    for (const c of companiesFrom([...global, ...labelled])) if (c.slug === slug) byEpic.set(c.epic, c);
     if (fresh || !byEpic.size) for (const c of companiesFrom(await listByMetadata({ field: ["company", slug] }))) if (c.slug === slug) byEpic.set(c.epic, c);
     const rows = [...byEpic.values()];
     if (!rows.length) throw new HttpError(404, `no company "${slug}"`);

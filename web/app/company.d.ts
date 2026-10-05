@@ -21,6 +21,7 @@ export function initCompany(deps: {
   query: () => URLSearchParams;
   onKey: (e: KeyboardEvent) => boolean;
   data: () => any;
+  leadFor: (slug: string) => string | undefined;
   scope: () => Set<string> | undefined;
   companiesError: () => string | undefined;
   tick: () => void;

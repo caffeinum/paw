@@ -126,6 +126,23 @@ export function initCompany(deps) {
   const cacheKey = (slug) => `paw.company.${deps.space?.() ?? ""}.${slug}.cache`;
   const listKey = () => `paw.company.${deps.space?.() ?? ""}.list.cache`;
 
+  /** Paint from the localStorage copy (payload + company list) when the space is known and there is one. */
+  function adoptCache() {
+    if (!deps.space?.()) return;
+    if (!s.data) {
+      const cached = store.get(cacheKey(s.slug), undefined);
+      if (cached && typeof cached === "object" && cached.data?.company?.slug === s.slug) {
+        s.data = cached.data;
+        s.cachedAt = cached.at; // set ⇒ what's on screen is a copy awaiting its refresh
+        deps.onLoaded?.(s.data);
+      }
+    }
+    if (!s.companies.length) {
+      const list = store.get(listKey(), []);
+      if (Array.isArray(list)) s.companies = list;
+    }
+  }
+
   async function load(fresh = false) {
     if (s.page !== "company") return;
     const mine = ++seq;
@@ -171,22 +188,16 @@ export function initCompany(deps) {
     if (!sameCompany) {
       s.page = "company";
       s.slug = loc.slug;
-      const cached = store.get(cacheKey(loc.slug), undefined);
-      const ok = cached && typeof cached === "object" && cached.data?.company?.slug === loc.slug;
-      s.data = ok ? cached.data : undefined;
-      s.cachedAt = ok ? cached.at : undefined; // set ⇒ what's on screen is a copy awaiting its refresh
-      if (!s.companies.length) {
-        const list = store.get(listKey(), []);
-        if (Array.isArray(list)) s.companies = list;
-      }
+      s.data = undefined;
+      s.cachedAt = undefined;
       s.error = undefined;
+      adoptCache();
       s.open = new Set();
       store.del(k("banner")); // the pre-structured banner string; gone members now come from the server
       s.setup = store.get(k("setup"), undefined);
       if (!s.setup || !Array.isArray(s.setup.failed)) s.setup = undefined;
       clearInterval(pollTimer);
       pollTimer = setInterval(() => void load(), POLL_MS);
-      if (s.data) deps.onLoaded?.(s.data); // the lead chat can open from the copy straight away
       void load();
       void loadCompanies().then(() => paint());
     }
@@ -307,12 +318,37 @@ export function initCompany(deps) {
     if (!d) {
       if (s.error && /^no company "/.test(s.error))
         return `<div class="co-wrap" data-scroll="page"><div class="co-col"><h1>No company “${esc(s.slug)}”</h1><p class="co-dim"><a href="/new?name=${encodeURIComponent(s.slug)}" data-nav="/new?name=${esc(encodeURIComponent(s.slug))}">Create it</a></p></div></div>`;
-      return `<div class="co-wrap" data-scroll="page"><div class="co-col"><h1>${esc(s.slug)}</h1>${s.error ? errLine(s.error, "retry") : ""}</div></div>`;
+      if (s.error) return `<div class="co-wrap" data-scroll="page"><div class="co-col"><h1>${esc(s.slug)}</h1>${errLine(s.error, "retry")}</div></div>`;
+      return skeletonHtml();
     }
     if (s.agent && !isMember(d, s.agent))
       return `<div class="co-wrap" data-scroll="page"><div class="co-col"><h1>${esc(s.agent)} is not in ${esc(s.slug)}</h1><p><a href="${esc(companyPath({ slug: s.slug, level: "home" }))}" data-nav="${esc(companyPath({ slug: s.slug, level: "home" }))}">Back to ${esc(d.company.name)}</a></p></div></div>`;
     if (s.level === "dialog" || s.level === "trace") return panelHtml(d); // app.js paints the body (members only — see place())
     return `${s.level === "tasks" ? tasksHtml(d) : homeHtml(d)}${panelHtml(d)}`;
+  }
+
+  /** No payload yet and no cached copy: a quiet skeleton, never a blank page. Whatever the company
+   *  LIST already knows (name, mission, members — from its own localStorage copy) fills in for real. */
+  function skeletonHtml() {
+    const row = s.companies.find((c) => c.slug === s.slug);
+    const team = row?.members?.length
+      ? `<p class="co-team">${row.members.map((m) => `${esc(m)}${m === row.lead ? " ★" : ""}${dot(m)}`).join(" &nbsp;·&nbsp; ")}</p>`
+      : `<p class="co-team"><span class="co-skel" style="width:60%"></span></p>`;
+    const rows = [72, 55, 64, 48, 58].map((w) => `<div class="co-bead"><span class="co-st">○</span><span class="co-skel" style="width:${w}%"></span></div>`).join("");
+    return `<div class="co-wrap" data-scroll="page"><div class="co-col co-loading">
+      <header class="co-header"><div class="co-title"><h1>${esc(row?.name ?? s.slug)}</h1>${row?.mission ? `<p class="co-mission">${esc(row.mission)}</p>` : ""}</div></header>
+      ${team}
+      <section class="co-work"><div class="co-workhead"><h2>Work</h2><span class="co-dim co-small">loading…</span></div>${rows}</section>
+    </div></div>`;
+  }
+
+  /** The lead of `slug` as far as anything local knows: the payload, its cached copy, the company list. */
+  function leadFor(slug) {
+    if (s.data?.company.slug === slug && s.data.company.lead) return s.data.company.lead;
+    const cached = store.get(cacheKey(slug), undefined);
+    if (cached?.data?.company?.slug === slug && cached.data.company.lead) return cached.data.company.lead;
+    const list = s.companies.length ? s.companies : store.get(listKey(), []);
+    return Array.isArray(list) ? list.find((c) => c?.slug === slug)?.lead : undefined;
   }
 
   function banners(d) {
@@ -850,11 +886,17 @@ export function initCompany(deps) {
     query,
     onKey,
     data: () => s.data,
+    leadFor,
     /** Names the company pages may show: its roster + the operator ("you"). */
     scope: () => (s.data ? new Set([...s.data.members.map((m) => m.name), s.data.operator, "you"]) : undefined),
     companiesError: () => s.companiesError,
     /** app.js's render tick: repaint for fresh roster dots (never under the caret). */
-    tick: () => paint(),
+    tick: () => {
+      // the cache is keyed by SPACE, which the shell learns from its first read — a page opened before
+      // that couldn't see its copy yet; adopt it the moment the space is known (unless fresh data won)
+      if (s.page === "company" && !s.data) adoptCache();
+      paint();
+    },
     loadCompanies,
   };
 }
