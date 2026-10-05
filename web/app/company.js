@@ -86,6 +86,7 @@ export function initCompany(deps) {
   const root = deps.el("company");
   const bar = deps.el("cobar");
   const head = deps.el("cohead");
+  const modal = deps.el("comodal");
   const s = {
     page: undefined, // "company" | "new"
     slug: undefined,
@@ -114,7 +115,7 @@ export function initCompany(deps) {
   const post = (path, body) => deps.api(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
   const editing = () => {
     const a = document.activeElement;
-    return !!a && root.contains(a) && (a.tagName === "INPUT" || a.tagName === "TEXTAREA" || a.tagName === "SELECT");
+    return !!a && (root.contains(a) || modal.contains(a)) && (a.tagName === "INPUT" || a.tagName === "TEXTAREA" || a.tagName === "SELECT");
   };
   const isMember = (d, name) => name === d.operator || d.members.some((m) => m.name === name);
 
@@ -208,6 +209,7 @@ export function initCompany(deps) {
     s.adding = undefined;
     s.view = sub.view ? parseView(sub.view) : parseView(store.get(k("view"), undefined));
     if (sub.fromUrl && sub.bead !== s.bead) {
+      if (!sub.bead) s.pushed = false; // Back closed it
       s.bead = sub.bead;
       if (s.bead) void loadThread(s.bead);
     }
@@ -234,6 +236,9 @@ export function initCompany(deps) {
 
   function close() {
     clearInterval(pollTimer);
+    modal.hidden = true;
+    modal.innerHTML = "";
+    document.body.classList.remove("co-modal-open");
     head.innerHTML = "";
     s.page = undefined;
     s.slug = undefined;
@@ -271,14 +276,24 @@ export function initCompany(deps) {
     if (!s.page) return;
     place();
     if (!force && editing()) return; // never under the caret — the next poll catches up
-    const keep = [...root.querySelectorAll("[data-scroll]")].map((el) => [el.dataset.scroll, el.scrollTop]);
+    const keep = [...root.querySelectorAll("[data-scroll]"), ...modal.querySelectorAll("[data-scroll]")].map((el) => [el.dataset.scroll, el.scrollTop]);
+    // a rebuild destroys the focused node — remember WHICH control had focus and give it back after
+    const act = document.activeElement;
+    const inside = act && (root.contains(act) || modal.contains(act)) ? act : undefined;
+    const focusKey = inside ? ["data-open", "data-act", "data-status", "data-view", "data-level"].map((a) => (inside.hasAttribute(a) ? `[${a}="${CSS.escape(inside.getAttribute(a))}"]` : "")).find(Boolean) : undefined;
+    const focusIn = inside && modal.contains(inside) ? modal : root;
     root.innerHTML = s.page === "new" ? newHtml() : companyHtml();
     head.innerHTML = headHtml();
+    const mHtml = s.page === "company" ? modalHtml(s.data) : "";
+    modal.hidden = !mHtml;
+    modal.innerHTML = mHtml;
+    document.body.classList.toggle("co-modal-open", !!mHtml);
     bar.innerHTML = s.page === "company" && shellLevel(s.level) ? crumbsHtml() : "";
     for (const [key, top] of keep) {
-      const el = root.querySelector(`[data-scroll="${key}"]`);
+      const el = root.querySelector(`[data-scroll="${key}"]`) ?? modal.querySelector(`[data-scroll="${key}"]`);
       if (el) el.scrollTop = top;
     }
+    if (focusKey) focusIn.querySelector(focusKey)?.focus({ preventScroll: true });
   }
 
   const rowsByName = () => new Map((deps.rows() ?? []).map((r) => [r.name, r]));
@@ -327,8 +342,8 @@ export function initCompany(deps) {
     }
     if (s.agent && !isMember(d, s.agent))
       return `<div class="co-wrap" data-scroll="page"><div class="co-col"><h1>${esc(s.agent)} is not in ${esc(s.slug)}</h1><p><a href="${esc(companyPath({ slug: s.slug, level: "home" }))}" data-nav="${esc(companyPath({ slug: s.slug, level: "home" }))}">Back to ${esc(d.company.name)}</a></p></div></div>`;
-    if (shellLevel(s.level)) return panelHtml(d); // app.js paints the body (members only — see place())
-    return `${s.level === "tasks" ? tasksHtml(d) : homeHtml(d)}${panelHtml(d)}`;
+    if (shellLevel(s.level)) return ""; // app.js paints the body (members only — see place())
+    return s.level === "tasks" ? tasksHtml(d) : homeHtml(d);
   }
 
   /** No payload yet and no cached copy: a quiet skeleton, never a blank page. Whatever the company
@@ -389,7 +404,7 @@ export function initCompany(deps) {
     const byId = new Map(d.issues.map((i) => [i.id, i]));
     const ms = milestone ? milestoneOf(b, byId, d.company.epic) : undefined;
     const onYou = b.onYou ? `<span class="co-acc co-tag">on you</span>` : "";
-    return `<div class="co-bead${b.status === "closed" ? " done" : ""}${s.bead === b.id ? " sel" : ""}" data-open="${esc(b.id)}">
+    return `<div class="co-bead${b.status === "closed" ? " done" : ""}${s.bead === b.id ? " sel" : ""}" data-open="${esc(b.id)}" tabindex="0" role="button">
       <span class="co-st" title="${esc(STATUS_LABEL[b.status] ?? b.status)}">${GLYPH[b.status] ?? "?"}</span>
       <span class="co-t">${esc(b.title)}${waitingOn ? ` <span class="co-dim">← ${esc(waitingOn.title)}</span>` : ""}</span>
       ${onYou}
@@ -513,10 +528,13 @@ export function initCompany(deps) {
     </div></div>`;
   }
 
-  function panelHtml(d) {
-    if (!s.bead) return "";
+  /** The bead, opened: a centred MODAL over the whole window (lists never reflow behind it, the lead
+   *  chat column stays put). Header (title + status line) is opaque; only the body scrolls. */
+  function modalHtml(d) {
+    if (!s.bead || !d) return "";
     const b = d.issues.find((i) => i.id === s.bead);
-    if (!b) return `<aside class="co-panel" role="dialog"><button class="co-close" data-act="close" aria-label="close">×</button><h3>${esc(s.bead)}</h3><p class="co-bad">Not one of ${esc(s.slug)}'s beads.</p></aside>`;
+    const shell = (inner) => `<div class="co-backdrop" data-act="backdrop"></div><div class="co-modal" role="dialog" aria-modal="true" aria-label="${esc(b?.title ?? s.bead)}">${inner}</div>`;
+    if (!b) return shell(`<div class="co-mhead"><h3>${esc(s.bead)}</h3><button class="co-close" data-act="close" aria-label="close">×</button></div><div class="co-mbody"><p class="co-bad">Not one of ${esc(s.slug)}'s beads.</p></div>`);
     const th = s.thread?.id === b.id ? s.thread : undefined;
     const err = s.note.get(`err:${b.id}`);
     const comments = th?.error
@@ -524,19 +542,43 @@ export function initCompany(deps) {
       : !th?.comments
         ? `<p class="co-dim co-small">Loading comments…</p>`
         : th.comments.length
-          ? th.comments.map((c) => `<div class="co-comment"><div class="co-who">${esc(c.author)} · ${rel(Date.parse(c.createdAt))}</div>${deps.md ? deps.md(c.text) : esc(c.text)}</div>`).join("")
+          ? th.comments.map((c) => `<div class="co-comment"><div class="co-who">${esc(c.author)} · <span title="${esc(c.createdAt)}">${rel(Date.parse(c.createdAt))}</span></div>${deps.md ? deps.md(c.text) : esc(c.text)}</div>`).join("")
           : `<p class="co-dim co-small">No comments yet.</p>`;
+    const sending = s.sending?.id === b.id;
+    const draft = sending ? s.sending.text : store.get(k(`draft.c.${b.id}`), "");
+    return shell(`
+      <div class="co-mhead"><h3>${esc(b.title)}</h3><button class="co-close" data-act="close" aria-label="close">×</button>
+        <div class="co-dim co-small co-mmeta">${metaLine(b, d)}</div></div>
+      <div class="co-mbody" data-scroll="modal">
+        ${statusHtml_(b, d)}
+        <p class="co-desc${b.description ? "" : " co-dim"}">${esc(b.description || "No description.")}</p>
+        <h4 class="co-sub">Comments</h4>${comments}
+      </div>
+      <div class="co-mfoot">
+        ${err ? `<p class="co-bad co-small">${esc(err.text)}</p>` : ""}
+        <textarea data-input="comment" rows="3" placeholder="Write a comment… (@agent pings them) — ⏎ send · ⇧⏎ newline"${sending ? " disabled" : ""}>${esc(draft)}</textarea>
+        <div class="co-panelfoot"><button class="co-btn" data-act="comment"${sending ? " disabled" : ""}>${sending ? "sending…" : "Comment"}</button></div>
+      </div>`);
+  }
+
+  /** "◐ In progress · beta · ct-1 · created 3d ago by alpha · updated 2h ago" (exact times in tooltips). */
+  function metaLine(b, d) {
+    const who = b.assignee ? agentLink(b.assignee, d) : "unassigned";
+    return `${GLYPH[b.status] ?? "?"} ${esc(STATUS_LABEL[b.status] ?? b.status)} · ${who} · ${esc(b.id)}`;
+  }
+
+  function agentLink(name, d) {
+    if (name === d.operator) return `you`;
+    if (!d.members.some((m) => m.name === name)) return esc(name);
+    const href = companyPath({ slug: s.slug, agent: name, level: "tasks" });
+    return `<a href="${esc(href)}" data-nav="${esc(href)}">${esc(name)}</a>`;
+  }
+
+  // status controls land in the next step; the operator's own beads keep their Close for now
+  function statusHtml_(b, d) {
     const canClose = b.assignee === d.operator && b.status !== "closed";
-    return `<aside class="co-panel" role="dialog" aria-label="${esc(b.id)}">
-      <button class="co-close" data-act="close" aria-label="close">×</button>
-      <h3>${esc(b.title)}</h3>
-      <div class="co-dim co-small">${GLYPH[b.status] ?? "?"} ${esc(STATUS_LABEL[b.status] ?? b.status)} · ${b.assignee ? esc(b.assignee) : "unassigned"} · ${esc(b.id)}</div>
-      <div class="co-scroll" data-scroll="panel"><p class="co-desc${b.description ? "" : " co-dim"}">${esc(b.description || "No description.")}</p>${comments}</div>
-      ${err ? `<p class="co-bad co-small">${esc(err.text)}</p>` : ""}
-      <textarea data-input="comment" rows="3" placeholder="Write a comment… (@agent pings them)">${esc(store.get(k(`draft.c.${b.id}`), ""))}</textarea>
-      ${canClose && s.closing ? `<input class="co-addin" data-input="reason" placeholder="Reason (optional) — closing unblocks what waits on it">` : ""}
-      <div class="co-panelfoot"><button class="co-btn" data-act="comment">Comment</button>${canClose ? `<button class="co-link co-closebtn" data-act="${s.closing ? "close-bead" : "closing"}">${s.closing ? "Close it" : "Close…"}</button>` : ""}</div>
-    </aside>`;
+    if (!canClose) return "";
+    return `${s.closing ? `<input class="co-addin" data-input="reason" placeholder="Reason (optional) — closing unblocks what waits on it">` : ""}<p><button class="co-link co-closebtn" data-act="${s.closing ? "close-bead" : "closing"}">${s.closing ? "Close it" : "Close…"}</button></p>`;
   }
 
   async function loadThread(id) {
@@ -550,19 +592,29 @@ export function initCompany(deps) {
     paint();
   }
 
-  function openBead(id) {
+  function openBead(id, from) {
     s.bead = id;
     s.closing = false;
-    deps.onSubState?.();
+    s.returnTo = from; // the row to give focus back to on close
+    s.pushed = true; // a history entry: Back closes the modal
+    deps.onSubState?.(true);
     paint(true);
+    modal.querySelector(".co-close")?.focus();
     void loadThread(id);
   }
   function closePanel() {
+    const back = s.returnTo;
     s.bead = undefined;
     s.thread = undefined;
     s.closing = false;
-    deps.onSubState?.();
+    s.returnTo = undefined;
+    if (s.pushed) {
+      s.pushed = false;
+      history.back(); // pops ?bead= — popstate re-reads the URL (no bead) and repaints
+    } else deps.onSubState?.();
     paint(true);
+    // after the popstate that history.back() queues (it re-runs the shell's focus logic)
+    if (back) setTimeout(() => root.querySelector(`[data-open="${CSS.escape(back)}"]`)?.focus(), 80);
   }
 
   /* /new ------------------------------------------------------------------------------------- */
@@ -664,7 +716,7 @@ export function initCompany(deps) {
   async function closeBead() {
     const id = s.bead;
     if (!id) return;
-    const reason = root.querySelector('[data-input="reason"]')?.value.trim();
+    const reason = modal.querySelector('[data-input="reason"]')?.value.trim();
     s.note.delete(`err:${id}`);
     try {
       await post("/api/tasks", { op: "close", id, ...(reason ? { reason } : {}) });
@@ -676,24 +728,33 @@ export function initCompany(deps) {
     paint(true);
   }
 
+  /** Send a comment. The box and button are DISABLED ("sending…") from submit until the refreshed
+   *  thread — with the new comment in it — has rendered; on failure they come back with the text and
+   *  the server's words. */
   async function sendComment() {
-    const ta = root.querySelector('[data-input="comment"]');
-    const text = ta?.value.trim();
+    const ta = modal.querySelector('[data-input="comment"]');
+    const raw = ta?.value ?? "";
+    const text = raw.trim();
     const id = s.bead;
-    if (!text || !id) return;
+    if (!text || !id || s.sending) return;
     s.note.delete(`err:${id}`);
+    s.sending = { id, text: raw };
+    ta.blur();
+    paint(true);
     try {
       await post("/api/tasks", { op: "comment", id, text });
       const at = parseMention(text);
       if (at) await post("/api/dm", { to: at.to, text: `comment on ${id} (${s.slug}): ${at.text} — bd show ${id} for the thread` });
       store.del(k(`draft.c.${id}`));
-      ta.value = "";
-      ta.blur();
       await loadThread(id);
+      s.sending = undefined;
     } catch (e) {
-      s.note.set(`err:${id}`, { ok: false, text: `Comment not sent: ${e?.message ?? e}` }); // the text stays in the box
-      paint(true);
+      s.sending = undefined;
+      store.set(k(`draft.c.${id}`), raw); // the text stays
+      s.note.set(`err:${id}`, { ok: false, text: `Comment not sent: ${e?.message ?? e}` });
     }
+    paint(true);
+    modal.querySelector('[data-input="comment"]')?.focus();
   }
 
   /* ── events (on both #company and #cobar) ───────────────────────────────────────────────── */
@@ -762,20 +823,57 @@ export function initCompany(deps) {
         return paint(true);
       }
       case "close":
+      case "backdrop":
         return closePanel();
       case "comment":
         return void sendComment();
       case "closing":
         s.closing = true;
         paint(true);
-        return root.querySelector('[data-input="reason"]')?.focus();
+        return modal.querySelector('[data-input="reason"]')?.focus();
       case "close-bead":
         return void closeBead();
     }
     const open = t.closest("[data-open]");
-    if (open) return openBead(open.dataset.open);
+    if (open) return openBead(open.dataset.open, open.dataset.open);
   }
   root.addEventListener("click", onClick);
+  modal.addEventListener("click", onClick);
+  modal.addEventListener("input", (e) => {
+    if (e.target.dataset?.input === "comment" && s.bead) store.set(k(`draft.c.${s.bead}`), e.target.value);
+  });
+  modal.addEventListener("keydown", (e) => {
+    const t = e.target;
+    // Enter sends, Shift+Enter is a newline — never mid-IME-composition (Enter confirms the candidate there)
+    if (t.dataset?.input === "comment" && e.key === "Enter" && !e.shiftKey && !e.isComposing && e.keyCode !== 229) {
+      e.preventDefault();
+      return void sendComment();
+    }
+    if (t.dataset?.input === "reason" && e.key === "Enter" && !e.isComposing && e.keyCode !== 229) {
+      e.preventDefault();
+      return void closeBead();
+    }
+    if (e.key === "Tab") {
+      // focus trap: Tab cycles inside the modal
+      const f = [...modal.querySelectorAll("button:not([disabled]), a[href], textarea:not([disabled]), input:not([disabled]), select")];
+      if (!f.length) return;
+      const i = f.indexOf(document.activeElement);
+      if (e.shiftKey && i <= 0) {
+        e.preventDefault();
+        f[f.length - 1].focus();
+      } else if (!e.shiftKey && i === f.length - 1) {
+        e.preventDefault();
+        f[0].focus();
+      }
+    }
+  });
+  root.addEventListener("keydown", (e) => {
+    const row = e.target.closest?.(".co-bead[data-open]");
+    if (row && (e.key === "Enter" || e.key === " ") && e.target === row) {
+      e.preventDefault();
+      openBead(row.dataset.open, row.dataset.open);
+    }
+  });
   bar.addEventListener("click", onClick);
   head.addEventListener("click", onClick);
   head.addEventListener("change", (e) => {
@@ -877,6 +975,7 @@ export function initCompany(deps) {
       return true;
     }
     if (s.page === "company" && s.bead) {
+      if (a && modal.contains(a) && (a.tagName === "TEXTAREA" || a.tagName === "INPUT")) a.blur();
       closePanel();
       return true;
     }

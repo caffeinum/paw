@@ -1427,7 +1427,7 @@ const company = initCompany({
   md,
   build: CLIENT_BUILD,
   navigate: (path) => navigatePath(path),
-  onSubState: () => syncUrl(),
+  onSubState: (push) => syncUrl(push),
   onOpenChannel: (slug) => focusTarget("#" + slug),
   openNav: () => openNav(),
   onLoaded: (d) => onCompanyLoaded(d),
@@ -1675,13 +1675,13 @@ function focusAgent(name) {
  * back-buttoned. `replaceState`, not push: clicking through six agents should not mean six presses of
  * Back to leave the page.
  */
-function syncUrl() {
+function syncUrl(push = false) {
   if (state.co) {
     const path = state.co.page === "new" ? "/new" : companyPath(state.co);
     const q = state.co.page === "new" ? new URLSearchParams(state.co.prefill ? { name: state.co.prefill } : {}) : company.query();
     const url = path + (q.toString() ? `?${q}` : "");
     // A page change is a history entry (Back works); a sub-state change (tab, drawer) replaces it.
-    if (location.pathname !== path) history.pushState(null, "", url);
+    if (location.pathname !== path || push) history.pushState(null, "", url); // a page change, or opening a bead
     else if (location.pathname + location.search !== url) history.replaceState(null, "", url);
     return;
   }
@@ -2186,6 +2186,9 @@ window.addEventListener("popstate", () => {
   $("main").classList.toggle("tracing", state.mode === "trace");
   if (co) {
     state.focus = before;
+    // apply the URL's sub-state (?bead=) BEFORE goCompany's syncUrl, or the still-open bead is written back
+    company.show(co, state.companySub ?? {});
+    state.companySub = undefined;
     return goCompany(co);
   }
   if (f !== before) {

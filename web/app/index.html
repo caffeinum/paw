@@ -302,6 +302,33 @@
   .co-ms-beads { padding-left:24px; margin-bottom:8px; }
   .co-build { font-size:12px; color:var(--txt-dim); margin-top:48px; }
   .co-menu { display:none; background:none; border:0; color:var(--txt); font-size:18px; cursor:pointer; padding:0 8px 0 0; }
+  /* the bead modal: fixed over the whole window, so nothing behind it reflows */
+  .comodal[hidden] { display:none; }
+  .comodal { position:fixed; inset:0; z-index:100; display:flex; align-items:center; justify-content:center; padding:24px;
+             font:15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; color:var(--txt); color-scheme:light dark; }
+  .comodal a, .comodal .co-link { color:var(--link); text-decoration:none; background:none; border:0; padding:0; cursor:pointer; font:inherit; }
+  .co-backdrop { position:absolute; inset:0; background:rgba(0,0,0,.35); }
+  .co-modal { position:relative; width:min(720px,100%); max-height:min(86vh,900px); display:flex; flex-direction:column;
+              background:var(--content); border:1px solid var(--line); border-radius:10px; box-shadow:0 12px 48px rgba(0,0,0,.25); overflow:hidden; }
+  .co-mhead { background:var(--content); padding:24px 56px 12px 28px; border-bottom:1px solid var(--line); flex:none; position:relative; }
+  .co-mhead h3 { font-size:20px; font-weight:600; margin:0 0 6px; line-height:1.3; }
+  .co-mhead .co-close { position:absolute; top:18px; right:20px; color:var(--txt-dim); font-size:22px; background:none; border:0; cursor:pointer; }
+  .co-mbody { flex:1; overflow:auto; padding:16px 28px; min-height:0; overscroll-behavior:contain; }
+  .co-mfoot { flex:none; padding:12px 28px 20px; border-top:1px solid var(--line); background:var(--content); }
+  .co-mfoot textarea { width:100%; border:1px solid var(--line); border-radius:6px; background:none; color:inherit; font:inherit; padding:10px; resize:none; outline:none; }
+  .co-mfoot textarea:focus { border-color:var(--link); }
+  .co-mfoot textarea:disabled { opacity:.6; }
+  .comodal .co-btn { border:0; background:var(--txt); color:var(--content); border-radius:6px; padding:7px 16px; cursor:pointer; font:inherit; font-weight:500; }
+  .comodal .co-btn:disabled { opacity:.45; cursor:default; }
+  .comodal .co-dim { color:var(--txt-dim); } .comodal .co-small { font-size:13px; } .comodal .co-bad { color:var(--red); }
+  .comodal .co-sub { font-size:13px; font-weight:600; color:var(--txt-dim); margin:20px 0 8px; }
+  .comodal .co-addin { width:100%; border:0; border-bottom:1px solid var(--line); background:none; color:inherit; font:inherit; padding:6px 0; outline:none; }
+  .co-bead:focus-visible { outline:2px solid var(--link); outline-offset:2px; }
+  @media (max-width: 860px) {
+    .comodal { padding:0; }
+    .co-modal { width:100%; height:100%; max-height:none; border-radius:0; border:0; }
+    .co-mhead { padding:20px 52px 10px 20px; } .co-mbody { padding:14px 20px; } .co-mfoot { padding:10px 20px 16px; }
+  }
   .co-panel { position:absolute; top:0; right:0; bottom:0; width:min(440px,100%); background:var(--content); border-left:1px solid var(--line); padding:32px 32px 24px; display:flex; flex-direction:column; z-index:5; }
   .co-close { position:absolute; top:22px; right:24px; color:var(--txt-dim); font-size:20px; background:none; border:0; cursor:pointer; }
   .co-panel h3 { font-size:20px; font-weight:600; margin:0 32px 6px 0; line-height:1.3; }
@@ -837,6 +864,7 @@
 <body>
 <div class="app">
   <div class="cohead" id="cohead"></div>
+  <div class="comodal" id="comodal" hidden></div>
   <div class="top">
     <input class="search" id="conn" type="search" autocomplete="off" data-1p-ignore data-lpignore="true" data-bwignore data-form-type="other" spellcheck="false" placeholder="connecting…">
     <div class="theme" role="group" aria-label="Colour theme">
