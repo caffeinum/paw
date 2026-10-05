@@ -242,6 +242,7 @@ try {
   ok("S a page comment is attributed to the operator, not git's user.name", (bd("comments", sb) as Array<{ author: string; text: string }>).some((c) => c.author === "operator" && c.text === "from the operator"));
   const opClose = await post("/api/company/test-co", { op: "issue-create", title: "Mine", assignee: "operator" });
   const opDone = await post("/api/company/test-co", { op: "status", id: opClose.body.id, to: "done" });
+  ok("S a bead created on the page names the operator as its creator", (bd("show", sb) as Array<{ created_by?: string }>)[0]?.created_by === "operator" || (bd("show", sb) as { created_by?: string }).created_by === "operator", JSON.stringify(bd("show", sb)).slice(0, 200));
   ok("S closing the operator's OWN bead DMs nobody", opDone.status === 200 && !opDone.body.nudged);
 
   // 8 ─ unknown + duplicate

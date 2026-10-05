@@ -161,6 +161,24 @@ export function mergeRetry(prev, plan, r) {
   return setupFrom({ failed: [...kept, ...(r?.failed ?? [])], cardError: plan.card ? r?.cardError : prev?.card, kickoffError: plan.kickoff ? r?.kickoffError : prev?.kickoff });
 }
 
+/** "3d" / "2h" / "5m" / "now" — the short age on bead rows. Pure. */
+export function shortAge(t, now = Date.now()) {
+  if (!Number.isFinite(t)) return "";
+  const s = Math.max(0, Math.round((now - t) / 1000));
+  if (s < 60) return "now";
+  if (s < 3600) return `${Math.floor(s / 60)}m`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h`;
+  return `${Math.floor(s / 86400)}d`;
+}
+
+/** The right-aligned meta on a bead row: who filed it (when that isn't its holder) and how old it is —
+ *  "from evals · 3d", or just "3d". Pure. */
+export function rowMeta(b, now = Date.now()) {
+  const age = shortAge(Date.parse(b.createdAt ?? ""), now);
+  const from = b.createdBy && b.createdBy !== b.assignee ? b.createdBy : undefined;
+  return { from, age, text: [from ? `from ${from}` : "", age].filter(Boolean).join(" · ") };
+}
+
 /** A stored view name → itself, or "agent" (the default) when nothing/something stale is stored. A
  *  remembered UI preference, not data — a stale value falls back rather than failing the page. */
 export function parseView(v) {

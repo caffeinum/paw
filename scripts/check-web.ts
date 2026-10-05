@@ -1461,6 +1461,10 @@ const stillAligned = async (ws: RawWs, label: string, ...setup: Buffer[]): Promi
   assert(mss.find((x) => x.id === "m2")!.total === 0 && mss[mss.length - 1].id === undefined && mss[mss.length - 1].title === "No milestone", "company UI: an empty milestone is 0/0; loose beads land in a final 'No milestone' row");
   assert(m.milestoneOf(tree[3], new Map(tree.map((t) => [t.id, t])), "E")?.id === "m1" && m.milestoneOf(tree[5], new Map(tree.map((t) => [t.id, t])), "E") === undefined, "company UI: milestoneOf walks up to the nearest milestone");
   assert(m.workBeads(tree, "E").every((t) => t.id !== "m1" && t.id !== "m2"), "company UI: Work lists beads, not the milestones themselves");
+  const now0 = Date.parse("2026-10-05T12:00:00Z");
+  assert(m.shortAge(now0 - 3 * 86_400_000, now0) === "3d" && m.shortAge(now0 - 2 * 3_600_000, now0) === "2h" && m.shortAge(now0 - 30_000, now0) === "now" && m.shortAge(NaN, now0) === "", "company UI: short row ages");
+  assert(m.rowMeta({ createdAt: "2026-10-02T12:00:00Z", createdBy: "evals", assignee: "aleks" }, now0).text === "from evals · 3d", "company UI: a row says who filed it (when that isn't its holder) and how old it is");
+  assert(m.rowMeta({ createdAt: "2026-10-05T10:00:00Z", createdBy: "beta", assignee: "beta" }, now0).text === "2h", "company UI: an agent's own bead shows just its age");
   // setup failures: retry ONLY what failed; a gone folder isn't retried
   const su = m.setupFrom({ failed: [{ name: "a", error: "x" }, { name: "g", error: "g's folder /tmp/g no longer exists", gone: true }], kickoffError: "kickoff post: boom" })!;
   assert(m.setupFrom({ failed: [] }) === undefined && su.failed.length === 2 && !!su.kickoff && !su.card, "setup: nothing failed → no banner; otherwise the failed steps + members");

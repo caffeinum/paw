@@ -65,6 +65,10 @@ with sync_playwright() as p:
             api_ms = page.evaluate("""async () => { const d = await (await fetch('/api/company/test-co?fresh=1')).json();
               const m = await import('/company-model.js'); const r = m.milestones(d.issues, d.company.epic).find((x) => x.title === 'Milestone one');
               return r ? `${r.done}/${r.total}` : null }""")
+            rm = page.eval_on_selector_all(".co-work .co-bead .co-rmeta", "els => els.map(e => [e.textContent, getComputedStyle(e).display])")
+            ok("every work row carries the right-aligned age / 'from <agent>' meta, painted", len(rm) > 0 and all(t and d != "none" for t, d in rm), str(rm[:4]))
+            you = page.eval_on_selector_all(".co-you .co-bead .co-rmeta", "els => els.map(e => e.textContent)")
+            ok("the You rows say which agent filed each one", all("from " in t for t in you) if you else True, str(you))
             ok("13 the milestone row shows the API's done/total", api_ms is not None and api_ms in ms_row, f"{ms_row!r} vs {api_ms}")
             page.screenshot(path=f"{OUT}/company-home-light.png")
             # stale-while-revalidate. The delay lives IN the page (a fetch wrapper switched by a
@@ -152,6 +156,8 @@ with sync_playwright() as p:
             page.wait_for_function("() => !document.querySelector('[data-input=comment]').disabled", timeout=60000)
             ok("re-enabled only once the new comment is IN the rendered thread, box emptied", "a comment from the browser check" in page.inner_text(".co-mbody") and page.input_value('[data-input="comment"]') == "")
             page.screenshot(path=f"{OUT}/company-modal-light.png")
+            meta = page.inner_text(".co-mmeta")
+            ok("the modal's status line says when it was created and by whom, and when it changed", "created" in meta and ("updated" in meta or "closed" in meta) and " by " in meta, meta)
             chips = page.eval_on_selector_all(".co-modal .co-stchips button", "els => els.map(e => e.textContent.trim())")
             ok("status controls: Open · In progress · Blocked · Done · Not needed", [c.split(" ", 1)[-1] for c in chips] == ["Open", "In progress", "Blocked", "Done", "Not needed"], str(chips))
             page.click('.co-modal [data-status="in_progress"]')

@@ -32,6 +32,7 @@ import {
   workBeads,
   companyPath,
   shellLevel,
+  rowMeta,
   setupFrom,
   retryPlan,
   mergeRetry,
@@ -411,7 +412,16 @@ export function initCompany(deps) {
       ${b.unlabelled ? `<span class="co-tag co-bad" title="under the company epic but missing the company:${esc(s.slug)} label">unlabelled</span>` : ""}
       ${note ? `<span class="co-tag${note.ok ? "" : " co-bad"}" title="${esc(note.text)}">${note.ok ? "nudged" : "nudge failed"}</span>` : ""}
       ${ms ? `<span class="co-tag co-ms">${esc(ms.title)}</span>` : ""}
-      ${who ? `<span class="co-tag">${b.assignee ? esc(b.assignee === d.operator ? "you" : b.assignee) : "unassigned"}</span>` : ""}</div>`;
+      ${who ? `<span class="co-tag">${b.assignee ? esc(b.assignee === d.operator ? "you" : b.assignee) : "unassigned"}</span>` : ""}
+      ${rmeta(b, d)}</div>`;
+  }
+
+  /** The right-aligned "from <agent> · 3d" slot every row shares (the agent links to its page). */
+  function rmeta(b, d) {
+    const m = rowMeta(b);
+    if (!m.text) return "";
+    const from = m.from ? `from ${d.members.some((x) => x.name === m.from) ? `<a href="${esc(companyPath({ slug: s.slug, agent: m.from, level: "tasks" }))}" data-nav="${esc(companyPath({ slug: s.slug, agent: m.from, level: "tasks" }))}">${esc(m.from)}</a>` : esc(m.from)} · ` : "";
+    return `<span class="co-rmeta" title="created ${esc(b.createdAt ? new Date(b.createdAt).toLocaleString() : "")}${b.createdBy ? ` by ${esc(b.createdBy)}` : ""}">${from}${esc(m.age)}</span>`;
   }
 
   function adder(name, d) {
@@ -561,10 +571,17 @@ export function initCompany(deps) {
       </div>`);
   }
 
-  /** "◐ In progress · beta · ct-1 · created 3d ago by alpha · updated 2h ago" (exact times in tooltips). */
+  /** "◐ In progress · beta · ct-1 · created 3d ago by alpha · updated 2h ago" (exact times in tooltips);
+   *  a closed bead says "closed 1h ago — <reason>". */
   function metaLine(b, d) {
     const who = b.assignee ? agentLink(b.assignee, d) : "unassigned";
-    return `${GLYPH[b.status] ?? "?"} ${esc(STATUS_LABEL[b.status] ?? b.status)} · ${who} · ${esc(b.id)}`;
+    const when = (iso) => `<span title="${esc(iso ? new Date(iso).toLocaleString() : "")}">${rel(Date.parse(iso ?? ""))}</span>`;
+    const by = b.createdBy ? ` by ${agentLink(b.createdBy, d)}` : "";
+    const parts = [`${GLYPH[b.status] ?? "?"} ${esc(STATUS_LABEL[b.status] ?? b.status)}`, who, esc(b.id)];
+    if (b.createdAt) parts.push(`created ${when(b.createdAt)}${by}`);
+    if (b.status === "closed" && b.closedAt) parts.push(`closed ${when(b.closedAt)}${b.closeReason ? ` — ${esc(b.closeReason)}` : ""}`);
+    else if (b.updatedAt && b.updatedAt !== b.createdAt) parts.push(`updated ${when(b.updatedAt)}`);
+    return parts.join(" · ");
   }
 
   function agentLink(name, d) {

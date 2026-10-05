@@ -194,7 +194,7 @@ export function companyService(deps: CompanyDeps) {
     const name = input.name.trim();
     const mission = input.mission?.trim() || undefined;
     const lead = input.lead;
-    const epic = await createTaskGetId(name, mission, undefined, lead, { type: "epic", labels: [`company:${input.slug}`], metadata: companyMetadata(input.slug, input.members) });
+    const epic = await createTaskGetId(name, mission, undefined, lead, { type: "epic", labels: [`company:${input.slug}`], metadata: companyMetadata(input.slug, input.members), actor: deps.operator });
     listCache = undefined;
     const c: Company = { slug: input.slug, name, epic, lead, mission, status: "open", members: input.members };
     return { slug: c.slug, epic, ...(await setupChannel(c)) };
@@ -232,7 +232,7 @@ export function companyService(deps: CompanyDeps) {
         if (assignee && assignee !== deps.operator && !c.members.includes(assignee)) throw new HttpError(400, `${assignee} isn't a member of ${slug}`);
         const parent = str("parent") ?? c.epic;
         if (parent !== c.epic && !(await page(slug)).issues.some((i) => i.id === parent)) throw new HttpError(400, `${parent} isn't one of ${slug}'s beads`);
-        const id = await createTaskGetId(title, str("description"), parent, assignee, { labels: [`company:${slug}`] });
+        const id = await createTaskGetId(title, str("description"), parent, assignee, { labels: [`company:${slug}`], actor: deps.operator });
         if (!assignee || assignee === deps.operator) return { id };
         try {
           await deps.dm(assignee, assignmentText(c.name, id, title));

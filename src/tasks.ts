@@ -261,6 +261,8 @@ export interface CreateExtras {
   /** Don't inherit the parent's labels — a goal must not pick up the company root's member/role labels. */
   noInheritLabels?: boolean;
   metadata?: Record<string, unknown>;
+  /** bd --actor: who the audit trail (created_by) names. */
+  actor?: string;
 }
 
 export async function createTaskGetId(title: string, description?: string, parent?: string, assignee?: string, extras: CreateExtras = {}): Promise<string> {
@@ -269,6 +271,7 @@ export async function createTaskGetId(title: string, description?: string, paren
   if (extras.labels?.length) args.push("-l", extras.labels.join(","));
   if (extras.noInheritLabels) args.push("--no-inherit-labels");
   if (extras.metadata) args.push("--metadata", JSON.stringify(extras.metadata));
+  if (extras.actor) args.push("--actor", extras.actor);
   if (description) args.push("-d", description);
   if (parent) args.push("--parent", parent);
   if (assignee) args.push("-a", assignee);
