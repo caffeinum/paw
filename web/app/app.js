@@ -490,7 +490,13 @@ function renderMessages(now) {
   // its DMs both ways incl. agent↔agent, and its #slug posts. Rows say `from → to` / `#slug`.
   const dialog = state.co?.level === "dialog" ? (state.dialog?.agent === state.focus ? state.dialog : undefined) : undefined;
   const list = state.co?.level === "dialog"
-    ? (dialog?.messages ?? []).map((m) => ({ ...m, dialog: true }))
+    ? (dialog?.messages ?? [])
+        // scoped to the company: DMs between members (and you), and the company channel's posts
+        .filter((m) => {
+          const scope = company.scope();
+          return !scope || (scope.has(m.from) && (!!m.channel || scope.has(m.to)));
+        })
+        .map((m) => ({ ...m, dialog: true }))
     : inChannel
       ? state.channelMessages
       : state.focus
@@ -498,6 +504,11 @@ function renderMessages(now) {
         : state.messages;
   const dialogNote = dialog?.error ? `<div class="empty" style="color:var(--red)">${esc(dialog.error)}</div>` : "";
 
+  if (state.focus === CO) {
+    // a company page whose lead isn't known yet: there is no conversation to show — say so, never "~co"
+    el.innerHTML = `<div class="empty">loading…</div>`;
+    return;
+  }
   if (!list.length) {
     // "Nothing here" is only true once we have actually read. Before that it is not-yet-known, and
     // flashing an empty state reads as a dead mesh.
@@ -898,7 +909,7 @@ function render() {
   $("spaceName").textContent = state.space;
 
   const row = state.focus ? state.rows.find((r) => r.name === state.focus) : undefined;
-  $("title").textContent = state.focus ?? "inbox";
+  $("title").textContent = state.focus === CO ? "" : (state.focus ?? "inbox"); // CO is a sentinel, never a name
   $("pip").className = `pip ${!row ? "off" : row.mesh === "offline" ? "off" : row.busy || row.mesh === "working" ? "busy" : "on"}`;
   const chFocus = String(state.focus ?? "").startsWith("#") ? String(state.focus).slice(1) : undefined;
   $("topic").innerHTML = row
@@ -923,6 +934,9 @@ function render() {
     village.update(state.space, state.rows, state.village || {});
     void loadVillage(); // refresh edges/last-lines from /api/village; re-renders on arrival
   } else if (village.isOpen()) village.close();
+  // A company page is SCOPED: no global sidebar, no global filter bar (operator, 2026-10-04).
+  document.body.classList.toggle("cochrome", !!state.co);
+  if (state.co) closeNav();
   if (state.co) {
     company.show(state.co, state.companySub ?? {});
     state.companySub = undefined;
@@ -931,7 +945,7 @@ function render() {
   $("main").classList.toggle("cohome", state.co?.page === "company" && state.co.level === "home");
   $("main").classList.toggle("inco", state.co?.page === "company" && (state.co.level === "dialog" || state.co.level === "trace"));
   if (state.co?.level === "dialog" && (!state.dialog || state.dialog.agent !== state.co.agent || Date.now() - state.dialog.at > 4000)) void loadDialog();
-  $("input").placeholder = state.focus ? `message ${state.focus}` : "";
+  $("input").placeholder = state.focus && state.focus !== CO ? `message ${state.focus}` : "";
   renderSidebarExtras();
   renderTasks();
   renderCompanies();

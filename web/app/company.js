@@ -31,6 +31,9 @@ import {
   slugify,
   workBeads,
   companyPath,
+  setupFrom,
+  retryPlan,
+  mergeRetry,
 } from "./company-model.js";
 
 const esc = (s) => String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
@@ -80,6 +83,7 @@ const store = {
 export function initCompany(deps) {
   const root = deps.el("company");
   const bar = deps.el("cobar");
+  const head = deps.el("cohead");
   const s = {
     page: undefined, // "company" | "new"
     slug: undefined,
@@ -94,7 +98,7 @@ export function initCompany(deps) {
     open: new Set(), // expanded milestone ids (this visit)
     note: new Map(), // bead id / "add:<who>" / "err:<id>" → {ok, text}
     closing: false,
-    banner: undefined,
+    setup: undefined, // {failed:[{name,error,gone}], card?, kickoff?} — persisted per company until dismissed
     companies: [],
     form: undefined,
     steps: undefined,
@@ -112,6 +116,16 @@ export function initCompany(deps) {
   };
   const isMember = (d, name) => name === d.operator || d.members.some((m) => m.name === name);
 
+  /**
+   * Stale-while-revalidate, in the browser: the last payload of each company (and the company list)
+   * is kept in localStorage per space, painted INSTANTLY on open with an "updating…" mark, and replaced
+   * by every successful fetch (which re-writes the cache — it is a copy of server data, never a source).
+   * A FAILED refresh never passes cached data off as current: the page keeps it but says the refresh
+   * failed and how old it is.
+   */
+  const cacheKey = (slug) => `paw.company.${deps.space?.() ?? ""}.${slug}.cache`;
+  const listKey = () => `paw.company.${deps.space?.() ?? ""}.list.cache`;
+
   async function load(fresh = false) {
     if (s.page !== "company") return;
     const mine = ++seq;
@@ -119,11 +133,17 @@ export function initCompany(deps) {
       const d = await deps.api(`/api/company/${encodeURIComponent(s.slug)}${fresh ? "?fresh=1" : ""}`);
       if (mine !== seq) return; // a newer read, or a navigation, superseded this one
       s.data = d;
+      s.cachedAt = undefined;
       s.error = undefined;
+      store.set(cacheKey(s.slug), { at: Date.now(), data: d });
       deps.onLoaded?.(d);
     } catch (e) {
       if (mine !== seq) return;
       s.error = String(e?.message ?? e);
+      if (/^no company "/.test(s.error)) {
+        s.data = undefined; // gone for real — a cached copy must not keep it alive
+        store.del(cacheKey(s.slug));
+      }
     }
     paint();
   }
@@ -132,6 +152,7 @@ export function initCompany(deps) {
     try {
       s.companies = (await deps.api("/api/companies")).companies ?? [];
       s.companiesError = undefined;
+      store.set(listKey(), s.companies);
     } catch (e) {
       s.companiesError = String(e?.message ?? e);
     }
@@ -150,13 +171,24 @@ export function initCompany(deps) {
     if (!sameCompany) {
       s.page = "company";
       s.slug = loc.slug;
-      s.data = undefined;
+      const cached = store.get(cacheKey(loc.slug), undefined);
+      const ok = cached && typeof cached === "object" && cached.data?.company?.slug === loc.slug;
+      s.data = ok ? cached.data : undefined;
+      s.cachedAt = ok ? cached.at : undefined; // set ⇒ what's on screen is a copy awaiting its refresh
+      if (!s.companies.length) {
+        const list = store.get(listKey(), []);
+        if (Array.isArray(list)) s.companies = list;
+      }
       s.error = undefined;
       s.open = new Set();
-      s.banner = store.get(k("banner"), undefined);
+      store.del(k("banner")); // the pre-structured banner string; gone members now come from the server
+      s.setup = store.get(k("setup"), undefined);
+      if (!s.setup || !Array.isArray(s.setup.failed)) s.setup = undefined;
       clearInterval(pollTimer);
       pollTimer = setInterval(() => void load(), POLL_MS);
-      void load(true);
+      if (s.data) deps.onLoaded?.(s.data); // the lead chat can open from the copy straight away
+      void load();
+      void loadCompanies().then(() => paint());
     }
     s.agent = loc.agent;
     s.level = loc.level;
@@ -189,6 +221,7 @@ export function initCompany(deps) {
 
   function close() {
     clearInterval(pollTimer);
+    head.innerHTML = "";
     s.page = undefined;
     s.slug = undefined;
     s.bead = undefined;
@@ -211,7 +244,10 @@ export function initCompany(deps) {
   /** Which surface is visible: #company for new/home/tasks (and the not-a-member page), #cobar over
    *  app.js's own Dialog/Trace. The bead panel rides #company, so it can open over Dialog/Trace too. */
   function place() {
-    const overDialog = s.page === "company" && (s.level === "dialog" || s.level === "trace");
+    // Over Dialog/Trace the shell's own renderers paint — but never for someone outside the company:
+    // a stranger gets the "not in" page painted over everything instead.
+    const stranger = s.page === "company" && s.agent && s.data && !isMember(s.data, s.agent);
+    const overDialog = s.page === "company" && (s.level === "dialog" || s.level === "trace") && !stranger;
     root.hidden = !s.page;
     root.classList.toggle("co-overlay-only", overDialog); // only the panel paints over the real chat/trace
     root.classList.toggle("co-home", s.page === "company" && s.level === "home");
@@ -224,6 +260,7 @@ export function initCompany(deps) {
     if (!force && editing()) return; // never under the caret — the next poll catches up
     const keep = [...root.querySelectorAll("[data-scroll]")].map((el) => [el.dataset.scroll, el.scrollTop]);
     root.innerHTML = s.page === "new" ? newHtml() : companyHtml();
+    head.innerHTML = headHtml();
     bar.innerHTML = s.page === "company" && (s.level === "dialog" || s.level === "trace") ? crumbsHtml() : "";
     for (const [key, top] of keep) {
       const el = root.querySelector(`[data-scroll="${key}"]`);
@@ -237,30 +274,74 @@ export function initCompany(deps) {
     const live = !!r && r.live && r.mesh !== "offline";
     return `<span class="co-dot${live ? " live" : ""}" title="${esc(!r ? "not in this space's roster" : live ? r.mesh : "asleep — a DM wakes it")}"></span>`;
   }
-  const menu = `<button class="co-menu" data-act="menu" aria-label="Show sidebar">☰</button>`;
   const errLine = (text, retry) => `<p class="co-bad">${esc(text)}${retry ? ` <button class="co-link" data-act="${retry}">retry</button>` : ""}</p>`;
+
+  /** The company pages' own slim header (the global sidebar + filter bar are hidden here — a company
+   *  view is scoped): ← paw, the company, a switcher when there's more than one, New company. */
+  function headHtml() {
+    const list = s.companies ?? [];
+    const here = s.page === "company" ? s.slug : undefined;
+    const name = s.page === "new" ? "New company" : (s.data?.company.name ?? s.slug ?? "");
+    const home = here ? companyPath({ slug: here, level: "home" }) : "/new";
+    const switcher =
+      list.length > 1 || (list.length === 1 && list[0].slug !== here)
+        ? `<select class="co-switch" data-input="switch" aria-label="Switch company">${here ? "" : `<option value="" selected>Switch to…</option>`}${list.map((c) => `<option value="${esc(c.slug)}"${c.slug === here ? " selected" : ""}>${esc(c.name)}${c.onYou ? ` · ${c.onYou} on you` : ""}</option>`).join("")}</select>`
+        : "";
+    const mark =
+      s.page === "company" && s.cachedAt
+        ? s.error
+          ? `<span class="co-stale co-bad" title="${esc(s.error)}">couldn't refresh — showing a copy from ${esc(rel(s.cachedAt))}</span>`
+          : `<span class="co-stale">updating…</span>`
+        : "";
+    return `<a class="co-back" href="/" data-nav="/" title="back to paw">← paw</a><a class="co-cname" href="${esc(home)}" data-nav="${esc(home)}">${esc(name)}</a>${mark}<span class="co-hgap"></span>${switcher}${s.page === "new" ? "" : `<a class="co-small" href="/new" data-nav="/new">New company</a>`}`;
+  }
 
   function crumbsHtml() {
     const name = s.data?.company.name ?? s.slug;
     const tabs = TABS.map(([lv, label]) => `<button data-level="${lv}" aria-pressed="${s.level === lv}">${label}</button>`).join("");
-    return `<div class="co-crumbs">${menu}<a href="${esc(companyPath({ slug: s.slug, level: "home" }))}" data-nav="${esc(companyPath({ slug: s.slug, level: "home" }))}">${esc(name)}</a> › ${esc(s.agent === s.data?.operator ? `You (${s.agent})` : s.agent)}</div><nav class="co-views co-tabs" aria-label="Agent view">${tabs}</nav>`;
+    return `<div class="co-crumbs"><a href="${esc(companyPath({ slug: s.slug, level: "home" }))}" data-nav="${esc(companyPath({ slug: s.slug, level: "home" }))}">${esc(name)}</a> › ${esc(s.agent === s.data?.operator ? `You (${s.agent})` : s.agent)}</div><nav class="co-views co-tabs" aria-label="Agent view">${tabs}</nav>`;
   }
 
   function companyHtml() {
     const d = s.data;
     if (!d) {
       if (s.error && /^no company "/.test(s.error))
-        return `<div class="co-wrap" data-scroll="page"><div class="co-col">${menu}<h1>No company “${esc(s.slug)}”</h1><p class="co-dim"><a href="/new?name=${encodeURIComponent(s.slug)}" data-nav="/new?name=${esc(encodeURIComponent(s.slug))}">Create it</a></p></div></div>`;
-      return `<div class="co-wrap" data-scroll="page"><div class="co-col">${menu}<h1>${esc(s.slug)}</h1>${s.error ? errLine(s.error, "retry") : ""}</div></div>`;
+        return `<div class="co-wrap" data-scroll="page"><div class="co-col"><h1>No company “${esc(s.slug)}”</h1><p class="co-dim"><a href="/new?name=${encodeURIComponent(s.slug)}" data-nav="/new?name=${esc(encodeURIComponent(s.slug))}">Create it</a></p></div></div>`;
+      return `<div class="co-wrap" data-scroll="page"><div class="co-col"><h1>${esc(s.slug)}</h1>${s.error ? errLine(s.error, "retry") : ""}</div></div>`;
     }
     if (s.agent && !isMember(d, s.agent))
-      return `<div class="co-wrap" data-scroll="page"><div class="co-col">${menu}<h1>${esc(s.agent)} is not in ${esc(s.slug)}</h1><p><a href="${esc(companyPath({ slug: s.slug, level: "home" }))}" data-nav="${esc(companyPath({ slug: s.slug, level: "home" }))}">Back to ${esc(d.company.name)}</a></p></div></div>`;
-    if (s.level === "dialog" || s.level === "trace") return panelHtml(d); // app.js paints the body
+      return `<div class="co-wrap" data-scroll="page"><div class="co-col"><h1>${esc(s.agent)} is not in ${esc(s.slug)}</h1><p><a href="${esc(companyPath({ slug: s.slug, level: "home" }))}" data-nav="${esc(companyPath({ slug: s.slug, level: "home" }))}">Back to ${esc(d.company.name)}</a></p></div></div>`;
+    if (s.level === "dialog" || s.level === "trace") return panelHtml(d); // app.js paints the body (members only — see place())
     return `${s.level === "tasks" ? tasksHtml(d) : homeHtml(d)}${panelHtml(d)}`;
   }
 
   function banners(d) {
-    return [s.error ? errLine(s.error, "retry") : "", ...(d.errors ?? []).map((e) => errLine(e)), s.banner ? `<p class="co-bad">${esc(s.banner)} <button class="co-link" data-act="retry-channel">retry</button> · <button class="co-link" data-act="dismiss">dismiss</button></p>` : ""].join("");
+    return [s.error ? errLine(s.error, "retry") : "", ...(d.errors ?? []).map((e) => errLine(e)), setupHtml()].join("");
+  }
+
+  function saveSetup(st) {
+    s.setup = st;
+    if (st) store.set(k("setup"), st);
+    else store.del(k("setup"));
+  }
+
+  /** "Setup didn't finish": what failed, in words. Retry redoes ONLY the failed steps/members; a member
+   *  whose folder is gone gets "remove from company" instead (a retry can't fix that). */
+  function setupHtml() {
+    const st = s.setup;
+    if (!st) return "";
+    const plan = retryPlan(st);
+    const lines = [
+      st.card ? `<li>${esc(st.card)}</li>` : "",
+      ...st.failed.map((f) =>
+        f.gone
+          ? `<li>${esc(f.error)} — <button class="co-link" data-act="member-remove" data-name="${esc(f.name)}">remove from company</button></li>`
+          : `<li>${esc(f.name)}: ${esc(f.error)}</li>`,
+      ),
+      st.kickoff ? `<li>${esc(st.kickoff)}</li>` : "",
+    ].join("");
+    const canRetry = plan.names.length || plan.card || plan.kickoff;
+    return `<div class="co-bad co-setup"><p>Setup didn't finish${st.note ? ` — ${esc(st.note)}` : ""}:</p><ul>${lines}</ul><p>${canRetry ? `<button class="co-link" data-act="retry-channel">retry ${plan.names.length ? `${plan.names.length} invite${plan.names.length === 1 ? "" : "s"}` : "setup"}</button> · ` : ""}<button class="co-link" data-act="dismiss">dismiss</button></p></div>`;
   }
 
   function beadRow(b, d, { who = false, milestone = false, waitingOn } = {}) {
@@ -294,6 +375,11 @@ export function initCompany(deps) {
       return mine.length ? ` <span class="co-dim">${mine.length} open</span>` : "";
     };
     const team = `<p class="co-team">${d.members.map((m) => `<a class="co-name" href="${esc(companyPath({ slug: c.slug, agent: m.name, level: "tasks" }))}" data-nav="${esc(companyPath({ slug: c.slug, agent: m.name, level: "tasks" }))}">${esc(m.name)}${m.name === c.lead ? " ★" : ""}</a>${dot(m.name)}${counts(m.name)}`).join(" &nbsp;·&nbsp; ")}</p>`;
+    // A member whose folder is gone (e.g. /tmp wiped by a reboot) can't be woken: say so, offer the fix.
+    const goneHtml = d.members
+      .filter((m) => m.gone)
+      .map((m) => `<p class="co-bad co-small">${esc(m.name)}'s folder ${esc(m.gone)} no longer exists${m.name === c.lead ? " — it's the lead; re-register its folder (paw adopt / paw claude in a new folder)" : ` — <button class="co-link" data-act="member-remove" data-name="${esc(m.name)}">remove from company</button>`}</p>`)
+      .join("");
     const byId = new Map(d.issues.map((i) => [i.id, i]));
     const mine = d.onYou.assigned.map((id) => byId.get(id)).filter(Boolean);
     const waiting = d.onYou.waiting.map((w) => ({ bead: byId.get(w.id), blocker: byId.get(w.blocker) })).filter((w) => w.bead && w.blocker);
@@ -318,9 +404,10 @@ export function initCompany(deps) {
       : "";
     const toggle = `<nav class="co-views" aria-label="View">${VIEWS.map((v) => `<button data-view="${v}" aria-pressed="${s.view === v}">${VIEW_LABEL[v]}</button>`).join("")}</nav>`;
     return `<div class="co-wrap" data-scroll="page"><div class="co-col">
-      <header class="co-header">${menu}<div class="co-title"><h1>${esc(c.name)}</h1>${c.mission ? `<p class="co-mission">${esc(c.mission)}</p>` : ""}</div><a class="co-small" href="/new" data-nav="/new">New company</a></header>
+      <header class="co-header"><div class="co-title"><h1>${esc(c.name)}</h1>${c.mission ? `<p class="co-mission">${esc(c.mission)}</p>` : ""}</div></header>
       ${banners(d)}
       ${team}
+      ${goneHtml}
       ${you}
       <div class="co-chatslot">${chatRow}</div>
       ${msHtml}
@@ -378,7 +465,7 @@ export function initCompany(deps) {
     const work = workBeads(d.issues, d.company.epic);
     const isYou = s.agent === d.operator;
     return `<div class="co-wrap" data-scroll="page"><div class="co-col">
-      <div class="co-crumbs">${menu}<a href="${esc(companyPath({ slug: s.slug, level: "home" }))}" data-nav="${esc(companyPath({ slug: s.slug, level: "home" }))}">${esc(d.company.name)}</a> › ${esc(isYou ? `You (${s.agent})` : s.agent)}</div>
+      <div class="co-crumbs"><a href="${esc(companyPath({ slug: s.slug, level: "home" }))}" data-nav="${esc(companyPath({ slug: s.slug, level: "home" }))}">${esc(d.company.name)}</a> › ${esc(isYou ? `You (${s.agent})` : s.agent)}</div>
       ${isYou ? "" : `<nav class="co-views co-tabs" aria-label="Agent view">${TABS.map(([lv, label]) => `<button data-level="${lv}" aria-pressed="${s.level === lv}">${label}</button>`).join("")}</nav>`}
       <h1 class="co-agenth">${esc(isYou ? "You" : s.agent)}${s.agent === d.company.lead ? " ★" : ""}${isYou ? "" : dot(s.agent)}</h1>
       ${banners(d)}
@@ -462,7 +549,7 @@ export function initCompany(deps) {
           ? `<span class="co-bad">#${esc(f.slug)} already exists — <a href="/company/${esc(f.slug)}" data-nav="/company/${esc(f.slug)}">open it</a>.</span>`
           : `Creates <b>#<input class="co-slugin" data-nf="slug" value="${esc(f.slug)}" size="${Math.max(4, f.slug.length)}" aria-label="channel name"></b> with these agents`;
     const steps = s.steps ? `<ol class="co-steps">${s.steps.map((st) => `<li class="${st.bad ? "co-bad" : st.wait ? "co-dim" : ""}">${st.bad ? "✕" : st.wait ? "…" : "✓"} ${esc(st.text)}${st.retry ? ` <button class="co-link" data-act="steps-retry">retry</button>` : ""}</li>`).join("")}</ol>` : "";
-    return `<div class="co-form" data-scroll="page"><div class="co-formcol">${menu}
+    return `<div class="co-form" data-scroll="page"><div class="co-formcol">
       <h1>New company</h1>
       <label class="co-f" for="co-name">Name</label>
       <input type="text" id="co-name" data-nf="name" value="${esc(f.name)}" placeholder="Acme Labs" autocomplete="off">
@@ -497,7 +584,8 @@ export function initCompany(deps) {
         ...(/kickoff/.test(chErr) ? [{ text: chErr, bad: true }] : [{ text: "kickoff posted" }]),
       ];
       const problems = [chErr, ...failed].filter(Boolean);
-      if (problems.length) store.set(`paw.company.${deps.space?.() ?? ""}.${f.slug}.banner`, `Setup didn't finish: ${problems.join(" · ")}`);
+      const st = setupFrom(r);
+      if (st) store.set(`paw.company.${deps.space?.() ?? ""}.${f.slug}.setup`, st);
       store.del(kNew());
       paint(true);
       setTimeout(() => deps.navigate(`/company/${f.slug}`), problems.length ? 2500 : 600);
@@ -529,7 +617,7 @@ export function initCompany(deps) {
     } catch (e) {
       s.note.set(noteKey, { ok: false, text: `Not added: ${e?.message ?? e}` }); // the draft stays in storage
     }
-    await load(true);
+    await load();
     paint(true);
   }
 
@@ -544,7 +632,7 @@ export function initCompany(deps) {
     } catch (e) {
       s.note.set(`err:${id}`, { ok: false, text: `Not closed: ${e?.message ?? e}` }); // bd's words
     }
-    await load(true);
+    await load();
     paint(true);
   }
 
@@ -600,21 +688,24 @@ export function initCompany(deps) {
       case "lead-chat":
         return deps.openLeadChat?.(s.data?.company.lead);
       case "dismiss":
-        s.banner = undefined;
-        store.del(k("banner"));
+        s.setup = undefined;
+        store.del(k("setup"));
         return paint(true);
-      case "retry-channel":
-        return void post(`/api/company/${encodeURIComponent(s.slug)}`, { op: "retry-channel" })
-          .then((r) => {
-            const problems = [r.channelError, ...(r.failed ?? []).map((x) => `${x.name}: ${x.error}`)].filter(Boolean);
-            s.banner = problems.length ? `Setup didn't finish: ${problems.join(" · ")}` : undefined;
-            if (s.banner) store.set(k("banner"), s.banner);
-            else store.del(k("banner"));
-          })
-          .catch((err) => {
-            s.banner = `Setup retry failed: ${err?.message ?? err}`;
-          })
+      case "retry-channel": {
+        const plan = retryPlan(s.setup);
+        return void post(`/api/company/${encodeURIComponent(s.slug)}`, { op: "retry-channel", ...plan })
+          .then((r) => saveSetup(mergeRetry(s.setup, plan, r)))
+          .catch((err) => saveSetup({ ...s.setup, note: `retry failed: ${err?.message ?? err}` }))
           .finally(() => paint(true));
+      }
+      case "member-remove": {
+        const name = el.dataset.name;
+        if (!window.confirm(`Take ${name} off ${s.data?.company.name ?? s.slug}? The agent itself is untouched.`)) return;
+        return void post(`/api/company/${encodeURIComponent(s.slug)}`, { op: "member-remove", name })
+          .then(() => saveSetup(setupFrom({ ...s.setup, failed: (s.setup?.failed ?? []).filter((f) => f.name !== name), cardError: s.setup?.card, kickoffError: s.setup?.kickoff })))
+          .catch((err) => saveSetup({ ...s.setup, note: `couldn't remove ${name}: ${err?.message ?? err}` }))
+          .finally(() => void load(true));
+      }
       case "ms": {
         const key = el.dataset.ms;
         if (s.open.has(key)) s.open.delete(key);
@@ -646,6 +737,11 @@ export function initCompany(deps) {
   }
   root.addEventListener("click", onClick);
   bar.addEventListener("click", onClick);
+  head.addEventListener("click", onClick);
+  head.addEventListener("change", (e) => {
+    const v = e.target.dataset?.input === "switch" ? e.target.value : "";
+    if (v) deps.navigate(companyPath({ slug: v, level: "home" }));
+  });
 
   root.addEventListener("change", (e) => {
     const t = e.target;
@@ -754,6 +850,8 @@ export function initCompany(deps) {
     query,
     onKey,
     data: () => s.data,
+    /** Names the company pages may show: its roster + the operator ("you"). */
+    scope: () => (s.data ? new Set([...s.data.members.map((m) => m.name), s.data.operator, "you"]) : undefined),
     companiesError: () => s.companiesError,
     /** app.js's render tick: repaint for fresh roster dots (never under the caret). */
     tick: () => paint(),

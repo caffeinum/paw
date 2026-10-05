@@ -331,6 +331,24 @@
   .co-steps { list-style:none; padding:0; margin:20px 0 0; font-size:13px; }
   .co-steps li { padding:2px 0; }
   /* the bar over the REAL Dialog/Trace renderers, and their 760px column */
+  /* chromeless company mode: no aubergine top bar, no sidebar, no grip — the page is the whole window */
+  .cohead { display:none; }
+  body.cochrome .app { grid-template-rows:auto 1fr; }
+  body.cochrome .top, body.cochrome .side, body.cochrome .grip, body.cochrome .scrim { display:none; }
+  body.cochrome .body-grid { grid-template-columns:minmax(0,1fr); }
+  body.cochrome .aside, body.cochrome .chead .menu { display:none; }
+  body.cochrome .cohead { display:flex; align-items:center; gap:16px; padding:10px 20px; background:var(--content); color:var(--txt);
+                          border-bottom:1px solid var(--line); font:14px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; min-width:0; }
+  .cohead a { color:var(--link); text-decoration:none; }
+  .cohead .co-back { color:var(--txt-dim); white-space:nowrap; }
+  .cohead .co-cname { color:var(--txt); font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; min-width:0; }
+  .cohead .co-hgap { flex:1; }
+  .cohead .co-stale { font-size:12px; color:var(--txt-dim); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; min-width:0; }
+  .cohead .co-stale.co-bad { color:var(--red); }
+  .co-setup { font-size:14px; margin:0 0 24px; } .co-setup p { margin:0; } .co-setup ul { margin:4px 0 6px; padding-left:18px; }
+  .cohead .co-switch { border:0; border-bottom:1px solid var(--line); background:none; color:var(--txt-dim); font:inherit; max-width:40vw; }
+  .cohead .co-small { font-size:13px; white-space:nowrap; }
+  body.cochrome #company, body.cochrome .cobar, body.cochrome .cohead { font-family:-apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; }
   .cobar { padding:14px 20px 0; background:var(--content); font:15px/1.5 var(--font); }
   .cobar .co-tabs { margin:10px 0 0; }
   .main.inco { grid-template-rows:auto auto 1fr auto; }
@@ -815,6 +833,7 @@
 </head>
 <body>
 <div class="app">
+  <div class="cohead" id="cohead"></div>
   <div class="top">
     <input class="search" id="conn" type="search" autocomplete="off" data-1p-ignore data-lpignore="true" data-bwignore data-form-type="other" spellcheck="false" placeholder="connecting…">
     <div class="theme" role="group" aria-label="Colour theme">

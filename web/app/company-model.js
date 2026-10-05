@@ -135,6 +135,32 @@ export function milestoneOf(bead, byId, epic) {
   return undefined;
 }
 
+/**
+ * The persisted "setup didn't finish" state of a company: `{failed:[{name,error,gone?}], card?, kickoff?}`
+ * (card/kickoff = that step's error). `setupFrom(result)` builds it from a create / retry response,
+ * `undefined` when nothing failed. Pure.
+ */
+export function setupFrom(r) {
+  const st = { failed: Array.isArray(r?.failed) ? r.failed.filter((f) => f && typeof f.name === "string") : [] };
+  if (r?.cardError) st.card = r.cardError;
+  if (r?.kickoffError) st.kickoff = r.kickoffError;
+  return st.failed.length || st.card || st.kickoff ? st : undefined;
+}
+
+/** What a retry should redo: ONLY the failed steps, and only the failed members whose folder still
+ *  exists (a gone folder can't be fixed by retrying). Pure. */
+export function retryPlan(setup) {
+  return { names: (setup?.failed ?? []).filter((f) => !f.gone).map((f) => f.name), card: !!setup?.card, kickoff: !!setup?.kickoff };
+}
+
+/** Fold a retry's response into the previous state: the retried members/steps take the new outcome,
+ *  everything not retried (the gone members) stays. Pure. */
+export function mergeRetry(prev, plan, r) {
+  const retried = new Set(plan.names);
+  const kept = (prev?.failed ?? []).filter((f) => !retried.has(f.name));
+  return setupFrom({ failed: [...kept, ...(r?.failed ?? [])], cardError: plan.card ? r?.cardError : prev?.card, kickoffError: plan.kickoff ? r?.kickoffError : prev?.kickoff });
+}
+
 /** A stored view name → itself, or "agent" (the default) when nothing/something stale is stored. A
  *  remembered UI preference, not data — a stale value falls back rather than failing the page. */
 export function parseView(v) {
