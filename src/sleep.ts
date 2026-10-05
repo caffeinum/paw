@@ -162,9 +162,16 @@ export function markerLines(file: string, sinceMs: number): { lines: string[]; u
   return { lines: tail };
 }
 
+/** cotal ≥0.59's launch-artifact reclaim watcher (core `launch-artifacts.js` RECLAIM_SCRIPT): the
+ *  launch wrapper forks it, then `exec`s claude, so it sits as a `/bin/sh -c p=$$ n=$1…` CHILD of
+ *  claude for the agent's whole life, polling the pid to delete the per-launch `cotal-*` temp dir.
+ *  It is cotal's, not the agent's work, so it never counts as a running shell. ps renders the
+ *  script's newlines as a literal `\012`. */
+const COTAL_RECLAIM_WATCHER = /^(\S*\/)?sh -c p=\$\$ n=\$1(\\012|\n)shift(\\012|\n)\((\\012|\n)\s*trap '' HUP INT QUIT TERM/;
+
 /** Shell processes under `pid` — a background Bash or a Monitor's command runs as one. MCP servers
- *  (node) and the claude binary itself are not shells. A hook that happens to be running counts too:
- *  that only delays a sleep by one tick, the safe direction. */
+ *  (node), the claude binary itself and cotal's reclaim watcher are not counted. A hook that happens
+ *  to be running counts too: that only delays a sleep by one tick, the safe direction. */
 export function shellDescendants(pid: number, psOutput?: string): string[] {
   const table = (psOutput ?? execFileSync("ps", ["-A", "-o", "pid=,ppid=,command="], { encoding: "utf8" }))
     .split("\n")
@@ -176,6 +183,7 @@ export function shellDescendants(pid: number, psOutput?: string): string[] {
   const out: string[] = [];
   const walk = (p: number) => {
     for (const k of kids.get(p) ?? []) {
+      if (COTAL_RECLAIM_WATCHER.test(k.cmd)) continue;
       if (/^(\S*\/)?(zsh|bash|sh|dash|fish)(\s|$)/.test(k.cmd)) out.push(`${k.pid} ${k.cmd.slice(0, 80)}`);
       walk(k.pid);
     }
