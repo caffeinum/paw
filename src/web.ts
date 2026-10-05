@@ -99,7 +99,7 @@ import { gitToplevel, listWorktrees } from "./worktree.ts";
 import type { Block } from "./transcript.ts";
 import { randomBytes } from "node:crypto";
 import { imagesDir } from "./images.ts";
-import { prInfo, prInfoMany } from "./git.ts";
+import { prInfo, prInfoByUrl, prInfoMany } from "./git.ts";
 import { bashMessage, runBash } from "./bash.ts";
 import { pawServer } from "./server.ts";
 
@@ -1170,6 +1170,14 @@ export async function startWebServer(deps: WebDeps): Promise<WebServer> {
           } catch (e) {
             return sendJson(res, 502, { error: (e as Error).message });
           }
+        }
+
+        // One linked PR's live state (gh pr view, git.ts's 60s cache). GitHub PR URLs only — anything else
+        // is a 400, so this can't be turned into a generic fetcher.
+        if (path === "/api/pr-info") {
+          const u = url.searchParams.get("url") ?? "";
+          if (!/^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/pull\/\d+$/.test(u)) return sendJson(res, 400, { error: "paw: url must be a GitHub pull request URL" });
+          return sendJson(res, 200, { url: u, pr: (await prInfoByUrl(u)) ?? null });
         }
 
         if (path.startsWith("/api/dialog/")) {

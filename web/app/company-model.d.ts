@@ -26,6 +26,7 @@ export function retryPlan(setup: SetupState | undefined): { names: string[]; car
 export function mergeRetry(prev: SetupState | undefined, plan: { names: string[]; card: boolean; kickoff: boolean }, r: { failed?: Array<{ name: string; error: string; gone?: boolean }>; cardError?: string; kickoffError?: string } | undefined): SetupState | undefined;
 export function shortAge(t: number, now?: number): string;
 export function rowMeta(b: { createdAt?: string; createdBy?: string; assignee?: string }, now?: number): { from?: string; age: string; text: string };
+export function prUrls(bead: { externalRef?: string; description?: string }, comments?: Array<{ text?: string }>): string[];
 export function parseView(v: unknown): "agent" | "status";
 export function newCompanyProblems(form: { name?: string; slug?: string; members?: string[]; lead?: string }, takenSlugs: Set<string>): string[];
 export function parseMention(text: string): { to: string; text: string } | undefined;

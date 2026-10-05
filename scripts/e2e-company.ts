@@ -245,6 +245,14 @@ try {
   ok("S a bead created on the page names the operator as its creator", (bd("show", sb) as Array<{ created_by?: string }>)[0]?.created_by === "operator" || (bd("show", sb) as { created_by?: string }).created_by === "operator", JSON.stringify(bd("show", sb)).slice(0, 200));
   ok("S closing the operator's OWN bead DMs nobody", opDone.status === 200 && !opDone.body.nudged);
 
+  // P ─ a PR linked to a bead (bd --external-ref, as the brief tells agents)
+  bdRaw("update", sb, "--external-ref", "https://github.com/cli/cli/pull/1");
+  const pp = await get("/api/company/test-co?fresh=1");
+  ok("P the page payload carries the bead's external_ref", (pp.body.issues as Array<{ id: string; externalRef?: string }>).some((i) => i.id === sb && i.externalRef === "https://github.com/cli/cli/pull/1"));
+  const pi = await get("/api/pr-info?url=" + encodeURIComponent("https://github.com/cli/cli/pull/1"));
+  ok("P /api/pr-info answers for a GitHub PR (state when gh can see it, null otherwise)", pi.status === 200 && "pr" in pi.body, JSON.stringify(pi.body).slice(0, 160));
+  ok("P the brief tells members to link PRs", String((await readChannelRegistry({ servers: pawServer(), space })).channels?.["test-co"]?.instructions).includes("--external-ref <PR url>"));
+
   // 8 ─ unknown + duplicate
   const nope = await get("/api/company/nope");
   ok("8 unknown slug → 404 'no company'", nope.status === 404 && /no company "nope"/.test(String(nope.body.error)));

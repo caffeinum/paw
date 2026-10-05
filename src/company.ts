@@ -165,6 +165,7 @@ export function companyBrief(c: Pick<Company, "slug" | "name" | "mission" | "lea
     `  (the label is inherited) or add -l company:${c.slug}.`,
     `- your queue: bd list --label company:${c.slug} -a <you>`,
     `- claim before starting (--status in_progress), close with a reason, comment handoffs on the bead.`,
+    `- when you open a PR for a bead, link it: bd update <id> --external-ref <PR url>`,
     `- ask a teammate for work by filing a bead assigned to them.`,
     `Talk here in #${c.slug}; DMs for 1:1 with ${lead}.`,
   ].join("\n");

@@ -1461,6 +1461,12 @@ const stillAligned = async (ws: RawWs, label: string, ...setup: Buffer[]): Promi
   assert(mss.find((x) => x.id === "m2")!.total === 0 && mss[mss.length - 1].id === undefined && mss[mss.length - 1].title === "No milestone", "company UI: an empty milestone is 0/0; loose beads land in a final 'No milestone' row");
   assert(m.milestoneOf(tree[3], new Map(tree.map((t) => [t.id, t])), "E")?.id === "m1" && m.milestoneOf(tree[5], new Map(tree.map((t) => [t.id, t])), "E") === undefined, "company UI: milestoneOf walks up to the nearest milestone");
   assert(m.workBeads(tree, "E").every((t) => t.id !== "m1" && t.id !== "m2"), "company UI: Work lists beads, not the milestones themselves");
+  const pr = m.prUrls(
+    { externalRef: "https://github.com/a/b/pull/12", description: "see https://github.com/a/b/pull/12/files and https://github.com/c/d/pull/3." },
+    [{ text: "follow-up: https://github.com/c/d/pull/4" }, { text: "no link" }],
+  );
+  assert(pr.join() === "https://github.com/a/b/pull/12,https://github.com/c/d/pull/3,https://github.com/c/d/pull/4", "company UI: linked PRs = external_ref, then description + comment PR URLs, normalised and deduped");
+  assert(m.prUrls({ externalRef: "gh-9", description: "https://github.com/a/b/issues/1" }).length === 0, "company UI: non-PR refs and issue links aren't PRs");
   const now0 = Date.parse("2026-10-05T12:00:00Z");
   assert(m.shortAge(now0 - 3 * 86_400_000, now0) === "3d" && m.shortAge(now0 - 2 * 3_600_000, now0) === "2h" && m.shortAge(now0 - 30_000, now0) === "now" && m.shortAge(NaN, now0) === "", "company UI: short row ages");
   assert(m.rowMeta({ createdAt: "2026-10-02T12:00:00Z", createdBy: "evals", assignee: "aleks" }, now0).text === "from evals · 3d", "company UI: a row says who filed it (when that isn't its holder) and how old it is");
@@ -1533,6 +1539,8 @@ const stillAligned = async (ws: RawWs, label: string, ...setup: Buffer[]): Promi
   const asset = await fetch(`http://127.0.0.1:${sport}/missing.js`, { headers: { Origin: `http://127.0.0.1:${sport}` } });
   assert(dotted.status === 200 && (dotted.headers.get("content-type") ?? "").includes("html"), "company route: /company/x/my.agent/dialog (a dotted agent) serves the shell on reload");
   assert(asset.status === 404, "a missing ASSET still 404s (the extension rule holds outside /company and /new)");
+  const badPr = await fetch(`http://127.0.0.1:${sport}/api/pr-info?url=${encodeURIComponent("https://evil.example/x")}`, { headers: { Origin: `http://127.0.0.1:${sport}` } });
+  assert(badPr.status === 400, "/api/pr-info only takes GitHub pull-request URLs (not a generic fetcher)");
   await sserver.close();
   console.log("✓ company routes");
 }

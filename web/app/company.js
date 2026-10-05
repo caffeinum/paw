@@ -15,6 +15,7 @@
  * server-side, never to the operator) / `retry-channel`; beads via /api/tasks `comments`/`comment`/
  * `close`. Never rebuilds under the caret; refusals show the server's own words; nothing is invented.
  */
+import { prChipHtml } from "./taskspad.js";
 import {
   GLYPH,
   STATUS_LABEL,
@@ -33,6 +34,7 @@ import {
   companyPath,
   shellLevel,
   rowMeta,
+  prUrls,
   setupFrom,
   retryPlan,
   mergeRetry,
@@ -108,6 +110,39 @@ export function initCompany(deps) {
     steps: undefined,
   };
   let pollTimer;
+  /** url → PR info (null = no such PR / gh unavailable). Fetched lazily, a few at a time. */
+  const prInfo = new Map();
+  const prQueue = [];
+  let prActive = 0;
+  function wantPr(u) {
+    if (prInfo.has(u) || prQueue.includes(u)) return;
+    prQueue.push(u);
+    pumpPr();
+  }
+  function pumpPr() {
+    while (prActive < 3 && prQueue.length) {
+      const u = prQueue.shift();
+      prActive++;
+      deps
+        .api(`/api/pr-info?url=${encodeURIComponent(u)}`)
+        .then((r) => prInfo.set(u, r.pr ?? null))
+        .catch(() => prInfo.set(u, null))
+        .finally(() => {
+          prActive--;
+          pumpPr();
+          paint();
+        });
+    }
+  }
+  /** The chips for some PR urls (prChipHtml's vocabulary: ◍ open / ⧉ merged / ◌ draft / ⊘ closed + checks). */
+  function prChips(urls) {
+    return urls
+      .map((u) => {
+        wantPr(u);
+        return prChipHtml({ type: "merge-request", externalRef: u, pr: prInfo.get(u) ?? undefined }, esc);
+      })
+      .join(" ");
+  }
   let seq = 0;
 
   // per SPACE too: two spaces share one browser origin (same rule as drafts / read-state)
@@ -413,6 +448,7 @@ export function initCompany(deps) {
       ${note ? `<span class="co-tag${note.ok ? "" : " co-bad"}" title="${esc(note.text)}">${note.ok ? "nudged" : "nudge failed"}</span>` : ""}
       ${ms ? `<span class="co-tag co-ms">${esc(ms.title)}</span>` : ""}
       ${who ? `<span class="co-tag">${b.assignee ? esc(b.assignee === d.operator ? "you" : b.assignee) : "unassigned"}</span>` : ""}
+      ${(() => { const u = prUrls(b); return u.length ? `<span class="co-prs">${prChips(u)}</span>` : ""; })()}
       ${rmeta(b, d)}</div>`;
   }
 
@@ -561,6 +597,7 @@ export function initCompany(deps) {
         <div class="co-dim co-small co-mmeta">${metaLine(b, d)}</div></div>
       <div class="co-mbody" data-scroll="modal">
         ${statusHtml_(b, d)}
+        ${(() => { const u = prUrls(b, th?.comments ?? []); return u.length ? `<p class="co-prline">Pull requests: ${prChips(u)}</p>` : ""; })()}
         <p class="co-desc${b.description ? "" : " co-dim"}">${esc(b.description || "No description.")}</p>
         <h4 class="co-sub">Comments</h4>${comments}
       </div>

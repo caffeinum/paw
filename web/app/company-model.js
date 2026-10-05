@@ -179,6 +179,23 @@ export function rowMeta(b, now = Date.now()) {
   return { from, age, text: [from ? `from ${from}` : "", age].filter(Boolean).join(" · ") };
 }
 
+const PR_RE = /https?:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/pull\/\d+/g;
+
+/** The GitHub PRs linked to a bead: its external_ref (bd --external-ref, how agents link a PR) first,
+ *  then PR URLs found in the description and comment texts — normalised (no trailing /files etc.),
+ *  deduped, in that order. Pure. */
+export function prUrls(bead, comments = []) {
+  const out = [];
+  const add = (u) => {
+    const m = String(u ?? "").match(PR_RE);
+    for (const x of m ?? []) if (!out.includes(x)) out.push(x);
+  };
+  add(bead.externalRef);
+  add(bead.description);
+  for (const c of comments) add(c?.text);
+  return out;
+}
+
 /** A stored view name → itself, or "agent" (the default) when nothing/something stale is stored. A
  *  remembered UI preference, not data — a stale value falls back rather than failing the page. */
 export function parseView(v) {
