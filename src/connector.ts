@@ -4,10 +4,11 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { HUMAN_PEER } from "./names.ts";
 import { beadsDir } from "./beads-dir.ts";
-import { readClaudeArgs, readHeadless, readResumeId, transcriptExists } from "./session.ts";
+import { readClaudeArgs, readCwd, readHeadless, readResumeId, transcriptExists } from "./session.ts";
 import { ensureShim, headlessDir, hubEnabled, hubSocketPath } from "./hub/paths.ts";
 import { headlessLaunch } from "./headless.ts";
 import { routeCotalToHub } from "./hub/route.ts";
+import { readTracepaperUrl, routeTracepaperDirect } from "./tracepaper-direct.ts";
 
 /** Claude Code's permission modes — PAW_PERMISSION must be one of these (fail loud otherwise). */
 const PERMISSION_MODES = ["default", "acceptEdits", "bypassPermissions", "plan"] as const;
@@ -188,6 +189,15 @@ export const pawConnector: Connector = {
     // Hub mode (`paw hub on`, read per spawn): the cotal MCP server is the hub's C shim, not a node process per agent
     // (src/hub/). ensure() starts the hub; the shim is built here on first use if the tree lacks one.
     if (hubEnabled(opts.space)) routeCotalToHub(args, ensureShim(), hubSocketPath(opts.space));
+
+    // tracepaper direct (src/tracepaper-direct.ts): one shared HTTP server instead of a ~17MB stdio
+    // bridge per agent. The canvas follows the agent's folder, read from its persona.
+    const tpUrl = readTracepaperUrl(opts.space);
+    if (tpUrl) {
+      const cwd = readCwd(opts.configPath);
+      if (!cwd) throw new Error(`paw: tracepaper direct needs "${opts.name}"'s folder (persona cwd:) to pick its canvas — none in ${opts.configPath}`);
+      routeTracepaperDirect(args, tpUrl, cwd);
+    }
 
     // KEEP cotal's `--dangerously-load-development-channels server:cotal` intact. It is NOT a no-op:
     // it is the channel-REGISTRATION gate that lets claude 2.1.x honour cotal's

@@ -14,6 +14,7 @@
     "check:transcript": "node scripts/check-transcript.ts",
     "check:adopt": "node scripts/check-adopt.ts",
     "check:chat": "node scripts/check-chat.ts",
+    "check:tracepaper": "node scripts/check-tracepaper.ts",
     "check:commands": "node scripts/check-commands.ts",
     "check:concurrency": "node scripts/check-concurrency.ts",
     "check:dispatch": "node scripts/check-dispatch.ts",

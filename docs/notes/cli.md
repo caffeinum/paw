@@ -89,6 +89,15 @@ Moved verbatim from CLAUDE.md (2026-10-02 split). Index: [CLAUDE.md](../../CLAUD
   bouncing the fleet is the wrong tool. Runtime names and agent names are disjoint, so the positional
   itself says which is meant; an unknown word fails loud naming both possibilities.
 
+### tracepaper direct (2026-10-05)
+`src/tracepaper-direct.ts`: when `$PAW_HOME/spaces/<s>/tracepaper-url` holds tracepaper's MCP url (e.g.
+`http://127.0.0.1:4321/mcp`), the connector rewrites each launch's `tracepaper` entry from the per-agent
+stdio bridge (~17MB each) to `{type:"http", url, headers:{x-tracepaper-cwd:<persona cwd>}}` — the server
+(≥0.10.3) picks the canvas from the folder. Cutover order: (1) a KeepAlive `tracepaper serve` ≥0.10.3 owns
+the port, (2) stop the agent-hosted 0.10.0 server, (3) write the url file, (4) restart agents. Out of order,
+an old server ignores the header and frames land on "default". `rm` the file to go back to bridges.
+`check:tracepaper`.
+
 ## paw files
 
 - `src/commands/files.ts` — `paw files [--limit N] [--channel c] [--path-only] [--json]`: list the
