@@ -61,6 +61,11 @@ ok("a task from before the process started is ignored", openBackgroundTasks([bas
 const ps = ["  100     1 /usr/local/bin/claude --resume x", "  101   100 node /x/mcp.cjs", "  102   100 /bin/zsh -c sleep 600", "  103   102 sleep 600", "  200     1 /bin/zsh -c unrelated"].join("\n");
 const sh = shellDescendants(100, ps);
 ok("finds the background shell under claude, not the MCP server or a stranger", sh.length === 1 && sh[0].startsWith("102 "), sh.join("; "));
+// cotal ≥0.59 forks its launch-artifact reclaim watcher under claude for the agent's whole life
+// (rendered by ps with literal \012 newlines) — it must never read as the agent running a shell.
+const watcher = String.raw`  104   100 /bin/sh -c p=$$ n=$1\012shift\012(\012  trap '' HUP INT QUIT TERM\012  while kill -0 "$p" 2>/dev/null; do sleep 1; done\012) </dev/null >/dev/null 2>&1 &\012shift "$n"\012exec "$@" cotal-launch 1 /tmp/cotal-x claude`;
+const shW = shellDescendants(100, [ps, watcher, "  105   104 sleep 1"].join("\n"));
+ok("cotal's reclaim watcher under claude is not an agent shell", shW.length === 1 && shW[0].startsWith("102 "), shW.join("; "));
 
 // sleepDecision
 const base = {

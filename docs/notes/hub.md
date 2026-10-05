@@ -22,8 +22,8 @@ for a stdio MCP server claude launched itself, so a shared HTTP MCP server can't
   handshake env. Each session = its own MeshAgent (own NATS connection), hook control socket, wake
   policy, McpServer.
 - `serveClaudeSession` is upstream PR https://github.com/Cotal-AI/Cotal/pull/2401. Until a release
-  carries it, `patches/@cotal-ai__connector-claude-code@0.58.0.patch` (pnpm `patchedDependencies`)
-  is that PR rebuilt onto the 0.58.0 sources. **Delete the patch when the release lands.**
+  carries it, `patches/@cotal-ai__connector-claude-code@0.66.1.patch` (pnpm `patchedDependencies`)
+  is that PR hand-applied to the published 0.66.1 dist (re-key it on every cotal bump). **Delete the patch when the release lands.**
 
 ## Why plain node, not tsx (measured)
 

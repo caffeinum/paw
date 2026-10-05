@@ -2,6 +2,42 @@
 
 Moved verbatim from CLAUDE.md (2026-10-02 split). Index: [CLAUDE.md](../../CLAUDE.md)
 
+## cotal 0.66.1
+
+**Bumped 0.58.0 → 0.66.1 on 2026-10-05** (operator's ask, inside the 7-day min-release-age window:
+`pnpm-workspace.yaml` `minimumReleaseAgeExclude` lists the ten 0.66.1 packages incl. transitive
+`@cotal-ai/seat` by EXACT version — delete it once 0.66.1 is a week old). What it took:
+- **Hub patch re-keyed** to `@cotal-ai/connector-claude-code@0.66.1` (#2401 still open). Hand-applied
+  to the published dist: export prologue + `serveClaudeSession` + `main()` as a thin caller, keeping
+  0.66.1's unmanaged `cotal_how_to_join` server and its stdin-EOF shutdown (the hosted session closes
+  on input `end` too). Re-key it on every bump.
+- **0.59 launch material** lives in per-launch `cotal-*` temp dirs owned by the launcher. The manager
+  forks a reclaim watcher (`/bin/sh -c p=$$ n=$1…`) that then `exec`s claude, so the watcher is a
+  CHILD of claude for its whole life — `paw sleep`'s shell gate read it as a running shell and
+  refused every sleep; `shellDescendants` now skips it. `paw-brief.md` (beside the persona file) lives
+  in that dir and is reaped with it — fine, it's per launch. `paw claude --fg` is its own launcher:
+  it now wraps the spec with core's `reclaimWithChild` so its dirs are removed after exit.
+- **0.59 repeated flags error**: audited — paw never emits a flag twice (`withDefaultSpace` skips an
+  operator `--space`/`--space=`; `up`/`supervise` argv are built once).
+- **0.59 cotal_dm `replyTo`**: a DM is refused when the recipient holds unanswered messages from one
+  peer across SEVERAL conversations (`contextId`). paw's `you` (dm/chat/web) sends no `contextId`, so
+  replies to `you` are never refused (e2e: 3 separate `paw dm`s, one reply, no refusal). A peer that
+  does use two contexts gets the refusal with the id list; haiku re-sent with `replyTo` on its own.
+  No brief change needed.
+- **0.62 manager stop** despawns pty agents itself; paw's explicit pre-stop despawn stays (tmux rows,
+  older managers). **0.66 `headState`→`gateState`**: paw never reads either; `isStaleRefusal` still
+  matches 0.66's epoch refusal ("bound to epoch N … this incarnation is not the one it resolved against").
+- Verified live (isolated, haiku): >48k DM delivered (arrives as a hook file the agent `Read`s — one
+  haiku then treated every later channel push as prompt injection, for the rest of its session);
+  claude SIGKILL → its `mcp.cjs` exits on stdin EOF and leaves the mesh (0.66.1); a second
+  `supervise` from the SAME cotal root exits 1 ("already serves space"); paw restart/down/sleep/hub
+  e2e; a 0.58 release (tmux + hub, 2 agents) cut over by a 0.66.1 `paw release` + `paw restart` in 12s,
+  both agents revived on shims. NOT fixed: a second `supervise` from a DIFFERENT root
+  (PAW_COTAL_ROOT) still comes up beside the first and both serve the space (the 0.63 split-brain
+  exit did not fire within 60s; upstream b54103a8).
+- Found on the way: `paw down` ignored `--space` (stopped the default space — fixed, `downSpace`);
+  the hub daemon exited 0 forever under a symlinked PAW_HOME (main guard compared unresolved argv[1]).
+
 ## cotal 0.58
 
 **Bumped 0.48.1 → 0.58.0 on 2026-10-02** (5401a20; all `@cotal-ai/*` pinned EXACT and coherent).

@@ -21,9 +21,25 @@ allowBuilds:
   esbuild: false
 # patchedDependencies — TEMPORARY. The cotal hub (src/hub.ts, PAW_COTAL_HUB=1) needs
 #   `serveClaudeSession` from `@cotal-ai/connector-claude-code/mcp`, upstreamed in
-#   https://github.com/Cotal-AI/Cotal/pull/2401. The patch is that PR rebuilt onto the 0.58.0
-#   sources (dist/mcp.cjs + mcp.d.ts + the `./mcp` subpath export); `node dist/mcp.cjs` behaves
-#   as published. DELETE this entry and patches/ when a cotal release carrying #2401 lands.
-patchedDependencies:
-  '@cotal-ai/connector-claude-code@0.58.0': patches/@cotal-ai__connector-claude-code@0.58.0.patch
+#   https://github.com/Cotal-AI/Cotal/pull/2401 (still open). The patch is that PR hand-applied to
+#   the published 0.66.1 dist (dist/mcp.cjs + mcp.d.ts + the `./mcp` subpath export); `node
+#   dist/mcp.cjs` behaves as published, incl. 0.66.1's unmanaged `cotal_how_to_join` server and its
+#   stdin-EOF shutdown. Re-key it on every cotal bump. DELETE this entry and patches/ when a cotal
+#   release carrying #2401 lands.
 verifyDepsBeforeRun: false
+# minimumReleaseAgeExclude — the operator explicitly asked for cotal 0.66.1 on 2026-10-05, inside
+#   the global 7-day minimum-release-age window. Exempted by EXACT version only (every other package
+#   and any other @cotal-ai version still waits out the gate). Safe to delete once 0.66.1 is >7 days old.
+minimumReleaseAgeExclude:
+  - '@cotal-ai/cli@0.66.1'
+  - '@cotal-ai/cmux@0.66.1'
+  - '@cotal-ai/connector-claude-code@0.66.1'
+  - '@cotal-ai/connector-codex@0.66.1'
+  - '@cotal-ai/connector-opencode@0.66.1'
+  - '@cotal-ai/core@0.66.1'
+  - '@cotal-ai/manager@0.66.1'
+  - '@cotal-ai/seat@0.66.1'
+  - '@cotal-ai/tmux@0.66.1'
+  - '@cotal-ai/workspace@0.66.1'
+patchedDependencies:
+  '@cotal-ai/connector-claude-code@0.66.1': patches/@cotal-ai__connector-claude-code@0.66.1.patch

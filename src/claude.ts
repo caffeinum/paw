@@ -17,7 +17,7 @@ import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { registry, type Command } from "@cotal-ai/core";
+import { reclaimWithChild, registry, type Command } from "@cotal-ai/core";
 import {
   canonicalDir,
   ensureAgentSpawned,
@@ -274,7 +274,13 @@ export async function runClaude(argv: string[]): Promise<void> {
     const cwd = confineAndTrustCwd(folder);
 
     // (h) Exec the REAL claude in this terminal (inherited stdio), carrying the connector's mesh env.
-    const c = spawn(spec.command, finalArgs, { stdio: "inherit", cwd, env: daemonEnv(spec.env) });
+    //     cotal ≥0.59 writes the launch material (persona, MCP config, and paw's paw-brief.md beside
+    //     it) into per-launch `cotal-*` temp dirs owned by the LAUNCHER: the manager reclaims its own,
+    //     here paw is the launcher. reclaimWithChild (what the foreground `cotal spawn` uses) wraps the
+    //     command so a watcher removes them once claude's pid is gone, even if this process dies
+    //     first. `exec` keeps claude on the wrapper's pid, so the registered pid is still claude's.
+    const launch = reclaimWithChild({ ...spec, args: finalArgs });
+    const c = spawn(launch.command, launch.args, { stdio: "inherit", cwd, env: daemonEnv(spec.env) });
 
     // (g) Register so the rest of paw sees it. The DURABLE session is the persona's EFFECTIVE pin — the
     //     operator's explicit one, else the birth id ensurePersonaFile just minted (so status/open/stop

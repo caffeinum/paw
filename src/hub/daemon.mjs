@@ -28,9 +28,9 @@
  * a few tool calls answered with "hub unavailable" and nothing else.
  */
 import { createConnection, createServer } from "node:net";
-import { chmodSync, existsSync, mkdirSync, unlinkSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, realpathSync, unlinkSync } from "node:fs";
 import { dirname } from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 import { Worker } from "node:worker_threads";
 import { AsyncLocalStorage } from "node:async_hooks";
@@ -345,9 +345,19 @@ export async function runHub({ space, socket: path }) {
   await new Promise(() => {}); // park; SIGTERM (paw down / restart) ends it
 }
 
-/** `node daemon.mjs --space <s> --socket <path>` — run as the hub. Imported (check:hub), it only exports. */
+/** `node daemon.mjs --space <s> --socket <path>` — run as the hub. Imported (check:hub), it only exports.
+ *  Compared by REAL path: node resolves import.meta.url through symlinks but leaves argv[1] as typed,
+ *  so a release under a symlinked PAW_HOME (macOS /tmp → /private/tmp) made the hub exit 0 at once,
+ *  forever, under its supervisor. */
 const argv = process.argv.slice(2);
-if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
+const realOrSelf = (/** @type {string} */ p) => {
+  try {
+    return realpathSync(p);
+  } catch {
+    return p;
+  }
+};
+if (process.argv[1] !== undefined && realOrSelf(fileURLToPath(import.meta.url)) === realOrSelf(process.argv[1])) {
   const flag = (/** @type {string} */ f) => {
     const i = argv.indexOf(f);
     const v = i >= 0 ? argv[i + 1] : undefined;
