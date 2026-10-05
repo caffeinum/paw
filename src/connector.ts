@@ -108,7 +108,9 @@ function meshBrief(name: string): string {
     `\`bd create "<the ask>" -a aleks -d "<what you need and why>"\`. Same for your own work: file what`,
     `you take on (\`bd create\`), claim before starting (\`bd update <id> --status in_progress\` — check`,
     `\`bd show <id>\` first, someone may hold it), mark blocked when waiting on someone, close with a`,
-    `reason. The operator's attention is limited and the task list is where they manage it — a task`,
+    `reason. When you open a pull request for a task, link it: \`bd update <id> --external-ref <PR url>\``,
+    `— the operator follows work through the task, and an unlinked PR is invisible there.`,
+    `The operator's attention is limited and the task list is where they manage it — a task`,
     `will be seen on their time; don't chase it with DMs. Never unset or override BEADS_DIR — a`,
     `repo-local .beads is that project's own tracker, not the fleet's.`,
     // Operator's ask (2026-09-09): "auto-beads incoming user requests so i can see the status of my
