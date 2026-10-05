@@ -83,6 +83,10 @@ assert(
   appendIdx !== -1 && /paw agent/.test(args[appendIdx + 1]) && /cotal_dm/.test(args[appendIdx + 1]),
   "mesh brief appended to system prompt",
 );
+assert(
+  /CHANNELS ARE DIFFERENT/.test(args[appendIdx + 1]) && /NOT required to answer/.test(args[appendIdx + 1]),
+  "brief: a channel message doesn't oblige a reply (only DMs do)",
+);
 assert(spec.env?.COTAL_CHANNEL === "1", "COTAL_CHANNEL=1 inherited from cotal connector");
 assert(spec.env?.COTAL_NAME === "tester", "COTAL_NAME passed through");
 
