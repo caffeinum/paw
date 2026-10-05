@@ -41,8 +41,10 @@ function render(e: Entry): string {
   return `${c.magenta("(DM)")} ${c.bold(e.from)}${agoTag(e.ts)} ${c.dim("→ you:")} ${e.text}`;
 }
 
-function parseArgs(argv: string[]): { space?: string; server?: string; history: boolean; limit: number; watch: boolean; json: boolean; markRead: boolean; sent: boolean } {
-  const out: { space?: string; server?: string; history: boolean; limit: number; watch: boolean; json: boolean; markRead: boolean; sent: boolean } = { history: false, limit: 50, watch: false, json: false, markRead: false, sent: false };
+type InboxArgs = { space?: string; server?: string; history: boolean; limit: number; watch: boolean; json: boolean; markRead: boolean; sent: boolean; agents: string[] };
+
+export function parseArgs(argv: string[]): InboxArgs {
+  const out: InboxArgs = { history: false, limit: 50, watch: false, json: false, markRead: false, sent: false, agents: [] };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--space") out.space = argv[++i];
@@ -57,9 +59,18 @@ function parseArgs(argv: string[]): { space?: string; server?: string; history: 
       if (!Number.isInteger(n) || n < 1) throw new Error("paw: --limit needs a positive integer");
       out.limit = n;
     }
-    else throw new Error(`paw: unknown argument "${a}" — inbox takes [--history] [--watch] [--json] [--mark-read] [--sent] [--limit N] [--space <s>]`);
+    else if (a.startsWith("-")) throw new Error(`paw: unknown argument "${a}" — inbox takes [<agent>…] [--history] [--watch] [--json] [--mark-read] [--sent] [--limit N] [--space <s>]`);
+    else out.agents.push(a.replace(/^@/, ""));
   }
   return out;
+}
+
+/** Keep only the conversation with `agents` (DMs from them; with --sent, also yours to them). Empty =
+ *  everyone. Pure; exported for check:inbox-style tests. */
+export function withAgents(all: Entry[], agents: string[]): Entry[] {
+  if (!agents.length) return all;
+  const want = new Set(agents);
+  return all.filter((e) => (e.dir === "out" ? e.to !== undefined && want.has(e.to) : want.has(e.from)));
 }
 
 const POLL_MS = 2000; // how often --watch re-reads the DM stream (mirrors `log --follow`'s polling)
@@ -79,7 +90,7 @@ const POLL_MS = 2000; // how often --watch re-reads the DM stream (mirrors `log 
  * the useful catch-up), and from then on it shows everything newer than what IT has already shown.
  * It still ADVANCES the shared cursor, because reading here really is reading.
  */
-async function watchInbox(space: string, server: string): Promise<void> {
+async function watchInbox(space: string, server: string, agents: string[]): Promise<void> {
   const ep = await observerEndpoint(space, server);
   ep.on("error", (e: Error) => console.error(c.red("! " + e.message)));
   await ep.start();
@@ -93,9 +104,11 @@ async function watchInbox(space: string, server: string): Promise<void> {
     // A real tail-read API / live ephemeral subscription is the proper fix.
     const all = await readConversation(ep);
     const since = shown ?? readCursor(space);
-    for (const e of all.filter((x) => x.ts > since)) {
+    for (const e of withAgents(all, agents).filter((x) => x.ts > since)) {
       console.log(render(e));
-      advanceCursor(space, e.ts); // forward-only: reading here marks it read everywhere
+      // forward-only: reading here marks it read everywhere — but a filtered tail hides other agents'
+      // DMs, and the cursor is one high-water mark, so advancing it would silently mark those read.
+      if (!agents.length) advanceCursor(space, e.ts);
     }
     // Move the mark even when nothing printed, so a message another surface consumed during the very
     // first tick can't replay on the second.
@@ -126,7 +139,7 @@ async function readInbox(space: string, server: string, withSent = false): Promi
 }
 
 async function inbox(argv: string[]): Promise<void> {
-  const { space: spaceArg, server: serverArg, history, limit, watch, json, markRead, sent } = parseArgs(argv);
+  const { space: spaceArg, server: serverArg, history, limit, watch, json, markRead, sent, agents } = parseArgs(argv);
   const space = spaceArg ?? resolveSpace();
   const server = serverArg ?? pawServer();
 
@@ -140,9 +153,13 @@ async function inbox(argv: string[]): Promise<void> {
   if (watch && json) {
     throw new Error("paw: --watch and --json are mutually exclusive — --json is a one-shot read; poll it if you want a feed");
   }
-  if (watch) return void (await watchInbox(space, server));
+  if (markRead && agents.length) {
+    throw new Error("paw: --mark-read clears the whole inbox (one shared cursor) — drop the agent filter");
+  }
+  if (watch) return void (await watchInbox(space, server, agents));
 
-  const all = await readInbox(space, server, sent);
+  const all = withAgents(await readInbox(space, server, sent), agents);
+  const who = agents.length ? ` · from ${agents.join(", ")}` : "";
 
   // `--mark-read` is the EXPLICIT "I've seen these" verb, for a reader that displays without consuming
   // (a GUI). Every other read path either advances the cursor as a side effect of PRINTING (the default)
@@ -164,10 +181,10 @@ async function inbox(argv: string[]): Promise<void> {
 
   if (history) {
     const shown = all.slice(-limit);
-    if (!shown.length) console.log(c.dim(`inbox empty — no DMs to "${HUMAN_PEER}" on record`));
+    if (!shown.length) console.log(c.dim(`inbox empty — no DMs to "${HUMAN_PEER}"${who} on record`));
     else {
       const more = all.length > shown.length ? c.dim(` (of ${all.length})`) : "";
-      console.log(c.dim(`# ${HUMAN_PEER} · last ${shown.length} message${shown.length === 1 ? "" : "s"}${more} · history (read-only)`));
+      console.log(c.dim(`# ${HUMAN_PEER}${who} · last ${shown.length} message${shown.length === 1 ? "" : "s"}${more} · history (read-only)`));
       for (const e of shown) console.log(render(e));
     }
     return;
@@ -177,12 +194,14 @@ async function inbox(argv: string[]): Promise<void> {
   // chat advancing it concurrently isn't rewound). No mesh ack, no consumer bind.
   const cursor = readCursor(space);
   const fresh = all.filter((e) => e.ts > cursor);
-  if (all.length) advanceCursor(space, all[all.length - 1].ts); // mark everything we just saw as read
+  // The cursor is ONE high-water mark for the whole inbox: a filtered read can't mark only its agent's
+  // DMs read, and advancing it would silently mark everyone else's too — so a filtered read never moves it.
+  if (all.length && !agents.length) advanceCursor(space, all[all.length - 1].ts); // mark everything we just saw as read
   if (!fresh.length) {
-    console.log(c.dim(`inbox empty — nothing new for "${HUMAN_PEER}" (try \`paw inbox --history\`)`));
+    console.log(c.dim(`inbox empty — nothing new for "${HUMAN_PEER}"${who} (try \`paw inbox ${agents.length ? agents.join(" ") + " " : ""}--history\`)`));
     return;
   }
-  console.log(c.dim(`# ${HUMAN_PEER} · ${fresh.length} new message${fresh.length === 1 ? "" : "s"}`));
+  console.log(c.dim(`# ${HUMAN_PEER}${who} · ${fresh.length} new message${fresh.length === 1 ? "" : "s"}${agents.length ? " (left unread elsewhere)" : ""}`));
   for (const e of fresh) console.log(render(e));
 }
 
@@ -190,8 +209,8 @@ const inboxCommand: Command = {
   kind: "command",
   name: "inbox",
   group: "Mesh",
-  summary: "read your DM inbox (new since last time; --history for the backlog; --watch to tail live; --json for tools; --mark-read to clear unread) — inbox [--history] [--watch] [--json] [--mark-read] [--limit N]",
-  usage: "inbox [--history] [--watch] [--json] [--mark-read] [--limit N] [--space <s>]   (default: new since last read; --history: last N, read-only; --watch: live tail; --json: machine read, cursor untouched; --mark-read: clear unread)",
+  summary: "read your DM inbox (new since last time; <agent> to filter; --history for the backlog; --watch to tail live; --json for tools; --mark-read to clear unread) — inbox [<agent>…] [--history] [--watch] [--json] [--mark-read] [--limit N]",
+  usage: "inbox [<agent>…] [--history] [--watch] [--json] [--mark-read] [--limit N] [--space <s>]   (<agent>: only DMs from it, and with --sent yours to it; never moves the unread cursor)   (default: new since last read; --history: last N, read-only; --watch: live tail; --json: machine read, cursor untouched; --mark-read: clear unread)",
   run: (a) => inbox([...a.raw]),
 };
 
