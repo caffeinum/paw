@@ -1,6 +1,8 @@
 # lean harness: a headless Claude agent loop that speaks paw (exploration, 2026-10-05)
 
-Index: [CLAUDE.md](../../CLAUDE.md). PoC: `scripts/lean/` (offline, no key needed). The headless
+Index: [CLAUDE.md](../../CLAUDE.md). PoC: `scripts/lean/` (offline, no key needed). The follow-up
+prototype, a Go per-agent harness that drives Claude sessions with codex and grok over cotal, is
+written up in [lean-harness-poc.md](lean-harness-poc.md). The headless
 `claude -p` connector is a separate piece of work; this note doesn't cover it.
 
 ## Verdict: don't build it for the Claude fleet, for now
