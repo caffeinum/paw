@@ -17,14 +17,16 @@
 import { Action, ActionPanel, Color, Icon, List, showToast, Toast, useNavigation } from "@raycast/api";
 import { formatDistanceStrict } from "date-fns";
 import { useEffect, useRef, useState } from "react";
-import { subscribeInbox, subscribeRoster } from "./feed";
-import { AgentRow, InboxMessage, ago, clipboardImagePath, fetchInbox, markInboxRead, sendDm, spaceKey } from "./paw";
+import { poke, subscribeInbox, subscribeRoster } from "./feed";
+import { AgentRow, InboxMessage, ago, clipboardImagePath, markInboxRead, sendDm, spaceKey } from "./paw";
 import { addReadIds, messageKey, subscribeReadIds } from "./read-state";
 
 /** How much history to open with. Enough to read back a conversation, short enough not to bury it. */
 const SEED_TAIL = 30;
 /** One failed poll is normal mid-restart; a RUN of them means paw is gone and the user should know. */
 const FAILS_BEFORE_ALARM = 3;
+/** A send keeps the inbox poll fast this long — the reply is the thing you are waiting for. */
+const SEND_HOLD_MS = 5 * 60_000;
 
 interface Line {
   id: string;
@@ -76,8 +78,11 @@ export function ChatView(props: { recipient: string; agents?: AgentRow[]; focus?
    *  Slower than the message poll on purpose: presence changes on a human timescale, messages don't. */
   const [agents, setAgents] = useState<AgentRow[]>(props.agents ?? []);
 
-  // The seed covers the history; the poll only has to carry what lands after the view opened.
+  // The FIRST payload seeds the history tail; later ones only carry what lands after the view opened.
+  // (The seed used to be its own one-shot `paw inbox` racing the feed's first poll — an extra process
+  // per view, two more when the roster pushes a focused chat. The shared feed already has the payload.)
   const since = useRef(Date.now());
+  const seeded = useRef(false);
   // Inbox reads are cumulative, so dedupe across the seed and every poll by (ts, from) — paw has no
   // message id here.
   const seen = useRef(new Set<string>());
@@ -88,25 +93,6 @@ export function ChatView(props: { recipient: string; agents?: AgentRow[]; focus?
     return () => {
       alive = false;
       off();
-    };
-  }, []);
-
-  // Open on the inbox tail. This races the first poll, so it MERGES (older lines in front) instead of
-  // replacing, and goes through the same dedupe.
-  useEffect(() => {
-    let alive = true;
-    fetchInbox()
-      .then(({ messages }) => {
-        if (!alive) return;
-        const tail = takeUnseen(seen.current, messages.slice(-SEED_TAIL));
-        if (tail.length) setLines((prev) => [...tail.map(agentLine), ...prev]);
-      })
-      // One-shot, so one failure is the whole story: say it rather than opening a blank-looking chat.
-      .catch((e) => {
-        if (alive) void showToast({ style: Toast.Style.Failure, title: "Couldn't load history", message: (e as Error).message });
-      });
-    return () => {
-      alive = false;
     };
   }, []);
 
@@ -129,6 +115,12 @@ export function ChatView(props: { recipient: string; agents?: AgentRow[]; focus?
         setLoaded(true);
         fails = 0;
         setPollFailure(undefined);
+        if (!seeded.current) {
+          seeded.current = true;
+          const tail = takeUnseen(seen.current, messages.slice(-SEED_TAIL));
+          if (tail.length) setLines((prev) => [...tail.map(agentLine), ...prev]);
+          return;
+        }
         const fresh = takeUnseen(
           seen.current,
           messages.filter((m) => m.ts > since.current),
@@ -165,11 +157,15 @@ export function ChatView(props: { recipient: string; agents?: AgentRow[]; focus?
   // otherwise "2 minutes ago" freezes at whatever it said when the last message landed. A second while
   // awaiting (the elapsed counter is the only "something is happening" signal); half a minute otherwise,
   // which is finer than the smallest unit shown and costs a re-render a minute.
+  // The 1s tick only runs while `waiting Ns` shows SECONDS; past a minute it reads in minutes, and an
+  // unanswered line can stay "awaiting" for hours behind a hidden window — re-rendering the whole list
+  // every second for that is Backend CPU spent on nobody.
+  const lastTs = last?.ts;
   useEffect(() => {
-    setNow(Date.now());
-    const timer = setInterval(() => setNow(Date.now()), awaiting ? 1000 : 30_000);
-    return () => clearInterval(timer);
-  }, [awaiting]);
+    const age = lastTs === undefined ? Infinity : Date.now() - lastTs;
+    const timer = setTimeout(() => setNow(Date.now()), awaiting && age < 60_000 ? 1000 : awaiting ? 15_000 : 30_000);
+    return () => clearTimeout(timer);
+  }, [now, awaiting, lastTs]);
 
   async function attachFromClipboard() {
     try {
@@ -214,6 +210,7 @@ export function ChatView(props: { recipient: string; agents?: AgentRow[]; focus?
     setAttachments([]);
     setLines((prev) => [...prev, { id, who: "you", to: target, text: body, ts: Date.now(), pending: true }]);
     setBusy(true);
+    poke(SEND_HOLD_MS);
     try {
       await sendDm(target, text, riding);
       setLines((prev) => prev.map((l) => (l.id === id ? { ...l, pending: false } : l)));
@@ -273,12 +270,16 @@ export function ChatView(props: { recipient: string; agents?: AgentRow[]; focus?
       isLoading={!loaded || busy || awaiting}
       navigationTitle={pollFailure ? "paw unreachable" : `${focus ?? "All agents"}${unread ? ` — ${unread} unread` : ""}`}
       searchText={input}
-      onSearchTextChange={setInput}
+      onSearchTextChange={(t) => {
+        setInput(t);
+        poke();
+      }}
       filtering={false}
       onSelectionChange={(id) => {
         // Reading a message and then sending to someone else is never what you meant, so the selection
         // sets the recipient: an agent's line targets that agent, your own targets whoever it went to.
         if (!id) return; // deselection (empty list, filtering) — nothing to target
+        if (id !== selectedId) poke();
         setSelectedId(id);
         const l = lines.find((x) => x.id === id);
         if (l && l.who !== "you" && !l.pending) {
@@ -369,7 +370,9 @@ function takeUnseen(seen: Set<string>, msgs: InboxMessage[]): InboxMessage[] {
 
 function agentLine(m: InboxMessage): Line {
   // An "out" message is one of YOURS, read back from the stream — render it on your side of the thread.
-  if (m.dir === "out") return { id: `s${m.ts}`, who: "you", to: m.to, text: m.text, ts: m.ts };
+  // The id carries the recipient: two sends in the same millisecond (a fan-out) are two rows. A bare
+  // `s${ts}` collided, and Raycast logged duplicate-key errors on every render.
+  if (m.dir === "out") return { id: `s${m.ts}:${m.to ?? ""}`, who: "you", to: m.to, text: m.text, ts: m.ts };
   return { id: `a${m.ts}:${m.from}`, who: m.from, text: m.text, ts: m.ts };
 }
 
