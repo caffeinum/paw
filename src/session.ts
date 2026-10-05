@@ -87,6 +87,13 @@ export function isClaudeHarness(agentType: string | undefined): boolean {
   return agentType === "claude" || agentType === "cotal" || agentType === "paw";
 }
 
+/** True when this agent's conversation is a Claude Code jsonl under ~/.claude/projects at its `resume:`
+ *  pin — the claude harness itself, or kit (src/kit.ts), which writes the same format. paw log, the web
+ *  trace and the pin-health column read it the same way for both. */
+export function writesClaudeTranscript(agentType: string | undefined): boolean {
+  return isClaudeHarness(agentType) || agentType === "kit";
+}
+
 /**
  * Read the `shareTools:` line from an agent file's frontmatter — which of the operator's MCP servers
  * this agent gets, forwarded to the manager as `--share-tools` at spawn.

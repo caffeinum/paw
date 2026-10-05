@@ -18,7 +18,7 @@ import { listForeground } from "./foreground.ts";
 import { ensure, formatHubLine, hubState, READY_PROBE_MS, readRuntimeMarker, resolveSpace, type HubState, type Runtime } from "./lifecycle.ts";
 import { writeJson } from "./stdout.ts";
 import { liveSessionProcsMany, nameForSession, readIndex as readSessionIndex, type LiveSessionProc } from "./named.ts";
-import { isClaudeHarness, readAgentType, readResumeId, transcriptPath, transcriptPaths } from "./session.ts";
+import { isClaudeHarness, readAgentType, readResumeId, transcriptPath, transcriptPaths, writesClaudeTranscript } from "./session.ts";
 import { lastFailure, lastUsage, type ContextUsage } from "./transcript.ts";
 import { tailRead, turnState, type PendingTool, type TurnState } from "./transcript.ts";
 import { gitInfoMany, type GitInfo } from "./git.ts";
@@ -318,8 +318,8 @@ function note(r: AgentStatus, now: number): string {
   if (r.terminalLost) return `⚠ terminal lost — live on the mesh, but the manager can't reach its tmux window (\`paw attach ${r.name}\` explains)`;
   if (r.conflictPids.length) return `⚠ two writers (pid ${r.conflictPids.join(", ")})`;
   if (inboxStuck(r)) return `⚠ inbox stuck — ${inboxText(r.inbox)}, agent not consuming`;
-  if (!r.pin && isClaudeHarness(r.harness)) return "⚠ no pin — resets on restart";
-  if (!r.durable && isClaudeHarness(r.harness)) return "fresh (new session on first boot)";
+  if (!r.pin && writesClaudeTranscript(r.harness)) return "⚠ no pin — resets on restart";
+  if (!r.durable && writesClaudeTranscript(r.harness)) return "fresh (new session on first boot)";
   return "";
 }
 
@@ -514,7 +514,7 @@ export function formatStatus(rows: AgentStatus[], now: number, width: number = t
     return n && !inline ? [row, "  " + paint(elideRight(n, Math.max(MIN_NOTE, width - 2)))] : [row];
   });
   const conflicts = rows.filter((r) => r.conflictPids.length).length;
-  const pinless = rows.filter((r) => !r.pin && isClaudeHarness(r.harness) && !r.unregistered).length;
+  const pinless = rows.filter((r) => !r.pin && writesClaudeTranscript(r.harness) && !r.unregistered).length;
   const stuck = rows.filter(inboxStuck).length;
   const hung = rows.filter((r) => hungTool(r, now) !== undefined).length;
   const out = [header, ...lines];

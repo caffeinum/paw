@@ -96,7 +96,8 @@ Moved verbatim from CLAUDE.md (2026-10-02 split). Index: [CLAUDE.md](../../CLAUD
   from any restart as a CLAUDE named codex1. The persona's frontmatter `agent: codex|opencode` is now
   forwarded as the spawn op's `agent` (cotal 0.25 `SPAWN_INPUT_SCHEMA` accepts it), so the harness is
   durable in the same file as the name/pin. Absent ⇒ default claude, unchanged. Verified live: `paw
-  start codex1` → `codex1 codex · tmux`. Non-claude agents are still NOT in the launchd fleet list on
+  start codex1` → `codex1 codex · tmux`. `agent: kit` (the lean Go harness on codex/grok) is the same mechanism with a
+  paw-side connector — see [kit.md](kit.md). Non-claude agents are still NOT in the launchd fleet list on
   purpose (booting them at login spends codex/grok sessions — the operator's call). Test: `check:mcp`.
 
 ## src/session.ts

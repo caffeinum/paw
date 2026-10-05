@@ -214,6 +214,24 @@ export function slashCommandText(text: string): string | undefined {
   return args ? `${name} ${args}` : name;
 }
 
+/**
+ * A kit turn (src/kit.ts): kit writes the MESSAGE ITSELF into the prompt, one `<channel source="cotal"
+ * … msg_id="…">body</channel>` envelope per message (several coalesced into one turn), where claude's
+ * wake carries no body and the words arrive later through cotal_inbox. So each envelope is a wake
+ * marker plus the body as `incoming`. Undefined for anything that isn't a kit envelope turn.
+ */
+export function kitEnvelopeBlocks(text: string): Block[] | undefined {
+  const envelopes = [...text.matchAll(/<channel source="cotal"([^>]*)>([\s\S]*?)<\/channel>/g)];
+  if (!envelopes.length || !envelopes.every((m) => /\bmsg_id="/.test(m[1]!))) return undefined;
+  return envelopes.flatMap((m) => {
+    const attr = (k: string) => m[1]!.match(new RegExp(`\\b${k}="([^"]*)"`))?.[1];
+    const channel = attr("channel");
+    const wake: Block = { kind: "wake", from: attr("from") ?? "?", via: channel ? `#${channel}` : (attr("kind") ?? "dm") };
+    const body = m[2]!.trim();
+    return body ? [wake, { kind: "incoming", text: body } as Block] : [wake];
+  });
+}
+
 export function userTextBlock(text: string): Block {
   const slash = slashCommandText(text);
   if (slash) return { kind: "user", text: slash };
@@ -507,7 +525,7 @@ export class TranscriptParser {
   }
 
   private feedUser(content: unknown): Block[] {
-    if (typeof content === "string") return content.trim() ? [this.userBlock(content)] : [];
+    if (typeof content === "string") return content.trim() ? this.userBlocks(content) : [];
     if (!Array.isArray(content)) return [];
     const parts = content as Part[];
     const blocks: Block[] = [];
@@ -515,7 +533,7 @@ export class TranscriptParser {
       .filter((p) => p?.type === "text" && p.text?.trim())
       .map((p) => p.text)
       .join(" ");
-    if (text.trim()) blocks.push(this.userBlock(text));
+    if (text.trim()) blocks.push(...this.userBlocks(text));
     for (const p of parts) {
       if (p?.type === "tool_result") {
         const b = this.resultBlock(p);
@@ -525,8 +543,8 @@ export class TranscriptParser {
     return blocks;
   }
 
-  private userBlock(text: string): Block {
-    return userTextBlock(text);
+  private userBlocks(text: string): Block[] {
+    return kitEnvelopeBlocks(text) ?? [userTextBlock(text)];
   }
 
   private resultBlock(p: Part): Block | undefined {
