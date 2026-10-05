@@ -7,7 +7,7 @@
  * `retry-channel`. Member/role/goal/filing ops come back WITH their UI (spec §0 LATER).
  */
 import { renameInMetadata, assignmentText, companiesFrom, companyBrief, companyIssues, companyMetadata, onYou, validateCompany, type Company, type CompanyIssue, type CreateCompanyInput, type OnYou } from "./company.ts";
-import { createTaskGetId, mutateMetadata, updateTask, listByMetadata, listLabelled, listTasks, listTasksSWR, writeGeneration, type Task } from "./tasks.ts";
+import { closeTask, commentTask, createTaskGetId, mutateMetadata, updateTask, listByMetadata, listLabelled, listTasks, listTasksSWR, writeGeneration, type Task } from "./tasks.ts";
 import type { AgentStatus } from "./status.ts";
 
 export interface CompanyDeps {
@@ -240,6 +240,43 @@ export function companyService(deps: CompanyDeps) {
         } catch (e) {
           return { id, nudgeError: (e as Error).message }; // the bead exists; the failed nudge is said, not hidden
         }
+      }
+      case "comment": {
+        // the operator's comment, attributed to the operator (bd --actor), not to git's user.name
+        const id = str("id");
+        const text = str("text");
+        if (!id || !text) throw new HttpError(400, "comment needs {id, text}");
+        await commentTask(id, text, deps.operator);
+        return { ok: true };
+      }
+      case "status": {
+        // Open · In progress · Blocked · Done · Not needed — for ANY company bead. Done / Not needed close
+        // it; the optional reason is the close reason AND a comment (one submit). bd's refusal (an open
+        // blocker…) propagates verbatim. Closing a bead someone else holds DMs them once.
+        const id = str("id");
+        const to = str("to");
+        if (!id || !to) throw new HttpError(400, "status needs {id, to}");
+        const bead = (await page(slug)).issues.find((i) => i.id === id);
+        if (!bead) throw new HttpError(400, `${id} isn't one of ${slug}'s beads`);
+        const reason = str("reason");
+        if (to === "done" || to === "not-needed") {
+          const closeReason = to === "not-needed" ? `not needed${reason ? `: ${reason}` : ""}` : (reason ?? "done");
+          await closeTask(id, closeReason, deps.operator);
+          if (reason) await commentTask(id, to === "not-needed" ? `closed as not needed: ${reason}` : reason, deps.operator);
+          const holder = bead.assignee;
+          if (holder && holder !== deps.operator && bead.status !== "closed") {
+            try {
+              await deps.dm(holder, `${deps.operator} closed ${id} (${bead.title}) as ${closeReason}.`);
+              return { ok: true, nudged: holder };
+            } catch (e) {
+              return { ok: true, nudgeError: (e as Error).message };
+            }
+          }
+          return { ok: true };
+        }
+        if (!["open", "in_progress", "blocked"].includes(to)) throw new HttpError(400, `unknown status "${to}"`);
+        await updateTask(id, { status: to }, deps.operator);
+        return { ok: true };
       }
       case "retry-channel": {
         // ONLY what failed: the named members (still on the roster), the card / kickoff if asked.

@@ -222,6 +222,28 @@ try {
   ok("R2 member-remove drops it from metadata.org, other keys kept", rm.status === 200 && sortedJson((show(epic).metadata as { org?: unknown }).org) === sortedJson({ alpha: {}, beta: {} }) && (show(epic).metadata as { company?: string }).company === "test-co");
   ok("R2 the lead can't be removed", (await post("/api/company/test-co", { op: "member-remove", name: "alpha" })).status === 400);
 
+  // S ─ status controls + attribution
+  const sb = (await post("/api/company/test-co", { op: "issue-create", title: "Status probe", assignee: "beta" })).body.id as string;
+  await sleep(1000);
+  const st1 = await post("/api/company/test-co", { op: "status", id: sb, to: "blocked" });
+  ok("S status → blocked", st1.status === 200 && show(sb).status === "blocked", JSON.stringify(st1.body));
+  const blk2 = (await post("/api/company/test-co", { op: "issue-create", title: "Blocker of the probe" })).body.id as string;
+  bdRaw("dep", "add", sb, blk2);
+  const refusedDone = await post("/api/company/test-co", { op: "status", id: sb, to: "done", reason: "tried" });
+  ok("S Done on a bead with an open blocker is refused with bd's words; not closed (the agent may move it itself)", refusedDone.status !== 200 && /block/i.test(String(refusedDone.body.error)) && show(sb).status !== "closed", JSON.stringify(refusedDone.body));
+  bdRaw("dep", "remove", sb, blk2);
+  const done = await post("/api/company/test-co", { op: "status", id: sb, to: "not-needed", reason: "superseded" });
+  const cmts = bd("comments", sb) as Array<{ author: string; text: string }>;
+  ok("S 'not needed' + reason closes with that reason AND comments it, as the operator", done.status === 200 && show(sb).status === "closed" && cmts.some((c) => c.author === "operator" && c.text.includes("superseded")), JSON.stringify(cmts));
+  ok("S its holder (beta) got exactly one DM about the close", done.body.nudged === "beta" && (await outs()).filter((m) => m.text.includes(`closed ${sb}`)).length === 1, JSON.stringify(done.body));
+  const reopened = await post("/api/company/test-co", { op: "status", id: sb, to: "open" });
+  ok("S a closed bead can be reopened", reopened.status === 200 && show(sb).status === "open");
+  await post("/api/company/test-co", { op: "comment", id: sb, text: "from the operator" });
+  ok("S a page comment is attributed to the operator, not git's user.name", (bd("comments", sb) as Array<{ author: string; text: string }>).some((c) => c.author === "operator" && c.text === "from the operator"));
+  const opClose = await post("/api/company/test-co", { op: "issue-create", title: "Mine", assignee: "operator" });
+  const opDone = await post("/api/company/test-co", { op: "status", id: opClose.body.id, to: "done" });
+  ok("S closing the operator's OWN bead DMs nobody", opDone.status === 200 && !opDone.body.nudged);
+
   // 8 ─ unknown + duplicate
   const nope = await get("/api/company/nope");
   ok("8 unknown slug → 404 'no company'", nope.status === 404 && /no company "nope"/.test(String(nope.body.error)));

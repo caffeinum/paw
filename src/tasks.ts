@@ -280,8 +280,9 @@ export async function createTaskGetId(title: string, description?: string, paren
 
 /** Edit a task in place. Only the fields given are touched; asking for nothing is a caller bug and
  *  fails loud rather than invoking bd as a no-op. */
-export async function updateTask(id: string, fields: { title?: string; description?: string; status?: string; parent?: string; assignee?: string; addLabels?: string[]; removeLabels?: string[]; metadata?: Record<string, unknown> }): Promise<void> {
+export async function updateTask(id: string, fields: { title?: string; description?: string; status?: string; parent?: string; assignee?: string; addLabels?: string[]; removeLabels?: string[]; metadata?: Record<string, unknown> }, actor?: string): Promise<void> {
   const args = ["update", id];
+  if (actor) args.push("--actor", actor);
   if (fields.metadata !== undefined) args.push("--metadata", JSON.stringify(fields.metadata));
   for (const l of fields.addLabels ?? []) args.push("--add-label", l);
   for (const l of fields.removeLabels ?? []) args.push("--remove-label", l);
@@ -290,7 +291,7 @@ export async function updateTask(id: string, fields: { title?: string; descripti
   if (fields.description !== undefined) args.push("-d", fields.description);
   if (fields.status !== undefined) args.push("--status", fields.status);
   if (fields.parent !== undefined) args.push("--parent", fields.parent); // "" clears — bd's own convention
-  if (args.length === 2) throw new Error("updateTask: no fields to update");
+  if (args.length === (actor ? 4 : 2)) throw new Error("updateTask: no fields to update");
   await bd(args);
   invalidate();
 }
@@ -348,8 +349,10 @@ export async function mutateMetadata(id: string, mutate: (cur: Record<string, un
   return out;
 }
 
-export async function commentTask(id: string, text: string): Promise<void> {
-  await bd(["comment", id, text]);
+/** `actor` = who bd records as the author (bd's --actor). Without it bd falls back to $BEADS_ACTOR /
+ *  git user.name — which made the operator's page comments read "Aleksey Bykhun". */
+export async function commentTask(id: string, text: string, actor?: string): Promise<void> {
+  await bd(["comment", id, text, ...(actor ? ["--actor", actor] : [])]);
   invalidate(); // comment_count changed
 }
 
@@ -392,8 +395,9 @@ export async function listComments(id: string): Promise<TaskComment[]> {
   return parseComments(await bd(["comments", id, "--json"]));
 }
 
-export async function closeTask(id: string, reason?: string): Promise<void> {
+export async function closeTask(id: string, reason?: string, actor?: string): Promise<void> {
   const args = ["close", id];
+  if (actor) args.push("--actor", actor);
   if (reason) args.push("--reason", reason);
   await bd(args);
   invalidate();

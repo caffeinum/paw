@@ -574,11 +574,27 @@ export function initCompany(deps) {
     return `<a href="${esc(href)}" data-nav="${esc(href)}">${esc(name)}</a>`;
   }
 
-  // status controls land in the next step; the operator's own beads keep their Close for now
+  /** Status controls for ANY company bead: Open · In progress · Blocked · Done, + Close as not needed.
+   *  Done / Not needed first open a reason field (optional) — one submit closes with it as the close
+   *  reason AND posts it as a comment. Disabled while a change is in flight; bd's refusal is shown. */
   function statusHtml_(b, d) {
-    const canClose = b.assignee === d.operator && b.status !== "closed";
-    if (!canClose) return "";
-    return `${s.closing ? `<input class="co-addin" data-input="reason" placeholder="Reason (optional) — closing unblocks what waits on it">` : ""}<p><button class="co-link co-closebtn" data-act="${s.closing ? "close-bead" : "closing"}">${s.closing ? "Close it" : "Close…"}</button></p>`;
+    const busy = s.statusBusy === b.id;
+    const opts = [
+      ["open", "Open"],
+      ["in_progress", "In progress"],
+      ["blocked", "Blocked"],
+      ["done", "Done"],
+      ["not-needed", "Not needed"],
+    ];
+    const cur = b.status === "closed" ? (/^not needed/i.test(b.closeReason ?? "") ? "not-needed" : "done") : b.status;
+    const chips = opts
+      .map(([v, label]) => `<button class="co-chip${cur === v ? " on" : ""}" data-status="${v}" aria-pressed="${cur === v}"${busy ? " disabled" : ""}>${GLYPH[v === "done" || v === "not-needed" ? "closed" : v] ?? ""} ${label}</button>`)
+      .join("");
+    const asking = s.closing && s.closing.id === b.id;
+    const reason = asking
+      ? `<div class="co-closebar"><input class="co-addin" data-input="reason" placeholder="${s.closing.to === "not-needed" ? "Why it isn't needed (optional)" : "What was done (optional)"} — becomes the close reason and a comment"${busy ? " disabled" : ""}><button class="co-btn" data-act="close-bead"${busy ? " disabled" : ""}>${busy ? "saving…" : s.closing.to === "not-needed" ? "Close as not needed" : "Mark done"}</button> <button class="co-link" data-act="close-cancel">cancel</button></div>`
+      : "";
+    return `<div class="co-stchips">${chips}</div>${reason}`;
   }
 
   async function loadThread(id) {
@@ -713,19 +729,29 @@ export function initCompany(deps) {
     paint(true);
   }
 
-  async function closeBead() {
-    const id = s.bead;
-    if (!id) return;
-    const reason = modal.querySelector('[data-input="reason"]')?.value.trim();
+  /** Set a bead's status. Open/In progress/Blocked apply at once; Done/Not needed ask for a reason first.
+   *  The chips are disabled while it's in flight; on bd's refusal the real status stays and its words show. */
+  async function setStatus(id, to, reason) {
+    if (s.statusBusy) return;
     s.note.delete(`err:${id}`);
-    try {
-      await post("/api/tasks", { op: "close", id, ...(reason ? { reason } : {}) });
-      s.closing = false;
-    } catch (e) {
-      s.note.set(`err:${id}`, { ok: false, text: `Not closed: ${e?.message ?? e}` }); // bd's words
-    }
-    await load();
+    s.statusBusy = id;
     paint(true);
+    try {
+      const r = await post(`/api/company/${encodeURIComponent(s.slug)}`, { op: "status", id, to, ...(reason ? { reason } : {}) });
+      s.closing = undefined;
+      if (r.nudgeError) s.note.set(`err:${id}`, { ok: false, text: `closed, but the DM to its holder failed: ${r.nudgeError}` });
+      await load();
+      if (reason) await loadThread(id);
+    } catch (e) {
+      s.note.set(`err:${id}`, { ok: false, text: String(e?.message ?? e) });
+    } finally {
+      s.statusBusy = undefined;
+    }
+    paint(true);
+  }
+
+  async function closeBead() {
+    if (s.closing?.id && s.closing.id === s.bead) return void setStatus(s.closing.id, s.closing.to, modal.querySelector('[data-input="reason"]')?.value.trim() || undefined);
   }
 
   /** Send a comment. The box and button are DISABLED ("sending…") from submit until the refreshed
@@ -742,7 +768,7 @@ export function initCompany(deps) {
     ta.blur();
     paint(true);
     try {
-      await post("/api/tasks", { op: "comment", id, text });
+      await post(`/api/company/${encodeURIComponent(s.slug)}`, { op: "comment", id, text }); // attributed to the operator
       const at = parseMention(text);
       if (at) await post("/api/dm", { to: at.to, text: `comment on ${id} (${s.slug}): ${at.text} — bd show ${id} for the thread` });
       store.del(k(`draft.c.${id}`));
@@ -780,6 +806,16 @@ export function initCompany(deps) {
       s.view = parseView(v.dataset.view);
       store.set(k("view"), s.view);
       return paint(true);
+    }
+    const st = t.closest("[data-status]");
+    if (st && s.bead && modal.contains(st)) {
+      const to = st.dataset.status;
+      if (to === "done" || to === "not-needed") {
+        s.closing = { id: s.bead, to };
+        paint(true);
+        return modal.querySelector('[data-input="reason"]')?.focus();
+      }
+      return void setStatus(s.bead, to);
     }
     switch (act) {
       case "retry":
@@ -827,12 +863,11 @@ export function initCompany(deps) {
         return closePanel();
       case "comment":
         return void sendComment();
-      case "closing":
-        s.closing = true;
-        paint(true);
-        return modal.querySelector('[data-input="reason"]')?.focus();
       case "close-bead":
         return void closeBead();
+      case "close-cancel":
+        s.closing = undefined;
+        return paint(true);
     }
     const open = t.closest("[data-open]");
     if (open) return openBead(open.dataset.open, open.dataset.open);
