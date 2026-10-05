@@ -144,6 +144,22 @@ export function nameForSession(sessionId: string): string | undefined {
   return undefined;
 }
 
+/** The `COTAL_NAME`/`COTAL_SPACE` cotal stamps into an agent's environment, parsed from `ps -E` output
+ *  (command line followed by the environment). Pure; exported for check:addressing. */
+export function parseCotalIdentity(psE: string): { name?: string; space?: string } {
+  const pick = (k: string) => new RegExp(`(?:^|\\s)${k}=(\\S+)`).exec(psE)?.[1];
+  return { name: pick("COTAL_NAME"), space: pick("COTAL_SPACE") };
+}
+
+/** Which mesh agent (name, space) process `pid` is, from its environment. Empty when unreadable. */
+export function meshIdentity(pid: number): { name?: string; space?: string } {
+  try {
+    return parseCotalIdentity(execFileSync("ps", ["-E", "-o", "command=", "-p", String(pid)], { encoding: "utf8" }));
+  } catch {
+    return {};
+  }
+}
+
 /** Standalone (non-mesh) claude processes holding `sessionId` — the two-writer hazard. Resuming a
  *  session a hand-run TUI is editing puts two writers on one transcript and can corrupt it; both
  *  `adopt` and the spawn guard refuse on a non-empty result. (paw's own mesh agents are excluded.) */

@@ -25,6 +25,10 @@ Moved verbatim from CLAUDE.md (2026-10-02 split). Index: [CLAUDE.md](../../CLAUD
   quiet when durable). Rows sort live-first then most-recently-active. `formatStatus`/`meshStatus`/`ago`/
   `inboxText`/`inboxStuck` are pure/unit-tested. In NEEDS_MANAGER (reads the manager ps for liveness).
   Test: `check:status`.
+- **`live (unmanaged)`:** every registered agent missing from ps is looked up on the presence roster
+  (`readMeshRoster`, waits for the KV snapshot, not a fixed sleep); a live, fresh-heartbeat entry →
+  `live: true, unmanaged: true` (JSON keeps `mesh` = the presence status), STATUS `live (unmanaged)`,
+  note "`paw restart <name>` re-adopts it". See [addressing.md#unmanaged-agents](addressing.md#unmanaged-agents).
 
 ## unregistered agents
 

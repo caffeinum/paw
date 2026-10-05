@@ -111,6 +111,11 @@ Moved verbatim from CLAUDE.md (2026-10-02 split). Index: [CLAUDE.md](../../CLAUD
   session a standalone claude is holding (`foreignWriters` in `src/named.ts` = live non-mesh procs on
   that id) — resuming it would put two writers on one transcript and corrupt it. This is why `paw chat
   --fresh` no longer silently resumes a human's own live session (the `aleks` incident, 2026-06-26).
+  A MESH holder running as the same name (env `COTAL_NAME`) is the agent itself, alive outside the
+  manager — reused, not refused. See [addressing.md#unmanaged-agents](addressing.md#unmanaged-agents).
+- **Startup classifier:** `classifyStartupScreen` returns `ready` for claude's idle input box + mode
+  footer (`isIdleInput`, judged on the LAST lines only — older pane text can hold a dialog's leftover
+  "Enter to confirm"), so `paw start` no longer logs an idle claude as an "unrecognised prompt".
 
 ## paw open
 

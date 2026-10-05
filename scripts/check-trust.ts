@@ -60,7 +60,19 @@ const t3 = classifyStartupScreen("   No, exit\n   Yes, I trust this folder\n");
 ok("no cursor visible → no keys (send nothing)", t3.kind === "trust" && t3.keys === undefined);
 ok("dev-channels gate recognised", classifyStartupScreen("WARNING: Loading development channels\nEnter to confirm").kind === "dev-channels");
 const idle = classifyStartupScreen("╭───╮\n│ > │\n╰───╯\n ⏵⏵ bypass permissions on");
-ok("an idle claude is 'other', not a prompt", idle.kind === "other" && !idle.prompt);
+ok("an idle claude is 'ready'", idle.kind === "ready");
+// The screen behind the 2026-10-05 noise ("unrecognised prompt … bypass permissions on"): claude's idle
+// input box, with a dialog's leftover "Enter to confirm" still higher up the pane.
+const IDLE_REAL = ` Enter to confirm · Esc to cancel
+
+ ✻ Welcome back!
+────────────────────────────────────────
+❯
+────────────────────────────────────────
+  🐾 perkmal (Opus 5.5)
+  ⏵⏵ bypass permissions on (shift+tab to cycle)`;
+ok("the real idle box + footer is 'ready' (logs nothing), despite leftover dialog text above", classifyStartupScreen(IDLE_REAL).kind === "ready");
+ok("a footer alone, without the input line, is not 'ready'", classifyStartupScreen("Pick one\nEnter to confirm\n bypass permissions on").kind === "other");
 const odd = classifyStartupScreen("Update available. Install now? (y/n)");
 ok("an unknown y/n question is an unrecognised prompt", odd.kind === "other" && odd.prompt);
 

@@ -7,7 +7,7 @@
  * `paw cotal ps` for the raw view); status now carries the liveness column too, so there's one command.
  */
 import { sleepState } from "./sleep-state.ts";
-import { CotalEndpoint, dmDurable, dmStream, parsePrincipalKey, type Command, registry } from "@cotal-ai/core";
+import { dmDurable, dmStream, parsePrincipalKey, type Command, registry } from "@cotal-ai/core";
 import { JetStreamApiCodes, JetStreamApiError, jetstreamManager } from "@nats-io/jetstream";
 import { connect, credsAuthenticator } from "@nats-io/transport-node";
 import { existsSync } from "node:fs";
@@ -23,6 +23,7 @@ import { lastFailure, lastUsage, type ContextUsage } from "./transcript.ts";
 import { tailRead, turnState, type PendingTool, type TurnState } from "./transcript.ts";
 import { gitInfoMany, type GitInfo } from "./git.ts";
 import { pawServer } from "./server.ts";
+import { presenceLive, readMeshRoster } from "./roster.ts";
 
 const tty = process.stdout.isTTY === true;
 const wrap = (code: string) => (s: string) => (tty ? `\x1b[${code}m${s}\x1b[0m` : s);
@@ -74,6 +75,9 @@ export interface AgentStatus {
   /** The manager lists the agent's terminal as gone (`exited`) while the agent heartbeats on the mesh —
    *  it's alive and answers DMs, but nothing can attach or type into it (see psRowAlive). */
   terminalLost?: boolean;
+  /** Live on the mesh (fresh presence heartbeat) but NOT in the current manager's ps — spared by a
+   *  previous manager's stop (cotal >=0.49). Reachable by DM; `paw restart <name>` re-adopts it. */
+  unmanaged?: boolean;
   /** The manager lists this agent but paw's registry does NOT (a `cotal_spawn` / `paw cotal spawn`
    *  peer, 2026-09-09): shown so the dashboard agrees with the mesh, with the harness the manager
    *  reports. No folder, pin, transcript or revival — paw only ever knows what the ps row says. */
@@ -248,6 +252,7 @@ function note(r: AgentStatus, now: number): string {
   // the advice leaves a dangling verb ("limit. Run"), which reads like the line was truncated by
   // accident — so the orphan goes too.
   if (r.failure) return `⚠ ${r.failure.text.split(/\s+\/usage|\n/)[0].slice(0, 80).replace(/\s+(Run|Please run)$/, "")}`;
+  if (r.unmanaged) return `not managed by the current manager — \`paw restart ${r.name}\` re-adopts it`;
   if (r.terminalLost) return `⚠ terminal lost — live on the mesh, but the manager can't reach its tmux window (\`paw attach ${r.name}\` explains)`;
   if (r.conflictPids.length) return `⚠ two writers (pid ${r.conflictPids.join(", ")})`;
   if (inboxStuck(r)) return `⚠ inbox stuck — ${inboxText(r.inbox)}, agent not consuming`;
@@ -296,7 +301,7 @@ export function ago(ms: number | undefined, now: number): string {
 function statusColor(text: string): (s: string) => string {
   // `busy` is paw's inference and `working` is the agent's own claim — same colour, because to a
   // reader scanning the column they mean the same thing: this agent is doing something.
-  if (text === "idle" || text === "working" || text === "busy") return c.green;
+  if (text === "idle" || text === "working" || text === "busy" || text === "live (unmanaged)") return c.green;
   if (text === "starting" || text === "waiting" || text.startsWith("in tool")) return c.yellow;
   return c.dim; // offline
 }
@@ -392,6 +397,7 @@ export function formatStatus(rows: AgentStatus[], now: number, width: number = t
   const statusText = (r: AgentStatus) => {
     const hung = hungTool(r, now);
     if (hung !== undefined) return `in tool ${ago(now - hung, now)}`;
+    if (r.unmanaged) return "live (unmanaged)";
     return (r.busy ?? inferBusy(r.mesh, r.live, r.activeMs, now)) ? "busy" : r.mesh;
   };
   const cwd = (r: AgentStatus) => (r.folder ? tilde(r.folder) : "—");
@@ -652,40 +658,6 @@ async function fetchInboxLag(
   return lag;
 }
 
-/** A FOREGROUND `paw claude` agent isn't in the manager's ps (it runs in the operator's terminal), so
- *  its mesh presence + card.id come from the live ROSTER instead. A short-lived presence-watching
- *  endpoint reads it; returns name → {id, status}. Best-effort — an unreachable mesh yields an empty map
- *  (the caller then shows "starting"/"—", never a fabricated healthy row). */
-async function fetchRoster(space: string, server: string, want: Set<string>): Promise<Map<string, { id?: string; status: string }>> {
-  const out = new Map<string, { id?: string; status: string }>();
-  if (want.size === 0) return out;
-  const creds = await controlCreds(space);
-  const ep = new CotalEndpoint({
-    space,
-    servers: server,
-    creds,
-    channels: [],
-    consume: false,
-    registerPresence: false,
-    watchPresence: true,
-    card: { name: "paw-status", kind: "endpoint" },
-  });
-  ep.on("error", () => {});
-  await ep.start();
-  try {
-    await new Promise((r) => setTimeout(r, 1500)); // let presence heartbeats populate the roster
-    for (const p of ep.getRoster()) {
-      const nm = p.card.name;
-      if (!want.has(nm)) continue;
-      const prev = out.get(nm);
-      if (!prev || p.status !== "offline") out.set(nm, { id: p.card.id, status: p.status }); // prefer a non-offline entry
-    }
-  } finally {
-    await ep.stop().catch(() => {});
-  }
-  return out;
-}
-
 /**
  * Gather every registered agent's live state — the DATA behind `paw status`, with no rendering.
  *
@@ -706,12 +678,20 @@ export async function collectStatus(space: string, ctl?: ManagerControl, opts: {
   // Foreground `paw claude` agents (live in a terminal, not under the manager). A registered agent that's
   // ABSENT from ps but present here is LIVE — its mesh status + card.id come from the roster, not ps.
   const fgByName = new Map(listForeground(space).map((e) => [e.name, e]));
-  const fgOnly = agents.map(({ name }) => name).filter((name) => !psByName.has(name) && fgByName.has(name));
-  const rosterByName = await fetchRoster(space, pawServer(), new Set(fgOnly));
+  // Every registered agent the manager doesn't list is looked up on the presence ROSTER: a foreground
+  // agent's presence + card.id live there, and so does an agent a previous manager spared on its way
+  // down (cotal >=0.49) — running and reachable, but invisible to this manager's ps.
+  const unlisted = agents.map(({ name }) => name).filter((name) => !psByName.has(name));
+  const rosterByName = await readMeshRoster(space, pawServer(), await controlCreds(space), new Set(unlisted));
+  const now = Date.now();
+  const unmanagedLive = (name: string) => {
+    const ros = rosterByName.get(name);
+    return !fgByName.has(name) && !!ros && presenceLive(ros, now);
+  };
   // Inbox lag needs the agent's mesh id: a ps-listed agent's nkey (minted at spawn), or a foreground
   // agent's roster card.id. A registered-but-unlisted, non-foreground agent has no consumer → "—".
   const withIds = agents
-    .map(({ name }) => ({ name, id: psByName.get(name)?.id ?? (fgByName.has(name) ? rosterByName.get(name)?.id : undefined) }))
+    .map(({ name }) => ({ name, id: psByName.get(name)?.id ?? (fgByName.has(name) || unmanagedLive(name) ? rosterByName.get(name)?.id : undefined) }))
     .concat([...psByName.values()].filter((r) => !agents.some((a) => a.name === r.name)).map((r) => ({ name: r.name, id: r.id })))
     .filter((a): a is { name: string; id: string } => typeof a.id === "string" && a.id.length > 0);
   const inboxErrors: string[] = [];
@@ -729,7 +709,11 @@ export async function collectStatus(space: string, ctl?: ManagerControl, opts: {
     let mesh: string;
     let live: boolean;
     let rowRuntime: Runtime | "fg" | undefined;
-    if (fg) {
+    const unmanaged = !psRow && unmanagedLive(name);
+    if (unmanaged) {
+      live = true;
+      mesh = rosterByName.get(name)!.status;
+    } else if (fg) {
       const ros = rosterByName.get(name);
       live = true; // its process is alive (listForeground self-reaps dead pids)
       rowRuntime = "fg";
@@ -754,6 +738,7 @@ export async function collectStatus(space: string, ctl?: ManagerControl, opts: {
       activeMs: pin ? transcriptMtime(pin) : undefined,
       failure: pin ? transcriptFailure(pin) : undefined,
       terminalLost: psRow ? terminalLost(psRow) : undefined,
+      ...(unmanaged ? { unmanaged: true } : {}),
       context: pin ? transcriptContext(pin) : undefined,
       // A standalone claude on the pin, OR more than one process of any kind (a leftover `<name>_2` mesh
       // duplicate resuming the same session) — both put two writers on one transcript.
