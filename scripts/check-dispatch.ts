@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { registry, type Command } from "@cotal-ai/core";
-import { expandEqFlags, stripCotalNamespace, withDefaultSpace } from "../src/dispatch.ts";
+import { downSpace, expandEqFlags, stripCotalNamespace, withDefaultSpace } from "../src/dispatch.ts";
 import { assertRuntimeUsable, resolveRuntime, runtimePreferencePath, writeRuntimePreference } from "../src/lifecycle.ts";
 
 let failures = 0;
@@ -58,6 +58,21 @@ assert(eq(passthrough, ["console", "--plain", "--space", "paw"]), "cotal console
 // expandEqFlags: `--space=x`/`--server=x` expand to the two-token form every command parser reads;
 // positionals (even ones containing `=` or starting with other `--` flags) are untouched.
 assert(eq(expandEqFlags(["ps", "--space=main"]), ["ps", "--space", "main"]), "--space=main expands to two tokens");
+
+// downSpace: `paw down --space x` must tear down x, never the default space (it once stopped the live one)
+const live = () => "paw";
+assert(downSpace(["--space", "test-x"], live) === "test-x", "paw down --space test-x targets test-x");
+assert(downSpace(["--space=test-y"], live) === "test-y", "paw down --space=test-y targets test-y");
+assert(downSpace([], live) === "paw", "bare paw down uses the resolved space");
+for (const bad of [["--space"], ["test-x"], ["--space", "a", "--space", "b"], ["--space", "--force"]]) {
+  let threw = false;
+  try {
+    downSpace(bad, live);
+  } catch {
+    threw = true;
+  }
+  assert(threw, `paw down ${bad.join(" ")} is refused, never guessed`);
+}
 assert(eq(expandEqFlags(["watch", "--server=nats://x:4222"]), ["watch", "--server", "nats://x:4222"]), "--server=… expands");
 assert(eq(expandEqFlags(["msg", "general", "a=b"]), ["msg", "general", "a=b"]), "a positional containing '=' is untouched");
 assert(eq(expandEqFlags(["history", "--limit=5"]), ["history", "--limit=5"]), "other --flag= forms are untouched (only space/server)");

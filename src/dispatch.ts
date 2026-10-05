@@ -59,6 +59,19 @@ export function expandEqFlags(argv: string[]): string[] {
 }
 
 /**
+ * The space `paw down` tears down: `--space <s>` / `--space=<s>`, else `fallback` (resolveSpace —
+ * PAW_SPACE or the default). `down` used to ignore its args entirely, so `paw down --space test-x`
+ * with no PAW_SPACE in the env stopped the LIVE `paw` space's manager, mailbox and hub (2026-10-05).
+ * Anything else on the line is refused: a teardown verb never guesses what a stray word meant.
+ */
+export function downSpace(args: string[], fallback: () => string): string {
+  const argv = expandEqFlags(args);
+  if (argv.length === 0) return fallback();
+  if (argv.length === 2 && argv[0] === "--space" && argv[1] && !argv[1].startsWith("-")) return argv[1];
+  throw new Error(`paw down: unexpected arguments ${JSON.stringify(args)} — usage: paw down [--space <s>]`);
+}
+
+/**
  * One-letter short forms (`paw a` = `paw attach`), for the verbs typed dozens of times a day.
  *
  * An explicit TABLE, not prefix matching. A prefix that's unique today goes ambiguous the day a verb

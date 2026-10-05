@@ -48,7 +48,7 @@ import "../src/commands/optimize.ts"; // self-registers "optimize" (restart long
 import "../src/commands/top.ts"; // self-registers "top" (per-agent memory/cpu/subprocesses + cleanup hints; read-only, self-ensures)
 import "../src/web.ts"; // self-registers the "web" command (local http+ws UI over feed/transcript/status)
 import "../src/commands/complete.ts"; // self-registers "completion" + the hidden "__complete" dispatcher (shell-completion)
-import { expandEqFlags, expandShortForm, SHORT_FORMS, stripCotalNamespace, withDefaultSpace } from "../src/dispatch.ts";
+import { downSpace, expandEqFlags, expandShortForm, SHORT_FORMS, stripCotalNamespace, withDefaultSpace } from "../src/dispatch.ts";
 import { cotaldViaNode, ensure, resolveSpace, stop } from "../src/lifecycle.ts";
 
 /** Commands that talk to the mesh — they need NATS reachable before they run. */
@@ -154,7 +154,7 @@ try {
   }
   if (cmd === "down") {
     // `down` is a paw lifecycle verb: tear down only the daemons paw started for this space.
-    await stop();
+    await stop({ space: downSpace(raw.slice(1), resolveSpace) });
     process.exit(0);
   }
 
