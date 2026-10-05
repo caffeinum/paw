@@ -1,0 +1,21 @@
+docs/notes/cotal-dependency.md
+  s_ed25aaaf9c7e77::t_2e37bdc7abc83d 5-40
+docs/notes/hub.md
+  s_ed25aaaf9c7e77::t_13571d134ac4a2 25-26
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "180db1a7f25d645c352ad479f32f65db8dd42628",
+  "prompts": {},
+  "sessions": {
+    "s_ed25aaaf9c7e77": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "90dd1251-161e-469a-96db-040d1e555035",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Aleksey Bykhun <theisease@gmail.com>"
+    }
+  }
+}
