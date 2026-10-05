@@ -113,6 +113,16 @@ export function initCompany(deps) {
   };
   const isMember = (d, name) => name === d.operator || d.members.some((m) => m.name === name);
 
+  /**
+   * Stale-while-revalidate, in the browser: the last payload of each company (and the company list)
+   * is kept in localStorage per space, painted INSTANTLY on open with an "updating…" mark, and replaced
+   * by every successful fetch (which re-writes the cache — it is a copy of server data, never a source).
+   * A FAILED refresh never passes cached data off as current: the page keeps it but says the refresh
+   * failed and how old it is.
+   */
+  const cacheKey = (slug) => `paw.company.${deps.space?.() ?? ""}.${slug}.cache`;
+  const listKey = () => `paw.company.${deps.space?.() ?? ""}.list.cache`;
+
   async function load(fresh = false) {
     if (s.page !== "company") return;
     const mine = ++seq;
@@ -120,11 +130,17 @@ export function initCompany(deps) {
       const d = await deps.api(`/api/company/${encodeURIComponent(s.slug)}${fresh ? "?fresh=1" : ""}`);
       if (mine !== seq) return; // a newer read, or a navigation, superseded this one
       s.data = d;
+      s.cachedAt = undefined;
       s.error = undefined;
+      store.set(cacheKey(s.slug), { at: Date.now(), data: d });
       deps.onLoaded?.(d);
     } catch (e) {
       if (mine !== seq) return;
       s.error = String(e?.message ?? e);
+      if (/^no company "/.test(s.error)) {
+        s.data = undefined; // gone for real — a cached copy must not keep it alive
+        store.del(cacheKey(s.slug));
+      }
     }
     paint();
   }
@@ -133,6 +149,7 @@ export function initCompany(deps) {
     try {
       s.companies = (await deps.api("/api/companies")).companies ?? [];
       s.companiesError = undefined;
+      store.set(listKey(), s.companies);
     } catch (e) {
       s.companiesError = String(e?.message ?? e);
     }
@@ -151,13 +168,21 @@ export function initCompany(deps) {
     if (!sameCompany) {
       s.page = "company";
       s.slug = loc.slug;
-      s.data = undefined;
+      const cached = store.get(cacheKey(loc.slug), undefined);
+      const ok = cached && typeof cached === "object" && cached.data?.company?.slug === loc.slug;
+      s.data = ok ? cached.data : undefined;
+      s.cachedAt = ok ? cached.at : undefined; // set ⇒ what's on screen is a copy awaiting its refresh
+      if (!s.companies.length) {
+        const list = store.get(listKey(), []);
+        if (Array.isArray(list)) s.companies = list;
+      }
       s.error = undefined;
       s.open = new Set();
       s.banner = store.get(k("banner"), undefined);
       clearInterval(pollTimer);
       pollTimer = setInterval(() => void load(), POLL_MS);
-      void load(true);
+      if (s.data) deps.onLoaded?.(s.data); // the lead chat can open from the copy straight away
+      void load();
       void loadCompanies().then(() => paint());
     }
     s.agent = loc.agent;
@@ -257,7 +282,13 @@ export function initCompany(deps) {
       list.length > 1 || (list.length === 1 && list[0].slug !== here)
         ? `<select class="co-switch" data-input="switch" aria-label="Switch company">${here ? "" : `<option value="" selected>Switch to…</option>`}${list.map((c) => `<option value="${esc(c.slug)}"${c.slug === here ? " selected" : ""}>${esc(c.name)}${c.onYou ? ` · ${c.onYou} on you` : ""}</option>`).join("")}</select>`
         : "";
-    return `<a class="co-back" href="/" data-nav="/" title="back to paw">← paw</a><a class="co-cname" href="${esc(home)}" data-nav="${esc(home)}">${esc(name)}</a><span class="co-hgap"></span>${switcher}${s.page === "new" ? "" : `<a class="co-small" href="/new" data-nav="/new">New company</a>`}`;
+    const mark =
+      s.page === "company" && s.cachedAt
+        ? s.error
+          ? `<span class="co-stale co-bad" title="${esc(s.error)}">couldn't refresh — showing a copy from ${esc(rel(s.cachedAt))}</span>`
+          : `<span class="co-stale">updating…</span>`
+        : "";
+    return `<a class="co-back" href="/" data-nav="/" title="back to paw">← paw</a><a class="co-cname" href="${esc(home)}" data-nav="${esc(home)}">${esc(name)}</a>${mark}<span class="co-hgap"></span>${switcher}${s.page === "new" ? "" : `<a class="co-small" href="/new" data-nav="/new">New company</a>`}`;
   }
 
   function crumbsHtml() {
@@ -549,7 +580,7 @@ export function initCompany(deps) {
     } catch (e) {
       s.note.set(noteKey, { ok: false, text: `Not added: ${e?.message ?? e}` }); // the draft stays in storage
     }
-    await load(true);
+    await load();
     paint(true);
   }
 
@@ -564,7 +595,7 @@ export function initCompany(deps) {
     } catch (e) {
       s.note.set(`err:${id}`, { ok: false, text: `Not closed: ${e?.message ?? e}` }); // bd's words
     }
-    await load(true);
+    await load();
     paint(true);
   }
 
