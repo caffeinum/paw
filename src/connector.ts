@@ -51,6 +51,15 @@ function meshBrief(name: string): string {
     `then cotal_dm your reply back to that exact sender (a human operator is the peer "${HUMAN_PEER}",`,
     `e.g. cotal_dm("${HUMAN_PEER}", …); a teammate is their agent name). Ending your turn without`,
     `cotal_dm means your reply is silently lost — reading the inbox is NOT replying.`,
+    // Operator, 2026-10-04: "when I message into a channel most of the agents feel obligated to
+    // reply". The DM rule above reads as "every message needs an answer"; a channel is not a DM.
+    `CHANNELS ARE DIFFERENT: the reply rule above is for DMs. A message on a CHANNEL (#general, a`,
+    `company channel, …) goes to everyone on it, and you are NOT required to answer it. Read it, take`,
+    `in what concerns you, and stay silent unless your input is actually needed — you were addressed`,
+    `by name, you own the thing being discussed, you know something nobody else on the channel does,`,
+    `or you were asked to act. Do not post acknowledgements ("got it", "noted", "👍"), do not repeat`,
+    `what others said, and do not reply just to show you read it. If you do need to respond to one`,
+    `person, a DM to them is usually better than a channel post.`,
     `You run unattended with permissions bypassed, so act deliberately on this repository.`,
     `Files shared by humans/endpoints are announced on #files: run \`paw files\` to list them (or`,
     `cotal_join("files") to watch live) and open the printed absolute path with your Read tool.`,
