@@ -115,10 +115,23 @@ export type StartupScreen =
   /** `keys` moves the cursor onto "Yes, I trust this folder" and confirms; undefined when the
    *  dialog didn't parse (no cursor, no Yes line) — then paw presses nothing. */
   | { kind: "trust"; keys?: string[] }
+  /** claude's normal input box with its mode footer — booted and waiting for input, nothing to answer. */
+  | { kind: "ready" }
   | { kind: "other"; prompt: boolean };
 
 const TRUST_YES = /Yes, I trust this folder/;
 const CURSOR = /^\s*[❯>]/;
+/** The footer under claude's input box (permission mode / shortcuts hint). */
+const READY_FOOTER = /bypass permissions on|accept edits on|plan mode on|shift\+tab to cycle|\? for shortcuts/i;
+/** The input box's prompt line: `❯ …`/`> …`, bare or inside the box border `│ > │`. */
+const INPUT_LINE = /^\s*[│|]?\s*[❯>](\s|$)/;
+
+/** Is the BOTTOM of the screen claude's idle input box + footer? Only the last lines count: older
+ *  scrollback above can still hold a dialog's leftover "Enter to confirm". Pure. */
+export function isIdleInput(text: string): boolean {
+  const tail = text.split("\n").filter((l) => l.trim()).slice(-8);
+  return tail.some((l) => READY_FOOTER.test(l)) && tail.some((l) => INPUT_LINE.test(l));
+}
 
 /**
  * Classify a captured pane. Pure; exported for check:trust. The dev-channels gate is claude's
@@ -138,6 +151,7 @@ export function classifyStartupScreen(text: string): StartupScreen {
     const move = Array.from({ length: Math.abs(delta) }, () => (delta > 0 ? "Down" : "Up"));
     return { kind: "trust", keys: [...move, "Enter"] };
   }
+  if (isIdleInput(text)) return { kind: "ready" };
   return { kind: "other", prompt: /Enter to confirm|Esc to cancel|\(y\/n\)|\[Y\/n\]/i.test(text) };
 }
 

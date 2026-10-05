@@ -106,6 +106,27 @@ Moved verbatim from CLAUDE.md (2026-10-02 split). Index: [CLAUDE.md](../../CLAUD
   `<repo>@<branch>`). Called by chat/dm/open/log/rm/rename/adopt/sessions right after the space resolves.
   Tested hermetically in `check:addressing`.
 
+## unmanaged agents
+
+- **An agent alive outside the current manager is REUSED, never duplicated (2026-10-05).** cotal ≥0.49
+  spares a stopped manager's agents and the next manager does not adopt them (re-verified on 0.66.1 with
+  the tmux runtime: SIGTERM the manager → claude keeps running, a fresh manager's ps is empty). The wake
+  gate used to decide liveness from ps alone, so `paw chat @evals` tried to start a second evals and the
+  two-writer guard refused with a misleading "`evals_2`-style duplicate" hint. Now, when ps lacks the
+  name, `findUnmanagedAgent` asks two witnesses — the presence roster (`src/roster.ts`: live status +
+  heartbeat < `ROSTER_FRESH_MS`, `paw sleep` stand-ins excluded) and a mesh process holding the name's
+  pin whose env says `COTAL_NAME=<name>`/`COTAL_SPACE=<space>` (`meshIdentity`, `ps -E`). Either ⇒
+  `{spawned:false, unmanaged:true, id}` and one dim line: `<name> is running but not managed by the
+  current manager — talking to it directly; paw restart <name> re-adopts it`.
+- `restartAgent` makes that note true: a name not in ps but held by its own mesh process gets that
+  process SIGTERMed (operator-invoked only — `paw restart <name>`, adopt, `paw claude`), then a normal
+  spawn with `reuseUnmanaged: false` (a just-stopped copy can still look live for seconds).
+- When paw still refuses, `twoWriterRefusal` says it plainly: a standalone claude → `paw adopt "<cwd>"
+  --resume <pin> --force`; a REAL duplicate (another COTAL_NAME on the pin) is named, and `paw stop <dup>`
+  only when ps lists it, else `kill <pid>`; no invented `_2` hint.
+- E2E: `scripts/e2e-unmanaged.ts` (own nats, real haiku agent, kill manager only → dm/chat reach it
+  without a spawn → status `live (unmanaged)` → `paw restart <name>` re-adopts).
+
 ## paw adopt
 
 - `src/adopt.ts` — `paw adopt [folder] [--resume <id|name>] [--name <n>] [--no-start] [--no-attach]` (`--session` aliases `--resume`):

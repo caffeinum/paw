@@ -26,8 +26,10 @@ import { pawCotalRoot } from "./cotal-root.ts";
 import { confineAndTrustCwd, isFolderTrusted, pawTrustedFolder, pretrustFolder } from "./cwd.ts";
 import { readForeground } from "./foreground.ts";
 import { clearSleep, prepareWake, sleepLog } from "./sleep-state.ts";
+import { presenceLive, readMeshRoster } from "./roster.ts";
+import { pawServer } from "./server.ts";
 import { withFileLock, withFileLockAsync } from "./lock.ts";
-import { liveSessionProcs, meshAgentSession } from "./named.ts";
+import { liveSessionProcs, meshAgentSession, meshIdentity, type LiveSessionProc } from "./named.ts";
 import { isClaudeHarness, personaValue, readAgentType, readCwd, readResumeId, readShareTools, transcriptMtime } from "./session.ts";
 import { defaultTmuxEnv, readRuntimeMarker } from "./lifecycle.ts";
 import { answerStartupPrompt, tmuxSplit, tmuxSplitAdvice, type StartupScreen } from "./native-attach.ts";
@@ -639,8 +641,18 @@ export function spawnAction(rows: PsRow[], name: string): "start" | "reuse" | "r
  */
 export async function ensureAgentSpawned(
   ctl: ManagerControl,
-  opts: { space: string; name: string; cwd: string; model?: string; brief?: string; kind?: Kind; allowForeignWriter?: boolean },
-): Promise<{ spawned: boolean; id?: string }> {
+  opts: {
+    space: string;
+    name: string;
+    cwd: string;
+    model?: string;
+    brief?: string;
+    kind?: Kind;
+    allowForeignWriter?: boolean;
+    /** false right after the caller stopped this agent itself: its exiting process can still look live. */
+    reuseUnmanaged?: boolean;
+  },
+): Promise<SpawnOutcome> {
   // A FOREGROUND `paw claude` agent already owns this name in the operator's own terminal (its process
   // isn't in the manager's ps). Never spawn a manager duplicate: dm/chat/open/adopt/rename/revival all
   // funnel through here, so this ONE guard keeps them from racing a second agent onto the same name.
@@ -666,6 +678,11 @@ export async function ensureAgentSpawned(
       action = "restart";
     }
     if (action === "reuse") return healSleep(opts.space, opts.name);
+    const reuseUnmanaged = action === "start" && opts.reuseUnmanaged !== false;
+    if (reuseUnmanaged) {
+      const live = await findUnmanagedAgent(opts.space, opts.name);
+      if (live) return reuseUnmanagedAgent(opts.space, opts.name, live);
+    }
     if (action === "restart") {
       // The manager still LISTS this agent but it's dead on the mesh (process exited, or mesh offline —
       // a zombie left by a crash/bounce). The old gate reused ANY listed name, so `paw dm`/`paw chat`
@@ -702,8 +719,8 @@ export async function ensureAgentSpawned(
     const config = ensurePersonaFile(opts.space, opts.name, { brief: opts.brief, kind: opts.kind });
     // Two-writer guard: if the agent's pinned session is open in a standalone claude (a hand-run
     // TUI, not a mesh agent), resuming it would put two writers on one transcript and can corrupt
-    // it. Refuse loud. (A mesh agent already holding the name is caught by the ps check above; a
-    // freshly-minted pin with no live writer passes through.) This is the guard `adopt` already has.
+    // it. Refuse loud. (A mesh agent running as this very name is reused, not refused — see
+    // findUnmanagedAgent; a freshly-minted pin with no live writer passes through.) This is the guard `adopt` already has.
     const pin = readResumeId(config);
     if (pin && !opts.allowForeignWriter) {
       // allowForeignWriter: the caller (adopt's make-before-break takeover) will kill the holder right after we confirm this agent is live
@@ -711,22 +728,29 @@ export async function ensureAgentSpawned(
       // exit, and a second agent on the same pin (the `evals_2` / `canary-env-52_2` incidents) writes the
       // same transcript. Give a despawned holder a bounded window to go, then refuse.
       await waitForSessionRelease(pin, SESSION_RELEASE_MS);
-      const foreign = liveSessionProcs(pin);
+      const foreign = liveSessionProcs(pin).map((p) => ({ ...p, ...(p.mesh ? { identity: meshIdentity(p.pid) } : {}) }));
       if (foreign.length) {
-        const pids = foreign.map((p) => p.pid).join(", ");
-        const mesh = foreign.some((p) => p.mesh);
+        // A mesh agent running as THIS name on its own pin is not a second writer to refuse — it is the
+        // agent, alive outside the current manager. Reach it instead of failing.
+        const own = foreign.every((p) => p.mesh && p.identity?.name === opts.name && p.identity?.space === opts.space);
+        if (own && reuseUnmanaged) return reuseUnmanagedAgent(opts.space, opts.name, { pids: foreign.map((p) => p.pid) });
         // The usual reason a MESH agent holds this session without the manager knowing: it is this very
         // agent, running in a tmux server the socket no longer reaches (2026-09-23). Then no duplicate
         // exists to find — say what actually happened and how to get the terminal back.
-        const split = mesh ? tmuxSplit(foreign.map((p) => p.pid)) : undefined;
+        const split = foreign.some((p) => p.mesh) ? tmuxSplit(foreign.map((p) => p.pid)) : undefined;
         if (split) {
-          throw new Error(`paw: "${opts.name}" is already running (pid ${pids}) — not starting a second copy.\n${tmuxSplitAdvice(opts.name, split)}`);
+          throw new Error(`paw: "${opts.name}" is already running (pid ${foreign.map((p) => p.pid).join(", ")}) — not starting a second copy.\n${tmuxSplitAdvice(opts.name, split)}`);
         }
         throw new Error(
-          `paw: won't start "${opts.name}" — its session ${pin} is still open in ${mesh ? "a running mesh agent" : "another process"} (pid ${pids}) ${Math.round(SESSION_RELEASE_MS / 1000)}s on; ` +
-            `a second copy would put two writers on one transcript and can corrupt it.\n` +
-            (mesh ? `  find it:  paw cotal ps   (a leftover \`${opts.name}_2\`-style duplicate)\n` : `  close it first:  kill ${pids}\n`) +
-            `  or re-pin it to its own session:  paw adopt "${opts.cwd}" --resume <id> --no-start`,
+          twoWriterRefusal({
+            space: opts.space,
+            name: opts.name,
+            pin,
+            cwd: opts.cwd,
+            holders: foreign,
+            psNames: rows.map((r) => r.name),
+            justStopped: action === "restart" || opts.reuseUnmanaged === false,
+          }),
         );
       }
     }
@@ -805,6 +829,95 @@ function healSleep(space: string, name: string): { spawned: false } {
   return { spawned: false };
 }
 
+/** What {@link ensureAgentSpawned} did. `unmanaged`: the agent was already running outside the current
+ *  manager (a manager restart spares its agents) and paw is talking to it as is. */
+export type SpawnOutcome = { spawned: boolean; id?: string; unmanaged?: true };
+
+/** Evidence that `name` is running even though the manager's ps doesn't list it. */
+export type UnmanagedAgent = { id?: string; pids: number[] };
+
+/** Mesh processes running as `name` in `space` (by the COTAL_NAME/COTAL_SPACE cotal stamps into them)
+ *  that hold `pin`. Only these count as "the agent itself" — a different name on the pin is a duplicate. */
+function ownMeshHolders(space: string, name: string, pin: string | undefined): LiveSessionProc[] {
+  if (!pin) return [];
+  return liveSessionProcs(pin).filter((p) => {
+    if (!p.mesh) return false;
+    const id = meshIdentity(p.pid);
+    return id.name === name && id.space === space;
+  });
+}
+
+/**
+ * Is `name` alive on the mesh although the manager doesn't list it? Two witnesses, either suffices:
+ * the presence roster (live status, fresh heartbeat — not a `paw sleep` stand-in), or a mesh process
+ * running as this name on its pinned session. cotal >=0.49 spares a stopped manager's agents and the
+ * next manager does not adopt them, so after a manager restart this is the normal state of a working
+ * agent — and paw used to try to start a second copy of it (`paw chat @evals`, 2026-10-05).
+ */
+export async function findUnmanagedAgent(space: string, name: string): Promise<UnmanagedAgent | undefined> {
+  const file = personaFilePath(space, name);
+  const pids = ownMeshHolders(space, name, existsSync(file) ? readResumeId(file) : undefined).map((p) => p.pid);
+  const roster = (await readMeshRoster(space, pawServer(), await controlCreds(space), new Set([name]))).get(name);
+  const id = roster && presenceLive(roster, Date.now()) ? roster.id : undefined;
+  return id || pids.length ? { id, pids } : undefined;
+}
+
+/** The note shown when paw talks to an agent the current manager doesn't manage. */
+export function unmanagedNote(name: string): string {
+  return `${name} is running but not managed by the current manager — talking to it directly; \`paw restart ${name}\` re-adopts it`;
+}
+
+function reuseUnmanagedAgent(space: string, name: string, live: UnmanagedAgent): SpawnOutcome {
+  const note = unmanagedNote(name);
+  console.error(process.stderr.isTTY ? `\x1b[2m${note}\x1b[22m` : note);
+  healSleep(space, name);
+  return { spawned: false, unmanaged: true, ...(live.id ? { id: live.id } : {}) };
+}
+
+/**
+ * The refusal when another process holds `name`'s pinned session and paw won't start a second copy.
+ * Plain words: what is running, why paw refuses, the one command that fixes it. Pure; check:addressing.
+ */
+export function twoWriterRefusal(o: {
+  space: string;
+  name: string;
+  pin: string;
+  cwd: string;
+  holders: Array<{ pid: number; mesh: boolean; identity?: { name?: string; space?: string } }>;
+  psNames: string[];
+  /** paw itself just stopped this agent, so a holder running as `name` is the old copy still exiting. */
+  justStopped?: boolean;
+}): string {
+  const pids = o.holders.map((h) => h.pid).join(", ");
+  const why = `two copies writing one transcript can corrupt it, so paw won't start a second one.`;
+  const standalone = o.holders.filter((h) => !h.mesh);
+  if (standalone.length) {
+    const sp = standalone.map((h) => h.pid).join(", ");
+    return (
+      `paw: can't start "${o.name}" — its session ${o.pin} is open in a standalone claude (pid ${sp}), not a mesh agent.\n` +
+      `  ${why}\n` +
+      `  fix: paw adopt "${o.cwd}" --resume ${o.pin} --force   (brings "${o.name}" up on the mesh, then closes pid ${sp})`
+    );
+  }
+  const own = o.holders.filter((h) => h.identity?.name === o.name && h.identity?.space === o.space);
+  if (own.length === o.holders.length && o.justStopped) {
+    return (
+      `paw: can't start "${o.name}" — the copy paw just stopped (pid ${pids}) still holds its session ${o.pin} ${Math.round(SESSION_RELEASE_MS / 1000)}s on.\n` +
+      `  ${why}\n` +
+      `  fix: kill ${pids}   (then retry)`
+    );
+  }
+  // A real duplicate: another NAME running on this agent's session.
+  const others = [...new Set(o.holders.map((h) => h.identity?.name).filter((n): n is string => !!n && n !== o.name))];
+  const listed = others.filter((n) => o.psNames.includes(n));
+  const what = others.length ? `another mesh agent, ${others.map((n) => `"${n}"`).join(", ")}` : "another mesh agent";
+  return (
+    `paw: can't start "${o.name}" — its session ${o.pin} is already open in ${what} (pid ${pids}).\n` +
+    `  ${why}\n` +
+    `  fix: ${listed.length ? `paw stop ${listed[0]}` : `kill ${pids}`}   (then retry)`
+  );
+}
+
 /** How long a just-despawned process gets to release its session / name before paw gives up. */
 export const SESSION_RELEASE_MS = 30_000;
 
@@ -854,8 +967,22 @@ export async function restartAgent(
     const stopped = await ctl.despawn(opts.name);
     if (!stopped.ok) throw new Error(`paw: couldn't stop the running "${opts.name}" to re-adopt it (${stopped.error ?? "no reply"})`);
   }
-  const r = await ensureAgentSpawned(ctl, opts);
-  return { ...r, restarted: live };
+  // Running OUTSIDE this manager (spared by a previous manager's stop): the manager can't despawn what
+  // it never spawned, so stop its process directly, then start it under this manager — the re-adopt.
+  const file = personaFilePath(opts.space, opts.name);
+  const stray = live ? [] : ownMeshHolders(opts.space, opts.name, existsSync(file) ? readResumeId(file) : undefined).map((p) => p.pid);
+  if (stray.length) {
+    console.error(`paw: "${opts.name}" is running outside the manager (pid ${stray.join(", ")}) — stopping it to re-adopt it`);
+    for (const pid of stray) {
+      try {
+        process.kill(pid, "SIGTERM");
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code !== "ESRCH") throw new Error(`paw: couldn't stop "${opts.name}" (pid ${pid}): ${(e as Error).message}`);
+      }
+    }
+  }
+  const r = await ensureAgentSpawned(ctl, { ...opts, reuseUnmanaged: false });
+  return { ...r, restarted: live || stray.length > 0 };
 }
 
 /** Stop the agent named `name` if it's live (the manager's `despawn`). No-op if it isn't running.

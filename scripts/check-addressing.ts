@@ -310,6 +310,53 @@ rmSync(process.env.PAW_HOME!, { recursive: true, force: true });
   assert(restartDespiteOffline(now + 60_000, now) === true, "busy-guard: an mtime in the FUTURE (clock skew) is not evidence");
 }
 
+// An agent a previous manager spared (cotal >=0.49) is LIVE on the roster but absent from ps. The
+// roster witness: live status + fresh heartbeat, and never a `paw sleep` stand-in.
+{
+  const { presenceLive, pickRoster, isStandIn, ROSTER_FRESH_MS } = await import("../src/roster.ts");
+  const { standInActor } = await import("../src/sleep-state.ts");
+  const now = 2_000_000_000;
+  assert(presenceLive({ status: "idle", ts: now - 2000 }, now), "roster: idle + 2s-old heartbeat → live");
+  assert(presenceLive({ status: "working", ts: now - 1000 }, now), "roster: working → live");
+  assert(!presenceLive({ status: "offline", ts: now }, now), "roster: offline is never live");
+  assert(!presenceLive({ status: "idle", ts: now - ROSTER_FRESH_MS - 1 }, now), "roster: a stale heartbeat (process died without saying offline) → not live");
+  const sp = "test-roster";
+  const p = (name: string, id: string, status: string, ts: number) => ({ card: { name, id, kind: "agent" }, status, ts }) as never;
+  const standIn = `local.${standInActor(sp, "evals")}`;
+  assert(isStandIn(sp, "evals", standIn) && !isStandIn(sp, "evals", "local.abc"), "roster: a sleep stand-in is recognised by its actor");
+  const picked = pickRoster(sp, [p("evals", standIn, "idle", now), p("evals", "local.old", "offline", now - 99_000), p("evals", "local.real", "idle", now - 1000), p("other", "local.x", "idle", now)], new Set(["evals"]), now);
+  assert(picked.get("evals")?.id === "local.real", "roster: picks the live incarnation over an offline one, ignores the stand-in and unwanted names");
+  assert(!picked.has("other"), "roster: only wanted names are returned");
+  const onlyStandIn = pickRoster(sp, [p("evals", standIn, "idle", now)], new Set(["evals"]), now);
+  assert(!onlyStandIn.has("evals"), "roster: a sleeping agent's stand-in alone does NOT read as the agent running");
+}
+
+// Which process holds a session: cotal stamps COTAL_NAME/COTAL_SPACE into every agent it launches.
+{
+  const { parseCotalIdentity } = await import("../src/named.ts");
+  const id = parseCotalIdentity("claude --dangerously-load-development-channels server:cotal TERM=xterm COTAL_NAME=evals COTAL_SPACE=paw HOME=/x");
+  assert(id.name === "evals" && id.space === "paw", "identity: COTAL_NAME/COTAL_SPACE parsed from ps -E");
+  assert(parseCotalIdentity("claude --resume abc").name === undefined, "identity: a standalone claude has no cotal identity");
+  assert(parseCotalIdentity("x MY_COTAL_NAME=nope COTAL_NAME=evals_2").name === "evals_2", "identity: a suffix-alike variable is not mistaken for COTAL_NAME");
+}
+
+// The refusal, when paw still must refuse: plain words, the right fix, no invented duplicate.
+{
+  const { twoWriterRefusal, unmanagedNote } = await import("../src/addressing.ts");
+  const base = { space: "paw", name: "evals", pin: "1234abcd-0000", cwd: "/w/evals", psNames: [] as string[] };
+  const standalone = twoWriterRefusal({ ...base, holders: [{ pid: 14067, mesh: false }] });
+  assert(/standalone claude \(pid 14067\), not a mesh agent/.test(standalone), "refusal: names a standalone claude and its pid");
+  assert(/fix: paw adopt "\/w\/evals" --resume 1234abcd-0000 --force/.test(standalone), "refusal: standalone → the one adopt --force command that takes it over");
+  assert(!/_2/.test(standalone), "refusal: no `_2-style duplicate` hint when no duplicate exists");
+  const dup = twoWriterRefusal({ ...base, psNames: ["evals_2"], holders: [{ pid: 9, mesh: true, identity: { name: "evals_2", space: "paw" } }] });
+  assert(/another mesh agent, "evals_2" \(pid 9\)/.test(dup) && /fix: paw stop evals_2/.test(dup), "refusal: a REAL duplicate is named, and stopped by name");
+  const unknownMesh = twoWriterRefusal({ ...base, holders: [{ pid: 9, mesh: true, identity: {} }] });
+  assert(/another mesh agent \(pid 9\)/.test(unknownMesh) && /fix: kill 9/.test(unknownMesh) && !/_2/.test(unknownMesh), "refusal: an unidentifiable mesh holder → kill <pid>, no invented duplicate name");
+  const exiting = twoWriterRefusal({ ...base, justStopped: true, holders: [{ pid: 9, mesh: true, identity: { name: "evals", space: "paw" } }] });
+  assert(/the copy paw just stopped \(pid 9\) still holds/.test(exiting), "refusal: our own just-stopped copy that won't exit is called exactly that");
+  assert(unmanagedNote("evals") === "evals is running but not managed by the current manager — talking to it directly; `paw restart evals` re-adopts it", "note: the unmanaged-agent line");
+}
+
 if (failures > 0) {
   console.error(`\n${failures} paw addressing check(s) failed`);
   process.exit(1);
