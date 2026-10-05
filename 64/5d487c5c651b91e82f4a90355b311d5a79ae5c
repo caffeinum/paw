@@ -1,0 +1,39 @@
+package.json
+  s_ed25aaaf9c7e77::t_b13fb70836a20a 48-56
+patches/@cotal-ai__connector-claude-code@0.66.1.patch
+  s_ed25aaaf9c7e77::t_eb4a9032a3c7ae 2,5,10-11,17-20,26-32,36,62-68,71-74,101,139-141,156,159,174-175,182-183,196,212,215,217-218,264
+pnpm-lock.yaml
+  s_ed25aaaf9c7e77::t_59c5f1d92b7ec2 8,15-16,18-19,21-22,24-25,27-28,30-31,33-34,36-37,39-40,75-76,78-79,83-84,88-89,93-94,98-99,101-102,104-105,107-108,112-113,653,656-657,680,682,684,686,688,690,692,694,696,709,711-713,730,738,740,742,744
+pnpm-workspace.yaml
+  s_ed25aaaf9c7e77::t_92f0ea832087c7 24-28,30-45
+scripts/check-sleep.ts
+  s_ed25aaaf9c7e77::t_3d16673f9f8b09 64-68
+src/claude.ts
+  s_38e9d5670f0f56::t_d67c4c02d590c2 20,277-283
+src/sleep.ts
+  s_ed25aaaf9c7e77::t_5cf6ea4d23998e 165-171,173-174,186
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "645d487c5c651b91e82f4a90355b311d5a79ae5c",
+  "prompts": {},
+  "sessions": {
+    "s_38e9d5670f0f56": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1aeeb629-60d9-490e-8db2-f10d400a732f",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Aleksey Bykhun <theisease@gmail.com>"
+    },
+    "s_ed25aaaf9c7e77": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "90dd1251-161e-469a-96db-040d1e555035",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Aleksey Bykhun <theisease@gmail.com>"
+    }
+  }
+}
