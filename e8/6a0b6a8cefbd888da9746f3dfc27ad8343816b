@@ -1,0 +1,29 @@
+scripts/check-launch.ts
+  s_d2b7706fce1d9b::t_5f81872564ec5a 86-89
+src/connector.ts
+  s_ed25aaaf9c7e77::t_262f56ff3b54c0 54-62
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "e86a0b6a8cefbd888da9746f3dfc27ad8343816b",
+  "prompts": {},
+  "sessions": {
+    "s_d2b7706fce1d9b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a18b695c-73a8-4843-8272-53e8263b0295",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Aleksey Bykhun <theisease@gmail.com>"
+    },
+    "s_ed25aaaf9c7e77": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "90dd1251-161e-469a-96db-040d1e555035",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Aleksey Bykhun <theisease@gmail.com>"
+    }
+  }
+}
