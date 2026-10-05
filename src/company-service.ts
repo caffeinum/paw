@@ -21,8 +21,10 @@ export interface CompanyDeps {
   /** Channels that already exist on the mesh (registry ∪ traffic seen). A company may not claim one:
    *  its card would be overwritten, everyone invited and the brief posted there. */
   channels: () => string[];
+  /** A member's registered folder when it no longer exists on disk (undefined = fine / unregistered). */
+  folderGone?: (name: string) => string | undefined;
   /** The /api/invite behaviour: DM each, sequentially; announce the reached ones in the channel. */
-  invite: (slug: string, names: string[]) => Promise<{ invited: string[]; failed: { name: string; error: string }[] }>;
+  invite: (slug: string, names: string[]) => Promise<{ invited: string[]; failed: FailedInvite[] }>;
 }
 
 export interface MemberView {
@@ -32,6 +34,8 @@ export interface MemberView {
   /** mesh display state, or "unknown" when the name isn't in the roster at all (a stale name). */
   state: string;
   known: boolean;
+  /** Its registered folder, when that folder no longer exists — the page offers "remove from company". */
+  gone?: string;
 }
 
 export interface CompanyPayload {
@@ -46,10 +50,30 @@ export interface CompanyPayload {
 /** A sidebar row: the company plus how many of its beads are blocked on the operator. */
 export type CompanyRow = Company & { onYou: number };
 
+export interface FailedInvite {
+  name: string;
+  error: string;
+  /** The agent's registered folder is gone (e.g. a /tmp folder wiped by a reboot) — a retry can't
+   *  help; the page offers "remove from company" instead. */
+  gone?: boolean;
+}
+
 export interface SetupResult {
   invited: string[];
-  failed: { name: string; error: string }[];
+  failed: FailedInvite[];
+  /** Per step, so a retry redoes only what failed. */
+  cardError?: string;
+  kickoffError?: string;
+  /** All step errors joined (card · invite-call · kickoff) — the one-line summary. */
   channelError?: string;
+}
+
+/** What a setup run should (re)do. A fresh company does everything; a retry only what failed. */
+export interface SetupSteps {
+  card: boolean;
+  /** Members to (re)invite. */
+  invite: string[];
+  kickoff: boolean;
 }
 
 export class HttpError extends Error {
@@ -123,26 +147,38 @@ export function companyService(deps: CompanyDeps) {
 
   /** Channel card → invites → kickoff. Every step runs; failures are COLLECTED and returned, never thrown —
    *  the bead already exists and is the record, so the page offers a retry instead of pretending. */
-  async function setupChannel(c: Company): Promise<SetupResult> {
+  async function setupChannel(c: Company, steps: SetupSteps = { card: true, invite: c.members, kickoff: true }): Promise<SetupResult> {
     const brief = companyBrief(c, deps.operator);
     const errs: string[] = [];
-    try {
-      await deps.seedChannel(c.slug, (c.mission ?? c.name).split("\n")[0].slice(0, 200), brief);
-    } catch (e) {
-      errs.push(`channel registry: ${(e as Error).message}`);
+    let cardError: string | undefined;
+    let kickoffError: string | undefined;
+    if (steps.card) {
+      try {
+        await deps.seedChannel(c.slug, (c.mission ?? c.name).split("\n")[0].slice(0, 200), brief);
+      } catch (e) {
+        cardError = `channel registry: ${(e as Error).message}`;
+        errs.push(cardError);
+      }
     }
-    let inv: { invited: string[]; failed: { name: string; error: string }[] } = { invited: [], failed: [] };
-    try {
-      inv = await deps.invite(c.slug, c.members);
-    } catch (e) {
-      errs.push(`invite: ${(e as Error).message}`);
+    let inv: { invited: string[]; failed: FailedInvite[] } = { invited: [], failed: [] };
+    if (steps.invite.length) {
+      try {
+        inv = await deps.invite(c.slug, steps.invite);
+      } catch (e) {
+        // the whole call failed: every asked member is still un-invited, so a retry asks them again
+        inv = { invited: [], failed: steps.invite.map((name) => ({ name, error: (e as Error).message })) };
+        errs.push(`invite: ${(e as Error).message}`);
+      }
     }
-    try {
-      await deps.post(c.slug, brief);
-    } catch (e) {
-      errs.push(`kickoff post: ${(e as Error).message}`);
+    if (steps.kickoff) {
+      try {
+        await deps.post(c.slug, brief);
+      } catch (e) {
+        kickoffError = `kickoff post: ${(e as Error).message}`;
+        errs.push(kickoffError);
+      }
     }
-    return { ...inv, ...(errs.length ? { channelError: errs.join("; ") } : {}) };
+    return { ...inv, ...(cardError ? { cardError } : {}), ...(kickoffError ? { kickoffError } : {}), ...(errs.length ? { channelError: errs.join("; ") } : {}) };
   }
 
   async function create(input: CreateCompanyInput): Promise<{ slug: string; epic: string } & SetupResult> {
@@ -176,7 +212,8 @@ export function companyService(deps: CompanyDeps) {
     const names = [...company.members].sort((a, b) => (a === company.lead ? -1 : b === company.lead ? 1 : a.localeCompare(b)));
     const members: MemberView[] = names.map((name) => {
       const r = byName.get(name);
-      return { name, live: !!r?.live, busy: !!r?.busy || r?.mesh === "working", state: r ? r.mesh : "unknown", known: !!r };
+      const gone = deps.folderGone?.(name);
+      return { name, live: !!r?.live, busy: !!r?.busy || r?.mesh === "working", state: r ? r.mesh : "unknown", known: !!r, ...(gone ? { gone } : {}) };
     });
     const payload: CompanyPayload = { company, operator: deps.operator, members, issues, onYou: onYou(issues, deps.operator), errors };
     pageCache.set(slug, { at: Date.now(), gen: writeGeneration(), payload });
@@ -203,8 +240,28 @@ export function companyService(deps: CompanyDeps) {
           return { id, nudgeError: (e as Error).message }; // the bead exists; the failed nudge is said, not hidden
         }
       }
-      case "retry-channel":
-        return setupChannel(c);
+      case "retry-channel": {
+        // ONLY what failed: the named members (still on the roster), the card / kickoff if asked.
+        // Never a blanket re-run — that would re-DM every agent that already got its invite.
+        const names = Array.isArray(body.names) ? body.names.filter((n): n is string => typeof n === "string" && c.members.includes(n)) : [];
+        const steps: SetupSteps = { card: body.card === true, invite: names, kickoff: body.kickoff === true };
+        if (!steps.card && !steps.kickoff && !names.length) throw new HttpError(400, "retry-channel: name what to retry — {names, card, kickoff}");
+        return setupChannel(c, steps);
+      }
+      case "member-remove": {
+        // The one roster edit the MVP has: drop a member (e.g. one whose folder is gone). The agent itself
+        // is untouched; its beads keep their assignee.
+        const name = str("name");
+        if (!name || !c.members.includes(name)) throw new HttpError(400, `${name ?? "?"} isn't a member of ${slug}`);
+        if (name === c.lead) throw new HttpError(400, `${name} is the lead — a company can't lose its lead here`);
+        await mutateMetadata(c.epic, (md) => {
+          const org = md.org && typeof md.org === "object" && !Array.isArray(md.org) ? { ...(md.org as Record<string, unknown>) } : {};
+          delete org[name];
+          return { ...md, org };
+        });
+        listCache = undefined;
+        return { ok: true, removed: name };
+      }
       default:
         throw new HttpError(400, `unknown op "${String(body.op)}"`);
     }

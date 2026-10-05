@@ -1664,6 +1664,10 @@ async function web(argv: string[]): Promise<void> {
       company: companyService({
         operator: operatorName(),
         channels: () => channelNames,
+        folderGone: (name) => {
+          const folder = folderForName(space, name);
+          return folder && !existsSync(folder) ? folder : undefined;
+        },
         rows: async () => {
           if (!collectedAt) await refreshStatus();
           return rows;
@@ -1674,7 +1678,15 @@ async function web(argv: string[]): Promise<void> {
           const creds = await controlCreds(space);
           await seedChannelRegistry({ servers: server, space, ...(creds ? { creds } : {}), file: { channels: { [slug]: { description, instructions } } } });
         },
-        invite: (slug, names) => inviteAll((to, text) => sendAsYou({ space, server, target: to, text }), async (ch, text) => { await ep.multicast(text, { channel: ch }); }, slug, names),
+        invite: async (slug, names) => {
+          // A member whose registered folder is GONE (a /tmp folder wiped by a reboot) can't be woken —
+          // say that in plain words instead of the spawn's raw ENOENT, and mark it so the page offers
+          // "remove from company" rather than a retry that can only fail again.
+          const gone = names.map((n) => ({ n, folder: folderForName(space, n) })).filter((x) => x.folder && !existsSync(x.folder));
+          const goneNames = new Set(gone.map((x) => x.n));
+          const r = await inviteAll((to, text) => sendAsYou({ space, server, target: to, text }), async (ch, text) => { await ep.multicast(text, { channel: ch }); }, slug, names.filter((n) => !goneNames.has(n)));
+          return { invited: r.invited, failed: [...gone.map((x) => ({ name: x.n, error: `${x.n}'s folder ${x.folder} no longer exists`, gone: true })), ...r.failed] };
+        },
       }),
       channel: (name, limit) => channelMessages(ep, channels, name, limit, authed),
       search: async (q, scope, agents) => {

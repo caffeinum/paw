@@ -31,6 +31,9 @@ import {
   slugify,
   workBeads,
   companyPath,
+  setupFrom,
+  retryPlan,
+  mergeRetry,
 } from "./company-model.js";
 
 const esc = (s) => String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
@@ -95,7 +98,7 @@ export function initCompany(deps) {
     open: new Set(), // expanded milestone ids (this visit)
     note: new Map(), // bead id / "add:<who>" / "err:<id>" → {ok, text}
     closing: false,
-    banner: undefined,
+    setup: undefined, // {failed:[{name,error,gone}], card?, kickoff?} — persisted per company until dismissed
     companies: [],
     form: undefined,
     steps: undefined,
@@ -178,7 +181,9 @@ export function initCompany(deps) {
       }
       s.error = undefined;
       s.open = new Set();
-      s.banner = store.get(k("banner"), undefined);
+      store.del(k("banner")); // the pre-structured banner string; gone members now come from the server
+      s.setup = store.get(k("setup"), undefined);
+      if (!s.setup || !Array.isArray(s.setup.failed)) s.setup = undefined;
       clearInterval(pollTimer);
       pollTimer = setInterval(() => void load(), POLL_MS);
       if (s.data) deps.onLoaded?.(s.data); // the lead chat can open from the copy straight away
@@ -311,7 +316,32 @@ export function initCompany(deps) {
   }
 
   function banners(d) {
-    return [s.error ? errLine(s.error, "retry") : "", ...(d.errors ?? []).map((e) => errLine(e)), s.banner ? `<p class="co-bad">${esc(s.banner)} <button class="co-link" data-act="retry-channel">retry</button> · <button class="co-link" data-act="dismiss">dismiss</button></p>` : ""].join("");
+    return [s.error ? errLine(s.error, "retry") : "", ...(d.errors ?? []).map((e) => errLine(e)), setupHtml()].join("");
+  }
+
+  function saveSetup(st) {
+    s.setup = st;
+    if (st) store.set(k("setup"), st);
+    else store.del(k("setup"));
+  }
+
+  /** "Setup didn't finish": what failed, in words. Retry redoes ONLY the failed steps/members; a member
+   *  whose folder is gone gets "remove from company" instead (a retry can't fix that). */
+  function setupHtml() {
+    const st = s.setup;
+    if (!st) return "";
+    const plan = retryPlan(st);
+    const lines = [
+      st.card ? `<li>${esc(st.card)}</li>` : "",
+      ...st.failed.map((f) =>
+        f.gone
+          ? `<li>${esc(f.error)} — <button class="co-link" data-act="member-remove" data-name="${esc(f.name)}">remove from company</button></li>`
+          : `<li>${esc(f.name)}: ${esc(f.error)}</li>`,
+      ),
+      st.kickoff ? `<li>${esc(st.kickoff)}</li>` : "",
+    ].join("");
+    const canRetry = plan.names.length || plan.card || plan.kickoff;
+    return `<div class="co-bad co-setup"><p>Setup didn't finish${st.note ? ` — ${esc(st.note)}` : ""}:</p><ul>${lines}</ul><p>${canRetry ? `<button class="co-link" data-act="retry-channel">retry ${plan.names.length ? `${plan.names.length} invite${plan.names.length === 1 ? "" : "s"}` : "setup"}</button> · ` : ""}<button class="co-link" data-act="dismiss">dismiss</button></p></div>`;
   }
 
   function beadRow(b, d, { who = false, milestone = false, waitingOn } = {}) {
@@ -345,6 +375,11 @@ export function initCompany(deps) {
       return mine.length ? ` <span class="co-dim">${mine.length} open</span>` : "";
     };
     const team = `<p class="co-team">${d.members.map((m) => `<a class="co-name" href="${esc(companyPath({ slug: c.slug, agent: m.name, level: "tasks" }))}" data-nav="${esc(companyPath({ slug: c.slug, agent: m.name, level: "tasks" }))}">${esc(m.name)}${m.name === c.lead ? " ★" : ""}</a>${dot(m.name)}${counts(m.name)}`).join(" &nbsp;·&nbsp; ")}</p>`;
+    // A member whose folder is gone (e.g. /tmp wiped by a reboot) can't be woken: say so, offer the fix.
+    const goneHtml = d.members
+      .filter((m) => m.gone)
+      .map((m) => `<p class="co-bad co-small">${esc(m.name)}'s folder ${esc(m.gone)} no longer exists${m.name === c.lead ? " — it's the lead; re-register its folder (paw adopt / paw claude in a new folder)" : ` — <button class="co-link" data-act="member-remove" data-name="${esc(m.name)}">remove from company</button>`}</p>`)
+      .join("");
     const byId = new Map(d.issues.map((i) => [i.id, i]));
     const mine = d.onYou.assigned.map((id) => byId.get(id)).filter(Boolean);
     const waiting = d.onYou.waiting.map((w) => ({ bead: byId.get(w.id), blocker: byId.get(w.blocker) })).filter((w) => w.bead && w.blocker);
@@ -372,6 +407,7 @@ export function initCompany(deps) {
       <header class="co-header"><div class="co-title"><h1>${esc(c.name)}</h1>${c.mission ? `<p class="co-mission">${esc(c.mission)}</p>` : ""}</div></header>
       ${banners(d)}
       ${team}
+      ${goneHtml}
       ${you}
       <div class="co-chatslot">${chatRow}</div>
       ${msHtml}
@@ -548,7 +584,8 @@ export function initCompany(deps) {
         ...(/kickoff/.test(chErr) ? [{ text: chErr, bad: true }] : [{ text: "kickoff posted" }]),
       ];
       const problems = [chErr, ...failed].filter(Boolean);
-      if (problems.length) store.set(`paw.company.${deps.space?.() ?? ""}.${f.slug}.banner`, `Setup didn't finish: ${problems.join(" · ")}`);
+      const st = setupFrom(r);
+      if (st) store.set(`paw.company.${deps.space?.() ?? ""}.${f.slug}.setup`, st);
       store.del(kNew());
       paint(true);
       setTimeout(() => deps.navigate(`/company/${f.slug}`), problems.length ? 2500 : 600);
@@ -651,21 +688,24 @@ export function initCompany(deps) {
       case "lead-chat":
         return deps.openLeadChat?.(s.data?.company.lead);
       case "dismiss":
-        s.banner = undefined;
-        store.del(k("banner"));
+        s.setup = undefined;
+        store.del(k("setup"));
         return paint(true);
-      case "retry-channel":
-        return void post(`/api/company/${encodeURIComponent(s.slug)}`, { op: "retry-channel" })
-          .then((r) => {
-            const problems = [r.channelError, ...(r.failed ?? []).map((x) => `${x.name}: ${x.error}`)].filter(Boolean);
-            s.banner = problems.length ? `Setup didn't finish: ${problems.join(" · ")}` : undefined;
-            if (s.banner) store.set(k("banner"), s.banner);
-            else store.del(k("banner"));
-          })
-          .catch((err) => {
-            s.banner = `Setup retry failed: ${err?.message ?? err}`;
-          })
+      case "retry-channel": {
+        const plan = retryPlan(s.setup);
+        return void post(`/api/company/${encodeURIComponent(s.slug)}`, { op: "retry-channel", ...plan })
+          .then((r) => saveSetup(mergeRetry(s.setup, plan, r)))
+          .catch((err) => saveSetup({ ...s.setup, note: `retry failed: ${err?.message ?? err}` }))
           .finally(() => paint(true));
+      }
+      case "member-remove": {
+        const name = el.dataset.name;
+        if (!window.confirm(`Take ${name} off ${s.data?.company.name ?? s.slug}? The agent itself is untouched.`)) return;
+        return void post(`/api/company/${encodeURIComponent(s.slug)}`, { op: "member-remove", name })
+          .then(() => saveSetup(setupFrom({ ...s.setup, failed: (s.setup?.failed ?? []).filter((f) => f.name !== name), cardError: s.setup?.card, kickoffError: s.setup?.kickoff })))
+          .catch((err) => saveSetup({ ...s.setup, note: `couldn't remove ${name}: ${err?.message ?? err}` }))
+          .finally(() => void load(true));
+      }
       case "ms": {
         const key = el.dataset.ms;
         if (s.open.has(key)) s.open.delete(key);
