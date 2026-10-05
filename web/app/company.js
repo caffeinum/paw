@@ -31,6 +31,7 @@ import {
   slugify,
   workBeads,
   companyPath,
+  shellLevel,
   setupFrom,
   retryPlan,
   mergeRetry,
@@ -41,7 +42,8 @@ const POLL_MS = 15_000;
 const VIEW_LABEL = { agent: "By agent", status: "By status" };
 const TABS = [
   ["tasks", "Tasks"],
-  ["dialog", "Dialog"],
+  ["activity", "Activity"],
+  ["chat", "Chat"],
   ["trace", "Trace"],
 ];
 
@@ -258,7 +260,7 @@ export function initCompany(deps) {
     // Over Dialog/Trace the shell's own renderers paint — but never for someone outside the company:
     // a stranger gets the "not in" page painted over everything instead.
     const stranger = s.page === "company" && s.agent && s.data && !isMember(s.data, s.agent);
-    const overDialog = s.page === "company" && (s.level === "dialog" || s.level === "trace") && !stranger;
+    const overDialog = s.page === "company" && shellLevel(s.level) && !stranger;
     root.hidden = !s.page;
     root.classList.toggle("co-overlay-only", overDialog); // only the panel paints over the real chat/trace
     root.classList.toggle("co-home", s.page === "company" && s.level === "home");
@@ -272,7 +274,7 @@ export function initCompany(deps) {
     const keep = [...root.querySelectorAll("[data-scroll]")].map((el) => [el.dataset.scroll, el.scrollTop]);
     root.innerHTML = s.page === "new" ? newHtml() : companyHtml();
     head.innerHTML = headHtml();
-    bar.innerHTML = s.page === "company" && (s.level === "dialog" || s.level === "trace") ? crumbsHtml() : "";
+    bar.innerHTML = s.page === "company" && shellLevel(s.level) ? crumbsHtml() : "";
     for (const [key, top] of keep) {
       const el = root.querySelector(`[data-scroll="${key}"]`);
       if (el) el.scrollTop = top;
@@ -304,11 +306,13 @@ export function initCompany(deps) {
           ? `<span class="co-stale co-bad" title="${esc(s.error)}">couldn't refresh — showing a copy from ${esc(rel(s.cachedAt))}</span>`
           : `<span class="co-stale">updating…</span>`
         : "";
-    return `<a class="co-back" href="/" data-nav="/" title="back to paw">← paw</a><a class="co-cname" href="${esc(home)}" data-nav="${esc(home)}">${esc(name)}</a>${mark}<span class="co-hgap"></span>${switcher}${s.page === "new" ? "" : `<a class="co-small" href="/new" data-nav="/new">New company</a>`}`;
+    return `<a class="co-back" href="/" data-nav="/" title="back to paw">← paw</a><a class="co-cname" href="${esc(home)}" data-nav="${esc(home)}">${esc(name)}</a>${mark}<span class="co-hgap"></span>${switcher}${here ? `<a class="co-small co-chanlink" href="${esc(companyPath({ slug: here, level: "channel" }))}" data-nav="${esc(companyPath({ slug: here, level: "channel" }))}" title="the company channel">#${esc(here)}</a>` : ""}${s.page === "new" ? "" : `<a class="co-small" href="/new" data-nav="/new">New company</a>`}`;
   }
 
   function crumbsHtml() {
     const name = s.data?.company.name ?? s.slug;
+    if (s.level === "channel")
+      return `<div class="co-crumbs"><a href="${esc(companyPath({ slug: s.slug, level: "home" }))}" data-nav="${esc(companyPath({ slug: s.slug, level: "home" }))}">${esc(name)}</a> › #${esc(s.slug)} <span class="co-dim">— the company channel; everyone in ${esc(name)} reads it</span></div>`;
     const tabs = TABS.map(([lv, label]) => `<button data-level="${lv}" aria-pressed="${s.level === lv}">${label}</button>`).join("");
     return `<div class="co-crumbs"><a href="${esc(companyPath({ slug: s.slug, level: "home" }))}" data-nav="${esc(companyPath({ slug: s.slug, level: "home" }))}">${esc(name)}</a> › ${esc(s.agent === s.data?.operator ? `You (${s.agent})` : s.agent)}</div><nav class="co-views co-tabs" aria-label="Agent view">${tabs}</nav>`;
   }
@@ -323,7 +327,7 @@ export function initCompany(deps) {
     }
     if (s.agent && !isMember(d, s.agent))
       return `<div class="co-wrap" data-scroll="page"><div class="co-col"><h1>${esc(s.agent)} is not in ${esc(s.slug)}</h1><p><a href="${esc(companyPath({ slug: s.slug, level: "home" }))}" data-nav="${esc(companyPath({ slug: s.slug, level: "home" }))}">Back to ${esc(d.company.name)}</a></p></div></div>`;
-    if (s.level === "dialog" || s.level === "trace") return panelHtml(d); // app.js paints the body (members only — see place())
+    if (shellLevel(s.level)) return panelHtml(d); // app.js paints the body (members only — see place())
     return `${s.level === "tasks" ? tasksHtml(d) : homeHtml(d)}${panelHtml(d)}`;
   }
 
@@ -448,7 +452,7 @@ export function initCompany(deps) {
       <div class="co-chatslot">${chatRow}</div>
       ${msHtml}
       <section class="co-work"><div class="co-workhead"><h2>Work</h2>${toggle}</div>${s.view === "status" ? statusHtml(d, work) : agentHtml(d, work)}</section>
-      <p class="co-build">build ${esc(deps.build)} · #${esc(c.slug)} <button class="co-link" data-act="channel">open channel</button></p>
+      <p class="co-build">build ${esc(deps.build)}</p>
     </div></div>`;
   }
 
@@ -876,7 +880,7 @@ export function initCompany(deps) {
       closePanel();
       return true;
     }
-    return s.page === "company" && s.level !== "dialog" && s.level !== "trace";
+    return s.page === "company" && !shellLevel(s.level);
   }
 
   return {

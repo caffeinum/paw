@@ -25,7 +25,7 @@ import { initTaskspad } from "./taskspad.js";
 import { initBoard } from "./board.js";
 import { initVillage } from "./village.js";
 import { initCompany } from "./company.js";
-import { parsePath, companyPath } from "./company-model.js";
+import { parsePath, companyPath, shellLevel } from "./company-model.js";
 import { initPalette } from "./palette.js";
 import { composeQuote, quotable } from "./quote.js";
 
@@ -488,8 +488,8 @@ function renderMessages(now) {
   const inChannel = String(state.focus ?? "").startsWith("#");
   // A company agent's DIALOG: the same renderer over a wider, separate message set (src/dialog.ts) —
   // its DMs both ways incl. agent↔agent, and its #slug posts. Rows say `from → to` / `#slug`.
-  const dialog = state.co?.level === "dialog" ? (state.dialog?.agent === state.focus ? state.dialog : undefined) : undefined;
-  const list = state.co?.level === "dialog"
+  const dialog = state.co?.level === "activity" ? (state.dialog?.agent === state.focus ? state.dialog : undefined) : undefined;
+  const list = state.co?.level === "activity"
     ? (dialog?.messages ?? [])
         // scoped to the company: DMs between members (and you), and the company channel's posts
         .filter((m) => {
@@ -512,7 +512,7 @@ function renderMessages(now) {
   if (!list.length) {
     // "Nothing here" is only true once we have actually read. Before that it is not-yet-known, and
     // flashing an empty state reads as a dead mesh.
-    el.innerHTML = dialogNote + (state.co?.level === "dialog" && !dialog ? `<div class="empty">loading…</div>` : `<div class="empty">${state.loaded ? "no messages yet" : "loading…"}</div>`);
+    el.innerHTML = dialogNote + (state.co?.level === "activity" && !dialog ? `<div class="empty">loading…</div>` : `<div class="empty">${state.loaded ? "no messages yet" : "loading…"}</div>`);
     return;
   }
   const rows = state.focus ? [...list, ...state.pending.filter((p) => p.to === state.focus)] : [...list, ...state.pending];
@@ -663,7 +663,7 @@ function renderMessages(now) {
   //
   // With an agent focused the other conversations are off screen, so they stay unread too.
   const lookedAt = document.visibilityState === "visible" && document.hasFocus();
-  if (lookedAt && !inChannel && !dialog && state.co?.level !== "dialog") void markVisibleRead(list); // a dialog isn't your inbox
+  if (lookedAt && !inChannel && !dialog && state.co?.level !== "activity") void markVisibleRead(list); // a dialog isn't your inbox
   if (lookedAt && inChannel) markChannelSeen(String(state.focus).slice(1));
 }
 
@@ -950,8 +950,9 @@ function render() {
     }
   } else if (company.isOpen()) company.close();
   $("main").classList.toggle("cohome", state.co?.page === "company" && state.co.level === "home");
-  $("main").classList.toggle("inco", state.co?.page === "company" && (state.co.level === "dialog" || state.co.level === "trace"));
-  if (state.co?.level === "dialog" && (!state.dialog || state.dialog.agent !== state.co.agent || Date.now() - state.dialog.at > 4000)) void loadDialog();
+  $("main").classList.toggle("inco", state.co?.page === "company" && shellLevel(state.co.level));
+  $("main").classList.toggle("coactivity", state.co?.level === "activity"); // read-only: no composer
+  if (state.co?.level === "activity" && (!state.dialog || state.dialog.agent !== state.co.agent || Date.now() - state.dialog.at > 4000)) void loadDialog();
   $("input").placeholder = state.focus && state.focus !== CO ? `message ${state.focus}` : "";
   renderSidebarExtras();
   renderTasks();
@@ -1281,7 +1282,8 @@ function navigatePath(path) {
 /** Move to a company location: pick whose chat/trace the shell shows, then focus it with `co` set. */
 function goCompany(co) {
   let focus = CO;
-  if (co.page === "company" && (co.level === "dialog" || co.level === "trace")) focus = co.agent;
+  if (co.page === "company" && (co.level === "activity" || co.level === "chat" || co.level === "trace")) focus = co.agent;
+  if (co.page === "company" && co.level === "channel") focus = "#" + co.slug; // focusTarget loads the channel
   // home: the chat column is the lead's conversation from the first frame — the lead is known from the
   // payload, its cached copy or the company list; only when NOTHING local knows it does CO stand in
   if (co.page === "company" && co.level === "home") focus = company.leadFor(co.slug) ?? CO;
@@ -1304,7 +1306,7 @@ function onCompanyLoaded(d) {
 /** An agent's Dialog (src/dialog.ts): its DMs both ways (agent↔agent too) + its #slug posts. */
 async function loadDialog() {
   const co = state.co;
-  if (co?.level !== "dialog" || state.dialogInflight) return;
+  if (co?.level !== "activity" || state.dialogInflight) return;
   state.dialogInflight = true;
   try {
     const d = await api(`/api/dialog/${encodeURIComponent(co.agent)}?limit=300&channel=${encodeURIComponent(co.slug)}`);
@@ -2159,8 +2161,10 @@ function readUrl() {
     return;
   }
   if (p?.page === "company") {
+    // an old name for a level (/dialog → /activity) is rewritten in place, so the bar shows the real path
+    if (companyPath(p) !== location.pathname.replace(/\/$/, "")) history.replaceState(null, "", companyPath(p) + location.search);
     state.co = p;
-    state.focus = p.level === "dialog" || p.level === "trace" ? p.agent : CO;
+    state.focus = p.level === "activity" || p.level === "chat" || p.level === "trace" ? p.agent : p.level === "channel" ? "#" + p.slug : CO;
     state.mode = p.level === "trace" ? "trace" : "chat";
     state.companySub = { bead: q.get("bead") ?? undefined, view: q.get("view") ?? undefined, fromUrl: true };
     return;

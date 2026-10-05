@@ -194,12 +194,15 @@ export function parseMention(text) {
 /** The parsed path: `/new` → {page:"new"}, `/company/<slug>` → {page:"company", slug}, else undefined. */
 export function parsePath(pathname) {
   if (pathname === "/new" || pathname === "/new/") return { page: "new" };
-  const m = /^\/company\/([^/]+)(?:\/([^/]+)(?:\/(dialog|trace))?)?\/?$/.exec(pathname);
+  const m = /^\/company\/([^/]+)(?:\/([^/]+)(?:\/(activity|chat|trace|dialog))?)?\/?$/.exec(pathname);
   if (!m) return undefined;
   try {
     const slug = decodeURIComponent(m[1]);
     if (!m[2]) return { page: "company", slug, level: "home" };
-    return { page: "company", slug, agent: decodeURIComponent(m[2]), level: m[3] ?? "tasks" };
+    // the company channel: /company/<slug>/channel (a path segment no agent page can take: m[3] unset)
+    if (m[2] === "channel" && !m[3]) return { page: "company", slug, level: "channel" };
+    // /dialog was Activity's first name — old links land on Activity (and the URL is rewritten)
+    return { page: "company", slug, agent: decodeURIComponent(m[2]), level: m[3] === "dialog" ? "activity" : (m[3] ?? "tasks") };
   } catch {
     return undefined;
   }
@@ -208,6 +211,12 @@ export function parsePath(pathname) {
 /** The inverse of parsePath for a company location. */
 export function companyPath(loc) {
   const base = `/company/${encodeURIComponent(loc.slug)}`;
+  if (loc.level === "channel") return `${base}/channel`;
   if (!loc.agent || loc.level === "home") return base;
-  return `${base}/${encodeURIComponent(loc.agent)}${loc.level === "dialog" || loc.level === "trace" ? `/${loc.level}` : ""}`;
+  return `${base}/${encodeURIComponent(loc.agent)}${loc.level === "activity" || loc.level === "chat" || loc.level === "trace" ? `/${loc.level}` : ""}`;
+}
+
+/** Levels the shell's own renderers paint (chat/trace/channel views); the company page only adds its bar. */
+export function shellLevel(level) {
+  return level === "activity" || level === "chat" || level === "trace" || level === "channel";
 }

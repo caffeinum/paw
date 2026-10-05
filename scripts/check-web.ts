@@ -1439,9 +1439,14 @@ const stillAligned = async (ws: RawWs, label: string, ...setup: Buffer[]): Promi
   const dlg = m.parsePath("/company/vibeos/vibeos-pm/dialog") as import("../web/app/company-model.js").CompanyLoc;
   const trc = m.parsePath("/company/vibeos/vibeos-pm/trace") as import("../web/app/company-model.js").CompanyLoc;
   assert(home.level === "home" && home.slug === "vibeos" && !home.agent, "company UI: /company/<slug> = home (level 0)");
-  assert(tasks.level === "tasks" && tasks.agent === "vibeos-pm" && dlg.level === "dialog" && trc.level === "trace", "company UI: /company/<slug>/<agent>[/dialog|/trace] = levels 1–3");
+  const act = m.parsePath("/company/vibeos/vibeos-pm/activity") as import("../web/app/company-model.js").CompanyLoc;
+  const cht = m.parsePath("/company/vibeos/vibeos-pm/chat") as import("../web/app/company-model.js").CompanyLoc;
+  const chan = m.parsePath("/company/vibeos/channel") as import("../web/app/company-model.js").CompanyLoc;
+  assert(tasks.level === "tasks" && tasks.agent === "vibeos-pm" && act.level === "activity" && cht.level === "chat" && trc.level === "trace", "company UI: /company/<slug>/<agent>[/activity|/chat|/trace]");
+  assert(dlg.level === "activity" && m.companyPath(dlg) === "/company/vibeos/vibeos-pm/activity", "company UI: an old /dialog link is Activity, and its canonical path is /activity");
+  assert(chan.level === "channel" && !chan.agent && m.companyPath(chan) === "/company/vibeos/channel" && m.shellLevel("channel") && m.shellLevel("chat") && !m.shellLevel("tasks"), "company UI: /company/<slug>/channel = the company channel, painted by the shell");
   assert(m.parsePath("/new")?.page === "new" && m.parsePath("/") === undefined && m.parsePath("/company/x/y/z") === undefined, "company UI: /new; anything else isn't a company path");
-  assert([home, tasks, dlg, trc].every((l) => m.parsePath(m.companyPath(l))!.page === "company" && m.companyPath(m.parsePath(m.companyPath(l)) as typeof l) === m.companyPath(l)), "company UI: companyPath is parsePath's inverse");
+  assert([home, tasks, act, cht, trc, chan].every((l) => m.parsePath(m.companyPath(l))!.page === "company" && m.companyPath(m.parsePath(m.companyPath(l)) as typeof l) === m.companyPath(l)), "company UI: companyPath is parsePath's inverse");
   const MS = (o: Record<string, unknown>) => ({ status: "open", title: "x", ...o }) as import("../web/app/company-model.js").CoBead & { parent?: string; type?: string };
   const tree = [
     MS({ id: "m1", parent: "E", type: "epic", title: "Launch" }),
