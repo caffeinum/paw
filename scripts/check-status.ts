@@ -267,6 +267,69 @@ assert(!inferBusy("idle", true, BUSY_NOW + 5_000, BUSY_NOW), "an mtime in the FU
   assert(threw, "PAW_UNSTICK_TOOL_MIN: negative throws");
 }
 
+// ---- the batched readers behind collectStatus give the SAME answers as their one-at-a-time originals ----
+{
+  const { transcriptTails, inboxLag } = await import("../src/status.ts");
+  const { tailRead } = await import("../src/transcript.ts");
+  const { transcriptPath, transcriptPaths } = await import("../src/session.ts");
+  const { liveSessionProcs, liveSessionProcsMany } = await import("../src/named.ts");
+  const { dmDurable, newIdentity, parsePrincipalKey } = await import("@cotal-ai/core");
+  const { wirePrincipal } = await import("../src/addressing.ts");
+
+  // transcriptTails: one 128KB read, sliced — byte-for-byte tailRead(64K) and tailRead(128K), including a
+  // multibyte character straddling either cut and files shorter than each window.
+  const tdir = mkdtempSync(join(tmpdir(), "paw-status-tails-"));
+  const line = (i: number) => JSON.stringify({ i, text: `é—${"x".repeat(i % 97)}🐾` }) + "\n";
+  for (const [label, n] of [["tiny", 3], ["between 64K and 128K", 900], ["over 128K", 4000]] as const) {
+    const f = join(tdir, `${n}.jsonl`);
+    writeFileSync(f, Array.from({ length: n }, (_, i) => line(i)).join(""));
+    const t = transcriptTails(f);
+    assert(t.small === tailRead(f, 64 * 1024) && t.context === tailRead(f, 128 * 1024), `transcriptTails = tailRead(64K)/tailRead(128K) — ${label}`);
+  }
+
+  // transcriptPaths: the first project dir (readdir order) holding <id>.jsonl, as transcriptPath — for the
+  // per-id path (≤4 ids) and the one-listing path (more), with a duplicate and a missing id.
+  const projects = join(home, ".claude", "projects");
+  for (const d of ["-a", "-b", "-c"]) mkdirSync(join(projects, d), { recursive: true });
+  writeFileSync(join(projects, "not-a-dir"), "");
+  const ids = ["s1", "s2", "s3", "s4", "s5", "dup"];
+  writeFileSync(join(projects, "-a", "s1.jsonl"), "");
+  writeFileSync(join(projects, "-b", "s2.jsonl"), "");
+  writeFileSync(join(projects, "-c", "s3.jsonl"), "");
+  writeFileSync(join(projects, "-a", "dup.jsonl"), "");
+  writeFileSync(join(projects, "-c", "dup.jsonl"), "");
+  const one = (xs: string[]) => new Map(xs.flatMap((id) => (transcriptPath(id) ? [[id, transcriptPath(id)!] as const] : [])));
+  const same = (a: Map<string, string>, b: Map<string, string>) => a.size === b.size && [...a].every(([k, v]) => b.get(k) === v);
+  assert(same(transcriptPaths(ids), one(ids)), "transcriptPaths (one listing) = transcriptPath per id — first dir wins, missing ids absent");
+  assert(same(transcriptPaths(["dup", "s9"]), one(["dup", "s9"])), "transcriptPaths (few ids) = transcriptPath per id");
+
+  // liveSessionProcsMany: same procs as liveSessionProcs for each session (the index written above).
+  const many = liveSessionProcsMany([SID, "no-such-session"]);
+  const strip = (ps: { pid: number; mesh: boolean }[]) => JSON.stringify(ps.map((p) => [p.pid, p.mesh]).sort());
+  assert(strip(many.get(SID)!) === strip(liveSessionProcs(SID)), "liveSessionProcsMany = liveSessionProcs (live holder, non-mesh, dead pid excluded)");
+  assert(many.get("no-such-session")!.length === 0, "liveSessionProcsMany: an unknown session has no procs");
+
+  // inboxLag: one DM-consumer listing → per-agent lag, with the old per-agent rules.
+  const id = newIdentity().id;
+  const p = parsePrincipalKey(wirePrincipal(id))!;
+  const durable = dmDurable(p.owner, p.actor, "b".repeat(26));
+  const agents = [{ name: "a", id }, { name: "bad", id: "x.y.z" }];
+  let errs: string[] = [];
+  let m = inboxLag({ kind: "ok", consumers: [{ name: "dm_other-x", num_pending: 9, num_ack_pending: 9 }, { name: durable, num_pending: 2, num_ack_pending: 1 }] }, "nats://x", agents, errs);
+  assert(JSON.stringify(m.get("a")) === JSON.stringify({ kind: "lag", queued: 2, unread: 1 }), "inboxLag: the agent's own durable (by principal prefix) gives its lag");
+  assert(m.get("bad")!.kind === "error" && errs.some((e) => e.includes('"bad"')), "inboxLag: an unparseable principal is an error, said on stderr");
+  m = inboxLag({ kind: "ok", consumers: [] }, "nats://x", [agents[0]], (errs = []));
+  assert(m.get("a")!.kind === "none" && errs.length === 0, "inboxLag: no consumer → none (never connected), not an error");
+  m = inboxLag({ kind: "no-stream" }, "nats://x", [agents[0]], (errs = []));
+  assert(m.get("a")!.kind === "none" && errs.length === 0, "inboxLag: no DM stream yet → none");
+  m = inboxLag({ kind: "failed", message: "boom" }, "nats://x", [agents[0]], (errs = []));
+  assert(m.get("a")!.kind === "error" && errs.length === 1 && errs[0].includes("boom"), "inboxLag: a failed listing → ? per agent with the cause, never a fabricated 0");
+  m = inboxLag({ kind: "unreachable", message: "refused" }, "nats://x", agents, (errs = []));
+  assert([...m.values()].every((s) => s.kind === "error") && errs.length === 1, "inboxLag: JetStream unreachable → every agent ?, one message");
+  m = inboxLag({ kind: "unreachable", message: "refused" }, "nats://x", [], (errs = []));
+  assert(m.size === 0 && errs.length === 0, "inboxLag: no agent needing a lag → no error reported");
+}
+
 if (failures > 0) {
   console.error(`\n${failures} paw status check(s) failed`);
   process.exit(1);

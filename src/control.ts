@@ -33,12 +33,18 @@
 import { connect, type NatsConnection } from "@nats-io/transport-node";
 import {
   BASELINE_LIFECYCLE_ENDPOINT,
+  compileContract,
+  contractRefToHex,
+  contractStoreContext,
+  describeEndpoint,
   DEV_OWNER,
   EpEnvelopeError,
+  fetchContractClosure,
   invokeCommand,
   mintCreds,
   mintLifecycleUid,
   newIdentity,
+  parseClusterDocument,
   resolveService,
   standaloneConnectOpts,
   unansweredRequest,
@@ -98,17 +104,20 @@ export class ManagerControl {
   readonly space: string;
   private readonly server: string;
   private readonly resolveMs: number;
+  /** Resolve ONLY these commands' contracts (see {@link resolveCommands}); absent = the whole surface. */
+  private readonly only?: ReadonlySet<string>;
 
-  constructor(space: string, server: string, resolveMs: number = RESOLVE_MS) {
+  constructor(space: string, server: string, resolveMs: number = RESOLVE_MS, only?: readonly string[]) {
     this.space = space;
     this.server = server;
     this.resolveMs = resolveMs;
+    if (only) this.only = new Set(only);
   }
 
   /** `ps` — every managed agent's row. paw's most-called control op by a wide margin (every wake
    *  gate, every readiness poll, `paw status`), which is why the resolve is cached. */
-  async ps(timeoutMs = 4000): Promise<ManagerReply> {
-    return this.invoke("privileged", "ps", undefined, timeoutMs);
+  async ps(timeoutMs = 4000, resolveMs?: number): Promise<ManagerReply> {
+    return this.invoke("privileged", "ps", undefined, timeoutMs, false, resolveMs);
   }
 
   /**
@@ -200,13 +209,20 @@ export class ManagerControl {
   }
 
   /** Invoke an UNTARGETED command, translating a rail failure into paw's `{ok:false, error}`. */
-  private async invoke(tier: Tier, command: string, args: Record<string, unknown> | undefined, deadlineMs: number, retried = false): Promise<ManagerReply> {
+  private async invoke(
+    tier: Tier,
+    command: string,
+    args: Record<string, unknown> | undefined,
+    deadlineMs: number,
+    retried = false,
+    resolveMs = this.resolveMs,
+  ): Promise<ManagerReply> {
     try {
-      const rail = await this.rail(tier);
+      const rail = await this.rail(tier, resolveMs);
       const r = replyOf((await invokeCommand(rail.nc, this.space, rail.service, command, args, { deadlineMs })).reply);
       if (!retried && !r.ok && r.error && isStaleRefusal(r.error)) {
         await this.dropRail(tier);
-        return this.invoke(tier, command, args, deadlineMs, true);
+        return this.invoke(tier, command, args, deadlineMs, true, resolveMs);
       }
       return this.noteRefusal(r);
     } catch (e) {
@@ -257,18 +273,18 @@ export class ManagerControl {
 
   /** Connect + resolve one tier's rail, once. The promise (not the resolved value) is cached so two
    *  concurrent calls share ONE describe rather than racing two connections into the same space. */
-  private rail(tier: Tier): Promise<Rail> {
+  private rail(tier: Tier, resolveMs = this.resolveMs): Promise<Rail> {
     const key = railKey(this.space, tier);
     const existing = this.rails.get(key);
     if (existing) return existing;
-    const opening = this.openRail(tier);
+    const opening = this.openRail(tier, resolveMs);
     this.rails.set(key, opening);
     // A failed open must not be cached — the next call gets a fresh attempt, not a stuck rejection.
     opening.catch(() => this.rails.delete(key));
     return opening;
   }
 
-  private async openRail(tier: Tier): Promise<Rail> {
+  private async openRail(tier: Tier, resolveMs: number): Promise<Rail> {
     const { creds, caller } = await callerFor(this.space, tier);
     const nc = await connect({
       servers: this.server,
@@ -276,7 +292,9 @@ export class ManagerControl {
       maxReconnectAttempts: 0,
     });
     try {
-      const service = await resolveService(nc, this.space, BASELINE_LIFECYCLE_ENDPOINT, caller, { deadlineMs: this.resolveMs });
+      const service = this.only
+        ? await resolveCommands(nc, this.space, BASELINE_LIFECYCLE_ENDPOINT, caller, this.only, { deadlineMs: resolveMs })
+        : await resolveService(nc, this.space, BASELINE_LIFECYCLE_ENDPOINT, caller, { deadlineMs: resolveMs });
       return { nc, caller, service };
     } catch (e) {
       await nc.drain().catch(() => nc.close());
@@ -333,14 +351,88 @@ export async function withManagerControl<T>(
   space: string,
   server: string,
   fn: (ctl: ManagerControl) => Promise<T>,
-  opts: { resolveMs?: number } = {},
+  opts: { resolveMs?: number; only?: readonly string[] } = {},
 ): Promise<T> {
-  const ctl = new ManagerControl(space, server, opts.resolveMs);
+  const ctl = new ManagerControl(space, server, opts.resolveMs, opts.only);
   try {
     return await fn(ctl);
   } finally {
     await ctl.close();
   }
+}
+
+const dec = new TextDecoder();
+
+/**
+ * cotal's `resolveService`, narrowed to the commands a caller will actually invoke.
+ *
+ * WHY: a full resolve recompiles the input AND output contract of every command the manager serves
+ * (31 of them in cotal 0.66, 62 compiles), and each compile builds a fresh Ajv that re-compiles the
+ * 2020-12 meta-schema. That is ~0.5s of pure CPU — half of a `paw status` that only ever sends `ps`.
+ * This is the same walk, step for step, over cotal's own exported pieces (describe, the contract
+ * store, the closure fetch, the profile compiler), with the SAME tamper checks; it just stops after
+ * the commands in `only`. Asked upstream as a `commands` option on resolveService — when that lands,
+ * this goes. A command outside `only` is simply absent, so invoking it fails loud as `not-found`.
+ */
+export async function resolveCommands(
+  nc: NatsConnection,
+  space: string,
+  endpoint: string,
+  caller: EpCaller,
+  only: ReadonlySet<string>,
+  opts: { deadlineMs?: number } = {},
+): Promise<ResolvedService> {
+  const { answer, responder } = await describeEndpoint(nc, space, endpoint, caller, opts);
+  const store = await contractStoreContext(nc, space);
+  const visible = new Set(answer.descriptor.clusters.flatMap((cl) => cl.commands));
+  const memo = new Map();
+  // Every cluster document, as cotal does: a later cluster that redeclares a name wins, so which
+  // declaration applies can't be decided from the describe view alone.
+  const docs = await Promise.all(
+    answer.descriptor.clusters.map(async (cl) => {
+      const { manifest, artifacts } = await fetchContractClosure(store, cl.digest, () => [], { artifactMemo: memo });
+      const rootBytes = artifacts.get(contractRefToHex(manifest.root));
+      if (rootBytes === undefined)
+        throw new EpEnvelopeError("failed-precondition", `the cluster manifest ${cl.digest} names root ${manifest.root} but the root artifact is absent from the fetched closure (SPEC 13.7)`);
+      return parseClusterDocument(JSON.parse(dec.decode(rootBytes)));
+    }),
+  );
+  const declared = docs.flatMap((doc) => doc.commands).filter((cmd) => visible.has(cmd.name) && only.has(cmd.name));
+  const recompile = async (closureDigest: string) => {
+    const { manifest, artifacts } = await fetchContractClosure(store, closureDigest, schemaRefs, { artifactMemo: memo });
+    const members: Record<string, unknown> = {};
+    for (const [hex, bytes] of artifacts) members[`sha256:${hex}`] = JSON.parse(dec.decode(bytes));
+    const root = members[manifest.root];
+    if (root === undefined) throw new EpEnvelopeError("failed-precondition", `schema closure ${closureDigest} is missing its root ${manifest.root} (SPEC 13.7)`);
+    const bundleMembers = Object.fromEntries(Object.entries(members).filter(([ref]) => ref !== manifest.root));
+    const compiled = compileContract({ root, members: bundleMembers } as Parameters<typeof compileContract>[0]);
+    if (compiled.closureDigest !== closureDigest)
+      throw new EpEnvelopeError("internal", `the recompiled schema closure hashes to ${compiled.closureDigest}, not the fetched ${closureDigest}; a store that served the wrong bytes never authorizes (SPEC 13.7)`);
+    return compiled;
+  };
+  const resolved = await Promise.all(
+    declared.map(async (cmd) => {
+      const [input, output] = await Promise.all([recompile(cmd.inputDigest), recompile(cmd.outputDigest)]);
+      return { command: cmd.name, contract: { input, output }, class: cmd.class, targeted: cmd.targeted, modes: cmd.modes ?? [], capability: cmd.capability };
+    }),
+  );
+  const commands = new Map(resolved.map((rc) => [rc.command, rc]));
+  return { endpoint: answer.descriptor.endpoint, owner: answer.descriptor.owner, caller, responder, commands };
+}
+
+/** The `cotal:sha256:<hex>` references anywhere in a stored schema document (as bare `sha256:<hex>`),
+ *  for the closure walk — cotal's own rule for what a schema artifact refers to. */
+function schemaRefs(bytes: Uint8Array): string[] {
+  const refs: string[] = [];
+  const walk = (v: unknown): void => {
+    if (typeof v === "string") {
+      const m = /^cotal:(sha256:[0-9a-f]{64})$/.exec(v);
+      if (m) refs.push(m[1]);
+    } else if (Array.isArray(v)) v.forEach(walk);
+    else if (v !== null && typeof v === "object") Object.values(v).forEach(walk);
+  };
+  walk(JSON.parse(dec.decode(bytes)));
+  return refs;
 }
 
 /** Which rail a tier gets. On an OPEN mesh (no space auth material) there is no credential system:

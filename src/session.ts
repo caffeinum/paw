@@ -127,6 +127,39 @@ export function transcriptPath(sessionId: string): string | undefined {
   return undefined;
 }
 
+/** {@link transcriptPath} for many sessions at once — the same answer per id (first project dir in
+ *  readdir order whose `<id>.jsonl` exists), from ONE listing of each project dir. Asked one id at a
+ *  time, `paw status` probed every project dir per agent per column: ~100k existsSync for a fleet. */
+export function transcriptPaths(sessionIds: Iterable<string>): Map<string, string> {
+  const want = new Set(sessionIds);
+  const out = new Map<string, string>();
+  const projects = join(homedir(), ".claude", "projects");
+  if (want.size === 0 || !existsSync(projects)) return out;
+  if (want.size <= 4) {
+    for (const id of want) {
+      const file = transcriptPath(id);
+      if (file) out.set(id, file);
+    }
+    return out;
+  }
+  for (const dir of readdirSync(projects)) {
+    let names: string[];
+    try {
+      names = readdirSync(join(projects, dir));
+    } catch {
+      continue; // not a directory (or vanished) — transcriptPath's existsSync finds nothing there either
+    }
+    for (const n of names) {
+      if (!n.endsWith(".jsonl")) continue;
+      const id = n.slice(0, -".jsonl".length);
+      if (!want.has(id) || out.has(id)) continue;
+      const file = join(projects, dir, n);
+      if (existsSync(file)) out.set(id, file);
+    }
+  }
+  return out;
+}
+
 /** The last-modified time (ms) of `sessionId`'s transcript — a proxy for the agent's "last active"
  *  — or undefined if it has no transcript yet. Same cwd-agnostic scan as {@link transcriptExists}. */
 export function transcriptMtime(sessionId: string): number | undefined {

@@ -12,7 +12,7 @@ import { join } from "node:path";
 
 const sessionsIndexDir = (): string => join(homedir(), ".claude", "sessions");
 
-interface SessionIndexEntry {
+export interface SessionIndexEntry {
   sessionId: string;
   cwd: string;
   name?: string;
@@ -21,8 +21,10 @@ interface SessionIndexEntry {
   startedAt?: number;
 }
 
-/** All parseable entries in the named-session index (skips unreadable/partial files). */
-function readIndex(): SessionIndexEntry[] {
+/** All parseable entries in the named-session index (skips unreadable/partial files). Exported so a
+ *  caller asking about MANY sessions (paw status: ~120 agents) reads the directory once and hands the
+ *  snapshot to {@link nameForSession}/{@link liveSessionProcsMany}, not once per question. */
+export function readIndex(): SessionIndexEntry[] {
   const dir = sessionsIndexDir();
   if (!existsSync(dir)) return [];
   const out: SessionIndexEntry[] = [];
@@ -112,6 +114,44 @@ export function liveSessionProcs(sessionId: string): LiveSessionProc[] {
   return out;
 }
 
+/** The command lines of `pids`, from ONE `ps` (not one per pid). A pid missing from the answer (it
+ *  exited in between) or a failed `ps` is simply absent — the caller treats absent as unreadable.
+ *  Several pids read the WHOLE table (`-A`, ~50ms): macOS ps handed a pid list walks every process
+ *  anyway and costs ~130ms, while a single `-p <pid>` is ~15ms. */
+function commandLines(pids: number[]): Map<number, string> {
+  const out = new Map<number, string>();
+  if (pids.length === 0) return out;
+  const want = new Set(pids);
+  let text: string;
+  try {
+    text = execFileSync("ps", pids.length === 1 ? ["-o", "pid=,command=", "-p", String(pids[0])] : ["-A", "-o", "pid=,command="], {
+      encoding: "utf8",
+      maxBuffer: 64 * 1024 * 1024,
+    });
+  } catch (e) {
+    text = String((e as { stdout?: unknown }).stdout ?? ""); // a failed ps: keep whatever it printed
+  }
+  for (const line of text.split("\n")) {
+    const m = /^\s*(\d+)\s(.*)$/.exec(line);
+    if (m && want.has(Number(m[1]))) out.set(Number(m[1]), m[2]);
+  }
+  return out;
+}
+
+/** {@link liveSessionProcs} for many sessions at once: one index snapshot, one `ps` for every live
+ *  pid. Same answer per session, including the fail-safe (an unreadable process counts as non-mesh). */
+export function liveSessionProcsMany(sessionIds: Iterable<string>, index: SessionIndexEntry[] = readIndex()): Map<string, LiveSessionProc[]> {
+  const want = new Set(sessionIds);
+  const out = new Map<string, LiveSessionProc[]>([...want].map((id) => [id, []]));
+  const hits = index.filter((e) => want.has(e.sessionId) && e.pid !== undefined && isAlive(e.pid));
+  const cmds = commandLines([...new Set(hits.map((e) => e.pid!))]);
+  for (const e of hits) {
+    const cmd = cmds.get(e.pid!);
+    out.get(e.sessionId)!.push({ pid: e.pid!, name: e.name, mesh: cmd !== undefined && cmd.includes("--dangerously-load-development-channels"), startedAt: e.startedAt });
+  }
+  return out;
+}
+
 /**
  * The live claude session behind a MESH agent that paw's registry doesn't know — a `cotal_spawn` peer.
  * cotal stamps `COTAL_NAME`/`COTAL_SPACE` into every agent it launches, and claude's session index maps
@@ -139,8 +179,8 @@ export function meshAgentSession(space: string, name: string): { sessionId: stri
 
 /** The human name (`claude --session-name` / `/rename`) recorded for a session id, if any. Lets
  *  `paw status` show "research" instead of a bare uuid so a session is recognizable at a glance. */
-export function nameForSession(sessionId: string): string | undefined {
-  for (const e of readIndex()) if (e.sessionId === sessionId && e.name) return e.name;
+export function nameForSession(sessionId: string, index: SessionIndexEntry[] = readIndex()): string | undefined {
+  for (const e of index) if (e.sessionId === sessionId && e.name) return e.name;
   return undefined;
 }
 
