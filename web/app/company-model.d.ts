@@ -20,6 +20,10 @@ export function beadOrder(a: CoBead, b: CoBead): number;
 export function groupByAgent<T extends CoBead>(members: CoMember[], issues: T[], operator?: string, onYou?: OnYou): AgentGroup<T>[];
 export function groupByStatus<T extends CoBead>(issues: T[], onYouIds?: Set<string>): StatusGroup<T & { onYou?: boolean }>[];
 export function leadOf(form: { members?: string[]; lead?: string }): string | undefined;
+export interface SetupState { failed: Array<{ name: string; error: string; gone?: boolean }>; card?: string; kickoff?: string }
+export function setupFrom(r: { failed?: Array<{ name: string; error: string; gone?: boolean }>; cardError?: string; kickoffError?: string } | undefined): SetupState | undefined;
+export function retryPlan(setup: SetupState | undefined): { names: string[]; card: boolean; kickoff: boolean };
+export function mergeRetry(prev: SetupState | undefined, plan: { names: string[]; card: boolean; kickoff: boolean }, r: { failed?: Array<{ name: string; error: string; gone?: boolean }>; cardError?: string; kickoffError?: string } | undefined): SetupState | undefined;
 export function parseView(v: unknown): "agent" | "status";
 export function newCompanyProblems(form: { name?: string; slug?: string; members?: string[]; lead?: string }, takenSlugs: Set<string>): string[];
 export function parseMention(text: string): { to: string; text: string } | undefined;

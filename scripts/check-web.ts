@@ -1456,6 +1456,16 @@ const stillAligned = async (ws: RawWs, label: string, ...setup: Buffer[]): Promi
   assert(mss.find((x) => x.id === "m2")!.total === 0 && mss[mss.length - 1].id === undefined && mss[mss.length - 1].title === "No milestone", "company UI: an empty milestone is 0/0; loose beads land in a final 'No milestone' row");
   assert(m.milestoneOf(tree[3], new Map(tree.map((t) => [t.id, t])), "E")?.id === "m1" && m.milestoneOf(tree[5], new Map(tree.map((t) => [t.id, t])), "E") === undefined, "company UI: milestoneOf walks up to the nearest milestone");
   assert(m.workBeads(tree, "E").every((t) => t.id !== "m1" && t.id !== "m2"), "company UI: Work lists beads, not the milestones themselves");
+  // setup failures: retry ONLY what failed; a gone folder isn't retried
+  const su = m.setupFrom({ failed: [{ name: "a", error: "x" }, { name: "g", error: "g's folder /tmp/g no longer exists", gone: true }], kickoffError: "kickoff post: boom" })!;
+  assert(m.setupFrom({ failed: [] }) === undefined && su.failed.length === 2 && !!su.kickoff && !su.card, "setup: nothing failed → no banner; otherwise the failed steps + members");
+  const plan = m.retryPlan(su);
+  assert(plan.names.join() === "a" && plan.kickoff && !plan.card, "setup: retry = the failed (not gone) members + the failed steps only");
+  const after = m.mergeRetry(su, plan, { failed: [] });
+  assert(after!.failed.map((f) => f.name).join() === "g" && !after!.kickoff, "setup: a successful retry clears what it redid; the gone member stays (it needs 'remove')");
+  const still = m.mergeRetry(su, plan, { failed: [{ name: "a", error: "again" }], kickoffError: "kickoff post: boom2" });
+  assert(still!.failed.find((f) => f.name === "a")!.error === "again" && still!.kickoff === "kickoff post: boom2", "setup: a failing retry keeps its NEW error");
+  assert(m.mergeRetry(after, m.retryPlan(after), {}) !== undefined && m.mergeRetry({ failed: [] }, { names: [], card: false, kickoff: false }, {}) === undefined, "setup: an empty state clears the banner");
   console.log("✓ company model (client)");
 }
 

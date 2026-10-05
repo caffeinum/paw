@@ -173,6 +173,29 @@ function invalidate(): void {
   writes++;
 }
 
+/** How old a list `listTasksSWR` will still hand out (while it refreshes behind the caller). */
+const STALE_MS = 5 * 60_000;
+let refreshing: Promise<unknown> | undefined;
+
+/**
+ * listTasks for READ-MOSTLY views (the company page + sidebar): a list up to STALE_MS old comes back
+ * at once while ONE refresh runs behind it. Each bd call boots an embedded dolt engine (~1s on the
+ * live db) and calls are serialized, so a cold company page used to wait on 4–5 of them. A paw write
+ * still invalidates the cache outright, so nothing written here is ever served stale.
+ */
+export async function listTasksSWR(): Promise<Task[]> {
+  if (cache && Date.now() - cache.at < STALE_MS) {
+    if (Date.now() - cache.at >= TASKS_TTL_MS && !refreshing)
+      refreshing = listTasks()
+        .catch(() => {})
+        .finally(() => {
+          refreshing = undefined;
+        });
+    return cache.tasks;
+  }
+  return listTasks();
+}
+
 /** The open work (bd's default list: open + in_progress + blocked), newest read ≤15s old. */
 export async function listTasks(): Promise<Task[]> {
   if (cache && Date.now() - cache.at < TASKS_TTL_MS) return cache.tasks;
@@ -293,11 +316,12 @@ export async function listLabelled(labels: string[]): Promise<Task[]> {
 }
 
 /** Beads by metadata: `{hasKey}` → `--has-metadata-key`, `{field: [k, v]}` → `--metadata-field k=v`. Closed included. */
-export async function listByMetadata(q: { hasKey?: string; field?: [string, string] }): Promise<Task[]> {
-  const args = ["list", "--json", "-n", "0", "--all"];
+export async function listByMetadata(q: { hasKey?: string; field?: [string, string]; openOnly?: boolean }): Promise<Task[]> {
+  const args = ["list", "--json", "-n", "0"];
+  if (!q.openOnly) args.push("--all"); // --all scans every closed bead too — ~3x slower on the live db
+  if (!q.hasKey && !q.field) throw new Error("listByMetadata: give hasKey or field");
   if (q.hasKey) args.push("--has-metadata-key", q.hasKey);
   if (q.field) args.push("--metadata-field", `${q.field[0]}=${q.field[1]}`);
-  if (args.length === 5) throw new Error("listByMetadata: give hasKey or field");
   return parseTasks(await bd(args));
 }
 

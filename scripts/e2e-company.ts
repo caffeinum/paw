@@ -20,7 +20,7 @@
  */
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { createServer } from "node:net";
-import { mkdtempSync, existsSync } from "node:fs";
+import { mkdtempSync, existsSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -202,6 +202,25 @@ try {
   const dlg2 = await get("/api/dialog/beta?limit=500&channel=test-co");
   ok("14 …and beta's own #test-co post, tagged with the channel", (dlg2.body.messages as Array<{ from: string; channel?: string }>).some((m) => m.from === "beta" && m.channel === "test-co"));
   ok("14 no dialog read error on this open mesh", !dlg2.body.error, String(dlg2.body.error ?? ""));
+
+  // R2 ─ a member whose folder is gone; retry redoes ONLY what failed; remove from company
+  const ghostDir = mkdtempSync(join(tmpdir(), "pawco-ghost-"));
+  setFolderName(space, ghostDir, "ghost");
+  rmSync(ghostDir, { recursive: true, force: true }); // the reboot that wiped /tmp
+  bdRaw("update", epic, "--metadata", JSON.stringify({ ...(show(epic).metadata as object), org: { alpha: {}, beta: {}, ghost: {} } }));
+  const invitesTo = async () => (await outs()).filter((m) => m.text.includes('cotal_join("test-co")')).length;
+  const invBefore = await invitesTo();
+  const retry = await post("/api/company/test-co", { op: "retry-channel", names: ["ghost", "beta"] });
+  await sleep(1500);
+  const after = await invitesTo();
+  ok("R2 retry re-invites ONLY the named members (beta: +1; alpha not re-DM'd)", retry.status === 200 && after - invBefore === 1 && (retry.body.invited as string[]).join() === "beta", JSON.stringify(retry.body).slice(0, 300));
+  ok("R2 the gone folder is said in plain words, flagged gone", (retry.body.failed as Array<{ name: string; error: string; gone?: boolean }>).some((f) => f.name === "ghost" && f.gone && f.error.includes("no longer exists")), JSON.stringify(retry.body.failed));
+  ok("R2 retry with nothing named is refused (never a blanket re-run)", (await post("/api/company/test-co", { op: "retry-channel" })).status === 400);
+  const pg = await get("/api/company/test-co?fresh=1");
+  ok("R2 the page payload marks the member's folder gone", (pg.body.members as Array<{ name: string; gone?: string }>).some((m) => m.name === "ghost" && m.gone === ghostDir), JSON.stringify(pg.body.members));
+  const rm = await post("/api/company/test-co", { op: "member-remove", name: "ghost" });
+  ok("R2 member-remove drops it from metadata.org, other keys kept", rm.status === 200 && sortedJson((show(epic).metadata as { org?: unknown }).org) === sortedJson({ alpha: {}, beta: {} }) && (show(epic).metadata as { company?: string }).company === "test-co");
+  ok("R2 the lead can't be removed", (await post("/api/company/test-co", { op: "member-remove", name: "alpha" })).status === 400);
 
   // 8 ─ unknown + duplicate
   const nope = await get("/api/company/nope");
