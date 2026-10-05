@@ -893,7 +893,7 @@ export function initCompany(deps) {
     try {
       await post(`/api/company/${encodeURIComponent(s.slug)}`, { op: "comment", id, text }); // attributed to the operator
       const at = parseMention(text);
-      if (at) await post("/api/dm", { to: at.to, text: `comment on ${id} (${s.slug}): ${at.text} — bd show ${id} for the thread` });
+      if (at) await post("/api/dm", { to: at.to, text: `comment on ${id} (${s.slug}): ${at.text}\n— reply ON THE BEAD so it shows in the thread: bd comments add ${id} "<your answer>"  (bd show ${id} for context)` });
       store.del(k(`draft.c.${id}`));
       await loadThread(id);
       s.sending = undefined;

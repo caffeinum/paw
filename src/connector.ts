@@ -112,6 +112,8 @@ function meshBrief(name: string): string {
     `\`bd show <id>\` first, someone may hold it), mark blocked when waiting on someone, close with a`,
     `reason. When you open a pull request for a task, link it: \`bd update <id> --external-ref <PR url>\``,
     `— the operator follows work through the task, and an unlinked PR is invisible there.`,
+    `A DM that starts "comment on <id>" is the operator commenting on that task: answer ON the task`,
+    `(\`bd comments add <id> "<answer>"\`), not only in your own output — they read the thread, not your pane.`,
     `The operator's attention is limited and the task list is where they manage it — a task`,
     `will be seen on their time; don't chase it with DMs. Never unset or override BEADS_DIR — a`,
     `repo-local .beads is that project's own tracker, not the fleet's.`,
