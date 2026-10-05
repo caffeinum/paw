@@ -7,7 +7,7 @@
  * `retry-channel`. Member/role/goal/filing ops come back WITH their UI (spec §0 LATER).
  */
 import { renameInMetadata, assignmentText, companiesFrom, companyBrief, companyIssues, companyMetadata, onYou, validateCompany, type Company, type CompanyIssue, type CreateCompanyInput, type OnYou } from "./company.ts";
-import { closeTask, commentTask, createTaskGetId, mutateMetadata, updateTask, listByMetadata, listLabelled, listTasks, listTasksSWR, writeGeneration, type Task } from "./tasks.ts";
+import { allComments, closeTask, commentTask, createTaskGetId, mutateMetadata, updateTask, listByMetadata, listLabelled, listTasks, listTasksSWR, writeGeneration, type Task, type TaskComment } from "./tasks.ts";
 import type { AgentStatus } from "./status.ts";
 
 export interface CompanyDeps {
@@ -109,10 +109,11 @@ export function companyService(deps: CompanyDeps) {
    *  companies drop out of the list; their pages still open by slug. */
   async function companies(): Promise<CompanyRow[]> {
     if (listCache && listCache.gen === writeGeneration() && Date.now() - listCache.at < TTL_MS) return listCache.companies;
+    const gen = writeGeneration(); // at the START: reads no longer queue behind writes, so one may land mid-read
     const roots = companiesFrom(await listByMetadata({ hasKey: "company", openOnly: true }));
     const global = await listTasksSWR();
     const list = roots.map((c) => ({ ...c, onYou: onYou(companyIssues(c, global.filter((t) => (t.labels ?? []).includes(`company:${c.slug}`)), global), deps.operator).count }));
-    listCache = { at: Date.now(), gen: writeGeneration(), companies: list };
+    listCache = { at: Date.now(), gen, companies: list };
     return list;
   }
 
@@ -203,6 +204,7 @@ export function companyService(deps: CompanyDeps) {
   async function page(slug: string, fresh = false): Promise<CompanyPayload> {
     const hit = pageCache.get(slug);
     if (!fresh && hit && hit.gen === writeGeneration() && Date.now() - hit.at < TTL_MS) return hit.payload;
+    const gen = writeGeneration();
     const { company, labelled, global, globalError } = await locate(slug, fresh);
     const errors: string[] = [];
     if (company.problem) errors.push(company.problem);
@@ -217,8 +219,21 @@ export function companyService(deps: CompanyDeps) {
       return { name, live: !!r?.live, busy: !!r?.busy || r?.mesh === "working", state: r ? r.mesh : "unknown", known: !!r, ...(gone ? { gone } : {}) };
     });
     const payload: CompanyPayload = { company, operator: deps.operator, members, issues, onYou: onYou(issues, deps.operator), errors };
-    pageCache.set(slug, { at: Date.now(), gen: writeGeneration(), payload });
+    pageCache.set(slug, { at: Date.now(), gen, payload });
     return payload;
+  }
+
+  /** Every comment on the company's beads, by bead id (beads without comments absent) — ONE `bd export`
+   *  for the whole page, so a bead modal opens with its thread already in hand. */
+  async function comments(slug: string): Promise<{ comments: Record<string, TaskComment[]> }> {
+    const ids = (await page(slug)).issues.map((i) => i.id);
+    const all = await allComments();
+    const out: Record<string, TaskComment[]> = {};
+    for (const id of ids) {
+      const list = all.get(id);
+      if (list) out[id] = list;
+    }
+    return { comments: out };
   }
 
   async function op(slug: string, body: Record<string, unknown>): Promise<unknown> {
@@ -305,7 +320,7 @@ export function companyService(deps: CompanyDeps) {
     }
   }
 
-  return { companies, create, page, op };
+  return { companies, create, page, comments, op };
 }
 
 export type CompanyService = ReturnType<typeof companyService>;

@@ -72,7 +72,7 @@ window.addEventListener("unhandledrejection", (e) => showFault(`unhandled: ${e.r
 // The client names its own build, loudly, so "which code is this tab running" is answered by any
 // screenshot instead of a forensic session (the 2026-08-25 evening: three rounds of fixes debugged
 // against tabs of unknown vintage). Stamped by paw-folder at edit time; shown in the header hint.
-const CLIENT_BUILD = "company-3";
+const CLIENT_BUILD = "company-4";
 console.log("[paw] client build", CLIENT_BUILD);
 
 const state = {

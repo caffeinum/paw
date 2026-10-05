@@ -1211,8 +1211,14 @@ export async function startWebServer(deps: WebDeps): Promise<WebServer> {
               }
               return sendJson(res, 200, { companies: await co.companies() });
             }
-            const slug = decodeURIComponent(path.slice("/api/company/".length));
+            const rest = path.slice("/api/company/".length);
+            const wantComments = rest.endsWith("/comments");
+            const slug = decodeURIComponent(wantComments ? rest.slice(0, -"/comments".length) : rest);
             if (!SLUG_RE.test(slug)) return sendJson(res, 400, { error: `paw: "${slug}" is not a company slug` });
+            if (wantComments) {
+              if (req.method !== "GET") return sendJson(res, 405, { error: "paw: comments is read-only (GET)" });
+              return sendJson(res, 200, await co.comments(slug));
+            }
             if (req.method === "POST") {
               let body: Record<string, unknown>;
               try {

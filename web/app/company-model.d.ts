@@ -39,3 +39,5 @@ export interface CompanyLoc { page: "company"; slug: string; agent?: string; lev
 export function parsePath(pathname: string): { page: "new" } | CompanyLoc | undefined;
 export function companyPath(loc: { slug: string; agent?: string; level: CompanyLevel }): string;
 export function shellLevel(level: string | undefined): boolean;
+export function staleThreads(issues: Array<{ id: string; comments?: number }>, byId: Record<string, unknown[]> | undefined): string[];
+export function presence(row: { live?: boolean; mesh: string; busy?: boolean; tool?: { name?: string } } | undefined): { kind: "working" | "idle" | "asleep" | "offline" | "unknown"; title: string };

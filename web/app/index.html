@@ -262,8 +262,17 @@
   .co-bad { color:var(--red); } .co-acc { color:var(--link); }
   .co-team { color:var(--txt-dim); font-size:14px; margin:0 0 36px; }
   #company .co-team .co-name, #company .co-group h2 a { color:var(--txt); } /* names are navigation, not accents (S1) */
-  .co-dot { display:inline-block; width:7px; height:7px; border-radius:50%; background:var(--txt-dim); opacity:.35; margin-left:6px; vertical-align:middle; }
-  .co-dot.live { background:var(--txt); opacity:.8; }
+  /* presence after a name: idle = solid, asleep = a ring, offline/unknown = faint; WORKING = an accent
+     pill with a pulsing dot (the one state worth catching at a glance) */
+  .co-dot { display:inline-block; width:7px; height:7px; border-radius:50%; background:var(--txt-dim); opacity:.35; margin-left:6px; vertical-align:middle; box-sizing:border-box; }
+  .co-dot.co-idle { background:var(--txt); opacity:.8; }
+  .co-dot.co-asleep { background:none; border:1.5px solid var(--txt-dim); opacity:.8; }
+  .co-state { display:inline-flex; align-items:center; gap:5px; margin-left:6px; padding:0 7px 0 6px; border-radius:999px;
+              font-size:12px; font-weight:400; line-height:18px; vertical-align:middle; white-space:nowrap;
+              color:var(--link); background:color-mix(in srgb, var(--link) 12%, transparent); }
+  .co-state .co-dot { margin:0; background:var(--link); opacity:1; animation:co-pulse 1.6s ease-in-out infinite; }
+  @keyframes co-pulse { 50% { opacity:.25; } }
+  @media (prefers-reduced-motion: reduce) { .co-state .co-dot { animation:none; } }
   .co-group, .co-work { margin-bottom:36px; }
   .co-group h2, .co-workhead h2 { font-size:13px; font-weight:600; margin:0 0 8px; padding-bottom:8px; border-bottom:1px solid var(--line); }
   .co-workhead { display:flex; align-items:baseline; gap:16px; border-bottom:1px solid var(--line); margin-bottom:16px; }

@@ -1306,6 +1306,11 @@ const stillAligned = async (ws: RawWs, label: string, ...setup: Buffer[]): Promi
   }
   let bad = false; try { parseComments("{}"); } catch { bad = true; }
   assert(bad, "tasks: parseComments rejects a non-array envelope");
+  const { parseExportComments } = await import("../src/tasks.ts");
+  const ex = parseExportComments([JSON.stringify({ id: "a", comments: [{ author: "x", text: "one", created_at: "2026-10-05T00:00:00Z" }] }), JSON.stringify({ id: "b", comments: [] }), JSON.stringify({ id: "c" }), ""].join("\n"));
+  assert(ex.size === 1 && ex.get("a")![0].text === "one" && ex.get("a")![0].author === "x", "tasks: parseExportComments keys threads by bead id, skips beads without comments");
+  let badEx = false; try { parseExportComments("{not json"); } catch { badEx = true; }
+  assert(badEx, "tasks: parseExportComments fails loud on a line it can't read");
 }
 
 // ---- editlist (web/app/editlist.js) — the shared editable-row contract ----
@@ -1430,6 +1435,10 @@ const stillAligned = async (ws: RawWs, label: string, ...setup: Buffer[]): Promi
   const blocked = st.find((c) => c.key === "blocked")!;
   assert(blocked.beads.map((b) => b.id).sort().join() === "b1,y1" && blocked.beads.every((b) => b.onYou), "company UI: by status — beads on you sit in Blocked, tagged");
   assert(st.reduce((n, c) => n + c.beads.length, 0) === issues.length && st.map((c) => c.name).join() === "In progress,Blocked,To do,Done", "company UI: by status — four groups, every bead once");
+  assert(m.staleThreads([{ id: "a", comments: 2 }, { id: "b" }, { id: "c", comments: 1 }], { a: [1, 2], c: [] }).join() === "c" && m.staleThreads([{ id: "a", comments: 1 }], undefined).join() === "a", "company UI: a thread is stale when bd's count differs from what's cached (absent count = 0)");
+  const P = (o: Record<string, unknown>) => m.presence({ live: true, mesh: "idle", ...o }).kind;
+  assert(P({ mesh: "working" }) === "working" && P({ busy: true }) === "working" && P({}) === "idle" && P({ live: false, mesh: "asleep" }) === "asleep" && P({ live: false, mesh: "offline" }) === "offline" && m.presence(undefined).kind === "unknown", "company UI: presence — working (said or inferred) / idle / asleep / offline / unknown");
+  assert(P({ live: true, mesh: "offline", busy: true }) === "offline" && /in Bash/.test(m.presence({ live: true, mesh: "idle", busy: true, tool: { name: "Bash" } }).title), "company UI: presence — an offline row is never 'working'; the running tool is in the title");
   assert(m.parseView("status") === "status" && m.parseView("columns") === "agent" && m.parseView(undefined) === "agent", "company UI: view preference — default By agent, stale value falls back");
   assert(m.leadOf({ members: ["A", "B"], lead: "B" }) === "B" && m.leadOf({ members: ["A", "B"], lead: "Z" }) === "A" && m.leadOf({ members: [] }) === undefined, "company UI: /new lead = the chosen one while picked, else the first picked");
   assert(m.newCompanyProblems({ name: "X", slug: "x", members: ["A"] }, new Set()).length === 0 && m.newCompanyProblems({ name: "X", slug: "x", members: ["A"] }, new Set(["x"]))[0].includes("already exists"), "company UI: /new problems");
@@ -1495,6 +1504,7 @@ const stillAligned = async (ws: RawWs, label: string, ...setup: Buffer[]): Promi
       if (slug === "nope") throw new HttpError(404, 'no company "nope"');
       return { company: { slug } };
     },
+    comments: async (slug: string) => (calls.push(["comments", slug]), { comments: { "e1.1": [{ author: "A", text: "hi", createdAt: "2026-10-05T00:00:00Z" }] } }),
     op: async (slug: string, body: unknown) => (calls.push(["op", slug, body]), { ok: true }),
   };
   const cport = await freePort();
@@ -1513,6 +1523,10 @@ const stillAligned = async (ws: RawWs, label: string, ...setup: Buffer[]): Promi
   assert((await fetch(`${cbase}/api/company/Bad%20Slug`, { headers: H })).status === 400, "company route: a non-slug is refused before the service runs");
   await fetch(`${cbase}/api/company/t`, { method: "POST", headers: H, body: JSON.stringify({ op: "issue-create", title: "x", assignee: "B" }) });
   assert(calls.some((x) => x[0] === "op" && x[1] === "t"), "company route: POST /api/company/<slug> reaches the op");
+  const cm = (await fetch(`${cbase}/api/company/t/comments`, { headers: H }).then((r) => r.json())) as { comments: Record<string, Array<{ text: string }>> };
+  assert(cm.comments["e1.1"][0].text === "hi" && calls.some((x) => x[0] === "comments" && x[1] === "t"), "company route: GET /api/company/<slug>/comments returns the company's threads by bead id");
+  assert((await fetch(`${cbase}/api/company/t/comments`, { method: "POST", headers: H, body: "{}" })).status === 405, "company route: comments is read-only");
+  assert((await fetch(`${cbase}/api/company/Bad%20Slug/comments`, { headers: H })).status === 400, "company route: comments checks the slug too");
   assert((await fetch(`${cbase}/api/companies`, { method: "POST", headers: { ...H, Origin: "http://evil.example" }, body: "{}" })).status === 403, "company route: the exact-Origin check still guards the new routes");
   const shellRes = await fetch(`${cbase}/company/t`, { headers: { Origin: cbase } });
   assert(shellRes.status === 200 && (shellRes.headers.get("content-type") ?? "").includes("html"), "company route: /company/<slug> falls back to the SPA shell");

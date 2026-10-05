@@ -255,3 +255,26 @@ export function companyPath(loc) {
 export function shellLevel(level) {
   return level === "activity" || level === "chat" || level === "trace" || level === "channel";
 }
+
+/** Bead ids whose cached thread doesn't match bd's own count (`comments` on the list row, absent = 0):
+ *  a comment landed since the cache was filled, so the company's threads are re-read. Pure. */
+export function staleThreads(issues, byId) {
+  return issues.filter((b) => (b.comments ?? 0) !== (byId?.[b.id]?.length ?? 0)).map((b) => b.id);
+}
+
+/**
+ * An agent's presence at a glance, from its status row: `working` (it said so, or paw inferred a turn
+ * in flight — the sidebar's amber pip, same rule), `idle` (live, nothing running), `asleep` (paw sleep:
+ * a DM wakes it), `offline`, or `unknown` (not in this space's roster). The title says the exact word.
+ */
+export function presence(row) {
+  if (!row) return { kind: "unknown", title: "not in this space's roster" };
+  const live = !!row.live && row.mesh !== "offline";
+  if (live && (row.busy || row.mesh === "working")) {
+    const tool = row.tool?.name ? ` — in ${row.tool.name}` : "";
+    return { kind: "working", title: `${row.mesh === "working" ? "working" : "busy (a turn is in flight)"}${tool}` };
+  }
+  if (live) return { kind: "idle", title: row.mesh };
+  if (/^(asleep|waking|wake failed)$/.test(row.mesh)) return { kind: "asleep", title: `${row.mesh} — a DM wakes it` };
+  return { kind: "offline", title: row.mesh || "offline" };
+}
