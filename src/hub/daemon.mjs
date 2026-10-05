@@ -34,6 +34,7 @@ import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 import { Worker } from "node:worker_threads";
 import { AsyncLocalStorage } from "node:async_hooks";
+import { channelPush, createHeadlessDriver, hasReader, headlessDirFor } from "./headless.mjs";
 
 const HANDSHAKE_MAX_BYTES = 64 * 1024;
 const HANDSHAKE_DEADLINE_MS = 5_000;
@@ -62,7 +63,7 @@ const HANDSHAKE_ENV = /^(COTAL_|HOME$|XDG_CONFIG_HOME$|TMPDIR$)/;
 
 /** @typedef {import("@cotal-ai/connector-claude-code/mcp").ClaudeSession} ClaudeSession */
 /** @typedef {import("@cotal-ai/connector-claude-code/mcp").ClaudeSessionOptions} ClaudeSessionOptions */
-/** @typedef {{ id: number, name: string, sock: import("node:net").Socket, closed: boolean, session?: ClaudeSession }} Conn */
+/** @typedef {{ id: number, name: string, sock: import("node:net").Socket, closed: boolean, session?: ClaudeSession, headless?: ReturnType<typeof createHeadlessDriver> }} Conn */
 
 /** @param {string} m */
 const log = (m) => {
@@ -149,6 +150,7 @@ export async function runHub({ space, socket: path }) {
       }
       setTimeout(() => c.sock.destroy(), 1000).unref();
     } else c.sock.destroy();
+    c.headless?.close();
     const s = c.session;
     if (s) {
       let done = false;
@@ -204,6 +206,28 @@ export async function runHub({ space, socket: path }) {
     if (conns.size >= MAX_SESSIONS) return end(c, `${MAX_SESSIONS} sessions live — refusing`);
     conns.set(c.id, c);
     bound(c);
+    // A HEADLESS agent (`claude -p`, docs/notes/headless.md) drops the channel push this session sends
+    // it, so the hub hands each push to the agent's stdin FIFO as a turn. Detected by a live reader on
+    // that FIFO (its claude holds it), never by the dir alone — a stale FIFO is not a headless agent.
+    const hdir = headlessDirFor(dirname(path), c.name);
+    if (hdir && hasReader(hdir)) {
+      const drv = createHeadlessDriver({ dir: hdir, name: c.name, log });
+      c.headless = drv;
+      /** @type {(...a: unknown[]) => boolean} */
+      const write = /** @type {any} */ (c.sock.write.bind(c.sock));
+      /** @type {any} */ (c.sock).write = (/** @type {unknown[]} */ ...a) => {
+        const p = channelPush(a[0]);
+        if (p) {
+          try {
+            drv.push(p);
+          } catch (e) {
+            log(`headless ${c.name}#${c.id}: wake not delivered: ${/** @type {Error} */ (e).message}`);
+          }
+        }
+        return write(...a);
+      };
+      log(`session ${c.name}#${c.id} is headless — wakes go to ${hdir}/in`);
+    }
     // Everything the session schedules from here (timers, socket and NATS callbacks) runs inside this
     // context, so an error that escapes to the process handlers still names its session.
     sessionContext.run(`${c.name}#${c.id}`, () => serveClaudeSession({
