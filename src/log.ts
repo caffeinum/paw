@@ -20,7 +20,7 @@ import { claudeProjectDir, latestSession } from "./adopt.ts";
 import { CodexParser, findCodexSessionFile, resolveCodexRoots } from "./codex-log.ts";
 import { meshAgentSession } from "./named.ts";
 import { latestOpencodeSession, opencodeBlocks, resolveOpencodeDb } from "./opencode-log.ts";
-import { isClaudeHarness, readAgentType, readResumeId, transcriptPath } from "./session.ts";
+import { readAgentType, readResumeId, transcriptPath, writesClaudeTranscript } from "./session.ts";
 import { resolveSpace } from "./lifecycle.ts";
 import { inlineMd, renderMarkdown } from "./markdown.ts";
 import { oneLine, tailRead, TranscriptParser, type Block } from "./transcript.ts";
@@ -169,7 +169,7 @@ export type AgentLog = {
 export function openAgentLog(space: string, name: string, folder: string, bytes = TAIL_BYTES, sessionId?: string): AgentLog {
   const persona = personaFilePath(space, name);
   const agentType = existsSync(persona) ? readAgentType(persona) : undefined;
-  if (isClaudeHarness(agentType)) return openClaudeLog(space, name, folder, bytes, sessionId);
+  if (writesClaudeTranscript(agentType)) return openClaudeLog(space, name, folder, bytes, sessionId);
   if (agentType === "opencode") return openOpencodeLog(space, name, folder);
   if (agentType === "codex") return openCodexLog(space, name, folder, bytes);
   throw new Error(`paw: "${name}" is a ${agentType} agent — paw log does not read ${agentType} sessions yet.`);
@@ -325,7 +325,7 @@ export function chooseTranscriptId(
     if (existsSync(join(dir, `${pinned}.jsonl`)) || transcriptPath(pinned)) return pinned;
     throw new Error(`paw: "${name}" is pinned to session ${pinned} but it has no transcript yet (the agent hasn't written a turn) — nothing to show.`);
   }
-  if (!isClaudeHarness(agentType)) {
+  if (!writesClaudeTranscript(agentType)) {
     throw new Error(
       `paw: "${name}" is a ${agentType} agent — paw log only reads claude transcripts, not ${agentType} sessions. ` +
         `Attach with \`paw open ${name}\` (or the ${agentType} TUI).`,

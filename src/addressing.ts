@@ -30,6 +30,7 @@ import { presenceLive, readMeshRoster } from "./roster.ts";
 import { pawServer } from "./server.ts";
 import { withFileLock, withFileLockAsync } from "./lock.ts";
 import { liveSessionProcs, meshAgentSession, meshIdentity, type LiveSessionProc } from "./named.ts";
+import { ensureKitBinary, KIT_AGENT } from "./kit.ts";
 import { isClaudeHarness, personaValue, readAgentType, readCwd, readResumeId, readShareTools, transcriptMtime } from "./session.ts";
 import { defaultTmuxEnv, readRuntimeMarker } from "./lifecycle.ts";
 import { answerStartupPrompt, tmuxSplit, tmuxSplitAdvice, type StartupScreen } from "./native-attach.ts";
@@ -759,7 +760,11 @@ export async function ensureAgentSpawned(
     // Without it a restart whose old presence hadn't expired yet came back as `queue-ea_2` — alive,
     // resumed, and unreachable under its own name (2026-09-16: eight restarts, eight `_2` agents).
     const args: Record<string, unknown> = { name: opts.name, config, cwd, identity: opts.name };
-    const model = resolveModel(opts.model); // explicit --model wins, else PAW_MODEL env default
+    const agentType = readAgentType(config);
+    const kit = agentType === KIT_AGENT;
+    // explicit --model wins, else PAW_MODEL env default — a CLAUDE model name, so never for a kit agent
+    // (its persona's `model:` names a codex/grok model; an explicit --model still applies).
+    const model = kit ? opts.model?.trim() || undefined : resolveModel(opts.model);
     if (model) args.model = model;
     // Which of the operator's MCP servers this agent gets (`paw mcp share`). Absent ⇒ the flag isn't
     // sent ⇒ cotal shares every declared server, which is what `paw mcp add` promises. Sent as the
@@ -768,8 +773,13 @@ export async function ensureAgentSpawned(
     if (share) args.shareTools = share;
     // Which CONNECTOR runs this agent (`agent:` in the persona; absent = the default claude). Sent as
     // the spawn op's `agent` so a codex/opencode agent respawns as ITSELF on every wake/revival path.
-    const agentType = readAgentType(config);
     if (agentType) args.agent = agentType;
+    if (kit) {
+      // kit publishes no AG-UI event plane (the manager refuses an armed spawn on a connector without
+      // one), and the manager only resolves its binary — building it is the CLI's job, here.
+      args.events = false;
+      ensureKitBinary();
+    }
     const reply = await spawnPinned(ctl, args, opts.name);
     if (!reply.ok) {
       const err = reply.error ?? "no reply";
@@ -806,7 +816,8 @@ export async function ensureAgentSpawned(
     // failed reply; now it would surface as a caller timing out somewhere later with no idea why. So
     // paw does the readiness wait itself — which it must anyway, because this is the window where the
     // tmux dev-channels prompt appears and paw's Enter nudge is the only thing that clears it.
-    const watch = startupWatch(opts.space, opts.name, cwd);
+    // kit has no TUI: no trust dialog, no dev-channels gate, nothing on a pane to answer.
+    const watch = kit ? { poll: () => {}, cause: () => "" } : startupWatch(opts.space, opts.name, cwd);
     if (!(await waitForMeshLive(ctl, opts.name, SPAWN_READY_MS, watch.poll))) {
       throw new Error(
         `paw: the manager accepted "${opts.name}" but it never reached the mesh within ${Math.round(SPAWN_READY_MS / 1000)}s` +

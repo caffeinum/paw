@@ -28,6 +28,7 @@ import "@cotal-ai/connector-opencode"; // self-registers the `opencode` connecto
 import { isReachable, registry } from "@cotal-ai/core";
 import { pawServer } from "../src/server.ts";
 import { pawConnector } from "../src/connector.ts"; // importing this self-registers the VANILLA `claude` connector (0.12) + paw's `paw`
+import { kitConnector } from "../src/kit.ts";
 
 // Replace the vanilla `claude` connector (just self-registered by the connector-claude-code import) with
 // paw's opinionated wrapper, so the manager's default agent type "claude" resolves to OURS. `register`
@@ -35,6 +36,8 @@ import { pawConnector } from "../src/connector.ts"; // importing this self-regis
 registry.unregister("connector", "claude");
 registry.register({ ...pawConnector, name: "claude" });
 registry.register({ ...pawConnector, name: "cotal" }); // back-compat alias for an explicit `--agent cotal`
+// `agent: kit` personas: the lean Go harness (src/kit.ts, docs/notes/kit.md) — speaks cotal itself.
+registry.register(kitConnector);
 
 /**
  * Minimal DIRECT-Manager `supervise` (installedExtensions:false → registry-only resolution) — the

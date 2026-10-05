@@ -43,7 +43,8 @@
     "check:sleep": "node scripts/check-sleep.ts",
     "check:hub": "node scripts/check-hub.ts",
     "check:headless": "node scripts/check-headless.ts",
-    "check:trust": "node scripts/check-trust.ts"
+    "check:trust": "node scripts/check-trust.ts",
+    "check:kit": "node scripts/check-kit.ts"
   },
   "dependencies": {
     "@cotal-ai/cli": "0.66.1",

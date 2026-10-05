@@ -13,6 +13,7 @@ import { attachTmux, tmuxSession, tmuxSplit, tmuxSplitAdvice, tmuxWindowExists }
 import { liveSessionProcs } from "./named.ts";
 import { existsSync } from "node:fs";
 import { assertUnambiguousTarget, canonicalDir, ensureAgentSpawned, folderForName, personaFilePath, registerInstance, resolveFolderAgent, setFolderName, type Kind } from "./addressing.ts";
+import { KIT_AGENT } from "./kit.ts";
 import { readAgentType, readHeadless, readResumeId } from "./session.ts";
 import { withManagerControl } from "./control.ts";
 import { readForeground } from "./foreground.ts";
@@ -127,6 +128,14 @@ export async function attachResolved(
   if (readHeadless(personaFilePath(space, name))) {
     process.stdout.write(
       `"${name}" is headless (claude -p, no TUI) — there is nothing to attach to. ` +
+        `\`paw log ${name}\` shows what it does, \`paw dm ${name} "…"\` talks to it, \`paw stop ${name}\` ends it.\n`,
+    );
+    return;
+  }
+  // A KIT agent (src/kit.ts) is headless by construction: one Go process, no TUI, its window only logs.
+  if (readAgentType(personaFilePath(space, name)) === KIT_AGENT) {
+    process.stdout.write(
+      `"${name}" runs on kit (headless, no TUI) — there is nothing to attach to. ` +
         `\`paw log ${name}\` shows what it does, \`paw dm ${name} "…"\` talks to it, \`paw stop ${name}\` ends it.\n`,
     );
     return;

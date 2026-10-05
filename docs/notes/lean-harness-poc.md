@@ -14,3 +14,4 @@ here: results, the Go-vs-node RAM numbers, architecture, tool mapping, auth, liv
   `scripts/lean/kit/{e2e-kit,parity,resume-check,node-baseline,sniff-cotal}.ts`. They use `$KIT_BIN`
   or `go build` the kit repo (`$KIT_SRC`). `sniff-cotal.ts` is cotal-go's wire re-verification
   tool — re-run it plus `e2e-kit.ts` on every cotal bump.
+- paw runs kit agents itself since 2026-10-05: persona `agent: kit` — [kit.md](kit.md).
