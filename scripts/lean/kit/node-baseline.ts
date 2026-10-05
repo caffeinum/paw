@@ -3,7 +3,7 @@
  * costs (the floor of a one-process-per-agent TS harness, before any conversation or HTTP client).
  * Own nats-server on a random port; never touches a live mesh.
  *
- *   node lean/tools/node-baseline.ts
+ *   node scripts/lean/kit/node-baseline.ts
  */
 import { spawn, spawnSync } from "node:child_process";
 import { createServer } from "node:net";

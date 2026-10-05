@@ -1,18 +1,20 @@
 /**
- * Read parity: the Go ClaudeLoader (`lean dump`) against scripts/lean/session.ts (verified against
+ * Read parity: the Go ClaudeLoader (`kit dump`, github.com/caffeinum/kit) against scripts/lean/session.ts (verified against
  * claude 2.1.289's own --resume requests). Each transcript is COPIED to a temp dir first — the Go
  * loader takes a lock file next to the transcript, and nothing may touch a live one.
  *
- *   node lean/tools/parity.ts <lean-binary> <transcript.jsonl>…
+ *   [KIT_BIN=<kit>] node scripts/lean/kit/parity.ts <transcript.jsonl>…
  */
 import { execFileSync } from "node:child_process";
 import { copyFileSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
-import { activeChain, leafOf, readRecords, toMessages } from "../../scripts/lean/session.ts";
+import { activeChain, leafOf, readRecords, toMessages } from "../session.ts";
+import { kitBin } from "./bin.ts";
 
-const [bin, ...files] = process.argv.slice(2);
-if (!bin || !files.length) throw new Error("usage: node lean/tools/parity.ts <lean-binary> <transcript.jsonl>…");
+const files = process.argv.slice(2);
+if (!files.length) throw new Error("usage: [KIT_BIN=<kit>] node scripts/lean/kit/parity.ts <transcript.jsonl>…");
+const bin = kitBin();
 
 type Sig = string;
 function tsSigs(path: string): Sig[] {
@@ -37,7 +39,7 @@ function goSigs(path: string): Sig[] {
 
 let bad = 0;
 for (const f of files) {
-  const dir = mkdtempSync(join(tmpdir(), "lean-parity-"));
+  const dir = mkdtempSync(join(tmpdir(), "kit-parity-"));
   const copy = join(dir, basename(f));
   copyFileSync(f, copy);
   try {

@@ -1,22 +1,24 @@
 /**
- * END-TO-END: lean agents on a REAL, ISOLATED cotal mesh (own nats-server, PAW_HOME, space,
+ * END-TO-END: kit agents (github.com/caffeinum/kit) on a REAL, ISOLATED cotal mesh (own nats-server, PAW_HOME, space,
  * cotal root), each continuing a COPY of a real Claude Code session.
  *
  *   1 paw's ensure() brings up mesh + manager + mailbox ("you"); each agent is registered as a
- *     paw persona (so `paw status` lists it) and started as `lean run` — one process per agent
+ *     paw persona (so `paw status` lists it) and started as `kit run` — one process per agent
  *   2 presence: visible on the roster, `working` during a turn, `idle` after, `offline` on stop
  *   3 a DM from a peer → a turn with tool calls (read a file, edit it, run bash) → a cotal_dm back
  *   4 a DM sent mid-turn is queued and answered by the next turn
  *   5 `paw dm <name>` reaches it (as "you"); the reply lands in `paw inbox`
  *   6 `paw status --json`: live, unmanaged (not the manager's)
- *   7 RAM (phys_footprint + RSS) of the lean process and its shell, idle at boot and after the turns
+ *   7 RAM (phys_footprint + RSS) of the kit process and its shell, idle at boot and after the turns
  *
- *   LEAN_BIN=<built lean> LEAN_AGENTS="codexy=openai:gpt-6-luna,grokky=xai:grok-build-0.1" \
- *   LEAN_SESSION=<source transcript.jsonl (copied, never modified)> \
- *   PAW_HOME=$(mktemp -d) PAW_SPACE=lean-test-$$ PAW_RELEASE=dev PAW_COTAL_ROOT=$(mktemp -d) \
- *   PAW_BEADS_DIR=$(mktemp -d) node lean/tools/e2e-lean.ts
+ *   [KIT_BIN=<built kit>] KIT_AGENTS="codexy=codex:gpt-6-luna,grokky=grok:grok-build-0.1" \
+ *   KIT_SESSION=<source transcript.jsonl (copied, never modified)> \
+ *   PAW_HOME=$(mktemp -d) PAW_SPACE=kit-test-$$ PAW_RELEASE=dev PAW_COTAL_ROOT=$(mktemp -d) \
+ *   PAW_BEADS_DIR=$(mktemp -d) node scripts/lean/kit/e2e-kit.ts
  *
- * A provider spec `fake:openai` / `fake:xai` runs the same mapping offline (scripted calls).
+ * Without KIT_BIN the kit repo ($KIT_SRC, default ~/Github/caffeinum/kit) is built. Tokens come
+ * from kit's own store (KIT_HOME, default ~/.kit) or borrowed codex/opencode logins.
+ * A provider spec `fake:codex` / `fake:grok` runs the same mapping offline (scripted calls).
  */
 import { execFileSync, spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { copyFileSync, mkdirSync, mkdtempSync, openSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
@@ -26,19 +28,20 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CotalEndpoint } from "@cotal-ai/core";
 import { removeMesh } from "@cotal-ai/workspace";
+import { kitBin } from "./bin.ts";
 
 const space = process.env.PAW_SPACE ?? "";
-if (!process.env.PAW_HOME || !space.startsWith("lean-test-") || process.env.PAW_RELEASE !== "dev" || !process.env.PAW_COTAL_ROOT || !process.env.PAW_BEADS_DIR)
-  throw new Error("isolated run only: PAW_HOME, PAW_SPACE=lean-test-*, PAW_RELEASE=dev, PAW_COTAL_ROOT, PAW_BEADS_DIR");
-const BIN = process.env.LEAN_BIN ?? "";
-const SOURCE = process.env.LEAN_SESSION ?? "";
-const AGENTS = (process.env.LEAN_AGENTS ?? "").split(",").filter(Boolean).map((s) => {
+if (!process.env.PAW_HOME || !space.startsWith("kit-test-") || process.env.PAW_RELEASE !== "dev" || !process.env.PAW_COTAL_ROOT || !process.env.PAW_BEADS_DIR)
+  throw new Error("isolated run only: PAW_HOME, PAW_SPACE=kit-test-*, PAW_RELEASE=dev, PAW_COTAL_ROOT, PAW_BEADS_DIR");
+const SOURCE = process.env.KIT_SESSION ?? "";
+const AGENTS = (process.env.KIT_AGENTS ?? "").split(",").filter(Boolean).map((s) => {
   const [name, prov] = s.split("=");
   const [provider, model] = prov!.split(/:(?=[^:]*$)/).length === 2 && !prov!.startsWith("fake") ? prov!.split(/:(?=[^:]*$)/) : [prov!, ""];
   return { name: name!, provider: provider!, model: model! };
 });
-if (!BIN || !SOURCE || !AGENTS.length) throw new Error("LEAN_BIN, LEAN_SESSION and LEAN_AGENTS are required");
-const REPO = fileURLToPath(new URL("../..", import.meta.url));
+if (!SOURCE || !AGENTS.length) throw new Error("KIT_SESSION and KIT_AGENTS are required");
+const BIN = kitBin();
+const REPO = fileURLToPath(new URL("../../..", import.meta.url));
 
 const port = await new Promise<number>((r) => {
   const s = createServer().listen(0, "127.0.0.1", () => {
@@ -49,11 +52,11 @@ const port = await new Promise<number>((r) => {
 process.env.PAW_SERVER = `nats://127.0.0.1:${port}`;
 process.env.PAW_RUNTIME = "pty"; // no tmux server touched
 delete process.env.PAW_COTAL_HUB;
-const nats = spawn("nats-server", ["-js", "-p", String(port), "-a", "127.0.0.1", "-sd", mkdtempSync(join(tmpdir(), "leanjs-"))], { stdio: "ignore" });
+const nats = spawn("nats-server", ["-js", "-p", String(port), "-a", "127.0.0.1", "-sd", mkdtempSync(join(tmpdir(), "kitjs-"))], { stdio: "ignore" });
 
-const { ensure, stop } = await import("../../src/lifecycle.ts");
-const { ensurePersonaFile, setFolderName } = await import("../../src/addressing.ts");
-const { pawServer } = await import("../../src/server.ts");
+const { ensure, stop } = await import("../../../src/lifecycle.ts");
+const { ensurePersonaFile, setFolderName } = await import("../../../src/addressing.ts");
+const { pawServer } = await import("../../../src/server.ts");
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 let fails = 0;
@@ -87,7 +90,7 @@ const ram = (label: string, pid: number) => {
   const fp = footprintMb(pid);
   const kfp = kids.reduce((a, k) => a + footprintMb(k.pid), 0);
   const krss = kids.reduce((a, k) => a + k.rssMb, 0);
-  console.log(`  RAM ${label}: lean footprint ${fp.toFixed(1)} MB rss ${self?.rssMb.toFixed(1)} MB · shell (${kids.map((k) => k.cmd.split(" ")[0]).join(",")}) footprint ${kfp.toFixed(1)} MB rss ${krss.toFixed(1)} MB`);
+  console.log(`  RAM ${label}: kit footprint ${fp.toFixed(1)} MB rss ${self?.rssMb.toFixed(1)} MB · shell (${kids.map((k) => k.cmd.split(" ")[0]).join(",")}) footprint ${kfp.toFixed(1)} MB rss ${krss.toFixed(1)} MB`);
   return { fp, rss: self?.rssMb ?? NaN, kfp, krss };
 };
 
@@ -110,7 +113,7 @@ try {
 
   for (const a of AGENTS) {
     console.log(`\n── ${a.name}: ${a.provider}${a.model ? ` ${a.model}` : ""} ──`);
-    const root = realpathSync(mkdtempSync(join(tmpdir(), `lean-${a.name}-`)));
+    const root = realpathSync(mkdtempSync(join(tmpdir(), `kit-${a.name}-`)));
     const work = join(root, "work");
     mkdirSync(work);
     writeFileSync(join(work, "notes.txt"), "fruit: apple\ncount: 1\n");
@@ -118,11 +121,11 @@ try {
     copyFileSync(SOURCE, copy);
     setFolderName(space, work, a.name);
     ensurePersonaFile(space, a.name);
-    const log = openSync(join(root, "lean.log"), "a");
+    const log = openSync(join(root, "kit.log"), "a");
     const args = ["run", "--session", copy, "--cwd", work, "--name", a.name, "--space", space, "--server", pawServer(), "--provider", a.provider, "--state", join(root, "state"), "--effort", "low"];
     if (a.model) args.push("--model", a.model);
     const t0 = Date.now();
-    const p = spawn(BIN, args, { stdio: ["ignore", log, log], env: { ...process.env, LEAN_HOME: process.env.LEAN_AUTH_HOME ?? join(process.env.HOME!, ".paw", "lean") } });
+    const p = spawn(BIN, args, { stdio: ["ignore", log, log], env: process.env });
     procs.push(p);
     const live = await until(() => peer(a.name), 30_000, 100);
     ok(`${a.name} on the mesh`, !!live, `after ${Date.now() - t0} ms, id ${live?.card.id}, meta ${JSON.stringify(live?.card.meta)}`);
@@ -133,7 +136,7 @@ try {
     const fake = a.provider.startsWith("fake");
     const family = a.provider.split(":")[1];
     const task = fake
-      ? `FAKE: ${JSON.stringify(family === "openai"
+      ? `FAKE: ${JSON.stringify((family === "codex" || family === "openai")
         ? [{ name: "shell_command", args: JSON.stringify({ command: "cat notes.txt && sleep 4" }) }, { name: "apply_patch", args: "*** Begin Patch\n*** Update File: notes.txt\n@@\n-fruit: apple\n+fruit: banana\n*** End Patch" }]
         : [{ name: "view_file", args: JSON.stringify({ path: "notes.txt" }) }, { name: "str_replace_editor", args: JSON.stringify({ path: "notes.txt", old_str: "fruit: apple", new_str: "fruit: banana" }) }, { name: "bash", args: JSON.stringify({ command: "wc -l notes.txt && sleep 4" }) }])}`
       : "New task, unrelated to the earlier conversation. In your working directory there is notes.txt. 1) Read it. 2) Edit it with your file-editing tool so that `apple` becomes `banana`. 3) Run `wc -l notes.txt && sleep 4` in the shell. Then cotal_dm prober with exactly: DONE <the wc output>.";
@@ -183,7 +186,7 @@ try {
       return !r || r.status === "offline" ? true : undefined;
     }, 10_000);
     ok(`${a.name}: offline on the roster after stop`, !!off);
-    console.log(`  transcript copy: ${copy}\n  log: ${join(root, "lean.log")}`);
+    console.log(`  transcript copy: ${copy}\n  log: ${join(root, "kit.log")}`);
   }
   console.log(`\nRAM\n${ramRows.map((r) => `  ${r}`).join("\n")}`);
 } catch (e) {
@@ -196,5 +199,5 @@ try {
   removeMesh(space);
   nats.kill("SIGTERM");
 }
-console.log(fails ? `\n${fails} FAILED` : "\nlean e2e passed");
+console.log(fails ? `\n${fails} FAILED` : "\nkit e2e passed");
 process.exit(fails ? 1 : 0);

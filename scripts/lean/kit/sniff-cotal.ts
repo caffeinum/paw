@@ -1,10 +1,10 @@
 /**
  * Wire sniffer: runs two REAL @cotal-ai/core endpoints on a throwaway nats-server and logs every
- * NATS frame (subject, headers, payload). This is the reference the Go client in lean/ was written
- * against. Isolated: own nats-server on a random port, own store dir, own space. Never touches a
+ * NATS frame (subject, headers, payload). This is the reference the Go client github.com/caffeinum/cotal-go
+ * (~/Github/caffeinum/cotal-go) was written against — re-run it to re-verify the wire after a cotal bump. Isolated: own nats-server on a random port, own store dir, own space. Never touches a
  * live mesh.
  *
- *   node lean/tools/sniff-cotal.ts > sniff.log
+ *   node scripts/lean/kit/sniff-cotal.ts > sniff.log
  */
 import { spawn } from "node:child_process";
 import { createServer } from "node:net";
@@ -44,7 +44,7 @@ nc.subscribe(">", {
   },
 });
 const mk = (name: string) => {
-  const ep = new CotalEndpoint({ space, servers: server, channels: ["general"], consume: true, registerPresence: true, watchPresence: true, card: { name, kind: "agent", meta: { connector: "lean" } } as any });
+  const ep = new CotalEndpoint({ space, servers: server, channels: ["general"], consume: true, registerPresence: true, watchPresence: true, card: { name, kind: "agent", meta: { connector: "kit" } } as any });
   ep.on("error", (e: Error) => console.log(`!! ${name} error ${e.message}`));
   ep.on("message", (m: unknown, d: { ack(): void }) => {
     console.log(`>> ${name} got message ${JSON.stringify(m)}`);

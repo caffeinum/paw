@@ -1,8 +1,9 @@
 # lean harness: a headless Claude agent loop that speaks paw (exploration, 2026-10-05)
 
 Index: [CLAUDE.md](../../CLAUDE.md). PoC: `scripts/lean/` (offline, no key needed). The follow-up
-prototype, a Go per-agent harness that drives Claude sessions with codex and grok over cotal, is
-written up in [lean-harness-poc.md](lean-harness-poc.md). The headless
+prototype, a Go per-agent harness that drives Claude sessions with codex and grok over cotal, now
+lives in its own repo, kit (`~/Github/caffeinum/kit`, cotal client `~/Github/caffeinum/cotal-go`);
+see [lean-harness-poc.md](lean-harness-poc.md). Its paw-side checks are in `scripts/lean/kit/`. The headless
 `claude -p` connector is a separate piece of work; this note doesn't cover it.
 
 ## Verdict: don't build it for the Claude fleet, for now

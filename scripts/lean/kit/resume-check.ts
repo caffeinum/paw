@@ -1,24 +1,26 @@
 /**
- * Does the REAL `claude --resume` load a transcript the lean harness appended to? Fully offline:
+ * Does the REAL `claude --resume` load a transcript the kit harness (github.com/caffeinum/kit) appended to? Fully offline:
  * the file is copied into a throwaway HOME/CLAUDE_CONFIG_DIR (re-keyed to a temp cwd), claude is
  * pointed at the loopback fake Anthropic API from scripts/lean/, and the request it rebuilds is
- * checked for every marker given (text the lean turns wrote: prompts, tool inputs, results, DMs).
- * Then lean's own reader must see claude's turn. Nothing under the operator's ~/.claude is touched.
+ * checked for every marker given (text the kit turns wrote: prompts, tool inputs, results, DMs).
+ * Then kit's own reader must see claude's turn. Nothing under the operator's ~/.claude is touched.
  *
- *   node lean/tools/resume-check.ts <lean-binary> <lean-written transcript copy> <marker>…
+ *   [KIT_BIN=<kit>] node scripts/lean/kit/resume-check.ts <kit-written transcript copy> <marker>…
  */
 import { execFileSync, spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
-import { startFake } from "../../scripts/lean/fake-anthropic.ts";
-import { projectSlug } from "../../scripts/lean/session.ts";
+import { startFake } from "../fake-anthropic.ts";
+import { projectSlug } from "../session.ts";
+import { kitBin } from "./bin.ts";
 
-const [bin, source, ...markers] = process.argv.slice(2);
-if (!bin || !source || !markers.length) throw new Error("usage: node lean/tools/resume-check.ts <lean-binary> <transcript> <marker>…");
+const [source, ...markers] = process.argv.slice(2);
+if (!source || !markers.length) throw new Error("usage: [KIT_BIN=<kit>] node scripts/lean/kit/resume-check.ts <transcript> <marker>…");
+const bin = kitBin();
 const claudeBin = process.env.CLAUDE_BIN ?? realpathSync(join(homedir(), ".local/bin/claude"));
-const root = realpathSync(mkdtempSync(join(tmpdir(), "lean-resume-")));
+const root = realpathSync(mkdtempSync(join(tmpdir(), "kit-resume-")));
 const home = join(root, "home");
 const config = join(home, ".claude");
 const work = join(root, "work");
@@ -63,7 +65,7 @@ try {
   }
   const back = execFileSync(bin, ["dump", file], { encoding: "utf8", maxBuffer: 1 << 30 });
   const sees = back.includes("RESUME-CHECK") && back.includes("CLAUDE-RESUMED-OK");
-  console.log(`${sees ? "✓" : "✗"} lean's reader sees claude's resumed turn`);
+  console.log(`${sees ? "✓" : "✗"} kit's reader sees claude's resumed turn`);
   if (!sees) fails++;
 } finally {
   await fake.close();
