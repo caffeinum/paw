@@ -1,0 +1,25 @@
+scripts/e2e-company-ui.py
+  s_ed25aaaf9c7e77::t_1ee4e3dcbd7643 122-123,127-128,131-141,144,146-154,156-173,288-289
+web/app/app.js
+  s_ed25aaaf9c7e77::t_6245efa28c7470 1430,1678,1684,2189-2191
+web/app/company.js
+  s_ed25aaaf9c7e77::t_660fc3f27bba18 89,118,212,239-241,279-284,287-290,293,296,345-346,407,531-534,536-537,545,547-578,580-581,595,598-600,602,606,610-614,616-617,719,731-733,735-737,739,741-743,750,752-754,756-757,826,833,838,841-876,978
+web/app/index.html
+  s_ed25aaaf9c7e77::t_426bbde5a64a1f 305-331,867
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "979d103a983d13486f1b491df75c0d730cdb4bc1",
+  "prompts": {},
+  "sessions": {
+    "s_ed25aaaf9c7e77": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "90dd1251-161e-469a-96db-040d1e555035",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Aleksey Bykhun <theisease@gmail.com>"
+    }
+  }
+}
