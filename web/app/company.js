@@ -80,6 +80,7 @@ const store = {
 export function initCompany(deps) {
   const root = deps.el("company");
   const bar = deps.el("cobar");
+  const head = deps.el("cohead");
   const s = {
     page: undefined, // "company" | "new"
     slug: undefined,
@@ -157,6 +158,7 @@ export function initCompany(deps) {
       clearInterval(pollTimer);
       pollTimer = setInterval(() => void load(), POLL_MS);
       void load(true);
+      void loadCompanies().then(() => paint());
     }
     s.agent = loc.agent;
     s.level = loc.level;
@@ -189,6 +191,7 @@ export function initCompany(deps) {
 
   function close() {
     clearInterval(pollTimer);
+    head.innerHTML = "";
     s.page = undefined;
     s.slug = undefined;
     s.bead = undefined;
@@ -211,7 +214,10 @@ export function initCompany(deps) {
   /** Which surface is visible: #company for new/home/tasks (and the not-a-member page), #cobar over
    *  app.js's own Dialog/Trace. The bead panel rides #company, so it can open over Dialog/Trace too. */
   function place() {
-    const overDialog = s.page === "company" && (s.level === "dialog" || s.level === "trace");
+    // Over Dialog/Trace the shell's own renderers paint — but never for someone outside the company:
+    // a stranger gets the "not in" page painted over everything instead.
+    const stranger = s.page === "company" && s.agent && s.data && !isMember(s.data, s.agent);
+    const overDialog = s.page === "company" && (s.level === "dialog" || s.level === "trace") && !stranger;
     root.hidden = !s.page;
     root.classList.toggle("co-overlay-only", overDialog); // only the panel paints over the real chat/trace
     root.classList.toggle("co-home", s.page === "company" && s.level === "home");
@@ -224,6 +230,7 @@ export function initCompany(deps) {
     if (!force && editing()) return; // never under the caret — the next poll catches up
     const keep = [...root.querySelectorAll("[data-scroll]")].map((el) => [el.dataset.scroll, el.scrollTop]);
     root.innerHTML = s.page === "new" ? newHtml() : companyHtml();
+    head.innerHTML = headHtml();
     bar.innerHTML = s.page === "company" && (s.level === "dialog" || s.level === "trace") ? crumbsHtml() : "";
     for (const [key, top] of keep) {
       const el = root.querySelector(`[data-scroll="${key}"]`);
@@ -237,25 +244,38 @@ export function initCompany(deps) {
     const live = !!r && r.live && r.mesh !== "offline";
     return `<span class="co-dot${live ? " live" : ""}" title="${esc(!r ? "not in this space's roster" : live ? r.mesh : "asleep — a DM wakes it")}"></span>`;
   }
-  const menu = `<button class="co-menu" data-act="menu" aria-label="Show sidebar">☰</button>`;
   const errLine = (text, retry) => `<p class="co-bad">${esc(text)}${retry ? ` <button class="co-link" data-act="${retry}">retry</button>` : ""}</p>`;
+
+  /** The company pages' own slim header (the global sidebar + filter bar are hidden here — a company
+   *  view is scoped): ← paw, the company, a switcher when there's more than one, New company. */
+  function headHtml() {
+    const list = s.companies ?? [];
+    const here = s.page === "company" ? s.slug : undefined;
+    const name = s.page === "new" ? "New company" : (s.data?.company.name ?? s.slug ?? "");
+    const home = here ? companyPath({ slug: here, level: "home" }) : "/new";
+    const switcher =
+      list.length > 1 || (list.length === 1 && list[0].slug !== here)
+        ? `<select class="co-switch" data-input="switch" aria-label="Switch company">${here ? "" : `<option value="" selected>Switch to…</option>`}${list.map((c) => `<option value="${esc(c.slug)}"${c.slug === here ? " selected" : ""}>${esc(c.name)}${c.onYou ? ` · ${c.onYou} on you` : ""}</option>`).join("")}</select>`
+        : "";
+    return `<a class="co-back" href="/" data-nav="/" title="back to paw">← paw</a><a class="co-cname" href="${esc(home)}" data-nav="${esc(home)}">${esc(name)}</a><span class="co-hgap"></span>${switcher}${s.page === "new" ? "" : `<a class="co-small" href="/new" data-nav="/new">New company</a>`}`;
+  }
 
   function crumbsHtml() {
     const name = s.data?.company.name ?? s.slug;
     const tabs = TABS.map(([lv, label]) => `<button data-level="${lv}" aria-pressed="${s.level === lv}">${label}</button>`).join("");
-    return `<div class="co-crumbs">${menu}<a href="${esc(companyPath({ slug: s.slug, level: "home" }))}" data-nav="${esc(companyPath({ slug: s.slug, level: "home" }))}">${esc(name)}</a> › ${esc(s.agent === s.data?.operator ? `You (${s.agent})` : s.agent)}</div><nav class="co-views co-tabs" aria-label="Agent view">${tabs}</nav>`;
+    return `<div class="co-crumbs"><a href="${esc(companyPath({ slug: s.slug, level: "home" }))}" data-nav="${esc(companyPath({ slug: s.slug, level: "home" }))}">${esc(name)}</a> › ${esc(s.agent === s.data?.operator ? `You (${s.agent})` : s.agent)}</div><nav class="co-views co-tabs" aria-label="Agent view">${tabs}</nav>`;
   }
 
   function companyHtml() {
     const d = s.data;
     if (!d) {
       if (s.error && /^no company "/.test(s.error))
-        return `<div class="co-wrap" data-scroll="page"><div class="co-col">${menu}<h1>No company “${esc(s.slug)}”</h1><p class="co-dim"><a href="/new?name=${encodeURIComponent(s.slug)}" data-nav="/new?name=${esc(encodeURIComponent(s.slug))}">Create it</a></p></div></div>`;
-      return `<div class="co-wrap" data-scroll="page"><div class="co-col">${menu}<h1>${esc(s.slug)}</h1>${s.error ? errLine(s.error, "retry") : ""}</div></div>`;
+        return `<div class="co-wrap" data-scroll="page"><div class="co-col"><h1>No company “${esc(s.slug)}”</h1><p class="co-dim"><a href="/new?name=${encodeURIComponent(s.slug)}" data-nav="/new?name=${esc(encodeURIComponent(s.slug))}">Create it</a></p></div></div>`;
+      return `<div class="co-wrap" data-scroll="page"><div class="co-col"><h1>${esc(s.slug)}</h1>${s.error ? errLine(s.error, "retry") : ""}</div></div>`;
     }
     if (s.agent && !isMember(d, s.agent))
-      return `<div class="co-wrap" data-scroll="page"><div class="co-col">${menu}<h1>${esc(s.agent)} is not in ${esc(s.slug)}</h1><p><a href="${esc(companyPath({ slug: s.slug, level: "home" }))}" data-nav="${esc(companyPath({ slug: s.slug, level: "home" }))}">Back to ${esc(d.company.name)}</a></p></div></div>`;
-    if (s.level === "dialog" || s.level === "trace") return panelHtml(d); // app.js paints the body
+      return `<div class="co-wrap" data-scroll="page"><div class="co-col"><h1>${esc(s.agent)} is not in ${esc(s.slug)}</h1><p><a href="${esc(companyPath({ slug: s.slug, level: "home" }))}" data-nav="${esc(companyPath({ slug: s.slug, level: "home" }))}">Back to ${esc(d.company.name)}</a></p></div></div>`;
+    if (s.level === "dialog" || s.level === "trace") return panelHtml(d); // app.js paints the body (members only — see place())
     return `${s.level === "tasks" ? tasksHtml(d) : homeHtml(d)}${panelHtml(d)}`;
   }
 
@@ -318,7 +338,7 @@ export function initCompany(deps) {
       : "";
     const toggle = `<nav class="co-views" aria-label="View">${VIEWS.map((v) => `<button data-view="${v}" aria-pressed="${s.view === v}">${VIEW_LABEL[v]}</button>`).join("")}</nav>`;
     return `<div class="co-wrap" data-scroll="page"><div class="co-col">
-      <header class="co-header">${menu}<div class="co-title"><h1>${esc(c.name)}</h1>${c.mission ? `<p class="co-mission">${esc(c.mission)}</p>` : ""}</div><a class="co-small" href="/new" data-nav="/new">New company</a></header>
+      <header class="co-header"><div class="co-title"><h1>${esc(c.name)}</h1>${c.mission ? `<p class="co-mission">${esc(c.mission)}</p>` : ""}</div></header>
       ${banners(d)}
       ${team}
       ${you}
@@ -378,7 +398,7 @@ export function initCompany(deps) {
     const work = workBeads(d.issues, d.company.epic);
     const isYou = s.agent === d.operator;
     return `<div class="co-wrap" data-scroll="page"><div class="co-col">
-      <div class="co-crumbs">${menu}<a href="${esc(companyPath({ slug: s.slug, level: "home" }))}" data-nav="${esc(companyPath({ slug: s.slug, level: "home" }))}">${esc(d.company.name)}</a> › ${esc(isYou ? `You (${s.agent})` : s.agent)}</div>
+      <div class="co-crumbs"><a href="${esc(companyPath({ slug: s.slug, level: "home" }))}" data-nav="${esc(companyPath({ slug: s.slug, level: "home" }))}">${esc(d.company.name)}</a> › ${esc(isYou ? `You (${s.agent})` : s.agent)}</div>
       ${isYou ? "" : `<nav class="co-views co-tabs" aria-label="Agent view">${TABS.map(([lv, label]) => `<button data-level="${lv}" aria-pressed="${s.level === lv}">${label}</button>`).join("")}</nav>`}
       <h1 class="co-agenth">${esc(isYou ? "You" : s.agent)}${s.agent === d.company.lead ? " ★" : ""}${isYou ? "" : dot(s.agent)}</h1>
       ${banners(d)}
@@ -462,7 +482,7 @@ export function initCompany(deps) {
           ? `<span class="co-bad">#${esc(f.slug)} already exists — <a href="/company/${esc(f.slug)}" data-nav="/company/${esc(f.slug)}">open it</a>.</span>`
           : `Creates <b>#<input class="co-slugin" data-nf="slug" value="${esc(f.slug)}" size="${Math.max(4, f.slug.length)}" aria-label="channel name"></b> with these agents`;
     const steps = s.steps ? `<ol class="co-steps">${s.steps.map((st) => `<li class="${st.bad ? "co-bad" : st.wait ? "co-dim" : ""}">${st.bad ? "✕" : st.wait ? "…" : "✓"} ${esc(st.text)}${st.retry ? ` <button class="co-link" data-act="steps-retry">retry</button>` : ""}</li>`).join("")}</ol>` : "";
-    return `<div class="co-form" data-scroll="page"><div class="co-formcol">${menu}
+    return `<div class="co-form" data-scroll="page"><div class="co-formcol">
       <h1>New company</h1>
       <label class="co-f" for="co-name">Name</label>
       <input type="text" id="co-name" data-nf="name" value="${esc(f.name)}" placeholder="Acme Labs" autocomplete="off">
@@ -646,6 +666,11 @@ export function initCompany(deps) {
   }
   root.addEventListener("click", onClick);
   bar.addEventListener("click", onClick);
+  head.addEventListener("click", onClick);
+  head.addEventListener("change", (e) => {
+    const v = e.target.dataset?.input === "switch" ? e.target.value : "";
+    if (v) deps.navigate(companyPath({ slug: v, level: "home" }));
+  });
 
   root.addEventListener("change", (e) => {
     const t = e.target;
@@ -754,6 +779,8 @@ export function initCompany(deps) {
     query,
     onKey,
     data: () => s.data,
+    /** Names the company pages may show: its roster + the operator ("you"). */
+    scope: () => (s.data ? new Set([...s.data.members.map((m) => m.name), s.data.operator, "you"]) : undefined),
     companiesError: () => s.companiesError,
     /** app.js's render tick: repaint for fresh roster dots (never under the caret). */
     tick: () => paint(),

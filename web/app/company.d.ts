@@ -21,6 +21,7 @@ export function initCompany(deps: {
   query: () => URLSearchParams;
   onKey: (e: KeyboardEvent) => boolean;
   data: () => any;
+  scope: () => Set<string> | undefined;
   companiesError: () => string | undefined;
   tick: () => void;
   loadCompanies: () => Promise<Array<{ slug: string; name: string; members?: string[]; onYou?: number }>>;

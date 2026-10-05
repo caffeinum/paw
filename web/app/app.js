@@ -490,7 +490,13 @@ function renderMessages(now) {
   // its DMs both ways incl. agent↔agent, and its #slug posts. Rows say `from → to` / `#slug`.
   const dialog = state.co?.level === "dialog" ? (state.dialog?.agent === state.focus ? state.dialog : undefined) : undefined;
   const list = state.co?.level === "dialog"
-    ? (dialog?.messages ?? []).map((m) => ({ ...m, dialog: true }))
+    ? (dialog?.messages ?? [])
+        // scoped to the company: DMs between members (and you), and the company channel's posts
+        .filter((m) => {
+          const scope = company.scope();
+          return !scope || (scope.has(m.from) && (!!m.channel || scope.has(m.to)));
+        })
+        .map((m) => ({ ...m, dialog: true }))
     : inChannel
       ? state.channelMessages
       : state.focus
@@ -923,6 +929,9 @@ function render() {
     village.update(state.space, state.rows, state.village || {});
     void loadVillage(); // refresh edges/last-lines from /api/village; re-renders on arrival
   } else if (village.isOpen()) village.close();
+  // A company page is SCOPED: no global sidebar, no global filter bar (operator, 2026-10-04).
+  document.body.classList.toggle("cochrome", !!state.co);
+  if (state.co) closeNav();
   if (state.co) {
     company.show(state.co, state.companySub ?? {});
     state.companySub = undefined;
