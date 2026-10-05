@@ -18,8 +18,8 @@ Moved verbatim from CLAUDE.md (2026-10-02 split). Index: [CLAUDE.md](../../CLAUD
   PATH (no shell rc, no nvm), so the launcher is invoked by ABSOLUTE path — fine, because
   `~/.local/bin/paw` already resolves bun/tsx absolutely for exactly this class of caller (verified
   with `env -i`). Sending is `paw dm` (which also WAKES an offline agent from its pin); replies arrive
-  by POLLING `paw inbox --json` every 2s (skipping a tick while the previous one is still in flight,
-  or a slow mesh stacks `paw` processes; a RUN of failed polls toasts instead of looking like a quiet
+  by POLLING `paw inbox --json` — 2s while hot, backing off to 30s (see the feed.ts paragraph; the
+  next poll is scheduled only after the last one settles, so a slow mesh can't stack `paw` processes; a RUN of failed polls toasts instead of looking like a quiet
   empty chat). The chat opens on the last 30 inbox messages and then shows anything newer than the
   moment it opened — a bounded tail, because the inbox holds the whole history with every agent and
   replaying all of it would bury the conversation you just started. There is no mesh-side "working"
@@ -79,6 +79,23 @@ Moved verbatim from CLAUDE.md (2026-10-02 split). Index: [CLAUDE.md](../../CLAUD
   rows: `errors` carries paw's inbox-lag query failures (which paw reports rather than fabricating a
   zero for), and dropping them to keep the type tidy would discard the one signal saying the lag column
   is unknown rather than fine.
+  **Adaptive cadence (2026-10-05, the "Raycast Backend is hot" report).** Raycast keeps a view command
+  MOUNTED after its window closes (until pop-to-root — forever if that's set to "never") and the API
+  has no visibility signal, so a fixed 2s poll ran a bun `paw inbox` (~0.6s wall, ~0.7s CPU) every 2s
+  behind a hidden window, plus `paw status` (~3–6s, up to 150% CPU) every 15s. The feed is now a
+  `setTimeout` CHAIN (at most ONE process per kind, ever) that stays fast while HOT — 60s after a view
+  opens, 60s after new inbox data, 5 min after a send, 60s after a keystroke/selection (`poke()`) — and
+  otherwise backs off ×1.5 to 30s (inbox) / 120s (roster). The roster's changes don't keep it hot
+  (`activeMs` moves on every read of a busy fleet). An UNCHANGED payload is not re-delivered (Raycast
+  had logged "rendering a lot without any changes"); a failure clears that memo so recovery is
+  delivered. The one-shot seed `paw inbox` in ChatView and the one-shot `paw status` in chat.tsx are
+  gone — both now read the shared feed — so opening Paw Chat costs 1 inbox + 1 status, not 3 + 2.
+  The `waiting Ns` counter ticks at 1s only for the first minute (then 15s), and sent-line ids carry
+  the recipient (`s<ts>:<to>`) — a bare `s<ts>` collided on fan-outs and spammed duplicate-key errors.
+  Measured: no leaked/orphaned `paw` children (the launcher `exec`s bun, so execFile's timeout kill
+  reaches the real process); the 44–145% Backend spike seen right after a Raycast restart had ZERO
+  children and was Raycast's own startup. Other extensions spawn too — ccusage runs
+  `npm exec ccusage@latest daily --json` (parses every transcript) on its own schedule.
   **Row shape:** the row carries the AGENT NAME, the read/unread state and the time — and NOT the
   message, which lives in the detail pane. Three columns competing for a narrow list truncated all
   three ("paw-fol… / all thre… / 3 minutes"); dropping the preview gives the name and stamp room to

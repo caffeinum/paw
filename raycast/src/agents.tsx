@@ -8,7 +8,7 @@
 import { Action, ActionPanel, Color, Icon, List, showToast, Toast } from "@raycast/api";
 import { useEffect, useState } from "react";
 import { ChatEntry } from "./chat-view";
-import { subscribeRoster } from "./feed";
+import { poke, subscribeRoster } from "./feed";
 import { AgentRow, ago, inboxLabel, spaceKey, tilde } from "./paw";
 import { loadRoster, saveRoster } from "./roster-cache";
 
@@ -74,7 +74,7 @@ export default function Agents() {
   const offline = rows.filter((r) => !r.live);
 
   return (
-    <List isLoading={loading} searchBarPlaceholder="Filter agents…">
+    <List isLoading={loading} searchBarPlaceholder="Filter agents…" onSelectionChange={() => poke()}>
       <List.Section title="Live" subtitle={live.length ? String(live.length) : undefined}>
         {live.map((r) => (
           <AgentItem key={r.name} row={r} agents={rows} />

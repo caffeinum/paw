@@ -6,7 +6,8 @@
 import { Color, Icon, List } from "@raycast/api";
 import { useEffect, useState } from "react";
 import { ChatView } from "./chat-view";
-import { AgentRow, fetchStatus, spaceKey } from "./paw";
+import { subscribeRoster } from "./feed";
+import { AgentRow, spaceKey } from "./paw";
 import { loadRoster, saveRoster } from "./roster-cache";
 
 export default function Chat() {
@@ -35,19 +36,27 @@ export default function Chat() {
       setRows(cached);
       setLoading(false); // there is something real on screen; the spinner would now be a lie
     });
-    fetchStatus()
-      .then((p) => {
+    // Through the SHARED roster feed, not a one-shot `paw status`: ChatView subscribes to the same feed,
+    // and a separate call here ran the most expensive paw command twice on every open.
+    const off = subscribeRoster(
+      (p) => {
         if (!alive) return;
         setRows(p.rows);
+        setLoading(false);
         void saveRoster(spaceKey(), p.rows);
-      })
+      },
       // A failure only takes over the view when we have NOTHING to show. With a cached roster up, the
       // honest thing is to keep it and let the next poll correct it, rather than replace a usable list
       // with an error because one read failed.
-      .catch((e) => alive && setRows((cur) => (cur.length === 0 ? (setFailure((e as Error).message), cur) : cur)))
-      .finally(() => alive && setLoading(false));
+      (e) => {
+        if (!alive) return;
+        setRows((cur) => (cur.length === 0 ? (setFailure(e.message), cur) : cur));
+        setLoading(false);
+      },
+    );
     return () => {
       alive = false;
+      off();
     };
   }, []);
 
