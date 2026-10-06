@@ -8,12 +8,14 @@
  * work on cotal 0.25 and says so — see {@link attachResolved}.
  * Self-registers an "open" command on import; bin/paw.ts ensures the mesh + manager are up first.
  */
+import { spawnSync } from "node:child_process";
 import { registry, type Command } from "@cotal-ai/core";
 import { attachTmux, tmuxSession, tmuxSplit, tmuxSplitAdvice, tmuxWindowExists } from "./native-attach.ts";
 import { liveSessionProcs } from "./named.ts";
 import { existsSync } from "node:fs";
 import { assertUnambiguousTarget, canonicalDir, ensureAgentSpawned, folderForName, personaFilePath, registerInstance, resolveFolderAgent, setFolderName, type Kind } from "./addressing.ts";
 import { KIT_AGENT } from "./kit.ts";
+import { agentSummary } from "./agent-summary.ts";
 import { readAgentType, readHeadless, readResumeId } from "./session.ts";
 import { withManagerControl } from "./control.ts";
 import { readForeground } from "./foreground.ts";
@@ -123,21 +125,14 @@ export async function attachResolved(
     await withManagerControl(space, pawServer(), (ctl) => ensureAgentSpawned(ctl, { space, name, cwd: folder, model, brief, kind }));
   }
 
-  // A HEADLESS agent (`claude -p`, docs/notes/headless.md) has no TUI anywhere: its window holds only
-  // stderr, and its stdin is the hub's FIFO. Say so instead of dropping the operator into a blank pane.
-  if (readHeadless(personaFilePath(space, name))) {
-    process.stdout.write(
-      `"${name}" is headless (claude -p, no TUI) — there is nothing to attach to. ` +
-        `\`paw log ${name}\` shows what it does, \`paw dm ${name} "…"\` talks to it, \`paw stop ${name}\` ends it.\n`,
-    );
-    return;
-  }
-  // A KIT agent (src/kit.ts) is headless by construction: one Go process, no TUI, its window only logs.
-  if (readAgentType(personaFilePath(space, name)) === KIT_AGENT) {
-    process.stdout.write(
-      `"${name}" runs on kit (headless, no TUI) — there is nothing to attach to. ` +
-        `\`paw log ${name}\` shows what it does, \`paw dm ${name} "…"\` talks to it, \`paw stop ${name}\` ends it.\n`,
-    );
+  // A HEADLESS agent (`claude -p`, docs/notes/headless.md) or a KIT agent (src/kit.ts) has no TUI
+  // anywhere — its window holds only stderr. Attaching to it means watching what it does: follow its log.
+  const persona = personaFilePath(space, name);
+  const kind_ = readHeadless(persona) ? "headless (claude -p, no TUI)" : readAgentType(persona) === KIT_AGENT ? "on kit (headless, no TUI)" : undefined;
+  if (kind_) {
+    process.stderr.write(`${agentSummary(space, name, persona, readHeadless(persona))}\n\n"${name}" runs ${kind_} — following its log (Ctrl-C stops watching; the agent keeps running) · \`paw dm ${name} "…"\` talks to it\n\n`);
+    const r = spawnSync(process.execPath, [...process.execArgv, process.argv[1]!, "log", name, "-f", "--space", space], { stdio: "inherit" });
+    if (r.error) throw new Error(`paw: couldn't follow ${name}'s log: ${r.error.message}`);
     return;
   }
 
