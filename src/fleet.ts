@@ -205,7 +205,12 @@ export function groupProcs(procs: Proc[], space: string, all = false): Groups {
       // `npm exec` rewrites its title and hides its env, so an orphaned npx chain shows its stamp one level down.
       let head = p;
       for (let q = byPid.get(head.ppid); q && /^(npm exec|npx) /.test(q.argv); q = byPid.get(q.ppid)) head = q;
-      if (head.ppid === 1) g.orphans.push({ agent: p.agent!, tree: tree(head) });
+      if (head.ppid === 1) {
+        // A machine-wide daemon an agent's hook happened to launch first (git-ai's `bg run`, started by
+        // the claude/codex checkpoint hook) carries that agent's env stamp but belongs to no one: killing
+        // it just respawns it on the next hook, so it is neither an orphan nor that agent's to clean up.
+        if (!SHARED_DAEMON.test(head.argv)) g.orphans.push({ agent: p.agent!, tree: tree(head) });
+      }
       else {
         const a = g.agents.get(p.agent!) ?? { roots: [], children: [] };
         a.roots.push(p);
@@ -412,6 +417,9 @@ export function hintFor(
 /** An orphan older than its agent's live process was left by an earlier incarnation — nothing tracks it
  *  any more. A younger one was detached ON PURPOSE by the agent running now (a `nohup` job), so it isn't
  *  cleanup, it's that agent's work. */
+/** Self-respawning machine-wide services that inherit an agent's stamp from the hook that started them. */
+export const SHARED_DAEMON = /(^|\/)git-ai bg run(\s|$)/;
+
 export function orphanAbandoned(o: Item & { agent: string }, fleet: Pick<Fleet, "agents">): boolean {
   const a = fleet.agents[o.agent];
   return !a || o.ageMs > a.ageMs;
