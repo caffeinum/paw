@@ -117,7 +117,7 @@ export class CodexParser {
     const pend = callId ? this.pending.get(callId) : undefined;
     if (!pend) return [];
     this.pending.delete(callId!);
-    const text = outputText(pl.output);
+    const text = codeModeText(outputText(pl.output));
     if (pend.name === "\u0000inbox") {
       const body = text.trim();
       return body && !/^no new messages/i.test(body) ? [{ kind: "incoming", text: body }] : [];
@@ -125,6 +125,40 @@ export class CodexParser {
     const isError = exitError(pl.output);
     return [{ kind: "result", lines: resultSummary(pend.name, pend.input, text, isError), isError }];
   }
+}
+
+/**
+ * Codex "code mode" wraps every tool result in a script envelope: a "Script completed / Wall time /
+ * Output:" header, then the real result as JSON — exec_command's `{output, exit_code}`, a settled
+ * promise `{status, value:{output}}`, or an MCP `{content:[{text}]}`. Shown raw, the header filled the
+ * preview and the result never appeared (every call read "Output:" with nothing under it). Unwrap it;
+ * anything that doesn't parse is shown as it came. Pure; exported for check:log.
+ */
+export function codeModeText(text: string): string {
+  const m = /^Script (?:completed|failed)[^\n]*\n(?:Wall time[^\n]*\n)?Output:\n?/.exec(text);
+  if (!m) return text;
+  const rest = text.slice(m[0].length).trim();
+  const unwrap = (v: unknown): string | undefined => {
+    if (!v || typeof v !== "object") return undefined;
+    const o = v as { output?: unknown; value?: unknown; reason?: unknown; content?: unknown };
+    if (typeof o.output === "string") return o.output;
+    if (o.value !== undefined) return unwrap(o.value);
+    if (typeof o.reason === "string") return o.reason;
+    if (Array.isArray(o.content)) return o.content.map((c) => (c && typeof c === "object" && typeof (c as { text?: unknown }).text === "string" ? (c as { text: string }).text : "")).join("\n");
+    return undefined;
+  };
+  const parts = rest.split("\n").filter((l) => l.trim());
+  const out: string[] = [];
+  for (const line of parts) {
+    try {
+      out.push(unwrap(JSON.parse(line)) ?? line);
+    } catch {
+      // codex truncates long results mid-JSON: pull the `output` / `text` string out by hand
+      const cut = /"(?:output|text)":"((?:[^"\\]|\\.)*)/.exec(line);
+      out.push(cut ? cut[1].replace(/\\n/g, "\n").replace(/\\t/g, "\t").replace(/\\(["\\/])/g, "$1") : line);
+    }
+  }
+  return out.join("\n").trim();
 }
 
 function contentText(content: unknown): string {

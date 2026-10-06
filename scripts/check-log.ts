@@ -294,3 +294,19 @@ if (failures > 0) {
   process.exit(1);
 }
 console.log("\nall paw log checks passed 🐾");
+
+// codex code-mode envelopes are unwrapped (paw log showed "Output:" and nothing else)
+{
+  const { codeModeText } = await import("../src/codex-log.ts");
+  const hdr = "Script completed\nWall time 1.2 seconds\nOutput:\n";
+  const a = codeModeText(hdr + JSON.stringify({ chunk_id: "x", exit_code: 0, output: "line1\nline2" }));
+  if (a !== "line1\nline2") throw new Error(`codeModeText exec: ${JSON.stringify(a)}`);
+  const b = codeModeText(hdr + JSON.stringify({ status: "fulfilled", value: { output: "ok" } }));
+  if (b !== "ok") throw new Error(`codeModeText settled: ${JSON.stringify(b)}`);
+  const c = codeModeText(hdr + JSON.stringify({ content: [{ type: "text", text: "DM stored" }] }));
+  if (c !== "DM stored") throw new Error(`codeModeText mcp: ${JSON.stringify(c)}`);
+  const d = codeModeText(hdr + '{"chunk_id":"x","output":"cut\\nhere');
+  if (d !== "cut\nhere") throw new Error(`codeModeText truncated: ${JSON.stringify(d)}`);
+  if (codeModeText("plain") !== "plain") throw new Error("codeModeText: non-envelope passes through");
+  console.log("codex code-mode output unwrapped ✓");
+}
