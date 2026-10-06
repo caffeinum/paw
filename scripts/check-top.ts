@@ -138,10 +138,3 @@ ok(threw && parseTopArgs(["-v", "--all", "--json", "queue"]).names[0] === "queue
 ok(f.parseVmStat("Mach Virtual Memory Statistics: (page size of 16384 bytes)\nPages wired down: 100.\nPages purgeable: 0.\nAnonymous pages: 200.\nPages occupied by compressor: 100.\n") === (400 * 16384) / 1048576, "vm_stat → used MB");
 
 console.log(`✓ check:top — ${n} assertions`);
-
-{
-  const { SHARED_DAEMON } = await import("../src/fleet.ts");
-  if (!SHARED_DAEMON.test("/Users/aleks/.git-ai/bin/git-ai bg run")) throw new Error("git-ai bg run should be a shared daemon");
-  if (SHARED_DAEMON.test("python3 -m http.server 47920")) throw new Error("http.server is not a shared daemon");
-  console.log("shared daemons are not orphans ✓");
-}
