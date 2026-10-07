@@ -14,7 +14,7 @@ import { attachTmux, tmuxSession, tmuxSplit, tmuxSplitAdvice, tmuxWindowExists }
 import { liveSessionProcs } from "./named.ts";
 import { existsSync } from "node:fs";
 import { assertUnambiguousTarget, canonicalDir, ensureAgentSpawned, folderForName, personaFilePath, registerInstance, resolveFolderAgent, setFolderName, type Kind } from "./addressing.ts";
-import { KIT_AGENT } from "./kit.ts";
+import { KIT_AGENT, kitBinPath } from "./kit.ts";
 import { agentSummary } from "./agent-summary.ts";
 import { readAgentType, readHeadless, readResumeId } from "./session.ts";
 import { withManagerControl } from "./control.ts";
@@ -128,6 +128,7 @@ export async function attachResolved(
   // A HEADLESS agent (`claude -p`, docs/notes/headless.md) or a KIT agent (src/kit.ts) has no TUI
   // anywhere — its window holds only stderr. Attaching to it means watching what it does: follow its log.
   const persona = personaFilePath(space, name);
+  if (!readHeadless(persona) && readAgentType(persona) === KIT_AGENT && kitView(space, name)) return;
   const kind_ = readHeadless(persona) ? "headless (claude -p, no TUI)" : readAgentType(persona) === KIT_AGENT ? "on kit (headless, no TUI)" : undefined;
   if (kind_) {
     process.stderr.write(`${agentSummary(space, name, persona, readHeadless(persona))}\n\n"${name}" runs ${kind_} — following its log (Ctrl-C stops watching; the agent keeps running) · \`paw dm ${name} "…"\` talks to it\n\n`);
@@ -186,6 +187,28 @@ export async function attachResolved(
       `    paw runtime tmux     switch the fleet to tmux, where \`paw attach\` enters the real window`,
   );
 }
+
+/**
+ * A kit agent's live view: `kit <name>` (kit's own TUI — header, last message, current tool, status,
+ * a prompt). Typed messages go through THIS paw (`paw dm <name> -`, as "you"), so the view needs no
+ * mesh identity of its own. Returns false — caller falls back to summary + `paw log -f` — off a tty, when the
+ * kit binary is missing or predates the view (its help has no `kit <name>`).
+ */
+function kitView(space: string, name: string): boolean {
+  const bin = kitBinPath();
+  if (!process.stdin.isTTY || !process.stdout.isTTY || !existsSync(bin)) return false;
+  const help = spawnSync(bin, ["--help"], { encoding: "utf8" });
+  if (help.error || !/kit <name> \| kit @<name>/.test(help.stdout ?? "")) return false;
+  const target = KIT_SUBCOMMANDS.has(name) ? `@${name}` : name;
+  const dm = [process.execPath, ...process.execArgv, process.argv[1]!, "dm", name, "--space", space, "-"];
+  const r = spawnSync(bin, [target, "--space", space, "--server", pawServer(), "--", ...dm], { stdio: "inherit" });
+  if (r.error) throw new Error(`paw: couldn't open ${name}'s kit view: ${r.error.message}`);
+  if (r.status !== 0) throw new Error(`paw: kit's view of ${name} exited with ${r.status ?? r.signal}`);
+  return true;
+}
+
+/** kit's subcommands: an agent named like one is addressed as `kit @<name>`. */
+const KIT_SUBCOMMANDS = new Set(["run", "once", "auth", "dump", "help"]);
 
 const openCommand: Command = {
   kind: "command",
