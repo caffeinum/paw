@@ -52,7 +52,10 @@ import { bashMessage, parseBang, runBash } from "./bash.ts";
 import { withManagerControl } from "./control.ts";
 import { advanceCursor } from "./cursor.ts";
 import { AwaitTracker } from "./chat-awaiting.ts";
-import { arrowRun, CLEAR_ALL, displayWidth, fitWidth, entryVisible, hintFor, History, LogFollower, navKey, Painter, type Entry, pickerWindow, showsChat, showsLogs, stepView, VIEW_LABEL, type ChatView } from "./chat-views.ts";
+import { arrowRun, CLEAR_ALL, displayWidth, fitWidth, entryVisible, hintFor, History, LogFollower, navKey, Painter, type Entry, pickerWindow, showsChat, showsLogs, stepView, VIEW_LABEL, viewNeedsTarget, type ChatView } from "./chat-views.ts";
+import { agentBeads, CLOSED_RECENT_MS, lastExchange, newer, renderTasksView, type Said } from "./chat-tasks.ts";
+import { listAssigned, type Task } from "./tasks.ts";
+import { operatorName } from "./company.ts";
 import { attachesAbove, openAgentLog, renderBlock } from "./log.ts";
 import {
   ATTACH_ICON,
@@ -67,7 +70,7 @@ import {
   type Attachment,
 } from "./images.ts";
 import { FRESH_SPAWN_MS, LIVE_AGENT_MS } from "./dm.ts";
-import { messageText as textOf } from "./feed.ts";
+import { messageText as textOf, readConversation, type Entry as FeedEntry } from "./feed.ts";
 import { dedupeRoster } from "./commands/who.ts";
 import { isContinueKey, joinLines, peelContinuation } from "./multiline.ts";
 import { resolveSpace } from "./lifecycle.ts";
@@ -520,7 +523,7 @@ async function chat(argv: string[]): Promise<void> {
   // is spaced exactly like the screen it replaces.
   type Side = "you" | "peer" | "sys";
   const history = new History();
-  const painter = new Painter(renderBlock, HUMAN_PEER, c.dim, "  ", attachesAbove);
+  const painter = new Painter(renderBlock, c.dim, "  ", attachesAbove);
   const follower = new LogFollower(
     (name) => {
       const folder = folderForName(space, name);
@@ -541,6 +544,16 @@ async function chat(argv: string[]): Promise<void> {
    *  through here — anything that bypassed it would be on screen once and gone after the next redraw. */
   function show(e: Entry): void {
     history.push(e);
+    if (view === "tasks") {
+      // The dashboard has no scrolling conversation, so a receipt or an error (anything that isn't a
+      // message) becomes its notice line — a send that failed must not fail silently here.
+      if (e.kind === "chat" && !e.onlyLogs) {
+        // A message arriving answers whatever the notice was waiting on ("⏳ waiting for kit…").
+        tasksNotice = e.side === "peer" ? undefined : stripVTControlCharacters(e.text).trim().split("\n")[0];
+        paintTasks();
+      }
+      return;
+    }
     if (!entryVisible(e, view, curName, follower.readable(curName))) return;
     const text = painter.paint(e, view);
     if (!text) return;
@@ -573,6 +586,7 @@ async function chat(argv: string[]): Promise<void> {
    *  view shows, through the same Painter the live path uses. */
   function redraw(): void {
     if (!rl || closing || !process.stdout.isTTY) return;
+    if (view === "tasks") return paintTasks(true);
     painter.reset();
     const readable = follower.readable(curName);
     let out = CLEAR_ALL;
@@ -584,6 +598,20 @@ async function chat(argv: string[]): Promise<void> {
   /** Which view the conversation is in (see src/chat-views.ts). `chat` is what `paw chat` always was,
    *  so nobody's session changes until they press ←. */
   let view: ChatView = "chat";
+  /** The tasks view's state (src/chat-tasks.ts): beads for `tasksFor` (agent name, or the operator
+   *  when there is no target), the last message each way PER AGENT this session knows of, the notice
+   *  line, and what was last painted so an unchanged repaint writes nothing. */
+  let tasksBeads: { for: string; tasks: Task[] } | undefined;
+  let tasksError: { for: string; message: string } | undefined;
+  let tasksNotice: string | undefined;
+  let tasksPainted = "";
+  const lastSaid = new Map<string, { in?: Said; out?: Said }>();
+  const noteSaid = (agent: string, dir: "in" | "out", said: Said): void => {
+    const k = agent.toLowerCase();
+    const cur = lastSaid.get(k) ?? {};
+    cur[dir] = newer(cur[dir], said);
+    lastSaid.set(k, cur);
+  };
   /** Whether the agent picker is open. Declared up here, not with the rest of the picker, because
    *  drawHint reads it and readline can prompt before the picker's section of this function runs. */
   let picking = false;
@@ -793,8 +821,9 @@ async function chat(argv: string[]): Promise<void> {
   // so when the agent is mid-turn (the line is queued, not lost), and lets each reply be stamped with
   // how long ITS message took — so a long-running agent doesn't feel like silence.
   const awaiting = new AwaitTracker();
-  const markWaiting = (to: string, m: { id?: string }): void => {
+  const markWaiting = (to: string, m: CotalMessage): void => {
     if (!m?.id) throw new Error(`send to ${to} returned no message id — cannot track the reply`);
+    noteSaid(to, "out", { text: textOf(m), ts: m.ts });
     const { queued } = awaiting.sent(to, m.id, Date.now(), findPeer(to)?.status);
     if (queued) emit(c.dim(`⏳ queued — ${to} is mid-turn`), "you");
     else emit(c.dim(`⏳ waiting for ${to}…`), "you");
@@ -821,7 +850,7 @@ async function chat(argv: string[]): Promise<void> {
         `     ${c.dim("type to message it · !cmd runs in its folder · @name switches target · #channel broadcasts · /who · /ps · /quit")}\n` +
         `     ${c.dim("drag an image in for [Image #1] · paste multiple lines for [Pasted text #1]")}\n` +
         `     ${c.dim("alt+enter (or end a line with \\\\) for a new line, not a send")}\n` +
-        `     ${c.dim("on an empty line: ← → switch logs · logs + chat · chat   ↓ picks an agent")}\n` +
+        `     ${c.dim("on an empty line: ← → switch logs · chat · tasks   ↓ picks an agent")}\n` +
         `     ${c.dim("/imgs · /noimg · /paste · /nopaste")}\n\n`,
     });
   } else {
@@ -835,6 +864,7 @@ async function chat(argv: string[]): Promise<void> {
         `     ${c.dim(`type to broadcast to #${ROOM} · @name starts a sticky DM · !cmd runs in its folder · #channel · /who · /ps · /quit`)}\n` +
         `     ${c.dim("drag an image in for [Image #1] · paste multiple lines for [Pasted text #1]")}\n` +
         `     ${c.dim("alt+enter (or end a line with \\\\) for a new line, not a send")}\n` +
+        `     ${c.dim("on an empty line: → your tasks   ↓ picks an agent")}\n` +
         `     ${c.dim("/imgs · /noimg · /paste · /nopaste")}\n\n`,
     });
   }
@@ -875,6 +905,8 @@ async function chat(argv: string[]): Promise<void> {
     }
     if (meta.kind === "dm") {
       const from = m.from.name;
+      noteSaid(from, "in", { text, ts: m.ts });
+      if (view === "tasks" && curName?.toLowerCase() === from.toLowerCase()) refreshBeadsSoon();
       // If this is the reply we were waiting on, clear the wait and note the round-trip time.
       let took = "";
       let stillPending = 0;
@@ -956,6 +988,8 @@ async function chat(argv: string[]): Promise<void> {
         // only" (reported 2026-08-20). That is not merely untidy: those lines can carry anything you
         // sent elsewhere, including secrets meant for one agent, into a view you opened for another.
         if (!passesFilter(filter, { kind: msg.channel ? "channel" : "dm", from: toName, channel: msg.channel })) return;
+        if (toName) noteSaid(toName, "out", { text: body, ts: msg.ts });
+        if (view === "tasks") paintTasks();
         const label = msg.channel
           ? c.dim(`#${msg.channel}`)
           : toName ? agentTag(toName) : c.cyan(msg.to ? msg.to.slice(0, 8) : "?");
@@ -973,6 +1007,7 @@ async function chat(argv: string[]): Promise<void> {
     // A restarted agent comes back under a NEW id. Follow it, or every later line goes to the dead id —
     // the send still succeeds (the DM stream stores it) and nobody ever reads it (benmore-intern, 2026-09-16).
     if (ev.type !== "offline" && curName && card.name === curName && card.id !== curId) curId = card.id;
+    if (view === "tasks" && card.name === curName) refreshBeadsSoon();
     if (!presenceVisible(filter, card.name)) return;
     // Track the status on join/offline too, so the next flip into working is judged against the truth.
     const picked = awaiting.presence(card.name, ev.type === "offline" ? "offline" : ev.presence.status);
@@ -1259,10 +1294,10 @@ async function chat(argv: string[]): Promise<void> {
     drawPicker();
   };
 
-  // ── views: logs · logs + chat · chat (src/chat-views.ts) ────────────────────────────────────────
+  // ── views: logs · chat · tasks (src/chat-views.ts, src/chat-tasks.ts) ───────────────────────────
   /** Capture the target's new transcript blocks into the history (printing them if the view shows
    *  logs). Runs every second whenever there is a target, in EVERY view — the history needs the blocks
-   *  in arrival order for a later switch into `logs + chat` to interleave them truthfully. */
+   *  in arrival order for a later switch into `logs` to reprint them truthfully. */
   const pumpLogs = (): void => {
     if (!rl || closing) return;
     // A re-point (the target changed) swaps which agent's logs are visible, so what's on screen in a
@@ -1277,20 +1312,139 @@ async function chat(argv: string[]): Promise<void> {
 
   function setView(next: ChatView): void {
     if (next === view) return;
+    const leaving = view;
     view = next;
+    if (leaving === "tasks") {
+      clearInterval(tasksTimer);
+      tasksTimer = undefined;
+      tasksPainted = "";
+    }
     if (rl && !closing) follower.pump(curName); // capture anything pending first — and ONE redraw, not two
+    if (next === "tasks") enterTasks();
     redraw();
   }
 
   /** ←/→ on an empty line. At an end of the strip it does nothing — the hint already shows no arrow
-   *  that way. With no target there is no transcript to follow, so it says why instead. */
+   *  that way. With no target there is no transcript to follow, so `logs` says why instead. */
   function switchView(dir: -1 | 1): void {
-    if (!curName) {
-      emit(c.dim("(views follow one agent — pick one with ↓ first)"));
+    const next = stepView(view, dir);
+    if (!curName && viewNeedsTarget(next)) {
+      emit(c.dim("(the logs follow one agent — pick one with ↓ first)"));
       return;
     }
-    setView(stepView(view, dir));
+    setView(next);
   }
+
+  // ── the tasks view ──────────────────────────────────────────────────────────────────────────────
+  /** Whose beads the view lists: the target, or — with none — the operator. */
+  const tasksFor = (): string => curName ?? operatorName();
+  const BEADS_EVERY_MS = 12_000;
+  let tasksTimer: NodeJS.Timeout | undefined;
+  let beadsInFlight = false;
+  let beadsReadAt = 0;
+  /** Conversations already read from the DM stream this session (once — live traffic keeps it fresh). */
+  let convRead: Promise<FeedEntry[]> | undefined;
+
+  /** Read the beads for whoever the view is on. One read at a time; the result is dropped if the view
+   *  moved to someone else meanwhile. A failure is SHOWN — never rendered as "no beads". */
+  async function refreshBeads(): Promise<void> {
+    if (view !== "tasks" || beadsInFlight || closing) return;
+    const who = tasksFor();
+    beadsInFlight = true;
+    beadsReadAt = Date.now();
+    try {
+      const tasks = await listAssigned(who, Date.now() - CLOSED_RECENT_MS);
+      tasksBeads = { for: who, tasks };
+      tasksError = undefined;
+    } catch (e) {
+      tasksError = { for: who, message: (e as Error).message };
+    } finally {
+      beadsInFlight = false;
+    }
+    if (tasksFor() !== who) return void refreshBeads(); // the target moved mid-read
+    paintTasks();
+  }
+  /** Mesh activity from the agent: re-read soon, but never more than once per few seconds. */
+  function refreshBeadsSoon(): void {
+    if (view !== "tasks") return;
+    const wait = Math.max(0, beadsReadAt + 3000 - Date.now());
+    setTimeout(() => void refreshBeads(), wait).unref();
+  }
+
+  /** Seed the last message each way from the DM stream (once per session), then paint. */
+  function seedConversation(): void {
+    if (convRead) return;
+    convRead = readConversation(ep, { withSent: true });
+    convRead.then(
+      (conv) => {
+        const names = new Set<string>();
+        for (const e of conv) names.add((e.dir === "out" ? e.to : e.from) ?? "");
+        for (const n of names) {
+          if (!n || n === HUMAN_PEER) continue;
+          const { lastIn, lastOut } = lastExchange(conv, n);
+          if (lastIn) noteSaid(n, "in", lastIn);
+          if (lastOut) noteSaid(n, "out", lastOut);
+        }
+        paintTasks();
+      },
+      (e: Error) => {
+        tasksNotice = `! couldn't read the conversation history: ${e.message}`;
+        paintTasks();
+      },
+    );
+  }
+
+  function enterTasks(): void {
+    tasksPainted = "";
+    seedConversation();
+    void refreshBeads();
+    tasksTimer = setInterval(() => {
+      void refreshBeads();
+      paintTasks(); // the ages move even when nothing else does
+    }, BEADS_EVERY_MS);
+    tasksTimer.unref();
+  }
+
+  /**
+   * Paint the tasks view in place: cursor home, each row over the old one (clear to its end), clear
+   * whatever is below, then the prompt. Skipped when the text is what's already on screen (`force`
+   * after anything else wrote to the terminal — a submitted line, a resize, a view switch). The first
+   * paint after a switch clears the scrollback too, like every other view switch.
+   */
+  function paintTasks(force = false): void {
+    if (view !== "tasks" || !rl || closing || !process.stdout.isTTY || picking) return;
+    const who = tasksFor();
+    if (tasksBeads?.for !== who && tasksError?.for !== who) void refreshBeads(); // the target moved
+    const said = curName ? lastSaid.get(curName.toLowerCase()) : undefined;
+    const now = Date.now();
+    const rows = renderTasksView(
+      {
+        ...(curName ? { agent: curName } : {}),
+        operator: operatorName(),
+        ...(tasksBeads?.for === who ? { beads: agentBeads(tasksBeads.tasks, who, now) } : {}),
+        ...(tasksError?.for === who ? { beadsError: tasksError.message } : {}),
+        ...(said?.in ? { lastIn: said.in } : {}),
+        ...(said?.out ? { lastOut: said.out } : {}),
+        ...(tasksNotice ? { notice: tasksNotice } : {}),
+      },
+      {
+        width: (process.stdout.columns || 80) - 1,
+        // Leave the prompt row and the hint row below the panel (and one spare for a wrapped input).
+        height: Math.max(3, (process.stdout.rows || 24) - 3),
+        now,
+        style: { ...c, tag: (n) => agentTag(n), md: (t, w) => renderMarkdown(t, { width: w }) },
+      },
+    );
+    const text = rows.map((r) => `${r}\x1b[K`).join("\n");
+    if (!force && tasksPainted && text === tasksPainted) return;
+    const first = !tasksPainted;
+    tasksPainted = text;
+    process.stdout.write((first ? CLEAR_ALL : "\x1b[H") + text + "\n\x1b[J");
+    rl.prompt(true);
+  }
+  process.stdout.on("resize", () => {
+    if (view === "tasks") paintTasks(true);
+  });
 
   if (process.stdin.isTTY) {
     process.stdout.write(ENABLE_BRACKETED_PASTE);
@@ -1753,6 +1907,10 @@ async function chat(argv: string[]): Promise<void> {
       emit(c.red("! " + (e as Error).message));
     }
     if (!closing) rl!.prompt();
+  });
+  // readline echoed the submitted line below the tasks panel; repaint over it whatever the send does.
+  rl.on("line", () => {
+    if (view === "tasks") setImmediate(() => paintTasks(true));
   });
   rl.on("close", () => void shutdown());
   process.on("SIGINT", () => void shutdown());

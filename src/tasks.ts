@@ -275,6 +275,20 @@ export async function listTasks(): Promise<Task[]> {
   return tasks;
 }
 
+/**
+ * One assignee's beads for `paw chat`'s tasks view: their open work plus what they closed since
+ * `closedSince`. Two bd reads on the READ lane (never the write chain), uncached — the view polls this
+ * itself every ~12s, only while it is on screen, and a stale list there would be the one thing it is
+ * for getting wrong. No blocker/PR enrichment: one line per bead doesn't show them.
+ */
+export async function listAssigned(assignee: string, closedSince: number): Promise<Task[]> {
+  const [open, closed] = await Promise.all([
+    bdRead(["list", "--json", "-n", "0", "--assignee", assignee]),
+    bdRead(["list", "--json", "-n", "0", "--status", "closed", "--assignee", assignee, "--closed-after", new Date(closedSince).toISOString()]),
+  ]);
+  return [...parseTasks(open), ...parseTasks(closed)];
+}
+
 /** File a task. Returns the fresh list so the caller renders what the operator just did — and drops
  *  the cache, because "I created one and the list doesn't show it" reads as a lost write. */
 export async function createTask(title: string, description?: string): Promise<Task[]> {
