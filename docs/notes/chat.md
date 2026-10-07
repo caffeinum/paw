@@ -19,7 +19,16 @@ Moved verbatim from CLAUDE.md (2026-10-02 split). Index: [CLAUDE.md](../../CLAUD
   the live roster and **respawns** a known-but-offline agent (`folderForName` → resume). After a DM it
   prints `⏳ waiting for <name>…`, then `✓ <name> picked it up` when that peer's presence flips to
   `working` (an explicit receipt, since the reply can be minutes away), then stamps the reply's
-  round-trip time; sent lines aren't re-echoed
+  round-trip time. **Awaiting is tracked PER SENT MESSAGE** (`src/chat-awaiting.ts` `AwaitTracker`,
+  2026-10-06): a single slot was overwritten by a 2nd line sent mid-turn, so the reply to line 1 was
+  timed from line 2 and line 2's later turn printed a bare `• x working` — it looked lost when it was
+  only queued. Now a send to an agent whose roster presence is already `working` prints `⏳ queued —
+  <agent> is mid-turn`; "picked it up" fires only on a TRANSITION into `working` (an activity update
+  inside the turn that was running when you sent claims nothing) and covers every unpicked message sent
+  before it (`picked up your N messages`); a reply answers the message its `replyTo` names when that is
+  one of ours, else the OLDEST pending one, timed from that message's send, then `⏳ still waiting for
+  <agent> on N more message(s)` if any remain. A queued line folded into the CURRENT turn gets no
+  receipt (paw can't see that) — just its reply. Sent lines aren't re-echoed
   (readline shows the typed line); redelivered DMs get an ` (Nh ago)` age tag. Registers `chat`.
   **`--fresh` is the birth verb** (the former `paw create`, folded in 2026-06-30): `paw chat --fresh
   [folder]` mints a BRAND-NEW agent then drops into the REPL. The folder defaults to `.` (the current
