@@ -22,24 +22,27 @@ allowBuilds:
 # patchedDependencies — TEMPORARY. The cotal hub (src/hub.ts, PAW_COTAL_HUB=1) needs
 #   `serveClaudeSession` from `@cotal-ai/connector-claude-code/mcp`, upstreamed in
 #   https://github.com/Cotal-AI/Cotal/pull/2401 (still open). The patch is that PR hand-applied to
-#   the published 0.66.1 dist (dist/mcp.cjs + mcp.d.ts + the `./mcp` subpath export); `node
-#   dist/mcp.cjs` behaves as published, incl. 0.66.1's unmanaged `cotal_how_to_join` server and its
-#   stdin-EOF shutdown. Re-key it on every cotal bump. DELETE this entry and patches/ when a cotal
-#   release carrying #2401 lands.
+#   the published 0.72.1 dist (dist/mcp.cjs + mcp.d.ts + the `./mcp` subpath export); `node
+#   dist/mcp.cjs` behaves as published, incl. 0.72.1's unmanaged `cotal_how_to_join` server and its
+#   stdin-EOF shutdown. Since 0.72.1 it also carries the #2401 review fixes: an `import` condition
+#   on `./mcp`, a realpath entry check beside `require.main`, the control env read BEFORE the agent
+#   joins (no leaked agent on a throw), and close() closing the AG-UI holder (bounded 5s). Re-key it
+#   on every cotal bump. DELETE this entry and patches/ when a cotal release carrying #2401 lands.
 verifyDepsBeforeRun: false
-# minimumReleaseAgeExclude — the operator explicitly asked for cotal 0.66.1 on 2026-10-05, inside
+# minimumReleaseAgeExclude — the operator explicitly asked for cotal 0.72.1 on 2026-10-07, inside
 #   the global 7-day minimum-release-age window. Exempted by EXACT version only (every other package
-#   and any other @cotal-ai version still waits out the gate). Safe to delete once 0.66.1 is >7 days old.
+#   and any other @cotal-ai version still waits out the gate). Safe to delete after 2026-10-14
+#   (0.72.1 published 2026-10-07T21:27Z).
 minimumReleaseAgeExclude:
-  - '@cotal-ai/cli@0.66.1'
-  - '@cotal-ai/cmux@0.66.1'
-  - '@cotal-ai/connector-claude-code@0.66.1'
-  - '@cotal-ai/connector-codex@0.66.1'
-  - '@cotal-ai/connector-opencode@0.66.1'
-  - '@cotal-ai/core@0.66.1'
-  - '@cotal-ai/manager@0.66.1'
-  - '@cotal-ai/seat@0.66.1'
-  - '@cotal-ai/tmux@0.66.1'
-  - '@cotal-ai/workspace@0.66.1'
+  - '@cotal-ai/cli@0.72.1'
+  - '@cotal-ai/cmux@0.72.1'
+  - '@cotal-ai/connector-claude-code@0.72.1'
+  - '@cotal-ai/connector-codex@0.72.1'
+  - '@cotal-ai/connector-opencode@0.72.1'
+  - '@cotal-ai/core@0.72.1'
+  - '@cotal-ai/manager@0.72.1'
+  - '@cotal-ai/seat@0.72.1'
+  - '@cotal-ai/tmux@0.72.1'
+  - '@cotal-ai/workspace@0.72.1'
 patchedDependencies:
-  '@cotal-ai/connector-claude-code@0.66.1': patches/@cotal-ai__connector-claude-code@0.66.1.patch
+  '@cotal-ai/connector-claude-code@0.72.1': patches/@cotal-ai__connector-claude-code@0.72.1.patch

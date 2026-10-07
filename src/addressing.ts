@@ -18,6 +18,7 @@ import {
   mintCreds,
   mintLifecycleUid,
   newIdentity,
+  parseShareSelection,
   principalKey,
 } from "@cotal-ai/core";
 // auth-path helpers moved to @cotal-ai/workspace in cotal v0.8 (#120).
@@ -834,11 +835,12 @@ export async function ensureAgentSpawned(
     // (its persona's `model:` names a codex/grok model; an explicit --model still applies).
     const model = kit ? opts.model?.trim() || undefined : resolveModel(opts.model);
     if (model) args.model = model;
-    // Which of the operator's MCP servers this agent gets (`paw mcp share`). Absent ⇒ the flag isn't
-    // sent ⇒ cotal shares every declared server, which is what `paw mcp add` promises. Sent as the
-    // string the manager's `parseShareSelection` already understands, so paw invents no second grammar.
+    // Which of the operator's MCP servers this agent gets (`paw mcp share`). Absent ⇒ not sent ⇒ cotal
+    // shares every declared server, which is what `paw mcp add` promises. The persona keeps the flag
+    // grammar (`none` / `a,b`); since cotal 0.69 the spawn op takes the parsed LIST (a string is refused
+    // "shareTools: expected an array of strings"), so it goes through cotal's own parser — no second grammar.
     const share = readShareTools(config);
-    if (share) args.shareTools = share;
+    if (share) args.shareTools = parseShareSelection(share);
     // Which CONNECTOR runs this agent (`agent:` in the persona; absent = the default claude). Sent as
     // the spawn op's `agent` so a codex/opencode agent respawns as ITSELF on every wake/revival path.
     if (agentType) args.agent = agentType;
@@ -882,8 +884,9 @@ export async function ensureAgentSpawned(
     // The reply is the ACCEPTANCE, not the outcome (see ManagerControl.spawn): the agent is allocated,
     // not yet alive. Under the old blocking `start` a claude that never came up surfaced HERE as a
     // failed reply; now it would surface as a caller timing out somewhere later with no idea why. So
-    // paw does the readiness wait itself — which it must anyway, because this is the window where the
-    // tmux dev-channels prompt appears and paw's Enter nudge is the only thing that clears it.
+    // paw does the readiness wait itself — which it must anyway, because this is the window where a
+    // tmux trust dialog (an erased ~/.claude.json entry) appears and only paw answers it. The
+    // dev-channels gate is cotal's to answer since 0.71 (answerStartupPrompt).
     // kit has no TUI: no trust dialog, no dev-channels gate, nothing on a pane to answer.
     const watch = kit ? { poll: () => {}, cause: () => "" } : startupWatch(opts.space, opts.name, cwd);
     if (!(await waitForMeshLive(ctl, opts.name, SPAWN_READY_MS, watch.poll))) {
@@ -1005,11 +1008,27 @@ export function isNameHeldRefusal(error: string | undefined): boolean {
   return !!error && /hard-pinned/.test(error) && /already held by a live incarnation/.test(error);
 }
 
+/** cotal ≥0.68's claude connector refusal for a seat folder its Claude home does not trust. */
+export function isUntrustedCwdRefusal(error: string | undefined): boolean {
+  return !!error && /Claude home does not trust/.test(error);
+}
+
 /** Spawn with a hard-pinned name, retrying while a just-retired incarnation's presence lingers. */
 async function spawnPinned(ctl: ManagerControl, args: Record<string, unknown>, name: string) {
   const deadline = Date.now() + SESSION_RELEASE_MS;
+  let retrusted = false;
   for (;;) {
     const reply = await ctl.spawn(args, 60_000); // a claude cold-start can take a while
+    // cotal ≥0.68 refuses a claude seat whose folder ~/.claude.json doesn't trust, BEFORE launch. paw
+    // pre-trusted it a moment ago, but a booting claude can rewrite the file from a stale copy and erase
+    // the entry (the 2026-10-03 race). Re-write it once and ask again; a second refusal is real.
+    const folder = typeof args.cwd === "string" ? pawTrustedFolder(args.cwd) : undefined;
+    if (!reply.ok && !retrusted && folder && isUntrustedCwdRefusal(reply.error)) {
+      retrusted = true;
+      console.error(`paw: "${name}": the manager found ${folder} untrusted (~/.claude.json lost paw's entry) — re-wrote it, retrying once`);
+      pretrustFolder(folder);
+      continue;
+    }
     if (reply.ok || !isNameHeldRefusal(reply.error) || Date.now() >= deadline) {
       if (!reply.ok && isNameHeldRefusal(reply.error)) {
         return { ...reply, error: `"${name}" is still held on the mesh ${Math.round(SESSION_RELEASE_MS / 1000)}s after it should have stopped — \`paw status\` / \`paw cotal ps\` for who holds it (${reply.error})` };
@@ -1127,8 +1146,8 @@ export async function waitForMeshLive(
  *     entry (3 of 5 isolated runs, 2026-10-03): the new claude then met its trust dialog. So the
  *     entry is re-checked every poll and re-written when it's gone — that saves every boot that
  *     hasn't READ the file yet, under pty too, where nothing can type into the terminal.
- * (b) PROMPTS, tmux only. The window is read before anything is typed (answerStartupPrompt): Enter
- *     only at the dev-channels gate; at the trust dialog only "Yes, I trust this folder", and only
+ * (b) PROMPTS, tmux only. The window is read before anything is typed (answerStartupPrompt): never
+ *     at the dev-channels gate (cotal ≥0.71's runtime owns it); at the trust dialog only "Yes, I trust this folder", and only
  *     for a folder paw's own policy trusts (pawTrustedFolder — the confineAndTrustCwd rule), after
  *     re-writing the entry; anything else, nothing. The old blind Enter picked the dialog's default
  *     "No, exit" and the agent quit.
@@ -1185,6 +1204,7 @@ export function startupWatch(
       if (erased) bits.push(`its ~/.claude.json trust entry was erased ${erased}× during the boot (a concurrent claude rewrite; paw re-wrote it)`);
       if (last?.kind === "trust" && !folder) bits.push(`it is at claude's folder-trust dialog and paw does not pre-trust ${cwd} (outside PAW_ROOT)`);
       else if (last?.kind === "trust") bits.push(`it was still at claude's folder-trust dialog`);
+      else if (last?.kind === "dev-channels") bits.push(`it was still at claude's dev-channels gate, which cotal's runtime answers (and ends the seat if it does not show within 15s — see the manager log)`);
       else if (last?.kind === "other" && last.prompt) bits.push(`it is waiting at an unrecognised prompt: «${tail(lastText)}»`);
       return bits.length ? ` — ${bits.join("; ")}` : "";
     },
