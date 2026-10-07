@@ -87,6 +87,7 @@ import { ensure, resolveSpace, reexecUnderNode } from "./lifecycle.ts";
 import { agentTranscriptFile, blocksForAgent, chooseTranscriptId } from "./log.ts";
 import { meshAgentSession } from "./named.ts";
 import { HUMAN_PEER } from "./names.ts";
+import { cachedLedger, ledgerName } from "./peer-ledger.ts";
 import { personaTranscriptRoots, readAgentType, readResumeId } from "./session.ts";
 import { searchEntries, searchTranscript, snippet, type MessageHit, type TranscriptHit } from "./search.ts";
 import { collectStatus, type AgentStatus } from "./status.ts";
@@ -344,7 +345,7 @@ export class Conversation {
   }
 
   private nameFor(id: string): string {
-    return this.names.get(id) ?? this.ep.getRoster().find((p) => p.card.id === id)?.card.name ?? id;
+    return this.names.get(id) ?? this.ep.getRoster().find((p) => p.card.id === id)?.card.name ?? ledgerName(cachedLedger(this.ep.space), id) ?? id;
   }
 }
 

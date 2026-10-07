@@ -19,6 +19,7 @@ import { assertUnambiguousTarget, canonicalDir, folderForName, lookupFolderName,
 import { claudeProjectDir, latestSession } from "./adopt.ts";
 import { CodexParser, findCodexSessionFile, resolveCodexRoots } from "./codex-log.ts";
 import { meshAgentSession } from "./named.ts";
+import { labelPeer } from "./peer-ledger.ts";
 import { latestOpencodeSession, opencodeBlocks, resolveOpencodeDb } from "./opencode-log.ts";
 import { claudeProjectsRoot, personaTranscriptRoots, readAgentType, readResumeId, transcriptPath, writesClaudeTranscript } from "./session.ts";
 import { resolveSpace } from "./lifecycle.ts";
@@ -169,10 +170,20 @@ export type AgentLog = {
 export function openAgentLog(space: string, name: string, folder: string, bytes = TAIL_BYTES, sessionId?: string): AgentLog {
   const persona = personaFilePath(space, name);
   const agentType = existsSync(persona) ? readAgentType(persona) : undefined;
-  if (writesClaudeTranscript(agentType)) return openClaudeLog(space, name, folder, bytes, sessionId);
-  if (agentType === "opencode") return openOpencodeLog(space, name, folder);
-  if (agentType === "codex") return openCodexLog(space, name, folder, bytes);
+  if (writesClaudeTranscript(agentType)) return namedReplies(space, openClaudeLog(space, name, folder, bytes, sessionId));
+  if (agentType === "opencode") return namedReplies(space, openOpencodeLog(space, name, folder));
+  if (agentType === "codex") return namedReplies(space, openCodexLog(space, name, folder, bytes));
   throw new Error(`paw: "${name}" is a ${agentType} agent — paw log does not read ${agentType} sessions yet.`);
+}
+
+/** A `↩` reply's recipient as a name: an agent that DM'd a raw id (often a dead instance's, copied from
+ *  an old message) renders as `evals (old instance)` via the peer ledger; an unknown id stays the id. */
+export function nameReplyTargets(space: string, blocks: Block[]): Block[] {
+  return blocks.map((b) => (b.kind === "reply" ? { ...b, to: labelPeer(space, b.to) } : b));
+}
+
+function namedReplies(space: string, log: AgentLog): AgentLog {
+  return { ...log, blocks: (tail) => nameReplyTargets(space, log.blocks(tail)), pull: () => nameReplyTargets(space, log.pull()) };
 }
 
 /** One-shot blocks for the web trace (and tests). Same dispatch as `paw log`. */

@@ -14,6 +14,7 @@ import { resolveSpace } from "../lifecycle.ts";
 import { HUMAN_PEER } from "../names.ts";
 import { messageText as textOf } from "../feed.ts";
 import { pawServer } from "../server.ts";
+import { cachedLedger, peerLabel } from "../peer-ledger.ts";
 
 /** How deep to read a backlog. cotal's channelHistory/dmHistory return the OLDEST N, so to surface
  *  the NEWEST we fetch up to this many and take the tail (same cap + reason as src/inbox.ts). */
@@ -124,6 +125,9 @@ async function history(argv: string[]): Promise<void> {
     }
     const me = ep.card.id;
     const names = idNames(all);
+    // An id that never SENT (a restarted agent's dead incarnation) is still named by paw's peer ledger.
+    const ledger = cachedLedger(space);
+    for (const id of Object.keys(ledger)) if (!names.has(id)) names.set(id, peerLabel(ledger, id));
     names.set(me, "you");
     const more = all.length > shown.length ? c.dim(` (of ${all.length}+)`) : "";
     console.log(c.dim(`# ${channel ? `#${channel}` : "DMs"} · last ${shown.length} message${shown.length === 1 ? "" : "s"}${more} · oldest first`));

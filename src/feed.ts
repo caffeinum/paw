@@ -15,6 +15,7 @@
 import { CotalEndpoint, type CotalMessage } from "@cotal-ai/core";
 import { controlCreds, stableHumanId } from "./addressing.ts";
 import { HUMAN_PEER } from "./names.ts";
+import { cachedLedger } from "./peer-ledger.ts";
 
 /** How deep to read a backlog. cotal's dmHistory returns the OLDEST N, so to surface the NEWEST we
  *  fetch up to this many and take the tail. Bounds the read on a busy mesh; a history deeper than this
@@ -100,7 +101,12 @@ export async function readConversation(ep: CotalEndpoint, opts: { withSent?: boo
       .sort((a, b) => a.ts - b.ts)
       .map((m): Entry => ({ from: m.from.name, text: messageText(m), ts: m.ts }));
   }
+  // The stream's own senders first, then paw's peer ledger (src/peer-ledger.ts), which also knows ids
+  // that only ever RECEIVED — a restarted agent's previous incarnation, say. The plain name, no
+  // "(old instance)": `to` is the conversation key every surface groups and filters on.
+  const ledger = cachedLedger(ep.space);
   const nameById = new Map<string, string>();
+  for (const [id, e] of Object.entries(ledger)) nameById.set(id, e.name);
   for (const m of all) if (m.from.id && m.from.name) nameById.set(m.from.id, m.from.name);
   return all
     .filter((m) => m.to === me || m.from.id === me)

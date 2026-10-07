@@ -3,7 +3,7 @@ import { registry, type Connector, type LaunchOpts, type LaunchSpec } from "@cot
 import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { HUMAN_PEER } from "./names.ts";
-import { BACKGROUND_BASH_BRIEF, CHANNELS_BRIEF, FILES_BRIEF, OPERATOR_REQUESTS_BRIEF, TASKS_BRIEF, UNATTENDED_BRIEF, WAKE_BRIEF } from "./brief.ts";
+import { ADDRESSING_BRIEF, BACKGROUND_BASH_BRIEF, CHANNELS_BRIEF, FILES_BRIEF, OPERATOR_REQUESTS_BRIEF, TASKS_BRIEF, UNATTENDED_BRIEF, WAKE_BRIEF } from "./brief.ts";
 import { beadsDir } from "./beads-dir.ts";
 import { voiceLineFor } from "./personality.ts";
 import { readClaudeArgs, readCwd, readHeadless, readResumeId, transcriptExists } from "./session.ts";
@@ -57,6 +57,7 @@ export function meshBrief(name: string, voice?: string): string {
     `then cotal_dm your reply back to that exact sender (a human operator is the peer "${HUMAN_PEER}",`,
     `e.g. cotal_dm("${HUMAN_PEER}", …); a teammate is their agent name). Ending your turn without`,
     `cotal_dm means your reply is silently lost — reading the inbox is NOT replying.`,
+    ...ADDRESSING_BRIEF,
     ...CHANNELS_BRIEF,
     ...UNATTENDED_BRIEF,
     ...FILES_BRIEF,
