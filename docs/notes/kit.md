@@ -61,7 +61,20 @@ resume: <uuid>         # minted at birth, as for every paw agent
   (`writesClaudeTranscript`). kit puts each message INTO its prompt (`<channel source="cotal" …
   msg_id="…">body</channel>`, several coalesced per turn), so the parser shows each as `📨 dm from X`
   plus the body on the `│` rail (claude's own wake has no body — unchanged).
-- `paw open/attach <name>`: says it runs on kit (headless, no TUI) and points at log/dm/stop.
+- `paw open/attach <name>` on a tty: runs kit's own live view, `kit <name> --space <s> --server <url>
+  -- <this paw> dm <name> --space <s> -` (`kit @<name>` for a name that is a kit subcommand: run,
+  once, auth, dump, help). The view shows header (harness · provider · model, folder, session,
+  context, process), the latest turn's messages, the current tool + result / live bash output, the
+  generation status and a `> ` prompt; Enter runs that `paw dm` with the text on stdin, so messages
+  arrive from "you"; Esc/Ctrl-C leave, the agent keeps running. Status comes from kit's
+  `<transcript>.kit.status` (phase, retries) when the kit binary writes one, else from presence +
+  transcript timing. Off a tty, or when the binary at `kitBinPath()` predates the view (its
+  `--help` has no `kit <name>`), it falls back to the summary + `paw log -f`. Details: kit's README
+  "The view". Test: `scripts/lean/kit/e2e-kit-tui.ts` (isolated mesh, node-pty + @xterm/headless
+  from `$XTERM_DIR`; green 2026-10-06: header/sections/prompt, a typed `FAKE:` turn shows the
+  running bash with live output then `↩ you`, Alt+Enter two-line prompt, Esc leaves, agent stays).
+  Known gap (verified: `kit run` exits "stream DM_<space> … not found"): a kit agent can't join a fresh space until some TS endpoint has created the
+  `DM_<space>`/`CHAT_<space>` streams (cotal-go refuses to invent them) — the e2e's prober does.
 - RAM, measured in the e2e: 7 MB footprint / 15 MB RSS at boot, 12–13 MB / 21 MB after real codex
   turns (claude TUI: 190–250 MB; headless claude: 150–185 MB).
 
