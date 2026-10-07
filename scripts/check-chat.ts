@@ -350,6 +350,45 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
   assert(!noAgentMessage("/tmp/q", "q", ["queue", "queue-ea"]).includes("did you mean"), "no agent: a 1-2 char token suggests nothing (it would match everything)");
 }
 
+// AwaitTracker: one pending entry per sent message (the 2026-10-06 "message 2 looked lost" bug).
+{
+  const { AwaitTracker } = await import("../src/chat-awaiting.ts");
+
+  // The reported sequence: msg1 to an idle agent, it starts working, msg2 sent mid-turn.
+  const t = new AwaitTracker();
+  assert(!t.sent("kit", "m1", 1000, "idle").queued, "send to an idle agent is not queued");
+  assert(eq(t.presence("kit", "working").map((p) => p.id), ["m1"]), "idle→working picks up the message sent before it");
+  assert(eq(t.presence("Kit", "working"), []), "an activity update inside the same turn picks nothing (case-insensitive name)");
+  assert(t.sent("kit", "m2", 5000, "working").queued, "send to a working agent is queued");
+  assert(t.pendingFor("kit").length === 2, "both messages pending — the second did not overwrite the first");
+  assert(eq(t.presence("kit", "working"), []), "the CURRENT turn's next update does not claim the queued message");
+  const r1 = t.reply("kit", undefined);
+  assert(r1.answered?.id === "m1" && r1.answered.at === 1000, "a reply with no replyTo answers the OLDEST, timed from its own send");
+  assert(r1.remaining === 1, "one message still pending after the first reply");
+  assert(eq(t.presence("kit", "idle"), []), "going idle picks nothing");
+  assert(eq(t.presence("kit", "working").map((p) => p.id), ["m2"]), "the next turn picks up the queued message");
+  const r2 = t.reply("kit", undefined);
+  assert(r2.answered?.id === "m2" && r2.answered.at === 5000 && r2.remaining === 0, "second reply answers m2, timed from m2's send");
+  assert(t.reply("kit", undefined).answered === undefined, "an unsolicited DM answers nothing");
+}
+{
+  const { AwaitTracker } = await import("../src/chat-awaiting.ts");
+  const t = new AwaitTracker();
+  t.sent("a", "x1", 1, "idle");
+  t.sent("a", "x2", 2, "idle");
+  t.sent("b", "y1", 3, "idle");
+  const r = t.reply("a", "x2");
+  assert(r.answered?.id === "x2" && r.remaining === 1, "replyTo naming one of ours answers THAT message, not the oldest");
+  assert(t.reply("a", "not-ours").answered?.id === "x1", "an unknown replyTo falls back to the oldest");
+  assert(eq(t.presence("b", "working").map((p) => p.id), ["y1"]), "pending is per agent — a's replies never touch b's");
+  t.sent("c", "z1", 1, "working");
+  t.sent("c", "z2", 2, "working");
+  assert(eq(t.presence("c", "waiting"), []) && eq(t.presence("c", "working").map((p) => p.id), ["z1", "z2"]), "a new turn picks up every queued message, oldest first");
+  t.sent("d", "w1", 1, "idle");
+  t.presence("d", "offline");
+  assert(eq(t.presence("d", "working").map((p) => p.id), ["w1"]), "offline→working (a restart) also starts a turn");
+}
+
 rmSync(process.env.PAW_HOME as string, { recursive: true, force: true });
 
 if (failures > 0) {

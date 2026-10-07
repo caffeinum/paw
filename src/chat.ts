@@ -49,6 +49,7 @@ import { HOST_RE } from "./url.ts";
 import { bashMessage, parseBang, runBash } from "./bash.ts";
 import { withManagerControl } from "./control.ts";
 import { advanceCursor } from "./cursor.ts";
+import { AwaitTracker } from "./chat-awaiting.ts";
 import { arrowRun, CLEAR_ALL, displayWidth, fitWidth, entryVisible, hintFor, History, LogFollower, navKey, Painter, type Entry, pickerWindow, showsChat, showsLogs, stepView, VIEW_LABEL, type ChatView } from "./chat-views.ts";
 import { attachesAbove, openAgentLog, renderBlock } from "./log.ts";
 import {
@@ -764,13 +765,16 @@ async function chat(argv: string[]): Promise<void> {
     return composed;
   };
 
-  // After you DM someone, note who you're awaiting a reply from + when. Gives an immediate "sent,
-  // waiting…" confirmation (the typed line alone doesn't prove it went out) and lets the reply be
-  // stamped with how long it took — so a long-running agent doesn't feel like silence.
-  let awaiting: { name: string; at: number; picked: boolean } | undefined;
-  const markWaiting = (to: string): void => {
-    awaiting = { name: to, at: Date.now(), picked: false };
-    emit(c.dim(`⏳ waiting for ${to}…`), "you");
+  // After you DM someone, note what you're awaiting — one entry PER MESSAGE (chat-awaiting.ts). Gives
+  // an immediate "sent, waiting…" confirmation (the typed line alone doesn't prove it went out), says
+  // so when the agent is mid-turn (the line is queued, not lost), and lets each reply be stamped with
+  // how long ITS message took — so a long-running agent doesn't feel like silence.
+  const awaiting = new AwaitTracker();
+  const markWaiting = (to: string, m: { id?: string }): void => {
+    if (!m?.id) throw new Error(`send to ${to} returned no message id — cannot track the reply`);
+    const { queued } = awaiting.sent(to, m.id, Date.now(), findPeer(to)?.status);
+    if (queued) emit(c.dim(`⏳ queued — ${to} is mid-turn`), "you");
+    else emit(c.dim(`⏳ waiting for ${to}…`), "you");
   };
 
   // Banner.
@@ -850,9 +854,13 @@ async function chat(argv: string[]): Promise<void> {
       const from = m.from.name;
       // If this is the reply we were waiting on, clear the wait and note the round-trip time.
       let took = "";
-      if (awaiting && !meta.historical && from.toLowerCase() === awaiting.name.toLowerCase()) {
-        took = c.dim(` (${Math.max(1, Math.round((Date.now() - awaiting.at) / 1000))}s)`);
-        awaiting = undefined;
+      let stillPending = 0;
+      if (!meta.historical) {
+        const { answered, remaining } = awaiting.reply(from, m.replyTo);
+        if (answered) {
+          took = c.dim(` (${Math.max(1, Math.round((Date.now() - answered.at) / 1000))}s)`);
+          stillPending = remaining;
+        }
       }
       // The transcript is written BEFORE the DM goes out (the tool call is recorded, then it runs), so
       // the turn that produced this reply is already on disk. Capture it first, or the reply would land
@@ -862,6 +870,7 @@ async function chat(argv: string[]): Promise<void> {
       // target's as the transcript's `↩ you` block instead (entryVisible).
       if (curName && from.toLowerCase() === curName.toLowerCase()) emit(said(`${tag}${c.cyan(from)}${age}${took}${c.dim(":")}`, text), "peer", false, from);
       else emit(said(`${tag}${c.magenta("(DM)")} ${c.bold(from)}${age}${took}${c.dim(":")}`, text), "peer", false, from);
+      if (stillPending) emit(c.dim(`⏳ still waiting for ${from} on ${stillPending} more message${stillPending === 1 ? "" : "s"}`), "you");
       advanceCursor(space, m.ts); // shown here = seen, so `paw inbox` won't re-surface it as new
       // Follow the conversation: an empty input means you have not started a reply to anyone else, so
       // the next thing you type is almost certainly for whoever just spoke. Announced, never silent —
@@ -942,18 +951,15 @@ async function chat(argv: string[]): Promise<void> {
     // the send still succeeds (the DM stream stores it) and nobody ever reads it (benmore-intern, 2026-09-16).
     if (ev.type !== "offline" && curName && card.name === curName && card.id !== curId) curId = card.id;
     if (!presenceVisible(filter, card.name)) return;
+    // Track the status on join/offline too, so the next flip into working is judged against the truth.
+    const picked = awaiting.presence(card.name, ev.type === "offline" ? "offline" : ev.presence.status);
     if (ev.type === "join") emit(`${c.green("→")} ${who(card)} joined ${statusBadge(ev.presence.status)}`);
     else if (ev.type === "offline") emit(c.dim(`← ${who(card)} went offline`));
-    else if (
-      awaiting &&
-      !awaiting.picked &&
-      ev.presence.status === "working" &&
-      card.name.toLowerCase() === awaiting.name.toLowerCase()
-    ) {
-      // The agent we're waiting on flipped to working — an explicit "got it, on it" receipt for your
-      // message (otherwise the only feedback is the final reply, which can be minutes away).
-      awaiting.picked = true;
-      emit(`${c.green("✓")} ${card.name} picked it up${ev.presence.activity ? c.dim(" — " + activityLine(ev.presence.activity)) : c.dim(" — working…")}`, "you");
+    else if (picked.length) {
+      // A NEW turn began on an agent we're waiting on — an explicit "got it, on it" receipt for the
+      // messages sent before it (otherwise the only feedback is the final reply, minutes away).
+      const what = picked.length === 1 ? "picked it up" : `picked up your ${picked.length} messages`;
+      emit(`${c.green("✓")} ${card.name} ${what}${ev.presence.activity ? c.dim(" — " + activityLine(ev.presence.activity)) : c.dim(" — working…")}`, "you");
     } else
       emit(
         `${c.dim("•")} ${who(card)} ${statusBadge(ev.presence.status)}` +
@@ -1467,8 +1473,7 @@ async function chat(argv: string[]): Promise<void> {
     // log emitted line by line is 200 prompt redraws.
     emit(body.split("\n").map((l) => `  ${l}`).join("\n") + (status ? `\n${c.yellow(`  (${status})`)}` : ""), "you");
     refreshTarget();
-    await sent(ep.unicast(curId!, bashMessage(result)));
-    markWaiting(curName);
+    markWaiting(curName, await sent(ep.unicast(curId!, bashMessage(result))));
   }
 
   rl.on("line", async (rawLine) => {
@@ -1653,8 +1658,7 @@ async function chat(argv: string[]): Promise<void> {
           const peer = findPeer(to);
           if (!peer) emit(c.red(`no peer named "${to}" present`));
           else {
-            await sent(ep.unicast(peer.card.id, flush(body)));
-            markWaiting(peer.card.name); // confirm sent + await the reply (typed line alone isn't proof)
+            markWaiting(peer.card.name, await sent(ep.unicast(peer.card.id, flush(body)))); // confirm sent + await the reply (typed line alone isn't proof)
           }
         }
       } else if (text.startsWith("@")) {
@@ -1700,8 +1704,7 @@ async function chat(argv: string[]): Promise<void> {
             if (filter?.kind === "agent") filter = { kind: "agent", name: peer.card.name };
             rl!.setPrompt(promptFor());
             if (body) {
-              await sent(ep.unicast(curId, flush(body, curName)));
-              markWaiting(curName);
+              markWaiting(curName, await sent(ep.unicast(curId, flush(body, curName))));
             } else emit(c.dim(`(now messaging ${curName})`));
           }
         }
@@ -1718,8 +1721,8 @@ async function chat(argv: string[]): Promise<void> {
         }
       } else if (curId) {
         refreshTarget();
-        await sent(ep.unicast(curId!, flush(text, curName))); // sticky target — DM it
-        markWaiting(curName!); // curName is set whenever curId is
+        // sticky target — DM it; curName is set whenever curId is
+        markWaiting(curName!, await sent(ep.unicast(curId!, flush(text, curName))));
       } else {
         await sent(ep.multicast(flush(text, `#${room}`), { channel: room })); // no sticky target — post to the room this session opened
       }
