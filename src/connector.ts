@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 import { HUMAN_PEER } from "./names.ts";
 import { BACKGROUND_BASH_BRIEF, CHANNELS_BRIEF, FILES_BRIEF, OPERATOR_REQUESTS_BRIEF, TASKS_BRIEF, UNATTENDED_BRIEF, WAKE_BRIEF } from "./brief.ts";
 import { beadsDir } from "./beads-dir.ts";
+import { voiceLineFor } from "./personality.ts";
 import { readClaudeArgs, readCwd, readHeadless, readResumeId, transcriptExists } from "./session.ts";
 import { ensureShim, headlessDir, hubEnabled, hubSocketPath } from "./hub/paths.ts";
 import { headlessLaunch } from "./headless.ts";
@@ -44,9 +45,10 @@ function warnUnattended(name: string, mode: string): void {
  * peers (the human included) over the cotal tools. The sections live in src/brief.ts, where
  * src/kit.ts composes its own brief from the ones that hold for any harness.
  */
-function meshBrief(name: string): string {
+export function meshBrief(name: string, voice?: string): string {
   return [
     `You are "${name}", a paw agent rooted at this folder and a peer on the cotal mesh.`,
+    ...(voice ? [voice] : []),
     `Reach teammates with the cotal_* MCP tools: cotal_dm(to, text) for a direct message,`,
     `cotal_anycast(role, text) to reach any agent of a role, cotal_roster to see who is online,`,
     `and cotal_inbox to drain messages waiting for you.`,
@@ -149,7 +151,9 @@ export const pawConnector: Connector = {
     // on the screen, the agent asks in plain text over cotal_dm instead (a normal mesh round-trip).
     args.push("--disallowedTools", "AskUserQuestion,ExitPlanMode");
 
-    appendSystemPrompt(args, meshBrief(opts.name));
+    // The personality's VOICE line (src/personality.ts) rides right after the identity line; a malformed
+    // vibe/emoji/hue throws here, at spawn, rather than reaching the model half-read.
+    appendSystemPrompt(args, meshBrief(opts.name, voiceLineFor(opts.configPath)));
 
     // Durable session pin: paw writes a stable `resume:` id into every persona (minted at birth, or
     // a real past id via `adopt`). If its transcript exists → resume it; if not, this is the first

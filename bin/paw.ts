@@ -27,6 +27,7 @@ const COMMAND_MODULES: Array<() => Promise<unknown>> = [
   () => import("../src/adopt.ts"), // self-registers the "adopt" command (resume a past claude session)
   () => import("../src/rename.ts"), // self-registers the "rename" command (relabel an agent, keep its session)
   () => import("../src/rm.ts"), // self-registers the "rm" command (forget an agent; always keeps its transcript)
+  () => import("../src/persona.ts"), // self-registers "persona" (show/reroll/backfill personalities); LOCAL — persona frontmatter only, never restarts
   () => import("../src/status.ts"), // self-registers the "status" command (durability + two-writer health view)
   () => import("../src/sessions.ts"), // self-registers the "sessions" command (local: lists a folder's transcripts)
   () => import("../src/log.ts"), // self-registers the "log" command (local: read an agent's transcript directly)

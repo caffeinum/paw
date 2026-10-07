@@ -37,8 +37,10 @@ import {
   resolveFolderAgent,
   listAgents,
   lookupFolderName,
+  personaFilePath,
   registerInstance,
   setFolderName,
+  setPersonaKeys,
   stableHumanId,
   startResilient,
   waitForPeerId,
@@ -71,6 +73,7 @@ import { isContinueKey, joinLines, peelContinuation } from "./multiline.ts";
 import { resolveSpace } from "./lifecycle.ts";
 import { renderMarkdown } from "./markdown.ts";
 import { HUMAN_PEER } from "./names.ts";
+import { hueSgr, parsePersonalityArg, personaGlyph, personalityFor, type Glyph } from "./personality.ts";
 import {
   composePastes,
   DISABLE_BRACKETED_PASTE,
@@ -270,7 +273,7 @@ export function completeMention(line: string, names: string[]): [string[], strin
   return [hits, `@${m[1]}`];
 }
 
-type ChatArgs = { space?: string; server?: string; target?: string; model?: string; name?: string; agent?: string; provider?: string; fresh: boolean; only: boolean; all: boolean };
+type ChatArgs = { space?: string; server?: string; target?: string; model?: string; name?: string; agent?: string; provider?: string; personality?: string; fresh: boolean; only: boolean; all: boolean };
 export function parseArgs(argv: string[]): ChatArgs {
   const out: ChatArgs = { fresh: false, only: false, all: false };
   const value = (flag: string, v: string | undefined): string => {
@@ -285,6 +288,7 @@ export function parseArgs(argv: string[]): ChatArgs {
     else if (a === "--agent") out.agent = value(a, argv[++i]); // create (or target) an agent on this harness — kit, codex, opencode, claude
     else if (a === "--provider") out.provider = value(a, argv[++i]); // kit's model provider: codex (default) | grok
     else if (a === "--name") out.name = argv[++i]; // pin an EXTRA agent instance at the folder (multi-instance)
+    else if (a === "--personality") out.personality = value(a, argv[++i]); // birth personality: a seed, a quoted vibe, or none (docs/notes/personalities.md)
     else if (a === "--fresh") out.fresh = true; // birth a NEW agent (was `paw create`); fails loud if one exists
     else if (a === "--only") out.only = true; // FILTER to the target agent (the `@name` view, reached by folder/`.` instead of a name)
     else if (a === "--all") out.all = true; // every conversation, no agent preselected (what a bare `paw chat` used to mean)
@@ -344,7 +348,10 @@ function freshTarget(space: string, target: string): { folder: string; name: str
 }
 
 async function chat(argv: string[]): Promise<void> {
-  const { space: spaceArg, server: serverArg, target: givenTarget, model, name: nameFlag, agent: agentFlag, provider, fresh, only, all } = parseArgs(argv);
+  const { space: spaceArg, server: serverArg, target: givenTarget, model, name: nameFlag, agent: agentFlag, provider, personality: personalityFlag, fresh, only, all } = parseArgs(argv);
+  // A personality is given at BIRTH; an existing agent's is changed with `paw persona <name> --reroll`.
+  if (personalityFlag !== undefined && !fresh) throw new Error("paw: --personality is for a new agent (`paw chat --fresh <folder> --personality …`) — for an existing one use `paw persona <name> --reroll [seed]`");
+  const personalityArg = personalityFlag !== undefined ? parsePersonalityArg(personalityFlag) : undefined; // validated before anything is registered
   if (provider !== undefined && agentFlag === undefined) throw new Error("paw: --provider picks kit's model provider — pass it with --agent kit");
   if (agentFlag !== undefined && all) throw new Error("paw: --agent creates or targets ONE agent at a folder — it can't combine with --all");
   const agentSpec = agentFlag !== undefined ? { agent: agentFlag, provider, model } : undefined;
@@ -385,6 +392,8 @@ async function chat(argv: string[]): Promise<void> {
       );
     }
     ({ folder, name, brief, kind } = freshTarget(space, target ?? "."));
+    // Written onto the still-unborn persona, so the birth (ensurePersonaFile) keeps it instead of drawing.
+    if (personalityArg) setPersonaKeys(space, name, personalityFor(personalityArg, name, folder));
   } else if (nameFlag !== undefined && target === undefined) {
     // --name pins an EXTRA instance AT A FOLDER; with no explicit target that folder is the cwd (".",
     // like `paw chat --fresh`), never broadcast mode — so `cd repo && paw chat --name reviewer` works.
@@ -618,6 +627,18 @@ async function chat(argv: string[]): Promise<void> {
   // Resolve a peer by name, preferring a LIVE one. Restarting an agent (e.g. re-adopt) leaves stale
   // OFFLINE presence entries under the same name until they TTL out; without this `@name`/`/dm` could
   // pick a ghost and refuse to send even though a live agent is right there.
+  /** An agent's personality glyph (persona emoji/hue), read once per name per session. */
+  const glyphs = new Map<string, Glyph>();
+  const glyphOf = (name: string): Glyph => {
+    if (!glyphs.has(name)) glyphs.set(name, /^[A-Za-z0-9_-]+$/.test(name) ? personaGlyph(personaFilePath(space, name)) : {});
+    return glyphs.get(name)!;
+  };
+  /** `🐈 queue` with the name in the agent's hue — or the given fallback colour when it has none. */
+  const agentTag = (name: string, fallback: (s: string) => string = c.cyan): string => {
+    const g = glyphOf(name);
+    const tinted = g.hue !== undefined && tty ? `\x1b[${hueSgr(g.hue)}m${name}\x1b[0m` : fallback(name);
+    return g.emoji ? `${g.emoji} ${tinted}` : tinted;
+  };
   /** An id → agent name, from the live roster. Unknown ids stay ids — never invent a name. */
   const rosterName = (id?: string): string | undefined =>
     id ? ep.getRoster().find((p) => p.card.id === id)?.card.name : undefined;
@@ -695,9 +716,9 @@ async function chat(argv: string[]): Promise<void> {
   const bangPrompt = (): string => `${c.yellow("$ >")} `;
   const promptFor = (): string => {
     if (bang && curName) return bangPrompt();
-    const where = curName ? `${HUMAN_PEER} → ${curName}${filter?.kind === "agent" ? " (only)" : ""}` : `${HUMAN_PEER} → #${room}`;
     const badges = [pending.length ? `${pending.length} img` : "", pastes.length ? `${pastes.length} pasted` : "", elsewhereBadge(hiddenCount)].filter(Boolean);
-    return c.dim(badges.length ? `${where} [${badges.join(" · ")}]> ` : `${where}> `);
+    const tail = c.dim(`${curName && filter?.kind === "agent" ? " (only)" : ""}${badges.length ? ` [${badges.join(" · ")}]` : ""}> `);
+    return curName ? `${c.dim(`${HUMAN_PEER} → `)}${agentTag(curName, c.dim)}${tail}` : `${c.dim(`${HUMAN_PEER} → #${room}`)}${tail}`;
   };
 
   /**
@@ -868,8 +889,8 @@ async function chat(argv: string[]): Promise<void> {
       pumpLogs();
       // `from` tags it as inbound mail: the logs view keeps another agent's DM visible, and shows the
       // target's as the transcript's `↩ you` block instead (entryVisible).
-      if (curName && from.toLowerCase() === curName.toLowerCase()) emit(said(`${tag}${c.cyan(from)}${age}${took}${c.dim(":")}`, text), "peer", false, from);
-      else emit(said(`${tag}${c.magenta("(DM)")} ${c.bold(from)}${age}${took}${c.dim(":")}`, text), "peer", false, from);
+      if (curName && from.toLowerCase() === curName.toLowerCase()) emit(said(`${tag}${agentTag(from)}${age}${took}${c.dim(":")}`, text), "peer", false, from);
+      else emit(said(`${tag}${c.magenta("(DM)")} ${agentTag(from, c.bold)}${age}${took}${c.dim(":")}`, text), "peer", false, from);
       if (stillPending) emit(c.dim(`⏳ still waiting for ${from} on ${stillPending} more message${stillPending === 1 ? "" : "s"}`), "you");
       advanceCursor(space, m.ts); // shown here = seen, so `paw inbox` won't re-surface it as new
       // Follow the conversation: an empty input means you have not started a reply to anyone else, so
@@ -935,7 +956,7 @@ async function chat(argv: string[]): Promise<void> {
         if (!passesFilter(filter, { kind: msg.channel ? "channel" : "dm", from: toName, channel: msg.channel })) return;
         const label = msg.channel
           ? c.dim(`#${msg.channel}`)
-          : c.cyan(toName ?? (msg.to ? msg.to.slice(0, 8) : "?"));
+          : toName ? agentTag(toName) : c.cyan(msg.to ? msg.to.slice(0, 8) : "?");
         emit(said(`${c.dim("↗ you →")} ${label}${c.dim(" (other session):")}`, body), "you");
       } catch {
         /* a render failure must never abort the tap iterator */
@@ -1743,7 +1764,7 @@ const chatCommand: Command = {
   name: "chat",
   group: "Mesh",
   summary: "chat with an EXISTING agent (by @name or folder; wakes it if offline); replies stream back live — --fresh creates a new one",
-  usage: 'chat [<folder>|<name>|@<name>|#<channel>] [--only] [--all] [--name <n>] [--fresh] [--agent kit|codex|opencode|claude [--provider codex|grok] [--model m]]   (default: "." — this folder\'s agent; --all = every conversation, nothing preselected; --name pins a 2nd+ EXTRA agent at the folder; --fresh births a NEW default agent, fails loud if one already exists; --agent creates the agent on that harness, or targets it if it already runs there)',
+  usage: 'chat [<folder>|<name>|@<name>|#<channel>] [--only] [--all] [--name <n>] [--fresh [--personality <seed|"vibe"|none>]] [--agent kit|codex|opencode|claude [--provider codex|grok] [--model m]]   (default: "." — this folder\'s agent; --all = every conversation, nothing preselected; --name pins a 2nd+ EXTRA agent at the folder; --fresh births a NEW default agent, fails loud if one already exists; --agent creates the agent on that harness, or targets it if it already runs there)',
   run: (a) => chat([...a.raw]),
 };
 
