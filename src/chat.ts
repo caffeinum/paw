@@ -71,6 +71,7 @@ import { messageText as textOf } from "./feed.ts";
 import { dedupeRoster } from "./commands/who.ts";
 import { isContinueKey, joinLines, peelContinuation } from "./multiline.ts";
 import { resolveSpace } from "./lifecycle.ts";
+import { chatAgentInfo } from "./agent-summary.ts";
 import { renderMarkdown } from "./markdown.ts";
 import { HUMAN_PEER } from "./names.ts";
 import { cachedLedger, ledgerName } from "./peer-ledger.ts";
@@ -813,10 +814,14 @@ async function chat(argv: string[]): Promise<void> {
   } else if (curName) {
     const where = folder ? c.dim(folder) : c.dim("(by name)");
     const state = spawned ? c.green("spawned a new agent · starting up") : c.green("reusing live agent");
+    const personaPath = personaFilePath(space, curName);
+    const info = existsSync(personaPath) ? chatAgentInfo(personaPath) : undefined;
     show({ kind: "banner", text:
       `\n${c.bold("  🐾 paw chat")}\n\n` +
         `     agent:  ${c.cyan(curName)}  ${where}\n` +
-        `     status: ${state}\n\n` +
+        `     status: ${state}\n` +
+        (info ? `     model:  ${info.model}\n     context: ${info.context}\n` : "") +
+        `\n` +
         (filter?.kind === "agent" ? `     showing: ${c.dim("this agent only — other DMs stay in `paw inbox`")}\n\n` : "") +
         `     ${c.dim("type to message it · !cmd runs in its folder · @name switches target · #channel broadcasts · /who · /ps · /quit")}\n` +
         `     ${c.dim("drag an image in for [Image #1] · paste multiple lines for [Pasted text #1]")}\n` +

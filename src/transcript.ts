@@ -481,6 +481,18 @@ export function lastUsage(lines: string[]): ContextUsage | undefined {
   return { ...found, ...inferWindow(found.tokens, autoCompactPre(lines)) };
 }
 
+/** The model of the newest real assistant turn in this tail (`message.model`), skipping claude's
+ *  `<synthetic>` error turns — what the agent is actually running on, not what was asked for. */
+export function lastModel(lines: string[]): string | undefined {
+  for (let i = lines.length - 1; i >= 0; i--) {
+    let rec: { type?: string; message?: { model?: unknown } } | undefined;
+    try { rec = JSON.parse(lines[i]); } catch { continue; }
+    const m = rec?.type === "assistant" ? rec.message?.model : undefined;
+    if (typeof m === "string" && m && m !== "<synthetic>" && m !== "kit-carried") return m;
+  }
+  return undefined;
+}
+
 /** The newest AUTO compact_boundary's `preTokens` in this tail — the harness's own "full" mark. A
  *  MANUAL `/compact` says nothing about the window (it fires wherever the operator typed it), so only
  *  `trigger: "auto"` counts. */
