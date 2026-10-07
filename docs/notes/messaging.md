@@ -128,3 +128,47 @@ agent down longer than the window doesn't get that traffic late, it never gets i
 `doWatch && doWatchChannels`, so an `observerEndpoint` with `watchPresence:false` NEVER opens the
 channel registry and reports every window as unbounded — which looks exactly like "the setting didn't
 take". Probe with `watchPresence:true` (a real agent opens it via `consume:true` instead).
+
+## Stale peer ids (DMs to a dead incarnation)
+
+**Incident (2026-10-06 23:41):** every agent restart mints a NEW mesh id (`local.<actor>`). evals
+restarted ~23:23 (`local.UDWRH…` → `local.UA7YY…`); queue-ea then `cotal_dm`'d the OLD id, copied from
+an earlier message's `from.id`. cotal resolves a `to` that is an exact instance id to that id at ANY
+status (`resolvePeer`: "an exact instance-id match wins"), so the send succeeded — "stored as seq N …
+recipient was idle at send; delivery not confirmed" — onto a subject no consumer will ever read again
+(the new incarnation's durable filters on its own new id). paw chat then showed `↩ local.UDWRH…`.
+
+Three layers, cheapest first:
+
+- **Brief** — `ADDRESSING_BRIEF` (src/brief.ts), in both the claude and the kit brief: address peers by
+  NAME; never reuse an id from a past message.
+- **Naming: the peer ledger** — `src/peer-ledger.ts`, `$PAW_HOME/spaces/<s>/peers.json`, id →
+  `{name, first, last}`. Written ONLY by the mailbox daemon (inside the forwarder), from authenticated
+  sources: presence cards on the roster and DM senders (the broker forge-locks the sender into the
+  subject; the receive path drops a mismatching `from.id`). Sleep stand-ins are never recorded. Pruned
+  at 30 days / 5000 ids; a corrupt file throws. Readers: transcript `↩` replies (`openAgentLog` →
+  `nameReplyTargets`, so paw log, chat's logs view and the web trace) render `evals (old instance)` when
+  the name has a newer id on record; `paw history` / `paw watch` label never-sent ids the same way;
+  `Entry.to` (inbox `--sent`, web conversation) and chat's `rosterName` get the PLAIN name, because
+  `to` is the conversation key surfaces group and filter on. An id the ledger never saw stays the id.
+- **Delivery: the stale-id forwarder** — `src/stale-forward.ts`, hosted by the mailbox (open mesh only).
+  Tails `DM_<space>` from a persisted cursor (`stale-forward.json`), and for a DM whose recipient has
+  no fresh presence: name it via the ledger → exactly ONE live non-stand-in instance of that name →
+  re-publish under the ORIGINAL sender's subject (same move as the sleep host), body/replyTo kept,
+  a `[paw: forwarded — …previous instance (<id>)…]` part first, deterministic msgID. Pure rules in
+  `decideForward`: unknown id → leave it; asleep/waking name or stand-in recipient → the sleep host's;
+  recipient seen alive at/after the send (catch-up after a mailbox outage) → leave it; roster not
+  current / no live instance yet → HOLD (retried up to 30 min); 2+ live instances → leave it
+  (ambiguous); never a different name; each stream seq decided once, each original forwarded once
+  (done-set + broker msgID dedup); a forward targets a LIVE id so it is never re-forwarded. Under
+  `PAW_AUTH` the broker forbids publishing as another sender, so the mailbox says the forwarder is OFF.
+  Checks: `pnpm check:stale-forward` (hermetic), `scripts/e2e-stale-forward.ts` (own nats-server:
+  restart → DM old id → delivered once; mailbox restart re-forwards nothing; history/inbox naming).
+
+**Upstream ask (for the operator to file via cotal_feedback, AI-disclosed):** `cotal_dm` / `unicast`
+to an exact instance id whose presence is not live should not silently store onto a dead subject.
+Either (a) resolve it by the card NAME the id last carried, when exactly one live peer holds that name
+now ("id X is offline; delivered to its successor Y under the same name"), or (b) fail loud: "peer
+evals (X) is offline — it restarted as Y; address peers by name". Today the tool reply (`recipient was
+idle at send`) even reports the dead row's last status as if it were live. paw's forwarder is the
+workaround and can only work on an open mesh (it must publish as the original sender).

@@ -20,6 +20,7 @@ import { resolveSpace } from "../lifecycle.ts";
 import { HUMAN_PEER } from "../names.ts";
 import { messageText as textOf } from "../feed.ts";
 import { pawServer } from "../server.ts";
+import { labelPeer } from "../peer-ledger.ts";
 
 const tty = process.stdout.isTTY === true;
 const wrap = (code: string) => (s: string) => (tty ? `\x1b[${code}m${s}\x1b[0m` : s);
@@ -72,7 +73,9 @@ async function watch(argv: string[]): Promise<void> {
   const names = new Map<string, string>([[ep.card.id, "you"]]);
   const nameFor = (id: string): string => {
     const known = names.get(id) ?? ep.getRoster().find((p) => p.card.id === id)?.card.name;
-    return known ?? id.slice(0, 8);
+    if (known) return known;
+    const label = labelPeer(space, id); // a dead incarnation that never spoke → "evals (old instance)"
+    return label !== id ? label : id.slice(0, 8);
   };
 
   if (creds) console.log(c.dim("(authed mesh: tapping chat only — DMs/anycast are confidential to an observer cred)"));

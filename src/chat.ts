@@ -73,6 +73,7 @@ import { isContinueKey, joinLines, peelContinuation } from "./multiline.ts";
 import { resolveSpace } from "./lifecycle.ts";
 import { renderMarkdown } from "./markdown.ts";
 import { HUMAN_PEER } from "./names.ts";
+import { cachedLedger, ledgerName } from "./peer-ledger.ts";
 import { hueSgr, parsePersonalityArg, personaGlyph, personalityFor, type Glyph } from "./personality.ts";
 import {
   composePastes,
@@ -639,9 +640,10 @@ async function chat(argv: string[]): Promise<void> {
     const tinted = g.hue !== undefined && tty ? `\x1b[${hueSgr(g.hue)}m${name}\x1b[0m` : fallback(name);
     return g.emoji ? `${g.emoji} ${tinted}` : tinted;
   };
-  /** An id → agent name, from the live roster. Unknown ids stay ids — never invent a name. */
+  /** An id → agent name, from the live roster, else paw's peer ledger (a restarted agent's old id).
+   *  Unknown ids stay ids — never invent a name. */
   const rosterName = (id?: string): string | undefined =>
-    id ? ep.getRoster().find((p) => p.card.id === id)?.card.name : undefined;
+    id ? (ep.getRoster().find((p) => p.card.id === id)?.card.name ?? ledgerName(cachedLedger(space), id)) : undefined;
 
   const findPeer = (to: string) => {
     const peers = ep.getRoster().filter((p) => p.card.name.toLowerCase() === to.toLowerCase() && p.card.id !== me);

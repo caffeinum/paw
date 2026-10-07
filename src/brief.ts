@@ -15,6 +15,13 @@ export const CHANNELS_BRIEF: readonly string[] = [
     `person, a DM to them is usually better than a channel post.`,
 ];
 
+/** Address peers by name — ids are per-incarnation. Shared by every paw harness. */
+export const ADDRESSING_BRIEF: readonly string[] = [
+    // 2026-10-06: queue-ea DM'd evals by an id copied from an old message; evals had restarted
+    // (every restart mints a new id), so the DM was stored for a dead instance and never read.
+    `Address peers by NAME (cotal_dm("evals", …)), never by an id copied from a past message — ids change on every restart.`,
+];
+
 /** The unattended posture, said once. */
 export const UNATTENDED_BRIEF: readonly string[] = [
     `You run unattended with permissions bypassed, so act deliberately on this repository.`,

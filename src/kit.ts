@@ -22,7 +22,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { loadAgentFile, type Connector, type LaunchOpts, type LaunchSpec } from "@cotal-ai/core";
 import { beadsDir } from "./beads-dir.ts";
-import { CHANNELS_BRIEF, OPERATOR_REQUESTS_BRIEF, TASKS_BRIEF, UNATTENDED_BRIEF, WAKE_BRIEF } from "./brief.ts";
+import { ADDRESSING_BRIEF, CHANNELS_BRIEF, OPERATOR_REQUESTS_BRIEF, TASKS_BRIEF, UNATTENDED_BRIEF, WAKE_BRIEF } from "./brief.ts";
 import { HUMAN_PEER } from "./names.ts";
 import { voiceLineFor } from "./personality.ts";
 import { readKitStorage, readResumeId, transcriptExists, transcriptRoots, type KitStorage } from "./session.ts";
@@ -92,6 +92,7 @@ export function kitBrief(name: string, voice?: string): string {
     `and cotal_roster. Messages arrive as your turns; there is no inbox to drain. The human operator is the`,
     `peer "${HUMAN_PEER}": answer them with cotal_dm("${HUMAN_PEER}", …), a teammate by their agent name.`,
     ...(voice ? [voice] : []),
+    ...ADDRESSING_BRIEF,
     ...CHANNELS_BRIEF,
     ...UNATTENDED_BRIEF,
     `Files shared by humans/endpoints are announced on #files: run \`paw files\` in the shell to list them`,

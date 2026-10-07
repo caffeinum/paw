@@ -106,6 +106,7 @@ const ME = "local.humanid";
 const parts = (s: string) => [{ kind: "text", text: s }];
 const fakeEp = (history: unknown[] = []) =>
   ({
+    space: "webcheck",
     card: { id: ME, name: "you" },
     getRoster: () => [{ card: { id: "local.devweb", name: "dev-web" } }],
     dmHistory: async () => history,

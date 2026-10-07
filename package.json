@@ -46,7 +46,8 @@
     "check:headless": "node scripts/check-headless.ts",
     "check:trust": "node scripts/check-trust.ts",
     "check:kit": "node scripts/check-kit.ts",
-    "check:personality": "node scripts/check-personality.ts"
+    "check:personality": "node scripts/check-personality.ts",
+    "check:stale-forward": "node scripts/check-stale-forward.ts"
   },
   "dependencies": {
     "@cotal-ai/cli": "0.66.1",

@@ -18,6 +18,7 @@ import { controlCreds, stableHumanId } from "./addressing.ts";
 import { resolveSpace } from "./lifecycle.ts";
 import { HUMAN_PEER } from "./names.ts";
 import { startSleepHost } from "./sleep-host.ts";
+import { startStaleForwarder } from "./stale-forward.ts";
 import { pawServer } from "./server.ts";
 
 function parseArgs(argv: string[]): { space?: string; server?: string } {
@@ -61,7 +62,19 @@ async function mailbox(argv: string[]): Promise<void> {
     console.error(`[mailbox] sleep host failed to start — sleeping agents are NOT addressable: ${e.message}`);
     return async () => {};
   });
+  // The stale-id forwarder (src/stale-forward.ts) + the peer ledger it keeps. Re-publishing under the
+  // original sender needs an open mesh (like the sleep host); under auth the broker forbids it.
+  let stopForwarder = async () => {};
+  if (creds) {
+    console.error(`[mailbox] authed mesh: stale-id forwarding is OFF — a DM to a restarted agent's old id stays undelivered (open mesh only)`);
+  } else {
+    stopForwarder = await startStaleForwarder(space, server).catch((e: Error) => {
+      console.error(`[mailbox] stale-id forwarder failed to start — DMs to an old instance id will NOT reach the live agent: ${e.message}`);
+      return async () => {};
+    });
+  }
   const leave = async () => {
+    await stopForwarder().catch(() => {});
     await stopSleepHost().catch(() => {});
     await ep.stop().catch(() => {});
     process.exit(0);
