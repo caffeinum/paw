@@ -64,12 +64,12 @@ const blocks = nameReplyTargets("s1", [
   { kind: "reply", to: OLD, text: "hi" },
   { kind: "reply", to: "global", text: "wake x" },
   { kind: "reply", to: "local.UNKNOWN", text: "?" },
-  { kind: "text", text: "plain" },
+  { kind: "assistant", text: "plain" },
 ] as never);
 ok("↩ old id renders as 'evals (old instance)'", (blocks[0] as { to: string }).to === "evals (old instance)");
 ok("↩ a name is untouched", (blocks[1] as { to: string }).to === "global");
 ok("↩ an unknown id stays the id", (blocks[2] as { to: string }).to === "local.UNKNOWN");
-ok("non-reply blocks pass through", blocks[3].kind === "text");
+ok("non-reply blocks pass through", blocks[3].kind === "assistant");
 
 // ── forwarder decisions ─────────────────────────────────────────────────────────────────────────
 const base = {
