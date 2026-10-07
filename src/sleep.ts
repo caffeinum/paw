@@ -28,7 +28,7 @@ import { agentRecord, listAgents, personaFilePath, setPersonaKeys, wirePrincipal
 import { withManagerControl, type ManagerControl } from "./control.ts";
 import { ensure, resolveSpace } from "./lifecycle.ts";
 import { liveSessionProcs } from "./named.ts";
-import { personaValue, readResumeId, transcriptMtime, transcriptPath } from "./session.ts";
+import { personaTranscriptRoots, personaValue, readResumeId, transcriptMtime, transcriptPath } from "./session.ts";
 import { dmsSince } from "./sleep-host.ts";
 import { listSleeping, readSleepRecord, readWakingRecord, scanRecords, sleepLog, sleepState, writeSleepRecord, type SleepRecord } from "./sleep-state.ts";
 import { collectStatus, type AgentStatus } from "./status.ts";
@@ -204,11 +204,11 @@ export interface Activity {
 }
 
 /** What is running inside `pin`'s live claude, from both the transcript and the process tree. */
-export function readActivity(pin: string, now = Date.now()): Activity {
+export function readActivity(pin: string, now = Date.now(), roots?: string[]): Activity {
   const procs = liveSessionProcs(pin);
   if (procs.length !== 1) return { tasks: [], shells: [], unknown: `${procs.length} live processes hold the session` };
   const proc = procs[0];
-  const file = transcriptPath(pin);
+  const file = transcriptPath(pin, roots);
   if (!file) return { tasks: [], shells: [], unknown: "no transcript" };
   if (typeof proc.startedAt !== "number") return { tasks: [], shells: [], unknown: "the session's process start time is unknown" };
   const { lines, unknown } = markerLines(file, proc.startedAt);
@@ -298,7 +298,7 @@ export async function sleepAgent(space: string, ctl: ManagerControl, name: strin
     const pin = readResumeId(personaFilePath(space, name));
     const why = preDespawnCheck({
       snapshotActiveMs: snap.snapshotActiveMs,
-      activeMsNow: pin ? transcriptMtime(pin) : undefined,
+      activeMsNow: pin ? transcriptMtime(pin, personaTranscriptRoots(personaFilePath(space, name))) : undefined,
       meshNow: row.mesh,
       dmsSinceCursor: await dmsSince(space, [unicastRecvFilter(space, old.owner, old.actor)], snap.cursorSeq),
     });
@@ -336,7 +336,7 @@ export async function sleepSweep(space: string, ctl: ManagerControl, now = Date.
     }
     if (hibernateMs === undefined || !row.live) continue;
     const file = personaFilePath(space, row.name);
-    const activity = row.pin ? readActivity(row.pin, now) : { tasks: [], shells: [], unknown: "no resume pin" };
+    const activity = row.pin ? readActivity(row.pin, now, personaTranscriptRoots(file)) : { tasks: [], shells: [], unknown: "no resume pin" };
     const d = sleepDecision(row, hibernateMs, now, activity, extraChannels(personaValue(file, "subscribe")));
     if (!d.sleep) {
       skipped.push({ name: row.name, reason: d.reason });
@@ -399,7 +399,7 @@ async function sleepCmd(argv: string[]): Promise<void> {
         const row = rows.find((r) => r.name === name);
         if (!row) throw new Error(`paw sleep: "${name}" is not a registered agent`);
         const file = personaFilePath(space, name);
-        const activity = row.pin ? readActivity(row.pin) : { tasks: [], shells: [], unknown: "no resume pin" };
+        const activity = row.pin ? readActivity(row.pin, Date.now(), personaTranscriptRoots(file)) : { tasks: [], shells: [], unknown: "no resume pin" };
         // --now waives the idle threshold (the operator is asking), never the "nothing running" rule unless --force.
         const d = sleepDecision(row, 0, Date.now(), activity, extraChannels(personaValue(file, "subscribe")));
         if (!d.sleep && !o.force) throw new Error(`paw sleep: not sleeping "${name}" — ${d.reason} (--force to override)`);

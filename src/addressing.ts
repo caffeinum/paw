@@ -30,8 +30,8 @@ import { presenceLive, readMeshRoster } from "./roster.ts";
 import { pawServer } from "./server.ts";
 import { withFileLock, withFileLockAsync } from "./lock.ts";
 import { liveSessionProcs, meshAgentSession, meshIdentity, type LiveSessionProc } from "./named.ts";
-import { ensureKitBinary, KIT_AGENT } from "./kit.ts";
-import { isClaudeHarness, personaValue, readAgentType, readCwd, readResumeId, readShareTools, transcriptMtime } from "./session.ts";
+import { ensureKitBinary, isKitProvider, KIT_AGENT } from "./kit.ts";
+import { isClaudeHarness, personaTranscriptRoots, personaValue, readAgentType, readCwd, readResumeId, readShareTools, transcriptMtime } from "./session.ts";
 import { defaultTmuxEnv, readRuntimeMarker } from "./lifecycle.ts";
 import { answerStartupPrompt, tmuxSplit, tmuxSplitAdvice, type StartupScreen } from "./native-attach.ts";
 import { HOST_RE } from "./url.ts";
@@ -496,6 +496,64 @@ export function ensurePersonaFile(space: string, name: string, opts?: { brief?: 
   return file;
 }
 
+/** The harnesses `--agent` can name: paw's claude, cotal's codex/opencode connectors, and kit. */
+export const AGENT_TYPES = ["claude", "codex", "opencode", KIT_AGENT] as const;
+export type AgentTypeSpec = { agent: string; provider?: string; model?: string };
+
+/** Validate an `--agent`/`--provider` pair before anything is registered; returns the harness and the
+ *  kit provider it implies (codex unless given). Unknown harness or a provider on a non-kit harness throws. */
+export function checkAgentSpec(spec: AgentTypeSpec): { agent: string; provider?: string } {
+  const agent = spec.agent.trim();
+  if (!(AGENT_TYPES as readonly string[]).includes(agent)) {
+    throw new Error(`paw: --agent "${spec.agent}" — unknown harness; pick one of ${AGENT_TYPES.join(", ")}`);
+  }
+  const kit = agent === KIT_AGENT;
+  if (spec.provider !== undefined && !kit) throw new Error(`paw: --provider is kit's (codex|grok) — it can't apply to --agent ${agent}`);
+  const provider = kit ? spec.provider?.trim() || "codex" : undefined;
+  if (provider !== undefined && !isKitProvider(provider)) throw new Error(`paw: --provider "${provider}" — kit drives codex or grok`);
+  return { agent, provider };
+}
+
+/** A born persona: it exists with a body (registration alone writes only frontmatter). */
+function personaBorn(file: string): boolean {
+  if (!existsSync(file)) return false;
+  const m = readFileSync(file, "utf8").match(/^---\r?\n[\s\S]*?\r?\n---\r?\n?([\s\S]*)$/);
+  return !m || m[1].trim().length > 0;
+}
+
+/**
+ * `--agent <type>` (paw chat): give the registered-but-unborn agent `name` its harness and birth it —
+ * `agent:` (absent for claude, paw's default), `provider:` (kit only, default codex), `model:` (non-claude
+ * harnesses; a claude `--model` stays a per-spawn flag as it always was), `shareTools: none` for kit (it
+ * has no MCP client), and a fresh `resume:` uuid + body via {@link ensurePersonaFile}. An agent that
+ * already exists is only TARGETED: asking for a different harness than its persona's `agent:` (or a
+ * different kit provider) fails loud — switching an agent's harness is a persona edit, never a side
+ * effect of how it was addressed.
+ */
+export function applyAgentType(space: string, name: string, spec: AgentTypeSpec, persona?: { brief?: string; kind?: Kind }): string {
+  const { agent, provider } = checkAgentSpec(spec);
+  const kit = agent === KIT_AGENT;
+  const file = personaFilePath(space, name);
+  if (personaBorn(file)) {
+    const current = readAgentType(file);
+    const currentNorm = isClaudeHarness(current) ? "claude" : current!;
+    if (currentNorm !== agent) {
+      throw new Error(
+        `paw: "${name}" already exists and runs on ${currentNorm}, not ${agent} — \`paw chat ${name}\` talks to it as it is; ` +
+          `for a ${agent} agent beside it use \`--name <new-name>\`, or \`paw rm ${name}\` first to replace it.`,
+      );
+    }
+    const currentProvider = kit ? personaValue(file, "provider") : undefined;
+    if (kit && spec.provider !== undefined && currentProvider !== provider) {
+      throw new Error(`paw: "${name}" is a kit agent on provider ${currentProvider ?? "(none)"}, not ${provider} — edit its persona (${file}) to switch`);
+    }
+    return file;
+  }
+  const model = agent === "claude" ? undefined : spec.model?.trim() || undefined;
+  setPersonaKeys(space, name, { agent: agent === "claude" ? undefined : agent, provider, model, shareTools: kit ? "none" : undefined });
+  return ensurePersonaFile(space, name, persona);
+}
+
 /**
  * Resolve the model override for a spawn: an explicit `--model` wins, else the PAW_MODEL env default,
  * else undefined (the agent file's `model:` / the harness default). A set-but-blank value counts as
@@ -697,7 +755,7 @@ export async function ensureAgentSpawned(
       // this branch used to despawn silently, which is how the kills went unattributed for a week.
       const row = rows.find((r) => r.name === opts.name);
       const earlyPin = readResumeId(personaFilePath(opts.space, opts.name));
-      const activeMs = earlyPin ? transcriptMtime(earlyPin) : undefined;
+      const activeMs = earlyPin ? transcriptMtime(earlyPin, personaTranscriptRoots(personaFilePath(opts.space, opts.name))) : undefined;
       if (row?.status !== "exited" && !restartDespiteOffline(activeMs, Date.now())) {
         console.error(
           `paw: "${opts.name}" reads ${row?.mesh ?? "?"} on the mesh but wrote its transcript ${Math.round((Date.now() - (activeMs as number)) / 1000)}s ago — busy, not a zombie; NOT restarting (the message waits in its inbox)`,

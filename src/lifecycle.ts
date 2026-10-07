@@ -29,13 +29,21 @@ import { homedir, loadavg } from "node:os";
 import { basename, dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  chatStream,
   CotalEndpoint,
   createSpaceAuth,
+  createSpaceStreams,
+  dlvStream,
+  dmStream,
+  inboxStream,
   isReachable,
   mintCreds,
   mintLifecycleUid,
   newIdentity,
+  taskStream,
 } from "@cotal-ai/core";
+import { jetstreamManager } from "@nats-io/jetstream";
+import { connect } from "@nats-io/transport-node";
 // The machine-local workstation layer (auth paths, mesh registry) split out of core into
 // @cotal-ai/workspace in cotal v0.8 (#120).
 import { authDir, loadSpaceAuth, saveSpaceAuth } from "@cotal-ai/workspace";
@@ -855,6 +863,32 @@ async function ensureMesh(space: string, server: string): Promise<void> {
   }
 }
 
+/**
+ * Make sure an OPEN mesh has the space's message streams (CHAT_/DM_/TASK_/… — core's
+ * createSpaceStreams, the one definition every TS endpoint uses), creating them when any is missing.
+ *
+ * A TS endpoint creates them lazily as it starts consuming (CotalEndpoint.ensureStreams), and none of
+ * paw's own daemons consumes — so in a brand-new space they appeared with the first CLAUDE agent. kit
+ * (cotal-go) deliberately never creates them: as the first agent of a fresh space `kit run` died with
+ * "stream DM_<space> … not found". One listing when they exist (the steady state), so it costs one
+ * round trip, and it creates nothing on a mesh that already has them — a drifted stream config is never
+ * re-added over. Auth meshes are skipped: `cotal up` provisions their streams, and an agent can't.
+ */
+export async function ensureSpaceStreams(space: string, server: string): Promise<"present" | "created"> {
+  const nc = await connect({ servers: server });
+  try {
+    const jsm = await jetstreamManager(nc);
+    const want = [chatStream(space), dmStream(space), taskStream(space), inboxStream(space), dlvStream(space)];
+    const have = new Set<string>();
+    for await (const name of jsm.streams.names()) have.add(name);
+    if (want.every((s) => have.has(s))) return "present";
+    await createSpaceStreams(jsm, space);
+    return "created";
+  } finally {
+    await nc.close().catch(() => {});
+  }
+}
+
 /** How long to wait for a freshly-started manager to answer ps (the readiness gate).
  *
  *  RAISED from 8s for cotal 0.25, and the reason is structural rather than "it got slower": on the v0.4
@@ -1625,6 +1659,8 @@ export async function ensure(opts: EnsureOpts = {}): Promise<{ space: string; se
   if (opts.needManager) resolveRuntime(space); // fail loud on a bad PAW_RUNTIME before booting; the cmux-surface gate is in ensureManagerUp (adopt needs no surface)
   await withLock(space, async () => {
     if (opts.needMesh || opts.needManager) await ensureMesh(space, server);
+    // Before anything can spawn: a kit agent can't be the space's first peer without them.
+    if (opts.needManager && process.env.PAW_AUTH !== "1") await ensureSpaceStreams(space, server);
     // The hub before the manager: the connector points every agent the manager spawns at it.
     if (opts.needMesh || opts.needManager) await ensureHub(space);
     if (opts.needManager) await ensureManagerUp(space, server, opts.switchRuntime, opts.managerProbe);
@@ -1649,6 +1685,7 @@ export async function restartManager(opts: { space?: string } = {}): Promise<voi
   assertRuntimeUsable(resolveRuntime(space)); // fail loud BEFORE stopping the manager (else a cmux-no-surface restart strands us)
   await withLock(space, async () => {
     await ensureMesh(space, server);
+    if (process.env.PAW_AUTH !== "1") await ensureSpaceStreams(space, server); // the revival below may start a kit agent first
     const creds = await probeCreds(space);
     // OWNERSHIP BY SIGNATURE: paw owns the manager iff a `cotald supervise` for this space is running
     // (only paw starts one). No running manager isn't an error — `paw restart` with nothing up should

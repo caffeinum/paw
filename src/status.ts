@@ -18,7 +18,8 @@ import { listForeground } from "./foreground.ts";
 import { ensure, formatHubLine, hubState, READY_PROBE_MS, readRuntimeMarker, resolveSpace, type HubState, type Runtime } from "./lifecycle.ts";
 import { writeJson } from "./stdout.ts";
 import { liveSessionProcsMany, nameForSession, readIndex as readSessionIndex, type LiveSessionProc } from "./named.ts";
-import { isClaudeHarness, readAgentType, readResumeId, transcriptPath, transcriptPaths, writesClaudeTranscript } from "./session.ts";
+import { KIT_AGENT } from "./kit.ts";
+import { claudeProjectsRoot, isClaudeHarness, personaTranscriptRoots, readAgentType, readResumeId, transcriptPath, transcriptPaths, writesClaudeTranscript } from "./session.ts";
 import { lastFailure, lastUsage, type ContextUsage } from "./transcript.ts";
 import { tailRead, turnState, type PendingTool, type TurnState } from "./transcript.ts";
 import { gitInfoMany, type GitInfo } from "./git.ts";
@@ -112,8 +113,19 @@ const BUSY_WINDOW_MS = 10_000;
  *
  * Falls back to that heuristic when the markers cannot be read (no pin, no transcript yet, or hooks
  * disabled so no turn_duration was ever written). The agent's OWN `working` claim still wins over both.
+ *
+ * A kit agent is judged by its presence ALONE. kit sets `working` for exactly the span of a turn and
+ * `idle` after it (engine.go), so its claim is complete — whereas its transcript never closes a turn the
+ * claude way: the turn ends right after the reply cotal_dm, leaving a tool_result as the last record and
+ * no turn_duration, which every transcript reading above takes for a turn in flight (an idle kit agent
+ * showed as busy forever). Its pending tool is still reported, but only inside a turn presence vouches for.
  */
-function liveTurn(t: TranscriptRead | undefined, mesh: string): { busy: boolean; tool?: PendingTool } {
+export function liveTurn(t: Pick<TranscriptRead, "turn" | "mtimeMs"> | undefined, mesh: string, harness?: string): { busy: boolean; tool?: PendingTool } {
+  if (harness === KIT_AGENT) {
+    const busy = mesh === "working" || mesh === "waiting";
+    const state = busy ? t?.turn() : undefined;
+    return { busy, tool: state?.inFlight ? state.tool : undefined };
+  }
   const state = t?.turn();
   const tool = state?.inFlight ? state.tool : undefined;
   if (mesh === "working" || mesh === "waiting") return { busy: true, tool }; // what the agent said beats what we infer
@@ -147,7 +159,7 @@ export function transcriptTails(file: string): { small: string; context: string 
 
 /** One transcript, read once: its mtime eagerly, its tails once, and each derived reading on demand
  *  (the turn state is only wanted for a LIVE agent). Undefined ⇔ no transcript (not durable). */
-interface TranscriptRead {
+export interface TranscriptRead {
   mtimeMs: number;
   failure(): { text: string; ts: number } | undefined;
   context(): ContextUsage | undefined;
@@ -192,8 +204,8 @@ function turnStateFrom(file: string, small: string): TurnState {
  * and a 64KB tail of only those would read as "cannot tell" exactly when it matters most.
  * Undefined when there is no transcript or it can't be read.
  */
-export function readTurnState(pin: string): TurnState | undefined {
-  const file = transcriptPath(pin);
+export function readTurnState(pin: string, roots: string[] = [claudeProjectsRoot()]): TurnState | undefined {
+  const file = transcriptPath(pin, roots);
   if (!file) return undefined;
   try {
     return turnStateFrom(file, tailRead(file, TAIL_SMALL));
@@ -223,8 +235,8 @@ export function toolLabel(t: PendingTool): string {
 
 /** The newest turn's runtime failure, if the newest turn IS one. Tail-reads the pinned transcript
  *  (last 64KB — a failure turn is small and recent by definition); a missing transcript is undefined. */
-export function transcriptFailure(pin: string): { text: string; ts: number } | undefined {
-  const file = transcriptPath(pin);
+export function transcriptFailure(pin: string, roots: string[] = [claudeProjectsRoot()]): { text: string; ts: number } | undefined {
+  const file = transcriptPath(pin, roots);
   if (!file) return undefined;
   try {
     return lastFailure(tailRead(file, TAIL_SMALL).split("\n").filter(Boolean));
@@ -241,8 +253,8 @@ export function transcriptFailure(pin: string): { text: string; ts: number } | u
  * a tail read, so it stays cheap on the 100s-MB transcripts in this fleet. A tail with no assistant
  * turn in it yields undefined — unknown, never a zero that would draw an empty context bar.
  */
-export function transcriptContext(pin: string): ContextUsage | undefined {
-  const file = transcriptPath(pin);
+export function transcriptContext(pin: string, roots: string[] = [claudeProjectsRoot()]): ContextUsage | undefined {
+  const file = transcriptPath(pin, roots);
   if (!file) return undefined;
   try {
     return lastUsage(tailRead(file, TAIL_CONTEXT).split("\n").filter(Boolean));
@@ -792,14 +804,31 @@ export async function collectStatus(space: string, ctl?: ManagerControl, opts: C
     agents.map(({ name }) => {
       const file = personaFilePath(space, name);
       const has = existsSync(file);
-      return [name, { pin: has ? readResumeId(file) : undefined, harness: has ? readAgentType(file) : undefined }];
+      const roots = has ? personaTranscriptRoots(file) : [claudeProjectsRoot()];
+      return [name, { pin: has ? readResumeId(file) : undefined, harness: has ? readAgentType(file) : undefined, roots }];
     }),
   );
   const pins = [...new Set([...local.values()].flatMap((l) => (l.pin ? [l.pin] : [])))];
   const sessionIndex = readSessionIndex();
   const procsByPin = liveSessionProcsMany(pins, sessionIndex);
-  const files = transcriptPaths(pins);
-  const transcripts = new Map(pins.map((pin) => [pin, readTranscript(files.get(pin))]));
+  // Pins resolved per STORE (the persona's harness decides: a kit agent on kit's store looks there
+  // first, everyone else in claude's alone), each store from one listing — the same id can sit in both
+  // stores with different continuations, so a pin is only ever looked up in its own agent's stores.
+  const byStore = new Map<string, { roots: string[]; pins: Set<string> }>();
+  for (const { pin, roots } of local.values()) {
+    if (!pin) continue;
+    const key = roots.join("\0");
+    if (!byStore.has(key)) byStore.set(key, { roots, pins: new Set() });
+    byStore.get(key)!.pins.add(pin);
+  }
+  const files = new Map([...byStore].map(([key, g]) => [key, transcriptPaths(g.pins, g.roots)]));
+  const reads = new Map<string, TranscriptRead | undefined>(); // one tail read per transcript file
+  const transcriptOf = ({ pin, roots }: { pin?: string; roots: string[] }): TranscriptRead | undefined => {
+    const file = pin ? files.get(roots.join("\0"))?.get(pin) : undefined;
+    if (!file) return undefined;
+    if (!reads.has(file)) reads.set(file, readTranscript(file));
+    return reads.get(file);
+  };
 
   const rosterByName = await roster;
   const now = Date.now();
@@ -817,9 +846,10 @@ export async function collectStatus(space: string, ctl?: ManagerControl, opts: C
   const inboxByName = inboxLag(withIds.length ? await consumers : { kind: "no-stream" }, server, withIds, inboxErrors);
   const gitByFolder = await git;
   const rows: AgentStatus[] = agents.map(({ folder, name }) => {
-    const { pin, harness } = local.get(name)!;
+    const rec = local.get(name)!;
+    const { pin, harness } = rec;
     const sessionName = pin ? nameForSession(pin, sessionIndex) : undefined;
-    const t = pin ? transcripts.get(pin) : undefined;
+    const t = transcriptOf(rec);
     const psRow = psByName.get(name);
     const fg = psRow ? undefined : fgByName.get(name); // ps wins; a foreground agent is only surfaced when not managed
     let mesh: string;
@@ -863,7 +893,7 @@ export async function collectStatus(space: string, ctl?: ManagerControl, opts: C
       // Computed HERE, not at render time. It used to live only inside formatStatus, so `paw status`
       // printed "busy" while `--json` and the web UI — reading the very same rows — saw a plain "idle"
       // and drew a working agent as merely online. Every surface now gets the same answer.
-      ...(live ? liveTurn(t, mesh) : { busy: false }),
+      ...(live ? liveTurn(t, mesh, harness) : { busy: false }),
       // Local git only; the PR lookup is network and stays lazy. Read CONCURRENTLY above rather than
       // one folder at a time here — see gitInfoMany.
       git: gitByFolder.get(folder),

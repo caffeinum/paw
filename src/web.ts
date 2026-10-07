@@ -84,10 +84,10 @@ function webCursor(space: string): number {
 import { sendAsYou } from "./dm.ts";
 import { FETCH_CAP, messageText, observerEndpoint, pollLoop, readConversation, type Entry } from "./feed.ts";
 import { ensure, resolveSpace, reexecUnderNode } from "./lifecycle.ts";
-import { blocksForAgent, chooseTranscriptId } from "./log.ts";
+import { agentTranscriptFile, blocksForAgent, chooseTranscriptId } from "./log.ts";
 import { meshAgentSession } from "./named.ts";
 import { HUMAN_PEER } from "./names.ts";
-import { readAgentType, readResumeId, transcriptPath } from "./session.ts";
+import { personaTranscriptRoots, readAgentType, readResumeId } from "./session.ts";
 import { searchEntries, searchTranscript, snippet, type MessageHit, type TranscriptHit } from "./search.ts";
 import { collectStatus, type AgentStatus } from "./status.ts";
 import { dropSharedManagerControl, sharedManagerControl } from "./control.ts";
@@ -596,8 +596,9 @@ function transcriptFileFor(space: string, name: string): string | undefined {
   const agentType = existsSync(persona) ? readAgentType(persona) : undefined;
   const dir = claudeProjectDir(folder);
   try {
-    const id = chooseTranscriptId(name, dir, pinned, agentType);
-    return existsSync(join(dir, `${id}.jsonl`)) ? join(dir, `${id}.jsonl`) : (transcriptPath(id) ?? join(dir, `${id}.jsonl`));
+    const roots = personaTranscriptRoots(persona);
+    const id = chooseTranscriptId(name, dir, pinned, agentType, roots);
+    return agentTranscriptFile(dir, id, roots) ?? join(dir, `${id}.jsonl`);
   } catch {
     return undefined; // no transcript yet — an agent with nothing to search, not an error
   }

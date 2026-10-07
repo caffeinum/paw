@@ -25,6 +25,8 @@ import {
 } from "@cotal-ai/core";
 import {
   agentNamesForFolder,
+  applyAgentType,
+  checkAgentSpec,
   assertUnambiguousTarget,
   canonicalDir,
   controlCreds,
@@ -267,14 +269,20 @@ export function completeMention(line: string, names: string[]): [string[], strin
   return [hits, `@${m[1]}`];
 }
 
-type ChatArgs = { space?: string; server?: string; target?: string; model?: string; name?: string; fresh: boolean; only: boolean; all: boolean };
-function parseArgs(argv: string[]): ChatArgs {
+type ChatArgs = { space?: string; server?: string; target?: string; model?: string; name?: string; agent?: string; provider?: string; fresh: boolean; only: boolean; all: boolean };
+export function parseArgs(argv: string[]): ChatArgs {
   const out: ChatArgs = { fresh: false, only: false, all: false };
+  const value = (flag: string, v: string | undefined): string => {
+    if (v === undefined || v.startsWith("-")) throw new Error(`paw: ${flag} needs a value`);
+    return v;
+  };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--space") out.space = argv[++i];
     else if (a === "--server") out.server = argv[++i];
     else if (a === "--model") out.model = argv[++i];
+    else if (a === "--agent") out.agent = value(a, argv[++i]); // create (or target) an agent on this harness — kit, codex, opencode, claude
+    else if (a === "--provider") out.provider = value(a, argv[++i]); // kit's model provider: codex (default) | grok
     else if (a === "--name") out.name = argv[++i]; // pin an EXTRA agent instance at the folder (multi-instance)
     else if (a === "--fresh") out.fresh = true; // birth a NEW agent (was `paw create`); fails loud if one exists
     else if (a === "--only") out.only = true; // FILTER to the target agent (the `@name` view, reached by folder/`.` instead of a name)
@@ -335,7 +343,11 @@ function freshTarget(space: string, target: string): { folder: string; name: str
 }
 
 async function chat(argv: string[]): Promise<void> {
-  const { space: spaceArg, server: serverArg, target: givenTarget, model, name: nameFlag, fresh, only, all } = parseArgs(argv);
+  const { space: spaceArg, server: serverArg, target: givenTarget, model, name: nameFlag, agent: agentFlag, provider, fresh, only, all } = parseArgs(argv);
+  if (provider !== undefined && agentFlag === undefined) throw new Error("paw: --provider picks kit's model provider — pass it with --agent kit");
+  if (agentFlag !== undefined && all) throw new Error("paw: --agent creates or targets ONE agent at a folder — it can't combine with --all");
+  const agentSpec = agentFlag !== undefined ? { agent: agentFlag, provider, model } : undefined;
+  if (agentSpec) checkAgentSpec(agentSpec); // before any name is registered for it
   const rawTarget = chatTargetArg(givenTarget, all);
   // The sigil decides the MODE; the rest of setup then sees a plain target and behaves exactly as
   // before, so `@name` reuses the same spawn/resume path a bare name has always taken.
@@ -399,7 +411,7 @@ async function chat(argv: string[]): Promise<void> {
       }
       const addr = resolveAddress(target);
       folder = addr.cwd;
-      if (!nameFlag) requireExistingAgent(space, folder, target);
+      if (!nameFlag && agentFlag === undefined) requireExistingAgent(space, folder, target); // --agent is an explicit ask to create
       // --name pins a 2nd+ EXTRA instance at the resolved folder (its own persona), overriding the address's
       // own name hint and the folder default; otherwise honour the hint, else mint the folder default.
       name = nameFlag
@@ -423,7 +435,7 @@ async function chat(argv: string[]): Promise<void> {
       }
       if (asFolder !== undefined) {
         folder = asFolder;
-        if (!nameFlag) requireExistingAgent(space, folder, target);
+        if (!nameFlag && agentFlag === undefined) requireExistingAgent(space, folder, target); // --agent is an explicit ask to create
         // --name → register a 2nd+ EXTRA agent at this folder (its own persona); no --name → the folder default.
         name = nameFlag ? registerInstance(space, folder, nameFlag) : resolveFolderAgent(space, folder);
       } else {
@@ -456,6 +468,13 @@ async function chat(argv: string[]): Promise<void> {
     if (addressed.mode === "channel") throw new Error("paw: --only filters to an AGENT; a `#channel` session is already single-channel (drop --only)");
     if (!name) throw new Error("paw: --only needs an agent — it can't combine with --all");
     filter = { kind: "agent", name };
+  }
+
+  // `--agent <type>`: the resolved agent runs on that harness — a new one is born with it (persona
+  // `agent:`/`provider:`/`model:`, a fresh pin), an existing one must already be on it (fails loud).
+  if (agentSpec) {
+    if (!name || !folder) throw new Error("paw: --agent needs a folder (or a registered agent) to create or target — e.g. `paw chat . --agent kit`");
+    applyAgentType(space, name, agentSpec, { brief, kind });
   }
 
   // Persistent human peer. Open mesh => bare connection with a stable id (so replies sent while we
@@ -1721,7 +1740,7 @@ const chatCommand: Command = {
   name: "chat",
   group: "Mesh",
   summary: "chat with an EXISTING agent (by @name or folder; wakes it if offline); replies stream back live — --fresh creates a new one",
-  usage: 'chat [<folder>|<name>|@<name>|#<channel>] [--only] [--all] [--name <n>] [--fresh]   (default: "." — this folder\'s agent; --all = every conversation, nothing preselected; --name pins a 2nd+ EXTRA agent at the folder; --fresh births a NEW default agent, fails loud if one already exists)',
+  usage: 'chat [<folder>|<name>|@<name>|#<channel>] [--only] [--all] [--name <n>] [--fresh] [--agent kit|codex|opencode|claude [--provider codex|grok] [--model m]]   (default: "." — this folder\'s agent; --all = every conversation, nothing preselected; --name pins a 2nd+ EXTRA agent at the folder; --fresh births a NEW default agent, fails loud if one already exists; --agent creates the agent on that harness, or targets it if it already runs there)',
   run: (a) => chat([...a.raw]),
 };
 

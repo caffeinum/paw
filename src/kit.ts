@@ -4,8 +4,12 @@
  * itself (docs/notes/kit.md). One `kit run` process per agent, spawned by the manager like any seat.
  *
  * Selected by the persona: `agent: kit` + `provider: codex|grok` (+ optional `model:`, `variant:` =
- * codex reasoning effort). The durable `resume:` pin works as for claude: `--session-id <pin>` until
- * the transcript exists (kit files it under ~/.claude/projects/<slug of cwd>/), `--resume <pin>` after.
+ * codex reasoning effort, `storage:`). The durable `resume:` pin works as for claude: `--session-id <pin>`
+ * until a transcript exists, `--resume <pin>` after. WHERE is the persona's `storage:` — kit's own store
+ * by default (`<KIT_HOME>/sessions/<slug>/<pin>.jsonl`; a claude transcript at the pin is forked there
+ * on first resume), or `storage: claude` = `kit run --overwrite`, appending to the claude transcript
+ * itself (`~/.claude/projects/<slug>/<pin>.jsonl`) — how an existing agent stays on its claude session.
+ * The lookup is session.ts's transcriptRoots, the same one paw log / status / web use.
  *
  * kit is NOT a cotal MCP client: no shim, no mcp.cjs, no hub. It joins the mesh itself under the
  * identity the manager assigned (COTAL_ID + COTAL_LIFECYCLE_UID → `--actor` + `--lifecycle-uid`), so
@@ -20,12 +24,16 @@ import { loadAgentFile, type Connector, type LaunchOpts, type LaunchSpec } from 
 import { beadsDir } from "./beads-dir.ts";
 import { CHANNELS_BRIEF, OPERATOR_REQUESTS_BRIEF, TASKS_BRIEF, UNATTENDED_BRIEF, WAKE_BRIEF } from "./brief.ts";
 import { HUMAN_PEER } from "./names.ts";
-import { readResumeId, transcriptExists } from "./session.ts";
+import { readKitStorage, readResumeId, transcriptExists, transcriptRoots, type KitStorage } from "./session.ts";
 
 export const KIT_AGENT = "kit";
 
 /** Providers kit drives (its own aliases included); `fake[:family]` is kit's offline scripted model, for tests. */
 const PROVIDER_RE = /^(codex|grok|openai|xai|fake(:(codex|grok|openai|xai|canonical))?)$/;
+
+export function isKitProvider(provider: string): boolean {
+  return PROVIDER_RE.test(provider);
+}
 
 function pawHome(): string {
   return process.env.PAW_HOME?.trim() || join(homedir(), ".paw");
@@ -100,7 +108,7 @@ const ENV_ALLOW = [
   "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME", "KIT_HOME",
 ];
 
-export type KitPersona = { provider: string; model?: string; variant?: string; body: string; pin?: string };
+export type KitPersona = { provider: string; model?: string; variant?: string; body: string; pin?: string; storage: KitStorage };
 
 /** What the persona says about this kit agent. Throws on what kit cannot run. */
 export function readKitPersona(configPath: string | undefined): KitPersona {
@@ -110,7 +118,7 @@ export function readKitPersona(configPath: string | undefined): KitPersona {
   if (!provider) throw new Error(`paw: ${configPath} is a kit agent with no \`provider:\` — set provider: codex or provider: grok`);
   if (!PROVIDER_RE.test(provider)) throw new Error(`paw: ${configPath}: provider "${provider}" — kit drives codex or grok`);
   const pin = readResumeId(configPath);
-  return { provider, model: def.model, variant: def.variant, body: def.persona?.trim() ?? "", pin };
+  return { provider, model: def.model, variant: def.variant, body: def.persona?.trim() ?? "", pin, storage: readKitStorage(configPath) };
 }
 
 /** The launch, pure apart from reading the persona: kit's argv + env. `brief` is the file the caller
@@ -136,6 +144,7 @@ export function kitLaunch(opts: LaunchOpts, persona: KitPersona, deps: { bin: st
   args.push("--channels", (opts.subscribe ?? []).join(","));
   args.push("--actor", opts.id!, "--lifecycle-uid", opts.lifecycleUid!);
   args.push("--append-system-prompt-file", deps.brief);
+  if (persona.storage === "claude") args.push("--overwrite");
   args.push(deps.sessionExists(persona.pin!) ? "--resume" : "--session-id", persona.pin!);
 
   const src = deps.env ?? process.env;
@@ -162,6 +171,9 @@ export const kitConnector: Connector = {
     const brief = join(dir, "system.md");
     writeFileSync(`${brief}.tmp`, [persona.body, kitBrief(opts.name)].filter(Boolean).join("\n\n") + "\n");
     renameSync(`${brief}.tmp`, brief);
-    return kitLaunch(opts, persona, { bin, brief, sessionExists: transcriptExists });
+    // kit refuses `--session-id` for an id it can already find in the stores it reads (kit's, then
+    // claude's; claude's alone under --overwrite) — so a transcript in EITHER means --resume.
+    const roots = transcriptRoots(KIT_AGENT, persona.storage);
+    return kitLaunch(opts, persona, { bin, brief, sessionExists: (id) => transcriptExists(id, roots) });
   },
 };
