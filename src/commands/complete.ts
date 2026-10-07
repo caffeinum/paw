@@ -40,6 +40,7 @@ const AGENT_TARGET_COMMANDS = new Set([
   "attach",
   "adopt",
   "rename",
+  "persona",
   "rm",
   "sessions",
   "log",

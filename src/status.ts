@@ -25,6 +25,7 @@ import { tailRead, turnState, type PendingTool, type TurnState } from "./transcr
 import { gitInfoMany, type GitInfo } from "./git.ts";
 import { pawServer } from "./server.ts";
 import { presenceLive, readMeshRoster } from "./roster.ts";
+import { personaGlyph } from "./personality.ts";
 
 const tty = process.stdout.isTTY === true;
 const wrap = (code: string) => (s: string) => (tty ? `\x1b[${code}m${s}\x1b[0m` : s);
@@ -86,6 +87,12 @@ export interface AgentStatus {
   /** Persona `agent:` pin (claude/opencode/codex/…). Absent = paw's default claude. The claude-only
    *  pin/transcript columns must not be judged against a non-claude harness. */
   harness?: string;
+  /** The personality's UI glyph and colour (persona `emoji:`/`hue:`, docs/notes/personalities.md).
+   *  Absent = none drawn or `personality: none` — the UIs fall back to no glyph / the name-hash colour. */
+  emoji?: string;
+  hue?: number;
+  /** The persona's personality keys are malformed: shown as a note, never a crashed roster. */
+  personalityError?: string;
 }
 
 /** Map a manager ps row to the display status. Not listed → offline; "absent" (mid-start) → starting. */
@@ -317,6 +324,7 @@ export function inboxStuck(r: AgentStatus): boolean {
 
 /** A trailing durability/health note, or "" when the agent is quietly durable. */
 function note(r: AgentStatus, now: number): string {
+  if (r.personalityError) return `⚠ ${r.personalityError.replace(/^paw: /, "")}`;
   if (r.unregistered) return `unregistered ${r.unregistered.agent} peer (cotal_spawn) — paw restart registers + revives it`;
   // A hung tool outranks everything: it is WHY the inbox isn't draining, and `paw unstick` is the fix.
   const hung = hungTool(r, now);
@@ -477,12 +485,15 @@ export function formatStatus(rows: AgentStatus[], now: number, width: number = t
   const cwd = (r: AgentStatus) => (r.folder ? tilde(r.folder) : "—");
   const rtText = (r: AgentStatus) => (r.live && r.runtime ? r.runtime : "—");
   const notes = new Map(rows.map((r) => [r.name, note(r, now)]));
+  /** A 3-column glyph slot (emoji is 2 cells wide + a space) — only when some row has one, so a fleet
+   *  with no personalities renders exactly as before. */
+  const glyphW = rows.some((r) => r.emoji) ? 3 : 0;
   const w = planColumns(
     {
       // CAPPED, not simply "as wide as the widest": one 37-char name
       // (`fix-verifier-retry-connect-unavailable`) otherwise sets the column for all 118 rows and takes
       // that width out of CWD on every one of them. An outlier elides; the fleet keeps its paths.
-      name: Math.min(NAME_CAP, Math.max(4, ...rows.map((r) => r.name.length))),
+      name: glyphW + Math.min(NAME_CAP, Math.max(4, ...rows.map((r) => r.name.length))),
       status: Math.max(6, ...rows.map((r) => statusText(r).length)),
       rt: Math.max(7, ...rows.map((r) => rtText(r).length)),
       cwd: Math.max(3, ...rows.map((r) => cwd(r).length)),
@@ -512,10 +523,11 @@ export function formatStatus(rows: AgentStatus[], now: number, width: number = t
     // A note that fits rides the row; one that doesn't gets its OWN indented line rather than wrapping
     // through the columns. Nothing is silently dropped — the reason a row is flagged is the point.
     const inline = n && n.length <= w.noteInline ? "  " + paint(n) : "";
-    const name = elideRight(r.name, w.name);
+    const name = elideRight(r.name, w.name - glyphW);
+    const glyph = glyphW ? (r.emoji ? `${r.emoji} ` : "   ") : "";
     const folder = elideLeft(cwd(r), w.cwd);
     const row =
-      `${pad(c.bold(name), name.length, w.name)}  ` +
+      `${pad(glyph + c.bold(name), glyphW + name.length, w.name)}  ` +
       `${pad(statusColor(statusText(r))(statusText(r)), statusText(r).length, w.status)}  ` +
       (w.showRt ? `${pad(r.live ? rt : c.dim(rt), rt.length, w.rt)}  ` : "") +
       `${pad(c.dim(folder), folder.length, w.cwd)}  ` +
@@ -805,7 +817,7 @@ export async function collectStatus(space: string, ctl?: ManagerControl, opts: C
       const file = personaFilePath(space, name);
       const has = existsSync(file);
       const roots = has ? personaTranscriptRoots(file) : [claudeProjectsRoot()];
-      return [name, { pin: has ? readResumeId(file) : undefined, harness: has ? readAgentType(file) : undefined, roots }];
+      return [name, { pin: has ? readResumeId(file) : undefined, harness: has ? readAgentType(file) : undefined, roots, glyph: personaGlyph(has ? file : undefined) }];
     }),
   );
   const pins = [...new Set([...local.values()].flatMap((l) => (l.pin ? [l.pin] : [])))];
@@ -847,7 +859,7 @@ export async function collectStatus(space: string, ctl?: ManagerControl, opts: C
   const gitByFolder = await git;
   const rows: AgentStatus[] = agents.map(({ folder, name }) => {
     const rec = local.get(name)!;
-    const { pin, harness } = rec;
+    const { pin, harness, glyph } = rec;
     const sessionName = pin ? nameForSession(pin, sessionIndex) : undefined;
     const t = transcriptOf(rec);
     const psRow = psByName.get(name);
@@ -897,6 +909,9 @@ export async function collectStatus(space: string, ctl?: ManagerControl, opts: C
       // Local git only; the PR lookup is network and stays lazy. Read CONCURRENTLY above rather than
       // one folder at a time here — see gitInfoMany.
       git: gitByFolder.get(folder),
+      ...(glyph.emoji ? { emoji: glyph.emoji } : {}),
+      ...(glyph.hue !== undefined ? { hue: glyph.hue } : {}),
+      ...(glyph.error ? { personalityError: glyph.error } : {}),
     };
   });
   // Manager-listed agents paw never registered — a `cotal_spawn(name, agent: "codex", …)` peer sits on

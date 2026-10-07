@@ -180,13 +180,22 @@ function shortPath(p, max = 44) {
   return `${parts[0]}/…/${parts.slice(-2).join("/")}`;
 }
 
+/** The status row for an agent name, if it is one of ours (its personality glyph rides on it). */
+const rowFor = (name) => state.rows?.find((r) => r.name === name);
+
 const avatarColor = (name) => {
-  // Deterministic per name: an agent keeps its colour across reloads, which is what makes the sidebar
+  // The agent's personality hue (persona `hue:`, docs/notes/personalities.md) when it has one; else
+  // deterministic per name: an agent keeps its colour across reloads, which is what makes the sidebar
   // scannable. A random palette would reshuffle on every refresh.
+  const hue = rowFor(name)?.hue;
+  if (typeof hue === "number") return `hsl(${hue} 45% 42%)`;
   let h = 0;
   for (const ch of name) h = (h * 31 + ch.charCodeAt(0)) % 360;
   return `hsl(${h} 45% 42%)`;
 };
+
+/** What the avatar square shows: the agent's emoji, else the first letter as before. */
+const avatarGlyph = (name) => esc(rowFor(name)?.emoji ?? (name[0]?.toUpperCase() ?? "?"));
 
 /**
  * Pull paw's attachment lines out of a message body.
@@ -331,7 +340,7 @@ function renderAgents(now) {
       const act = `<span class="arch" data-arch="${r.name}" title="${filed ? "Unarchive" : "Archive — returns on its next message"}">${filed ? "↩" : "⊘"}</span>`;
       return `<div class="row${active}${strong}${filed ? " filed" : ""}" data-agent="${r.name}"${r.failure ? ` title="last turn failed: ${esc(r.failure.text)}"` : ""}>
         <span class="pip ${cls}"></span>
-        <span class="nm">${r.name}</span>
+        <span class="nm">${r.emoji ? `<span class="emo">${esc(r.emoji)}</span> ` : ""}${r.name}</span>
         ${act}
         ${n ? `<span class="count">${n}</span>` : `<span class="count" style="background:none;color:var(--sidebar-txt);font-weight:400">${ago(r.activeMs, now)}</span>`}
       </div>`;
@@ -579,7 +588,7 @@ function renderMessages(now) {
       // agent you sent it to. Both are "the DM this row lives in", which is what a click should open.
       const convo = m.dir === "out" ? (m.to ?? "") : m.from;
       return divider + `<div class="m${cont}${m.ts === state.flashTs ? " flash" : ""}" data-ts="${m.ts}" data-convo="${esc(convo)}"${m.state === "failed" ? ` data-retry="${m.id}"` : ""}${m.state ? ' style="opacity:.7"' : ""}>
-        <div class="av" style="background:${avatarColor(who)}">${who[0]?.toUpperCase() ?? "?"}</div>
+        <div class="av" style="background:${avatarColor(who)}">${avatarGlyph(who)}</div>
         <div>
           <div class="hdr"><span class="name${m.dir === "out" ? "" : " who"}"${m.dir === "out" ? "" : ` data-open="${esc(who)}"`}>${who}</span>${tag}${stamp}</div>
           <div class="txt">${md(body)}${images.map((p) => `<a href="/api/file?path=${encodeURIComponent(p)}" target="_blank" rel="noreferrer"><img class="att" src="/api/file?path=${encodeURIComponent(p)}" alt="${p.split("/").pop()}" loading="lazy"></a>`).join("")}</div>

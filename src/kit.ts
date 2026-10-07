@@ -24,6 +24,7 @@ import { loadAgentFile, type Connector, type LaunchOpts, type LaunchSpec } from 
 import { beadsDir } from "./beads-dir.ts";
 import { CHANNELS_BRIEF, OPERATOR_REQUESTS_BRIEF, TASKS_BRIEF, UNATTENDED_BRIEF, WAKE_BRIEF } from "./brief.ts";
 import { HUMAN_PEER } from "./names.ts";
+import { voiceLineFor } from "./personality.ts";
 import { readKitStorage, readResumeId, transcriptExists, transcriptRoots, type KitStorage } from "./session.ts";
 
 export const KIT_AGENT = "kit";
@@ -84,12 +85,13 @@ export function ensureKitBinary(opts: { rebuild?: boolean } = {}): string {
  * Claude-only parts of the claude brief (cotal_inbox/anycast, cotal_join, image Reads, Monitor) are
  * left out because kit has no such tools.
  */
-export function kitBrief(name: string): string {
+export function kitBrief(name: string, voice?: string): string {
   return [
     `You are "${name}", a paw agent rooted at this folder and a peer on the cotal mesh, running on kit:`,
     `a small harness with a shell, file tools and three cotal tools — cotal_dm(to, text), cotal_send(channel, text)`,
     `and cotal_roster. Messages arrive as your turns; there is no inbox to drain. The human operator is the`,
     `peer "${HUMAN_PEER}": answer them with cotal_dm("${HUMAN_PEER}", …), a teammate by their agent name.`,
+    ...(voice ? [voice] : []),
     ...CHANNELS_BRIEF,
     ...UNATTENDED_BRIEF,
     `Files shared by humans/endpoints are announced on #files: run \`paw files\` in the shell to list them`,
@@ -108,7 +110,7 @@ const ENV_ALLOW = [
   "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME", "KIT_HOME",
 ];
 
-export type KitPersona = { provider: string; model?: string; variant?: string; body: string; pin?: string; storage: KitStorage };
+export type KitPersona = { provider: string; model?: string; variant?: string; body: string; pin?: string; storage: KitStorage; voice?: string };
 
 /** What the persona says about this kit agent. Throws on what kit cannot run. */
 export function readKitPersona(configPath: string | undefined): KitPersona {
@@ -118,7 +120,7 @@ export function readKitPersona(configPath: string | undefined): KitPersona {
   if (!provider) throw new Error(`paw: ${configPath} is a kit agent with no \`provider:\` — set provider: codex or provider: grok`);
   if (!PROVIDER_RE.test(provider)) throw new Error(`paw: ${configPath}: provider "${provider}" — kit drives codex or grok`);
   const pin = readResumeId(configPath);
-  return { provider, model: def.model, variant: def.variant, body: def.persona?.trim() ?? "", pin, storage: readKitStorage(configPath) };
+  return { provider, model: def.model, variant: def.variant, body: def.persona?.trim() ?? "", pin, storage: readKitStorage(configPath), voice: voiceLineFor(configPath) };
 }
 
 /** The launch, pure apart from reading the persona: kit's argv + env. `brief` is the file the caller
@@ -169,7 +171,7 @@ export const kitConnector: Connector = {
     const dir = kitAgentDir(opts.space, opts.name);
     mkdirSync(dir, { recursive: true });
     const brief = join(dir, "system.md");
-    writeFileSync(`${brief}.tmp`, [persona.body, kitBrief(opts.name)].filter(Boolean).join("\n\n") + "\n");
+    writeFileSync(`${brief}.tmp`, [persona.body, kitBrief(opts.name, persona.voice)].filter(Boolean).join("\n\n") + "\n");
     renameSync(`${brief}.tmp`, brief);
     // kit refuses `--session-id` for an id it can already find in the stores it reads (kit's, then
     // claude's; claude's alone under --overwrite) — so a transcript in EITHER means --resume.

@@ -35,6 +35,7 @@ import { isClaudeHarness, personaTranscriptRoots, personaValue, readAgentType, r
 import { defaultTmuxEnv, readRuntimeMarker } from "./lifecycle.ts";
 import { answerStartupPrompt, tmuxSplit, tmuxSplitAdvice, type StartupScreen } from "./native-attach.ts";
 import { HOST_RE } from "./url.ts";
+import { personalityFor, readPersonality } from "./personality.ts";
 import type { ManagerControl, ManagerReply } from "./control.ts";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -485,6 +486,15 @@ export function ensurePersonaFile(space: string, name: string, opts?: { brief?: 
   if (!existsSync(file) || (existing && !existing[1].trim())) {
     const kind = opts?.kind && opts.kind !== "folder" ? opts.kind : undefined;
     setPersonaKeys(space, name, { resume: (existing && readResumeId(file)) || randomUUID(), "paw-kind": kind });
+    // A personality is drawn at BIRTH only (docs/notes/personalities.md) — seeded by the name, tilted by
+    // the repo. One set beforehand (`paw chat --fresh --personality …`, or `personality: none`) is kept;
+    // an operator's own emoji/hue survive the draw. A born persona is never re-drawn here (backfill is
+    // `paw persona --backfill`, explicit).
+    const before = readPersonality(file);
+    if (before.kind === "unset") {
+      const keys = personalityFor(undefined, name, readCwd(file));
+      setPersonaKeys(space, name, { ...keys, emoji: before.emoji ?? keys.emoji, hue: before.hue !== undefined ? String(before.hue) : keys.hue });
+    }
     const body = opts?.brief ?? `You are the paw agent for the "${name}" folder — a peer on the cotal mesh, acting unattended on this repository.`;
     writeFileSync(file, `${readFileSync(file, "utf8")}${body}\n`);
   }
