@@ -87,9 +87,10 @@ export function isClaudeHarness(agentType: string | undefined): boolean {
   return agentType === "claude" || agentType === "cotal" || agentType === "paw";
 }
 
-/** True when this agent's conversation is a Claude Code jsonl under ~/.claude/projects at its `resume:`
- *  pin — the claude harness itself, or kit (src/kit.ts), which writes the same format. paw log, the web
- *  trace and the pin-health column read it the same way for both. */
+/** True when this agent's conversation is a Claude Code jsonl at its `resume:` pin — the claude harness
+ *  itself (~/.claude/projects), or kit (src/kit.ts), which writes the same format in the store its
+ *  `storage:` names (see {@link transcriptRoots}). paw log, the web trace and the pin-health column
+ *  read it the same way for both. */
 export function writesClaudeTranscript(agentType: string | undefined): boolean {
   return isClaudeHarness(agentType) || agentType === "kit";
 }
@@ -110,66 +111,111 @@ export function readShareTools(configPath: string | undefined): string | undefin
 export function readCwd(configPath: string | undefined): string | undefined {
   return scalar(configPath, "cwd");
 }
-
-/**
- * True if claude already has a transcript for `sessionId` under ~/.claude/projects/<any-cwd-slug>/.
- * Callers don't know the agent's cwd (the manager owns it since cotal #43), so we scan every project
- * dir. Decides resume-vs-create: a pinned id whose transcript exists is RESUMED (--resume); a pin
- * with no transcript yet is the agent's FIRST boot, so the session is CREATED at that exact id
- * (--session-id) — making the very first session durable, so the next restart can resume it.
- */
-export function transcriptExists(sessionId: string): boolean {
-  return transcriptPath(sessionId) !== undefined;
+/** Claude Code's own transcript store: `~/.claude/projects/<slug of cwd>/<id>.jsonl`. */
+export function claudeProjectsRoot(): string {
+  return join(homedir(), ".claude", "projects");
 }
 
-/** The path to `sessionId`'s transcript, or undefined if claude has none yet. Same cwd-agnostic scan as
- *  {@link transcriptExists} — callers don't know the agent's cwd, since the manager owns it. */
-export function transcriptPath(sessionId: string): string | undefined {
-  const projects = join(homedir(), ".claude", "projects");
-  if (!existsSync(projects)) return undefined;
-  for (const dir of readdirSync(projects)) {
-    const file = join(projects, dir, `${sessionId}.jsonl`);
-    if (existsSync(file)) return file;
+/** kit's own transcript store: `<KIT_HOME|~/.kit>/sessions/<slug of cwd>/<id>.jsonl` — the same slug and
+ *  the same Claude Code JSONL format, but a different file: kit forks a claude session here on its first
+ *  resume and appends only to its copy (kit's default storage mode). */
+export function kitSessionsRoot(env: NodeJS.ProcessEnv = process.env): string {
+  return join(env.KIT_HOME?.trim() || join(homedir(), ".kit"), "sessions");
+}
+
+/** Where a kit agent's session lives — the persona's `storage:` key. `kit` (absent ⇒ this) is kit's own
+ *  store, forking a claude session on resume; `claude` is `kit run --overwrite`: read and append the
+ *  claude transcript itself, so an agent that was a claude agent keeps ONE transcript. Anything else
+ *  throws — a typo must not silently fork an agent off its claude session. */
+export type KitStorage = "kit" | "claude";
+export function readKitStorage(configPath: string | undefined): KitStorage {
+  const v = scalar(configPath, "storage");
+  if (v === undefined || v === "kit") return "kit";
+  if (v === "claude") return "claude";
+  throw new Error(`paw: storage: in ${configPath} is "${v}" — expected kit (kit's own store, the default) or claude (kit --overwrite)`);
+}
+
+/**
+ * The transcript stores to search for an agent's sessions, in lookup order. A kit agent on kit's own
+ * store looks there FIRST, then claude's (an id found there is the claude original kit forks on its
+ * first resume); every other agent — claude, and kit with `storage: claude` — is claude-only. Never
+ * search kit's store for a claude agent: the same id can exist in both with DIFFERENT continuations.
+ */
+export function transcriptRoots(agentType: string | undefined, storage: KitStorage = "kit"): string[] {
+  return agentType === "kit" && storage === "kit" ? [kitSessionsRoot(), claudeProjectsRoot()] : [claudeProjectsRoot()];
+}
+
+/** {@link transcriptRoots} for a persona file (its `agent:` + `storage:`). No file ⇒ claude-only. */
+export function personaTranscriptRoots(configPath: string | undefined): string[] {
+  if (!configPath || !existsSync(resolve(configPath))) return [claudeProjectsRoot()];
+  const agent = readAgentType(configPath);
+  return transcriptRoots(agent, agent === "kit" ? readKitStorage(configPath) : undefined);
+}
+
+/**
+ * True if a transcript for `sessionId` exists in one of `roots` (default: claude's projects), under any
+ * cwd slug. Callers don't know the agent's cwd (the manager owns it since cotal #43), so we scan every
+ * project dir. Decides resume-vs-create: a pinned id whose transcript exists is RESUMED (--resume); a
+ * pin with no transcript yet is the agent's FIRST boot, so the session is CREATED at that exact id
+ * (--session-id) — making the very first session durable, so the next restart can resume it.
+ */
+export function transcriptExists(sessionId: string, roots: string[] = [claudeProjectsRoot()]): boolean {
+  return transcriptPath(sessionId, roots) !== undefined;
+}
+
+/** The path to `sessionId`'s transcript in the FIRST of `roots` that holds it, or undefined if none does.
+ *  `slug` (a cwd's project-dir name) is tried first within each root — a shortcut inside a root, never a
+ *  reason to prefer a later root over an earlier one. */
+export function transcriptPath(sessionId: string, roots: string[] = [claudeProjectsRoot()], slug?: string): string | undefined {
+  for (const root of roots) {
+    if (!existsSync(root)) continue;
+    if (slug && existsSync(join(root, slug, `${sessionId}.jsonl`))) return join(root, slug, `${sessionId}.jsonl`);
+    for (const dir of readdirSync(root)) {
+      const file = join(root, dir, `${sessionId}.jsonl`);
+      if (existsSync(file)) return file;
+    }
   }
   return undefined;
 }
 
-/** {@link transcriptPath} for many sessions at once — the same answer per id (first project dir in
- *  readdir order whose `<id>.jsonl` exists), from ONE listing of each project dir. Asked one id at a
- *  time, `paw status` probed every project dir per agent per column: ~100k existsSync for a fleet. */
-export function transcriptPaths(sessionIds: Iterable<string>): Map<string, string> {
+/** {@link transcriptPath} for many sessions at once — the same answer per id (first root, then first
+ *  project dir in readdir order, whose `<id>.jsonl` exists), from ONE listing of each project dir. Asked
+ *  one id at a time, `paw status` probed every project dir per agent per column: ~100k existsSync. */
+export function transcriptPaths(sessionIds: Iterable<string>, roots: string[] = [claudeProjectsRoot()]): Map<string, string> {
   const want = new Set(sessionIds);
   const out = new Map<string, string>();
-  const projects = join(homedir(), ".claude", "projects");
-  if (want.size === 0 || !existsSync(projects)) return out;
+  if (want.size === 0) return out;
   if (want.size <= 4) {
     for (const id of want) {
-      const file = transcriptPath(id);
+      const file = transcriptPath(id, roots);
       if (file) out.set(id, file);
     }
     return out;
   }
-  for (const dir of readdirSync(projects)) {
-    let names: string[];
-    try {
-      names = readdirSync(join(projects, dir));
-    } catch {
-      continue; // not a directory (or vanished) — transcriptPath's existsSync finds nothing there either
-    }
-    for (const n of names) {
-      if (!n.endsWith(".jsonl")) continue;
-      const id = n.slice(0, -".jsonl".length);
-      if (!want.has(id) || out.has(id)) continue;
-      const file = join(projects, dir, n);
-      if (existsSync(file)) out.set(id, file);
+  for (const root of roots) {
+    if (!existsSync(root)) continue;
+    for (const dir of readdirSync(root)) {
+      let names: string[];
+      try {
+        names = readdirSync(join(root, dir));
+      } catch {
+        continue; // not a directory (or vanished) — transcriptPath's existsSync finds nothing there either
+      }
+      for (const n of names) {
+        if (!n.endsWith(".jsonl")) continue;
+        const id = n.slice(0, -".jsonl".length);
+        if (!want.has(id) || out.has(id)) continue;
+        const file = join(root, dir, n);
+        if (existsSync(file)) out.set(id, file);
+      }
     }
   }
   return out;
 }
 
 /** The last-modified time (ms) of `sessionId`'s transcript — a proxy for the agent's "last active"
- *  — or undefined if it has no transcript yet. Same cwd-agnostic scan as {@link transcriptExists}. */
-export function transcriptMtime(sessionId: string): number | undefined {
-  const file = transcriptPath(sessionId);
+ *  — or undefined if it has no transcript yet. Same scan as {@link transcriptExists}. */
+export function transcriptMtime(sessionId: string, roots: string[] = [claudeProjectsRoot()]): number | undefined {
+  const file = transcriptPath(sessionId, roots);
   return file ? statSync(file).mtimeMs : undefined;
 }

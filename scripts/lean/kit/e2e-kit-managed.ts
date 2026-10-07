@@ -51,7 +51,8 @@ const nats = spawn("nats-server", ["-js", "-p", String(port), "-a", "127.0.0.1",
 
 const { ensure, stop, managerProcs, mailboxProcs } = await import("../../../src/lifecycle.ts");
 const { ensurePersonaFile, personaFilePath, setFolderName, setPersonaKeys } = await import("../../../src/addressing.ts");
-const { readResumeId, transcriptPath } = await import("../../../src/session.ts");
+const { kitSessionsRoot, readResumeId, transcriptPath, transcriptRoots } = await import("../../../src/session.ts");
+const KIT_STORES = transcriptRoots("kit"); // kit's own store, then claude's (an older kit binary files in claude's)
 const { kitBinPath } = await import("../../../src/kit.ts");
 const { pawServer } = await import("../../../src/server.ts");
 
@@ -123,7 +124,7 @@ try {
   ensurePersonaFile(space, NAME, { brief: "You are kitty, a test agent. Keep replies to one line." });
   setPersonaKeys(space, NAME, { agent: "kit", provider: PROVIDER, model: MODEL || undefined, variant: FAKE ? undefined : "low" });
   const pin = readResumeId(personaFilePath(space, NAME))!;
-  ok("persona minted with a resume pin and no transcript yet", !!pin && !transcriptPath(pin));
+  ok("persona minted with a resume pin and no transcript yet", !!pin && !transcriptPath(pin, KIT_STORES));
 
   const t0 = Date.now();
   const st = paw("start", NAME);
@@ -147,8 +148,8 @@ try {
   await dm(NAME, "Reply to prober with cotal_dm saying exactly READY-KIT, nothing else.");
   const r1 = await reply(NAME, "READY-KIT");
   ok("a DM gets a reply", !!r1, r1?.text.slice(0, 160));
-  const file = await until(() => transcriptPath(pin), 10_000);
-  ok("the transcript is the pin, filed under the folder's claude project", !!file && file.endsWith(`/${folder.replace(/[^a-zA-Z0-9]/g, "-")}/${pin}.jsonl`), file);
+  const file = await until(() => transcriptPath(pin, KIT_STORES), 10_000);
+  ok("the transcript is the pin, filed under the folder's slug (kit's store, or claude's for an older kit)", !!file && file.endsWith(`/${folder.replace(/[^a-zA-Z0-9]/g, "-")}/${pin}.jsonl`), file);
   if (file) cleanup.push(file);
   await dm(NAME, "Remember the code word PELICAN-42. Reply to prober with cotal_dm saying exactly NOTED, nothing else.");
   ok("noted the word", !!(await reply(NAME, "NOTED")));
@@ -181,7 +182,7 @@ try {
   ok("paw log renders the kit transcript", lg.code === 0 && /PELICAN-42/.test(lg.out) && /↩ prober/.test(lg.out), tail(lg.out + lg.err, 6));
   console.log(lg.out.trim().split("\n").map((l) => `    ${l}`).join("\n"));
   const op = paw("open", NAME);
-  ok("paw open says it runs on kit (headless)", /runs on kit/.test(op.out), tail(op.out + op.err));
+  ok("paw open says it runs on kit (headless)", /runs on kit/.test(op.out + op.err), tail(op.out + op.err));
 
   const sp = paw("stop", NAME);
   ok("paw stop kitty", sp.code === 0, tail(sp.out + sp.err));
@@ -196,7 +197,10 @@ try {
   const cliName = "kit-cli"; // basename "kit cli.XXXX" cleaned the way paw cleans names, minus the random tail
   const expected = cliDir.split("/").pop()!.replace(/[^A-Za-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "");
   const env = { ...process.env, KIT_PROVIDER: PROVIDER, ...(MODEL ? { KIT_MODEL: MODEL } : {}) };
-  const project = join(homedir(), ".claude", "projects", cliDir.replace(/[^a-zA-Z0-9]/g, "-"));
+  // A kit with storage modes (`--overwrite` in its help) files new sessions in its own store.
+  const help = spawnSync(bin, ["--help"], { encoding: "utf8" });
+  const kitStore = /--overwrite/.test(`${help.stdout}${help.stderr}`);
+  const project = join(kitStore ? kitSessionsRoot() : join(homedir(), ".claude", "projects"), cliDir.replace(/[^a-zA-Z0-9]/g, "-"));
   cleanup.push(project);
   const run = (args: string[]) => {
     const c = spawn(bin, args, { cwd: cliDir, env, stdio: ["ignore", "pipe", "pipe"] });
@@ -237,7 +241,7 @@ try {
   ok("--continue: nothing on stderr", cont.err() === "", cont.err().slice(0, 200));
 
   const list = spawnSync(bin, ["--resume"], { cwd: cliDir, env, encoding: "utf8" });
-  ok("`kit --resume` with no id lists the sessions, exit 1", list.status === 1 && /newest first/.test(list.stderr) && list.stderr.includes(sessions[0]!.replace(".jsonl", "")), tail(list.stderr));
+  ok("`kit --resume` with no id lists the sessions, exit 1", list.status === 1 && /newest first|store priority/.test(list.stderr) && list.stderr.includes(sessions[0]!.replace(".jsonl", "")), tail(list.stderr));
 } finally {
   for (const c of children) if (c.exitCode === null) c.kill("SIGTERM");
   await prober?.stop().catch(() => {});

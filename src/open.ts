@@ -16,7 +16,9 @@ import { existsSync } from "node:fs";
 import { assertUnambiguousTarget, canonicalDir, ensureAgentSpawned, folderForName, personaFilePath, registerInstance, resolveFolderAgent, setFolderName, type Kind } from "./addressing.ts";
 import { KIT_AGENT, kitBinPath } from "./kit.ts";
 import { agentSummary } from "./agent-summary.ts";
-import { readAgentType, readHeadless, readResumeId } from "./session.ts";
+import { personaTranscriptRoots, readAgentType, readCwd, readHeadless, readKitStorage, readResumeId, transcriptPath } from "./session.ts";
+import { claudeProjectDir } from "./adopt.ts";
+import { join } from "node:path";
 import { withManagerControl } from "./control.ts";
 import { readForeground } from "./foreground.ts";
 import { isAddressHandle, resolveAddress } from "./address.ts";
@@ -201,10 +203,27 @@ function kitView(space: string, name: string): boolean {
   if (help.error || !/kit <name> \| kit @<name>/.test(help.stdout ?? "")) return false;
   const target = KIT_SUBCOMMANDS.has(name) ? `@${name}` : name;
   const dm = [process.execPath, ...process.execArgv, process.argv[1]!, "dm", name, "--space", space, "-"];
-  const r = spawnSync(bin, [target, "--space", space, "--server", pawServer(), "--", ...dm], { stdio: "inherit" });
+  const r = spawnSync(bin, [target, "--space", space, "--server", pawServer(), ...kitViewSession(personaFilePath(space, name)), "--", ...dm], { stdio: "inherit" });
   if (r.error) throw new Error(`paw: couldn't open ${name}'s kit view: ${r.error.message}`);
   if (r.status !== 0) throw new Error(`paw: kit's view of ${name} exited with ${r.status ?? r.signal}`);
   return true;
+}
+
+/**
+ * `--session <transcript>` for kit's view, resolved by paw's store-aware lookup — the view's own
+ * default searches kit's store first whatever the persona says, so a `storage: claude` agent (which kit
+ * runs with --overwrite) could be shown a stale fork, and before its first turn would be watched at a
+ * kit-store path it never writes. Nothing to add for a kit-store agent with no transcript yet: kit's
+ * default already names where `kit run` will create it.
+ */
+export function kitViewSession(persona: string): string[] {
+  const pin = readResumeId(persona);
+  if (!pin) return [];
+  const found = transcriptPath(pin, personaTranscriptRoots(persona));
+  if (found) return ["--session", found];
+  const cwd = readCwd(persona);
+  if (readKitStorage(persona) === "claude" && cwd) return ["--session", join(claudeProjectDir(cwd), `${pin}.jsonl`)];
+  return [];
 }
 
 /** kit's subcommands: an agent named like one is addressed as `kit @<name>`. */

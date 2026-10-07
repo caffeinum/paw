@@ -5,7 +5,7 @@
  */
 import { execFileSync } from "node:child_process";
 import { homedir } from "node:os";
-import { personaValue, readAgentType, readCwd, readResumeId, transcriptPath } from "./session.ts";
+import { personaTranscriptRoots, personaValue, readAgentType, readCwd, readKitStorage, readResumeId, transcriptPath } from "./session.ts";
 import { lastUsage, tailRead } from "./transcript.ts";
 import { meshIdentity } from "./named.ts";
 
@@ -34,9 +34,9 @@ export function agentSummary(space: string, name: string, persona: string, headl
   const agent = readAgentType(persona) ?? "claude";
   const provider = personaValue(persona, "provider");
   const model = personaValue(persona, "model");
-  const harness = agent === "kit" ? `kit · ${provider ?? "?"}${model ? ` · ${model}` : " · (kit default model)"}` : `${headless ? "claude -p (headless)" : agent}${model ? ` · ${model}` : ""}`;
+  const harness = agent === "kit" ? `kit · ${provider ?? "?"}${model ? ` · ${model}` : " · (kit default model)"} · ${readKitStorage(persona)} store` :`${headless ? "claude -p (headless)" : agent}${model ? ` · ${model}` : ""}`;
   const pin = readResumeId(persona);
-  const file = pin ? transcriptPath(pin) : undefined;
+  const file = pin ? transcriptPath(pin, personaTranscriptRoots(persona)) : undefined;
   const usage = file ? lastUsage(tailRead(file, 128 * 1024).split("\n").filter(Boolean)) : undefined;
   const ctx = usage ? `${kfmt(usage.tokens)}${usage.limit ? `/${kfmt(usage.limit)} ${Math.round((usage.tokens / usage.limit) * 100)}%` : ""}` : "—";
   const proc = agentProcess(space, name, agent === "kit" ? "kit run" : "claude");

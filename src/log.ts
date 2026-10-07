@@ -13,14 +13,14 @@
  * of the file (transcripts reach hundreds of MB).
  */
 import { closeSync, existsSync, openSync, readSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { registry, type Command } from "@cotal-ai/core";
 import { assertUnambiguousTarget, canonicalDir, folderForName, lookupFolderName, personaFilePath, sanitizeAgentName } from "./addressing.ts";
 import { claudeProjectDir, latestSession } from "./adopt.ts";
 import { CodexParser, findCodexSessionFile, resolveCodexRoots } from "./codex-log.ts";
 import { meshAgentSession } from "./named.ts";
 import { latestOpencodeSession, opencodeBlocks, resolveOpencodeDb } from "./opencode-log.ts";
-import { readAgentType, readResumeId, transcriptPath, writesClaudeTranscript } from "./session.ts";
+import { claudeProjectsRoot, personaTranscriptRoots, readAgentType, readResumeId, transcriptPath, writesClaudeTranscript } from "./session.ts";
 import { resolveSpace } from "./lifecycle.ts";
 import { inlineMd, renderMarkdown } from "./markdown.ts";
 import { oneLine, tailRead, TranscriptParser, type Block } from "./transcript.ts";
@@ -186,8 +186,9 @@ function openClaudeLog(space: string, name: string, folder: string, bytes: numbe
   const pinned = sessionId ?? (existsSync(persona) ? readResumeId(persona) : undefined);
   const agentType = existsSync(persona) ? readAgentType(persona) : undefined;
   const dir = claudeProjectDir(folder);
-  const id = chooseTranscriptId(name, dir, pinned, agentType);
-  const file = existsSync(join(dir, `${id}.jsonl`)) ? join(dir, `${id}.jsonl`) : (transcriptPath(id) ?? join(dir, `${id}.jsonl`));
+  const roots = personaTranscriptRoots(persona);
+  const id = chooseTranscriptId(name, dir, pinned, agentType, roots);
+  const file = agentTranscriptFile(dir, id, roots) ?? join(dir, `${id}.jsonl`);
   const parser = new TranscriptParser();
   let offset = 0;
   let partial = "";
@@ -306,6 +307,22 @@ function openCodexLog(space: string, name: string, folder: string, bytes: number
   };
 }
 
+/**
+ * The file holding `id` for an agent whose transcript stores are `roots` (session.ts transcriptRoots,
+ * in lookup order), or undefined. The folder's own claude project dir (`dir`) is a shortcut WITHIN the
+ * claude tier only: a kit agent's continuation in kit's store must win over its claude original, which
+ * would otherwise sit right there in `dir` and show the session as it was before kit forked it.
+ */
+export function agentTranscriptFile(dir: string, id: string, roots: string[] = [claudeProjectsRoot()]): string | undefined {
+  const claudeRoot = claudeProjectsRoot();
+  for (const root of roots) {
+    if (root === claudeRoot && existsSync(join(dir, `${id}.jsonl`))) return join(dir, `${id}.jsonl`);
+    const file = transcriptPath(id, [root], basename(dir));
+    if (file) return file;
+  }
+  return undefined;
+}
+
 /** Pick which transcript id to show for an agent. A PINNED agent's transcript is authoritative: if it
  *  doesn't exist yet (the agent booted but wrote no turns), fail LOUD rather than fall back to the
  *  folder's newest session — that fallback can surface an UNRELATED, live session (e.g. the human's
@@ -318,11 +335,12 @@ export function chooseTranscriptId(
   dir: string,
   pinned: string | undefined,
   agentType?: string,
+  roots: string[] = [claudeProjectsRoot()],
 ): string {
   if (pinned) {
     // The pin may be stored under ANOTHER project dir (claude started in a worktree, then cd'd): the
     // session id is unique, so any project holding it is this agent's transcript.
-    if (existsSync(join(dir, `${pinned}.jsonl`)) || transcriptPath(pinned)) return pinned;
+    if (agentTranscriptFile(dir, pinned, roots)) return pinned;
     throw new Error(`paw: "${name}" is pinned to session ${pinned} but it has no transcript yet (the agent hasn't written a turn) — nothing to show.`);
   }
   if (!writesClaudeTranscript(agentType)) {
