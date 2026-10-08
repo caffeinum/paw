@@ -450,6 +450,11 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
   assert(short.some((r) => r.includes("… +")) && short.some((r) => r.includes("⋮")), "render: when short, beads clip (… +N more) and the long message drops its OLDEST lines (⋮)");
   assert(short.filter((r) => /^[◐⊘○◌✓]/.test(r)).length === 2, "render: beads clip to 3 rows first (2 beads + the +N line)");
   assert(short.some((r) => r.includes("please fix it")), "render: your last message survives the squeeze");
+  const glued = renderTasksView({ ...model, lastIn: { text: "short reply", ts: now - 60_000 }, notice: "✓ kit picked it up — working…", status: "● working" }, { width: 60, height: 30, now });
+  assert(glued.length === 30, "render: fills the height, so the bottom sits by the prompt");
+  assert(glued[0].includes("● working") && /^[◐⊘○◌✓]/.test(glued[1]), "render: the title carries the live status, beads hug the top");
+  assert(glued[29].includes("picked it up") && glued[28].includes("short reply"), "render: the receipt is the last row, the newest message right above it");
+  assert(glued.slice(9, 20).every((r) => r === ""), "render: blank filler between the beads and the conversation");
   const err = renderTasksView({ agent: "kit", operator: "op", beadsError: "bd list: boom" }, { width: 60, height: 20, now });
   assert(err.some((r) => r.includes("! beads: bd list: boom")) && !err.some((r) => r.includes("no beads")), "render: a failed read is shown, never as 'no beads'");
   const mine = renderTasksView({ operator: "op", beads: [] }, { width: 60, height: 20, now });

@@ -1,10 +1,13 @@
 /**
  * `paw chat`'s `tasks` view (2026-10-07): what the targeted agent is ON, and the last word each way.
  *
- *   top    — the agent's beads (assignee = the agent): in_progress, then blocked, then open, then the
- *            last day's closed ones dimmed (at most a few). One line each: glyph, id, title, age.
- *   below  — the agent's LAST message to you and YOUR last message to it, oldest first (so the newer
- *            one sits by the prompt), markdown-rendered like chat entries, each with how long ago.
+ *   top    — glued to the top: a title row (with the agent's live status) and the agent's beads
+ *            (assignee = the agent): in_progress, then blocked, then open, then the last day's closed
+ *            ones dimmed (at most a few). One line each: glyph, id, title, age.
+ *   bottom — glued to the prompt: the agent's LAST message to you and YOUR last message to it, oldest
+ *            first (so the newer one sits by the prompt), markdown-rendered like chat entries, each
+ *            with how long ago; then the newest receipt (⏳ queued, ✓ picked it up…) right above the
+ *            prompt, where chat prints it. Blank rows fill the gap between the two (operator, 2026-10-07).
  *
  * It is a DASHBOARD, not a filter over the chat history: chat.ts repaints it in place (cursor home,
  * overwrite, clear below) and only when the painted text changed, so a background refresh that found
@@ -148,6 +151,8 @@ export interface TasksModel {
   /** The newest receipt / error line (⏳ waiting…, ✓ picked it up, ! …) — the tasks view has no
    *  scrolling conversation to put them in, and a send that failed silently is the worst outcome. */
   notice?: string;
+  /** The agent's live presence, pre-styled (● working — activity); undefined when it isn't on the mesh. */
+  status?: string;
 }
 
 export interface TasksStyle {
@@ -194,8 +199,9 @@ interface MsgBlock {
 }
 
 /**
- * The view as rows, at most `height` of them, none wider than `width`. Layout, top to bottom: a title
- * row, an optional notice, the bead rows, a blank, then the messages. When it doesn't fit, the beads
+ * The view as rows — exactly `height` of them, none wider than `width`. Layout, top to bottom: a title
+ * row, the bead rows, blank filler, then the messages and an optional notice — so the beads hug the top
+ * and the conversation hugs the prompt. When it doesn't fit, the beads
  * shrink first (down to 3 rows, the last saying how many more), then the longer message body loses its
  * OLDEST lines (a `⋮` in the indent marks the cut), then the beads go down to one row; a terminal too small even for
  * that gets the top `height` rows.
@@ -209,8 +215,8 @@ export function renderTasksView(m: TasksModel, opts: { width: number; height: nu
 
   const head: string[] = [];
   const count = m.beads ? ` ${st.dim(`· ${m.beads.filter((t) => t.status !== "closed").length} open`)}` : "";
-  head.push(fitWidth(`${st.bold("tasks")} ${st.dim("·")} ${m.agent ? st.tag(m.agent) : `yours ${st.dim(`(${m.operator})`)}`}${count}`, width));
-  if (m.notice) head.push(st.dim(fitWidth(m.notice.split("\n")[0], width)));
+  const status = m.status ? ` ${st.dim("·")} ${m.status}` : "";
+  head.push(fitWidth(`${st.bold("tasks")} ${st.dim("·")} ${m.agent ? st.tag(m.agent) : `yours ${st.dim(`(${m.operator})`)}`}${count}${status}`, width));
 
   let beadRows: string[];
   if (m.beadsError) beadRows = [st.red(fitWidth(`! beads: ${m.beadsError}`, width))];
@@ -227,8 +233,9 @@ export function renderTasksView(m: TasksModel, opts: { width: number; height: nu
   }
   const tail: string[] = m.agent ? [] : [st.dim("pick an agent with ↓ to see its beads and its last messages")];
   if (m.agent && !msgs.length) tail.push(st.dim(`no messages between you and ${m.agent} yet`));
+  if (m.notice) tail.push(st.dim(fitWidth(m.notice.split("\n")[0], width)));
 
-  // Rows that are always there: title (+notice), the blank before the lower section, each message's
+  // Rows that are always there: the title, the blank before the lower section, each message's
   // header, one blank between messages, and the tail lines.
   const fixed = head.length + 1 + msgs.length + Math.max(0, msgs.length - 1) + tail.length;
   const bodies = msgs.map((b) => b.body.length);
@@ -257,18 +264,20 @@ export function renderTasksView(m: TasksModel, opts: { width: number; height: nu
     const shown = beadRows.slice(0, beadBudget - 1);
     out.push(...shown, st.dim(`  … +${beadRows.length - shown.length} more`));
   }
-  out.push("");
+  const lower: string[] = [];
   msgs.forEach((b, j) => {
-    if (j) out.push("");
-    out.push(fitWidth(b.head, width));
+    if (j) lower.push("");
+    lower.push(fitWidth(b.head, width));
     const keep = bodies[j];
-    if (keep >= b.body.length) out.push(...b.body);
+    if (keep >= b.body.length) lower.push(...b.body);
     else if (keep > 0) {
       // The cut is marked in the indent of the first kept row, so even a 1-row budget keeps a line.
       const kept = b.body.slice(b.body.length - keep);
-      out.push(st.dim("⋮ ") + kept[0].slice(2), ...kept.slice(1));
+      lower.push(st.dim("⋮ ") + kept[0].slice(2), ...kept.slice(1));
     }
   });
-  out.push(...tail);
+  lower.push(...tail);
+  const gap = Math.max(1, height - out.length - lower.length);
+  out.push(...Array<string>(gap).fill(""), ...lower);
   return out.slice(0, height);
 }

@@ -1012,7 +1012,10 @@ async function chat(argv: string[]): Promise<void> {
     // A restarted agent comes back under a NEW id. Follow it, or every later line goes to the dead id —
     // the send still succeeds (the DM stream stores it) and nobody ever reads it (benmore-intern, 2026-09-16).
     if (ev.type !== "offline" && curName && card.name === curName && card.id !== curId) curId = card.id;
-    if (view === "tasks" && card.name === curName) refreshBeadsSoon();
+    if (view === "tasks" && card.name === curName) {
+      refreshBeadsSoon();
+      paintTasks(); // the title row carries its live status
+    }
     if (!presenceVisible(filter, card.name)) return;
     // Track the status on join/offline too, so the next flip into working is judged against the truth.
     const picked = awaiting.presence(card.name, ev.type === "offline" ? "offline" : ev.presence.status);
@@ -1416,6 +1419,14 @@ async function chat(argv: string[]): Promise<void> {
    * after anything else wrote to the terminal — a submitted line, a resize, a view switch). The first
    * paint after a switch clears the scrollback too, like every other view switch.
    */
+  /** The target's presence as the title row shows it; nothing when it isn't on the mesh. */
+  function liveStatus(name: string): { status?: string } {
+    const key = name.toLowerCase();
+    const p = ep.getRoster().find((r) => r.card.name.toLowerCase() === key && r.card.id !== me && r.status !== "offline");
+    if (!p) return {};
+    return { status: statusBadge(p.status) + (p.activity ? c.dim(" — " + activityLine(p.activity, 60)) : "") };
+  }
+
   function paintTasks(force = false): void {
     if (view !== "tasks" || !rl || closing || !process.stdout.isTTY || picking) return;
     const who = tasksFor();
@@ -1431,6 +1442,7 @@ async function chat(argv: string[]): Promise<void> {
         ...(said?.in ? { lastIn: said.in } : {}),
         ...(said?.out ? { lastOut: said.out } : {}),
         ...(tasksNotice ? { notice: tasksNotice } : {}),
+        ...(curName ? liveStatus(curName) : {}),
       },
       {
         width: (process.stdout.columns || 80) - 1,
