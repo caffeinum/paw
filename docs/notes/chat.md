@@ -306,3 +306,40 @@ Moved verbatim from CLAUDE.md (2026-10-02 split). Index: [CLAUDE.md](../../CLAUD
   submit — otherwise the first receipt reads as a peer→you side CHANGE and opens with a blank, putting
   the air after your message instead of after the ⏳. And `trailingBlank` is cleared on submit, since a
   blank the previous round ended on is no longer adjacent once a prompt and your typed line sit between.
+
+## views
+
+- **`paw chat` views: logs | chat | tasks (`src/chat-views.ts`, tasks 2026-10-07)** — ← → on an EMPTY
+  input line step between exactly three views (clamped at the ends, no wrap); ↓ opens the picker. The
+  default is `chat`. `logs` = the target's transcript (needs a target — with none it says "pick one
+  with ↓"); `chat` = the conversation; `tasks` = a dashboard for the target. The interleaved
+  `logs + chat` view that used to sit in the middle was REMOVED on the operator's ask (2026-10-07) —
+  and with it the transcript-vs-DM dedup (`dropSender`) that only that view needed. `logs`/`chat`
+  are filters over one `History`, reprinted on a switch (`\e[2J\e[3J` + replay through the shared
+  `Painter`); `tasks` shows NOTHING from the history (`entryVisible` is false for every entry there).
+  The hint under the prompt names the current view and where each arrow goes from here.
+- **The tasks view (`src/chat-tasks.ts`, pure; wired in chat.ts `paintTasks`)** — top: the target's
+  beads (`assignee` = the agent; with no target, the operator's own via `operatorName()` plus "pick an
+  agent with ↓"): in_progress ◐ → blocked ⊘ → open ○ → deferred ◌ (priority, then most recently
+  touched), then the last 24h's closed ✓ dimmed, at most 3; one row each — glyph, id, title, age.
+  Below: the agent's LAST message to you and YOUR last message to it, oldest first (the newer one sits
+  by the prompt), markdown-rendered like chat. **Reads:** `listAssigned` (src/tasks.ts) = two bd reads
+  on the READ lane (never the write chain), uncached, only while the view is on screen: on entry,
+  every 12s, and (≥3s apart) on a DM or presence change from that agent; one read in flight at a time;
+  a failed read is SHOWN (`! beads: …`), never rendered as "no beads". Last messages: the DM stream once
+  per session (`readConversation withSent`), then live — every DM in, every send (`markWaiting`) and
+  the cross-session echo update a per-agent `lastSaid`, newest ts wins. **Painting:** cursor home, each
+  row overwritten + `\e[K`, `\e[J` below, then the prompt — and ONLY when the painted text changed, so
+  an idle refresh writes zero bytes (measured: 0 bytes over 13s incl. a refresh). Ages are
+  MINUTE-resolution (`now`, `3m`, `2h`) for that reason — a seconds counter repainted every tick. The
+  first paint after a switch clears the scrollback like any view switch; a submitted line, a resize or
+  a view switch force a repaint (readline's echo moved the screen). **Fit:** never taller than the
+  terminal minus prompt+hint: beads clip first (to 3 rows, `… +N more`), then the longer message loses
+  its OLDEST lines (`⋮` in the indent), then beads go to 1 row. Receipts and errors (`⏳ waiting…`,
+  `! …`) have no scrolling conversation to land in here, so the newest one is a notice line under the
+  title, cleared when a message arrives. The picker, paste, images, modes and `!cmd` all keep working
+  (paints are skipped while the picker is open). Tests: `check:chat` (3 views, hint, bead order and
+  filtering, last-message selection, ANSI wrap, render fits 8–60 rows); live:
+  `scripts/lean/e2e-chat-tasks.ts` (isolated nats + PAW_HOME + PAW_BEADS_DIR, fake `kit` peer, node-pty
+  + @xterm/headless — order, glyphs, round-trip, no-flicker idle, a bead closed elsewhere turning ✓,
+  a 14-row terminal, ← back through chat to logs).

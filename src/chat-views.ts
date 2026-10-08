@@ -3,9 +3,11 @@
  *
  * Three views, arranged left to right the way the operator described them:
  *   logs   — the targeted agent's transcript only (its turns, tool calls, results, replies)
- *   both   — the transcript AND the conversation, interleaved as they happen
  *   chat   — the conversation only (the default: what `paw chat` always was)
- * ←/→ move between them, ↓ opens the agent picker.
+ *   tasks  — the targeted agent's beads plus the last word each way (src/chat-tasks.ts), a
+ *            dashboard repainted in place rather than a filter over the history
+ * ←/→ move between them, ↓ opens the agent picker. The interleaved `logs + chat` view that sat in
+ * the middle was dropped for `tasks` (operator, 2026-10-07).
  *
  * REDRAW ON SWITCH, APPEND IN BETWEEN (2026-09-23). Appending a divider and a backfill on a switch was
  * built first and rejected in use — the operator: "switching between views looks bad, it just appends
@@ -23,22 +25,27 @@
  */
 import type { Block } from "./transcript.ts";
 
-export type ChatView = "logs" | "both" | "chat";
+export type ChatView = "logs" | "chat" | "tasks";
 
 /** Left-to-right order. The arrows STEP along it and stop at the ends — in a three-position strip a
  *  wrap from chat back to logs would read as the key misfiring, not as a feature. */
-export const VIEWS: readonly ChatView[] = ["logs", "both", "chat"];
+export const VIEWS: readonly ChatView[] = ["logs", "chat", "tasks"];
 
-export const VIEW_LABEL: Record<ChatView, string> = { logs: "logs", both: "logs + chat", chat: "chat" };
+export const VIEW_LABEL: Record<ChatView, string> = { logs: "logs", chat: "chat", tasks: "tasks" };
 
 export function stepView(v: ChatView, dir: -1 | 1): ChatView {
   const i = VIEWS.indexOf(v) + dir;
   return VIEWS[Math.max(0, Math.min(VIEWS.length - 1, i))];
 }
 
-/** Does this view print the transcript / the conversation? */
-export const showsLogs = (v: ChatView): boolean => v !== "chat";
-export const showsChat = (v: ChatView): boolean => v !== "logs";
+/** Does this view print the transcript / the conversation? `tasks` prints neither — it is painted
+ *  from its own model, not from the history. */
+export const showsLogs = (v: ChatView): boolean => v === "logs";
+export const showsChat = (v: ChatView): boolean => v === "chat";
+
+/** Which views need a target: the logs follow one agent. chat and tasks (which then shows the
+ *  operator's own beads) work without one. */
+export const viewNeedsTarget = (v: ChatView): boolean => v === "logs";
 
 /**
  * Which navigation key a raw stdin chunk is, across the encodings real terminals send.
@@ -84,17 +91,18 @@ export function navKey(raw: string): "left" | "right" | "down" | undefined {
  * the view — at the left end there is no "←", at the right end no "→" — and it names the current view
  * first, since "which view am I in?" is the question a view switch leaves you with.
  *
- * No target (broadcast, or a channel) has no transcript to follow, so the views don't apply and the
- * line offers only the picker.
+ * No target (broadcast, or a channel) has no transcript to follow, so `logs` is not offered — only
+ * chat ⇄ tasks (the operator's own beads) and the picker.
  */
 export function hintFor(s: { view: ChatView; picking: boolean; hasTarget: boolean; bang: boolean }): string {
   if (s.picking) return "↑↓ select · enter picks · esc closes · type to filter";
   if (s.bang) return "$ command mode · esc or backspace leaves";
-  if (!s.hasTarget) return "↓ mention an agent";
+  const prev = stepView(s.view, -1);
+  const next = stepView(s.view, 1);
   const parts: string[] = [];
-  if (s.view !== VIEWS[0]) parts.push(`← ${VIEW_LABEL[stepView(s.view, -1)]}`);
-  parts.push("↓ mention");
-  if (s.view !== VIEWS[VIEWS.length - 1]) parts.push(`${VIEW_LABEL[stepView(s.view, 1)]} →`);
+  if (prev !== s.view && (s.hasTarget || !viewNeedsTarget(prev))) parts.push(`← ${VIEW_LABEL[prev]}`);
+  parts.push(s.hasTarget ? "↓ mention" : "↓ mention an agent");
+  if (next !== s.view) parts.push(`${VIEW_LABEL[next]} →`);
   return `${VIEW_LABEL[s.view]}  │  ${parts.join("   ")}`;
 }
 
@@ -113,63 +121,14 @@ export function pickerWindow(total: number, picked: number, size: number): { sta
   return { start, end: start + size };
 }
 
-/**
- * Which transcript blocks to print in a view.
- *
- * `logs` prints everything — it is the raw trace. `both` would otherwise say every message twice,
- * because the transcript records the conversation too: the agent's reply to you is a `reply` block AND
- * arrives as the DM, and your own message is a `wake` block AND the line you typed. In `both` the
- * conversation's copy wins (it carries the round-trip time and the follow logic), so the transcript's
- * copies of it are dropped. Anything addressed to OTHER agents stays — that is exactly what the logs
- * are for. `incoming` (the text an inbox drain printed) is the same messages a third time.
- */
-export function logBlockVisible(view: ChatView, b: Block, human: string): boolean {
-  return logBlockFor(view, b, human) !== undefined;
+/** Which transcript blocks a view prints: all of them in `logs` (the raw trace), none elsewhere. */
+export function logBlockVisible(view: ChatView, b: Block): boolean {
+  return logBlockFor(view, b) !== undefined;
 }
 
-/**
- * The block as the view shows it — or undefined when the view hides it. Same rules as
- * logBlockVisible, plus one TRANSFORM: an inbox drain (`incoming`) in `both` keeps the messages from
- * OTHER agents and drops only yours. Dropping the whole drain hid agent-to-agent mail to the target,
- * which appears nowhere else (the critic's finding, 2026-09-23); your own messages are already on
- * screen as the lines you typed.
- */
-export function logBlockFor(view: ChatView, b: Block, human: string): Block | undefined {
-  if (view === "chat") return undefined;
-  if (view === "logs") return b;
-  if (b.kind === "reply" && b.to === human) return undefined;
-  if (b.kind === "wake" && b.from === human) return undefined;
-  if (b.kind === "incoming") {
-    const kept = dropSender(b.text, human);
-    return kept ? { kind: "incoming", text: kept } : undefined;
-  }
-  return b;
-}
-
-/**
- * Remove one sender's messages from an inbox-drain body. The drain prints `N messages:` then each
- * message under a header — `[DM from <name>]` for a DM, `[#<channel> <name>]` for a channel post; real
- * drains MIX the two (measured: 224 DM headers and 33 channel headers in one transcript). Continuation
- * lines belong to the header above them. Recognising only the DM form ate other agents' channel posts
- * after one of yours and doubled your own (the critic's second pass, 2026-09-23).
- *
- * Anything that doesn't parse that way is returned UNTOUCHED: showing a drain twice is a smaller harm
- * than silently eating mail from a format this doesn't know. Known limit: a message BODY line that
- * itself begins with a header shape is read as a new message.
- */
-export function dropSender(text: string, sender: string): string {
-  const lines = text.split("\n");
-  const header = /^\[(?:DM from ([^\]\s]+)|#[^\]\s]+ ([^\]\s]+))\]/;
-  if (!lines.some((l) => header.test(l))) return text;
-  const kept: string[] = [];
-  let keep = true;
-  for (const l of lines) {
-    if (/^\d+ messages?:$/.test(l.trim())) continue; // the count no longer matches what's shown
-    const m = l.match(header);
-    if (m) keep = (m[1] ?? m[2]) !== sender;
-    if (keep) kept.push(l);
-  }
-  return kept.join("\n").trim();
+/** The block as the view shows it — or undefined when the view hides it. */
+export function logBlockFor(view: ChatView, b: Block): Block | undefined {
+  return view === "logs" ? b : undefined;
 }
 
 /** What the follower needs from a transcript — `paw log`'s AgentLog satisfies it. */
@@ -202,10 +161,12 @@ export type Entry =
  * `logs` is the target's transcript plus every conversation line EXCEPT what that transcript already
  * says: the target's own DMs (the `↩ you` blocks — shown as DMs only if the transcript can't be read,
  * or they'd be shown nowhere) and your typed lines (the `wake from you` blocks). `chat` is everything
- * but the transcript; `both` is both. Transcript blocks only ever show for the CURRENT target — another agent's, captured before a
+ * but the transcript. `tasks` shows nothing from the history — it is painted from its own model.
+ * Transcript blocks only ever show for the CURRENT target — another agent's, captured before a
  * switch, would be a trace of the wrong agent.
  */
 export function entryVisible(e: Entry, view: ChatView, target: string | undefined, logsReadable: boolean): boolean {
+  if (view === "tasks") return false;
   switch (e.kind) {
     case "banner":
       return true;
@@ -258,7 +219,6 @@ export class Painter {
   trailingBlank = false;
 
   private readonly render: (b: Block) => string;
-  private readonly human: string;
   private readonly dim: (s: string) => string;
   private readonly pad: string;
   /** `paw log`'s spacing predicate (src/log.ts attachesAbove): true for a `⎿` result rail. */
@@ -266,13 +226,11 @@ export class Painter {
 
   constructor(
     render: (b: Block) => string,
-    human: string,
     dim: (s: string) => string = (s) => s,
     pad = "  ",
     attachesAbove: (rendered: string) => boolean = () => false,
   ) {
     this.render = render;
-    this.human = human;
     this.dim = dim;
     this.pad = pad;
     this.attachesAbove = attachesAbove;
@@ -300,7 +258,7 @@ export class Painter {
         return this.put(e.side, e.text.split("\n").join(`\n${this.pad}`), e.side === "sys" || e.tight);
       case "log": {
         const lines = e.blocks
-          .map((b) => logBlockFor(view, b, this.human))
+          .map((b) => logBlockFor(view, b))
           .filter((b): b is Block => b !== undefined)
           .map(this.render)
           .filter(Boolean);
@@ -330,8 +288,8 @@ export class Painter {
 
 /**
  * Follows the target's transcript and hands its blocks over RAW, as `log` entries — in every view,
- * not only the logs ones: the history needs them in arrival order so a switch into `logs + chat` can
- * interleave them with the conversation truthfully, instead of printing a backlog lump at the end.
+ * not only the logs one: the history needs them in arrival order so a switch into `logs` reprints the
+ * trace truthfully, instead of only what arrived while you happened to be looking.
  *
  * Re-points itself LAZILY: the target moves on many paths (@name, the picker, following a reply, a
  * respawn), and checking on each pump catches all of them without hooking any. A new target starts

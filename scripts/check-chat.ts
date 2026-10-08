@@ -147,27 +147,36 @@ assert(!passesFilter(agentF, { kind: "channel", channel: "general" }), "echo: a 
 assert(passesFilter(chanF, { kind: "channel", channel: "team2027" }), "echo: your own post to the filtered channel shows");
 assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltered sessions still show everything");
 
-// ── views: logs · logs + chat · chat, the keys, the hint and the picker window (2026-09-23) ─────
+// ── views: logs · chat · tasks, the keys, the hint and the picker window (2026-09-23, tasks 2026-10-07) ─
 {
-  const { stepView, navKey, hintFor, pickerWindow, logBlockVisible, showsLogs, showsChat, arrowRun } = await import("../src/chat-views.ts");
+  const { stepView, navKey, hintFor, pickerWindow, logBlockVisible, showsLogs, showsChat, arrowRun, VIEWS, VIEW_LABEL, viewNeedsTarget } = await import("../src/chat-views.ts");
   assert(arrowRun("\x1b[B") === 1 && arrowRun("\x1b[A") === -1, "arrows: a single ↓/↑ is one step");
   assert(arrowRun("\x1b[B".repeat(20)) === 20, "arrows: a held ↓ read as ONE chunk is 20 steps, not typing (the collapse-to-1/1 bug)");
   assert(arrowRun("\x1b[B\x1b[A\x1b[B") === 1 && arrowRun("\x1bOB\x1bOB") === 2, "arrows: mixed runs net out; SS3 encodings count");
   assert(arrowRun("\x1b[Ba") === undefined && arrowRun("ab") === undefined && arrowRun("\x1b[D") === undefined, "arrows: anything else in the chunk is typing, not a run");
-  assert(stepView("chat", -1) === "both" && stepView("both", -1) === "logs", "view: ← steps chat → logs+chat → logs");
-  assert(stepView("logs", -1) === "logs" && stepView("chat", 1) === "chat", "view: the ends CLAMP — a wrap would read as the key misfiring");
-  assert(showsLogs("logs") && showsLogs("both") && !showsLogs("chat"), "view: logs and both follow the transcript, chat doesn't");
-  assert(showsChat("both") && showsChat("chat") && !showsChat("logs"), "view: both and chat print the conversation, logs doesn't");
+  assert(eq(VIEWS, ["logs", "chat", "tasks"]), "view: exactly three views, logs · chat · tasks");
+  assert(!Object.values(VIEW_LABEL).some((l) => l.includes("+")) && Object.keys(VIEW_LABEL).length === 3, "view: no `logs + chat` label survives");
+  assert(stepView("chat", -1) === "logs" && stepView("chat", 1) === "tasks", "view: ← from chat is logs, → is tasks");
+  assert(stepView("tasks", -1) === "chat" && stepView("logs", 1) === "chat", "view: tasks ← chat, logs → chat");
+  assert(stepView("logs", -1) === "logs" && stepView("tasks", 1) === "tasks", "view: the ends CLAMP — a wrap would read as the key misfiring");
+  const cycled = new Set<string>();
+  let v: import("../src/chat-views.ts").ChatView = "logs";
+  for (let i = 0; i < 6; i++) { cycled.add(v); v = stepView(v, 1); }
+  assert(cycled.size === 3, "view: stepping → from the left end visits exactly 3 views");
+  assert(showsLogs("logs") && !showsLogs("chat") && !showsLogs("tasks"), "view: only logs follows the transcript");
+  assert(showsChat("chat") && !showsChat("logs") && !showsChat("tasks"), "view: only chat prints the conversation (tasks is its own dashboard)");
+  assert(viewNeedsTarget("logs") && !viewNeedsTarget("chat") && !viewNeedsTarget("tasks"), "view: only logs needs a target — tasks shows your own beads without one");
 
   for (const k of ["\x1b[D", "\x1bOD", "\x1b[1;3D", "\x1b[1;9D", "\x1bb"]) assert(navKey(k) === "left", `keys: ${JSON.stringify(k)} is ← (plain, Option as CSI, Cmd/super, Option as Meta)`);
   for (const k of ["\x1b[C", "\x1b[1;3C", "\x1b[1;9C", "\x1bf"]) assert(navKey(k) === "right", `keys: ${JSON.stringify(k)} is →`);
   assert(navKey("\x1b[1;3B") === "down" && navKey("\x1b[B") === "down", "keys: plain and Option+↓ both open the picker");
   assert(navKey("a") === undefined && navKey("\x1b[A") === undefined, "keys: letters and ↑ are not navigation");
 
-  assert(hintFor({ view: "both", picking: false, hasTarget: true, bang: false }) === "logs + chat  │  ← logs   ↓ mention   chat →", "hint: the middle view offers both ways and names where you are");
+  assert(hintFor({ view: "chat", picking: false, hasTarget: true, bang: false }) === "chat  │  ← logs   ↓ mention   tasks →", "hint: the middle view offers both ways and names where you are");
   assert(!hintFor({ view: "logs", picking: false, hasTarget: true, bang: false }).includes("←"), "hint: at the left end there is no ←");
-  assert(!hintFor({ view: "chat", picking: false, hasTarget: true, bang: false }).includes("→"), "hint: at the right end there is no →");
-  assert(hintFor({ view: "chat", picking: false, hasTarget: false, bang: false }) === "↓ mention an agent", "hint: with no target the views don't apply — only the picker is offered");
+  assert(!hintFor({ view: "tasks", picking: false, hasTarget: true, bang: false }).includes("→"), "hint: at the right end there is no →");
+  assert(hintFor({ view: "chat", picking: false, hasTarget: false, bang: false }) === "chat  │  ↓ mention an agent   tasks →", "hint: with no target, logs isn't offered — tasks (your own beads) is");
+  assert(hintFor({ view: "tasks", picking: false, hasTarget: false, bang: false }) === "tasks  │  ← chat   ↓ mention an agent", "hint: tasks with no target goes back to chat");
   assert(hintFor({ view: "chat", picking: true, hasTarget: true, bang: false }).startsWith("↑↓ select"), "hint: the picker's own keys while it is open");
 
   assert(JSON.stringify(pickerWindow(5, 2, 12)) === JSON.stringify({ start: 0, end: 5 }), "picker: a short list shows whole");
@@ -177,14 +186,10 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
   assert(JSON.stringify(pickerWindow(118, 117, 12)) === JSON.stringify({ start: 106, end: 118 }), "picker: the bottom clamps — no blank rows past the list");
 
   const reply = { kind: "reply", to: "you", text: "done" } as const;
-  const replyOther = { kind: "reply", to: "evals", text: "hi" } as const;
   const wakeYou = { kind: "wake", from: "you", via: "dm" } as const;
-  const wakeOther = { kind: "wake", from: "evals", via: "dm" } as const;
   const tool = { kind: "tool", name: "Bash", display: "Bash", arg: "ls" } as const;
-  assert([reply, wakeYou, tool].every((b) => logBlockVisible("logs", b, "you")), "dedup: the logs view is the raw trace — everything prints");
-  assert(!logBlockVisible("both", reply, "you") && !logBlockVisible("both", wakeYou, "you"), "dedup: in logs + chat, the transcript's copy of YOUR conversation is dropped (the DM and your typed line already show it)");
-  assert(logBlockVisible("both", replyOther, "you") && logBlockVisible("both", wakeOther, "you") && logBlockVisible("both", tool, "you"), "dedup: traffic with OTHER agents and the agent's own work still print — that's what the logs are for");
-  assert(!logBlockVisible("chat", tool, "you"), "dedup: the chat view prints no transcript at all");
+  assert([reply, wakeYou, tool].every((b) => logBlockVisible("logs", b)), "blocks: the logs view is the raw trace — everything prints");
+  assert(!logBlockVisible("chat", tool) && !logBlockVisible("tasks", tool), "blocks: chat and tasks print no transcript at all");
 }
 
 // ── history / painter / follower: the redraw model behind the views (2026-09-23) ────────────────
@@ -203,29 +208,29 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
   const logA: E = { kind: "log", agent: "a", blocks: [tool("x")], backfill: false };
   const logB: E = { kind: "log", agent: "b", blocks: [tool("y")], backfill: false };
   const note: E = { kind: "chat", text: "(no logs for a)", side: "sys", tight: true, onlyLogs: true };
-  const vis = (e: E, v: "logs" | "both" | "chat", readable = true) => entryVisible(e, v, "a", readable);
+  const vis = (e: E, v: "logs" | "chat" | "tasks", readable = true) => entryVisible(e, v, "a", readable);
   assert([dmT, dmO, sys, echo].every((e) => vis(e, "chat")) && !vis(logA, "chat"), "visible: chat = the conversation, no transcript");
-  assert([dmT, dmO, sys, echo, logA].every((e) => vis(e, "both")), "visible: logs + chat = both");
-  assert(vis(logA, "logs") && !vis(logB, "logs") && !vis(logB, "both"), "visible: transcript blocks only for the CURRENT target");
+  assert(![dmT, dmO, sys, echo, logA, { kind: "banner", text: "B" } as E].some((e) => vis(e, "tasks")), "visible: tasks paints from its own model — nothing from the history");
+  assert(vis(logA, "logs") && !vis(logB, "logs"), "visible: transcript blocks only for the CURRENT target");
   assert(!vis(echo, "logs"), "visible: logs hides your typed lines (the `wake from you` blocks stand for them)");
   const err: E = { kind: "chat", text: 'no peer named "nobody"', side: "sys", tight: false };
   const chan: E = { kind: "chat", text: "#general x: hi", side: "peer", tight: false };
   assert(vis(sys, "logs") && vis(err, "logs") && vis(chan, "logs"), "visible: logs KEEPS errors, receipts and channel posts — `@nobody hi` used to print nothing at all (critic, reproduced)");
   assert(vis(dmO, "logs"), "visible: logs keeps ANOTHER agent's DM — it's in no transcript of the target's, hiding it would hide mail");
   assert(!vis(dmT, "logs") && vis(dmT, "logs", false), "visible: the target's own DM shows in logs only if its transcript can't be read (else the ↩ you block is it)");
-  assert(vis(note, "logs") && vis(note, "both") && !vis(note, "chat"), "visible: a note about the logs stays out of the chat view");
-  assert(entryVisible({ kind: "banner", text: "B\n\n" }, "logs", undefined, false), "visible: the banner shows in every view");
+  assert(vis(note, "logs") && !vis(note, "chat"), "visible: a note about the logs stays out of the chat view");
+  assert(entryVisible({ kind: "banner", text: "B\n\n" }, "logs", undefined, false) && entryVisible({ kind: "banner", text: "B\n\n" }, "chat", undefined, false), "visible: the banner shows in logs and chat");
 
   // Painter — the live path and a redraw must produce the SAME text
-  const P = () => new Painter(render, "you");
+  const P = () => new Painter(render);
   const seq: E[] = [{ kind: "banner", text: "BANNER\n\n" }, echo, { kind: "chat", text: "⏳ waiting", side: "you", tight: false }, logA, dmT, { kind: "chat", text: "line1\nline2", side: "peer", tight: false }];
   const live = P();
-  const liveText = seq.map((e) => live.paint(e, "both")).join("");
+  const liveText = seq.map((e) => live.paint(e, "chat")).join("");
   const again = P();
-  assert(seq.map((e) => again.paint(e, "both")).join("") === liveText, "painter: replaying the history reproduces the live screen exactly");
+  assert(seq.map((e) => again.paint(e, "chat")).join("") === liveText, "painter: replaying the history reproduces the live screen exactly");
   assert(liveText.includes("\n  line2"), "painter: continuation lines keep their indent (moved from emit unchanged)");
-  const both = P().paint({ kind: "log", agent: "a", blocks: [{ kind: "reply", to: "you", text: "x" }], backfill: false }, "both");
-  assert(both === "", "painter: a log batch the view filters to nothing prints NOTHING — not a stray blank line");
+  const none = P().paint({ kind: "log", agent: "a", blocks: [{ kind: "reply", to: "you", text: "x" }], backfill: false }, "chat");
+  assert(none === "", "painter: a log batch the view filters to nothing prints NOTHING — not a stray blank line");
   const back = P().paint({ kind: "log", agent: "a", blocks: [tool("z")], backfill: true }, "logs");
   assert(back.includes("── a · earlier ──") && back.includes("TOOL z"), "painter: a backfill is labelled as earlier activity");
   const pr = P();
@@ -297,18 +302,10 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
   assert(errs3.length === 1, "follow: the '(no logs for x)' note is shown ONCE per session, not on every return");
 }
 {
-  const { dropSender, logBlockFor, displayWidth } = await import("../src/chat-views.ts");
+  const { logBlockFor, displayWidth } = await import("../src/chat-views.ts");
   const drain = "2 messages:\n[DM from you] do this\n[DM from evals] heads up:\nline two of evals";
-  assert(dropSender(drain, "you") === "[DM from evals] heads up:\nline two of evals", "drain: drop YOUR messages (and the stale count), keep another agent's — multi-line bodies included");
-  assert(dropSender("1 message:\n[DM from you] only mine", "you") === "", "drain: nothing left → empty");
-  assert(dropSender("some format we don't know", "you") === "some format we don't know", "drain: an unknown format is left UNTOUCHED rather than risk eating mail");
   const inc = (t: string) => ({ kind: "incoming", text: t }) as const;
-  assert(logBlockFor("both", inc("1 message:\n[DM from you] x"), "you") === undefined, "drain: in logs + chat, a drain of only YOUR messages disappears (they're your typed lines)");
-  assert((logBlockFor("both", inc(drain), "you") as { text: string }).text.startsWith("[DM from evals]"), "drain: in logs + chat, agent-to-agent mail to the target now shows (it was dropped whole)");
-  assert(logBlockFor("logs", inc(drain), "you")!.kind === "incoming" && (logBlockFor("logs", inc(drain), "you") as { text: string }).text === drain, "drain: the logs view shows the drain as-is");
-  const mixed = "4 messages:\n[DM from you] mine\n[#general research] channel post by research\n[#general you] my own post\n[DM from evals] theirs";
-  assert(dropSender(mixed, "you") === "[#general research] channel post by research\n[DM from evals] theirs", "drain: MIXED DM + channel items — yours dropped in both forms, theirs kept (the critic's second pass)");
-  assert(dropSender("1 message:\n[#general you] only my post", "you") === "", "drain: a channel-only drain is understood too (it used to pass through whole and double your post)");
+  assert((logBlockFor("logs", inc(drain)) as { text: string }).text === drain, "drain: the logs view shows the drain as-is");
   // Log spacing = paw log's: blank before each turn, a ⎿ result stays glued to its call (screenshot, 2026-09-23)
   {
     const { Painter: P2 } = await import("../src/chat-views.ts");
@@ -316,7 +313,7 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
     const r = (b: import("../src/transcript.ts").Block) => (b.kind === "tool" ? `● Bash(${b.arg})` : b.kind === "result" ? `  ⎿  ${b.lines[0]}` : "?");
     const t = (arg: string) => ({ kind: "tool", name: "Bash", display: "Bash", arg }) as const;
     const res = (x: string): import("../src/transcript.ts").Block => ({ kind: "result", lines: [x], isError: false });
-    const pp = new P2(r, "you", (x) => x, "  ", attachesAbove);
+    const pp = new P2(r, (x) => x, "  ", attachesAbove);
     const a = pp.paint({ kind: "log", agent: "a", blocks: [t("one"), res("ok"), t("two"), res("ok2")], backfill: false }, "logs");
     assert(a === "● Bash(one)\n  ⎿  ok\n\n● Bash(two)\n  ⎿  ok2\n", "spacing: a blank line between turns, none between a call and its ⎿ result");
     const b = pp.paint({ kind: "log", agent: "a", blocks: [t("three")], backfill: false }, "logs");
@@ -387,6 +384,77 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
   t.sent("d", "w1", 1, "idle");
   t.presence("d", "offline");
   assert(eq(t.presence("d", "working").map((p) => p.id), ["w1"]), "offline→working (a restart) also starts a turn");
+}
+
+// ── the tasks view model (src/chat-tasks.ts, 2026-10-07) ─────────────────────────────────────────
+{
+  const { agentBeads, lastExchange, renderTasksView, wrapAnsi, age, CLOSED_MAX } = await import("../src/chat-tasks.ts");
+  const { displayWidth } = await import("../src/width.ts");
+  type T = import("../src/tasks.ts").Task;
+  const now = Date.parse("2026-10-07T12:00:00Z");
+  const iso = (hAgo: number) => new Date(now - hAgo * 3_600_000).toISOString();
+  const bead = (id: string, status: string, extra: Partial<T> = {}): T => ({ id, title: `title ${id}`, status, assignee: "kit", updatedAt: iso(1), ...extra });
+  const tasks: T[] = [
+    bead("o1", "open", { priority: 2 }),
+    bead("b1", "blocked"),
+    bead("ip1", "in_progress", { priority: 3 }),
+    bead("o0", "open", { priority: 1 }),
+    bead("ip0", "in_progress", { priority: 1 }),
+    bead("x1", "open", { assignee: "someone-else" }),
+    bead("c1", "closed", { closedAt: iso(2) }),
+    bead("c2", "closed", { closedAt: iso(30) }),
+    bead("c3", "closed", { closedAt: iso(1) }),
+    bead("c4", "closed", { closedAt: iso(3) }),
+    bead("c5", "closed", { closedAt: iso(5) }),
+  ];
+  const order = agentBeads(tasks, "kit", now).map((t) => t.id);
+  assert(eq(order.slice(0, 5), ["ip0", "ip1", "b1", "o0", "o1"]), `beads: in_progress first, then blocked, then open; priority within (got ${order.join(",")})`);
+  assert(!order.includes("x1"), "beads: only the agent's own (assignee) beads");
+  assert(eq(order.slice(5), ["c3", "c1", "c4"]) && CLOSED_MAX === 3, "beads: closed within 24h only, newest first, at most 3");
+  assert(!order.includes("c2"), "beads: a bead closed 30h ago is gone");
+
+  const conv = [
+    { from: "kit", text: "first reply", ts: 1, dir: "in" as const },
+    { from: "you", text: "to kit", ts: 2, dir: "out" as const, to: "kit" },
+    { from: "you", text: "to evals", ts: 3, dir: "out" as const, to: "evals" },
+    { from: "Kit", text: "last reply", ts: 4, dir: "in" as const },
+    { from: "evals", text: "evals reply", ts: 5, dir: "in" as const },
+    { from: "you", text: "to an id", ts: 6, dir: "out" as const, to: "abc123" },
+  ];
+  const ex = lastExchange(conv, "kit");
+  assert(ex.lastIn?.text === "last reply" && ex.lastOut?.text === "to kit", "messages: the agent's LAST message in, and your last message TO it (case-insensitive names)");
+  assert(lastExchange(conv, "nobody").lastIn === undefined && lastExchange(conv, "nobody").lastOut === undefined, "messages: none for an agent you never talked to");
+  assert(age(now - 90_000, now) === "1m" && age(now - 5_000, now) === "now" && age(NaN, now) === "—", "age: compact, minute resolution (a seconds counter would repaint every refresh), — (not 0) when unknown");
+
+  const red = "\x1b[31m" + "x".repeat(25) + "\x1b[39m";
+  const w = wrapAnsi(red, 10);
+  assert(w.length === 3 && w.every((l) => displayWidth(l) <= 10) && w[1].startsWith("\x1b[31m") && w[0].endsWith("\x1b[0m"), "wrap: by columns, styles reset at the break and reopened");
+
+  const long = Array.from({ length: 40 }, (_, i) => `reply line ${i}`).join("\n");
+  const model = {
+    agent: "kit",
+    operator: "op",
+    beads: agentBeads(tasks, "kit", now),
+    lastIn: { text: long, ts: now - 60_000 },
+    lastOut: { text: "please fix it", ts: now - 120_000 },
+  };
+  for (const height of [8, 12, 20, 60]) {
+    const rows = renderTasksView(model, { width: 60, height, now });
+    assert(rows.length <= height && rows.every((r) => displayWidth(r) <= 60), `render: fits ${height} rows × 60 cols (${rows.length} rows)`);
+    assert(rows.some((r) => r.includes("reply line 39")), `render: at ${height} rows the agent's message keeps its LAST line`);
+  }
+  const tall = renderTasksView(model, { width: 60, height: 60, now });
+  assert(tall.filter((r) => /^[◐⊘○◌✓]/.test(r)).length === 8 && !tall.some((r) => r.includes("⋮")), "render: with room, every bead and the whole message show");
+  assert(tall.findIndex((r) => r.startsWith("you → kit")) < tall.findIndex((r) => r.startsWith("kit ·")), "render: messages oldest first — the newer one sits by the prompt");
+  const short = renderTasksView(model, { width: 60, height: 14, now });
+  assert(short.some((r) => r.includes("… +")) && short.some((r) => r.includes("⋮")), "render: when short, beads clip (… +N more) and the long message drops its OLDEST lines (⋮)");
+  assert(short.filter((r) => /^[◐⊘○◌✓]/.test(r)).length === 2, "render: beads clip to 3 rows first (2 beads + the +N line)");
+  assert(short.some((r) => r.includes("please fix it")), "render: your last message survives the squeeze");
+  const err = renderTasksView({ agent: "kit", operator: "op", beadsError: "bd list: boom" }, { width: 60, height: 20, now });
+  assert(err.some((r) => r.includes("! beads: bd list: boom")) && !err.some((r) => r.includes("no beads")), "render: a failed read is shown, never as 'no beads'");
+  const mine = renderTasksView({ operator: "op", beads: [] }, { width: 60, height: 20, now });
+  assert(mine[0].includes("yours") && mine.some((r) => r.includes("no beads assigned to op")) && mine.some((r) => r.includes("pick an agent with ↓")), "render: no target → the operator's own beads + how to pick an agent");
+  assert(renderTasksView({ agent: "kit", operator: "op" }, { width: 60, height: 20, now }).some((r) => r.includes("reading beads")), "render: before the first read it says so");
 }
 
 rmSync(process.env.PAW_HOME as string, { recursive: true, force: true });
