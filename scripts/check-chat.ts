@@ -455,6 +455,16 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
   assert(glued[0].includes("● working") && /^[◐⊘○◌✓]/.test(glued[1]), "render: the title carries the live status, beads hug the top");
   assert(glued[29].includes("picked it up") && glued[28].includes("short reply"), "render: the receipt is the last row, the newest message right above it");
   assert(glued.slice(9, 20).every((r) => r === ""), "render: blank filler between the beads and the conversation");
+  const linked = [
+    bead("p1", "in_progress", { externalRef: "https://github.com/a/b/pull/7/files" }),
+    bead("p2", "open", { description: "see https://github.com/a/b/pull/9 and https://github.com/a/b/issues/3" }),
+    bead("p3", "open"),
+  ];
+  const withPr = renderTasksView({ agent: "kit", operator: "op", beads: linked }, { width: 60, height: 20, now });
+  assert(withPr[1].includes("p1") && withPr[2].includes("↳ https://github.com/a/b/pull/7") && !withPr[2].includes("/files"), "render: a linked PR (external_ref) shows as a ↳ row under its bead, normalised");
+  assert(withPr[3].includes("p2") && withPr[4].includes("pull/9") && withPr[5].includes("p3") && !withPr.some((r) => r.includes("issues/3")), "render: PR URLs in the description count; issue links don't");
+  const tight = renderTasksView({ agent: "kit", operator: "op", beads: linked }, { width: 60, height: 5, now });
+  assert(!tight.some((r) => r.includes("p2") && !tight.some((x) => x.includes("pull/9"))) && tight.some((r) => r.includes("… +")), "render: clipping keeps whole beads — never a bead without its PR row");
   const err = renderTasksView({ agent: "kit", operator: "op", beadsError: "bd list: boom" }, { width: 60, height: 20, now });
   assert(err.some((r) => r.includes("! beads: bd list: boom")) && !err.some((r) => r.includes("no beads")), "render: a failed read is shown, never as 'no beads'");
   const mine = renderTasksView({ operator: "op", beads: [] }, { width: 60, height: 20, now });

@@ -3,7 +3,8 @@
  *
  *   top    — glued to the top: a title row (with the agent's live status) and the agent's beads
  *            (assignee = the agent): in_progress, then blocked, then open, then the last day's closed
- *            ones dimmed (at most a few). One line each: glyph, id, title, age.
+ *            ones dimmed (at most a few). One line each: glyph, id, title, age — plus a `↳ <url>` row
+ *            under it for each linked PR (external_ref or a PR URL in the description).
  *   bottom — glued to the prompt: the agent's LAST message to you and YOUR last message to it, oldest
  *            first (so the newer one sits by the prompt), markdown-rendered like chat entries, each
  *            with how long ago; then the newest receipt (⏳ queued, ✓ picked it up…) right above the
@@ -19,6 +20,7 @@
 import type { Task } from "./tasks.ts";
 import type { Entry as FeedEntry } from "./feed.ts";
 import { displayWidth, fitWidth } from "./width.ts";
+import { prUrls } from "../web/app/company-model.js";
 
 /** One message as the view shows it. */
 export interface Said {
@@ -192,6 +194,13 @@ function beadLine(t: Task, now: number, width: number, st: TasksStyle): string {
   return `${g} ${st.dim(t.id)}  ${title}${pad}${st.dim(right)}`;
 }
 
+/** A bead's rows: its line, then one `↳ <PR url>` row per linked PR (plain text, so the terminal
+ *  links it; cut to the width like every row). */
+function beadGroup(t: Task, now: number, width: number, st: TasksStyle): string[] {
+  const links = prUrls(t).map((u) => `  ${st.dim("↳")} ${fitWidth(u, width - 4)}`);
+  return [beadLine(t, now, width, st), ...links];
+}
+
 interface MsgBlock {
   ts: number;
   head: string;
@@ -218,11 +227,12 @@ export function renderTasksView(m: TasksModel, opts: { width: number; height: nu
   const status = m.status ? ` ${st.dim("·")} ${m.status}` : "";
   head.push(fitWidth(`${st.bold("tasks")} ${st.dim("·")} ${m.agent ? st.tag(m.agent) : `yours ${st.dim(`(${m.operator})`)}`}${count}${status}`, width));
 
-  let beadRows: string[];
-  if (m.beadsError) beadRows = [st.red(fitWidth(`! beads: ${m.beadsError}`, width))];
-  else if (!m.beads) beadRows = [st.dim("reading beads…")];
-  else if (!m.beads.length) beadRows = [st.dim(`no beads assigned to ${who}`)];
-  else beadRows = m.beads.map((t) => beadLine(t, now, width, st));
+  let groups: string[][];
+  if (m.beadsError) groups = [[st.red(fitWidth(`! beads: ${m.beadsError}`, width))]];
+  else if (!m.beads) groups = [[st.dim("reading beads…")]];
+  else if (!m.beads.length) groups = [[st.dim(`no beads assigned to ${who}`)]];
+  else groups = m.beads.map((t) => beadGroup(t, now, width, st));
+  const beadRows = groups.flat();
 
   const msgs: MsgBlock[] = [];
   if (m.agent) {
@@ -261,8 +271,15 @@ export function renderTasksView(m: TasksModel, opts: { width: number; height: nu
   const out = [...head];
   if (beadRows.length <= beadBudget) out.push(...beadRows);
   else if (beadBudget > 0) {
-    const shown = beadRows.slice(0, beadBudget - 1);
-    out.push(...shown, st.dim(`  … +${beadRows.length - shown.length} more`));
+    // Whole beads only (a bead never loses its PR row to the cut); the count is in beads, not rows.
+    let used = 0;
+    let n = 0;
+    while (n < groups.length && used + groups[n].length <= beadBudget - 1) used += groups[n++].length;
+    if (n === 0 && beadBudget > 1) {
+      out.push(groups[0][0]);
+      n = 1;
+    } else out.push(...groups.slice(0, n).flat());
+    out.push(st.dim(`  … +${groups.length - n} more`));
   }
   const lower: string[] = [];
   msgs.forEach((b, j) => {
