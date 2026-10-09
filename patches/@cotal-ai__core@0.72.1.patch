@@ -1,0 +1,72 @@
+diff --git a/dist/schema-profile.js b/dist/schema-profile.js
+index da7efb06882699eedb8eb7d6e1ecd76eb2341ad1..69db514b62c3319801b3ce64541400db7e9673b1 100644
+--- a/dist/schema-profile.js
++++ b/dist/schema-profile.js
+@@ -153,6 +153,58 @@ const AJV_PROFILE_OPTIONS = Object.freeze({
+     // worth more than inlining's marginal speed.
+     inlineRefs: false,
+ });
++/**
++ * ONE process-wide Ajv that only ever META-VALIDATES (paw patch). A fresh `Ajv2020` re-compiles the
++ * 2020-12 meta-schema the first time it validates a schema, and that was ~90% of every contract
++ * compile: a cold resolve of the manager's 66 contracts paid it 66 times. This instance compiles it
++ * once. It never `addSchema`s or `compile`s a caller document — a caller schema is only ever DATA
++ * here — so nothing a closure registers can reach it, and it is built with the exact profile
++ * options, so its verdicts and `errorsText()` are byte-identical to a fresh instance's.
++ */
++let metaAjv;
++/** The schema keys a fresh profile Ajv is born with (the 2020-12 meta-schema, its vocabulary
++ *  meta-schemas, the `http://json-schema.org/schema` alias), snapshotted before anything validates.
++ *  A born key resolves to the same meta-schema in every instance: ajv refuses a later `$id`/key
++ *  that collides with one, so no closure member can shadow it. */
++let metaAjvBornKeys;
++function sharedMetaAjv() {
++    if (metaAjv === undefined) {
++        const ajv = new Ajv2020(AJV_PROFILE_OPTIONS);
++        metaAjvBornKeys = new Set([...Object.keys(ajv.schemas), ...Object.keys(ajv.refs)]);
++        metaAjv = ajv;
++    }
++    return metaAjv;
++}
++/**
++ * The per-closure compiler: a FRESH instance with the exact profile options, as before, so every
++ * member, `$id` and compiled function stays private to its closure. Only ajv's own meta-validation
++ * hook is routed to {@link sharedMetaAjv} — called by ajv at the same point, for the same documents,
++ * in the same order as before, so which error a bad closure reports first is unchanged.
++ *
++ * Routed only when the document's meta-schema is one every instance is born with (`$schema` absent
++ * or a born key). Any other `$schema` — e.g. one naming a closure member — can depend on what THIS
++ * instance has registered, so it takes ajv's own path on this instance, exactly as before.
++ */
++class ProfileAjv extends Ajv2020 {
++    validateSchema(schema, throwOrLogError) {
++        if (schema === null || typeof schema !== "object")
++            return super.validateSchema(schema, throwOrLogError);
++        const meta = sharedMetaAjv();
++        const $schema = schema.$schema;
++        if ($schema !== undefined && !(typeof $schema === "string" && metaAjvBornKeys.has($schema)))
++            return super.validateSchema(schema, throwOrLogError);
++        const valid = meta.validateSchema(schema, false);
++        this.errors = meta.errors;
++        if (!valid && throwOrLogError) {
++            const message = "schema is invalid: " + this.errorsText();
++            if (this.opts.validateSchema === "log")
++                this.logger.error(message);
++            else
++                throw new Error(message);
++        }
++        return valid;
++    }
++}
+ /** The §13.7 closure of one self-contained document: the manifest naming it with no members, and
+  *  that manifest's digest, the closure digest a registration or an `op` digest carries. It needs no
+  *  compile, and `compileContract` returns the same digest for a member-free schema. Producers build
+@@ -522,7 +574,7 @@ function compileWithinBudget(bundle) {
+     const started = Date.now();
+     // Compile with deterministic local resolution only. Members register under their cotal: URI
+     // so in-document `$ref: "cotal:sha256:…"` resolves from the bundle, never the network.
+-    const ajv = new Ajv2020(AJV_PROFILE_OPTIONS);
++    const ajv = new ProfileAjv(AJV_PROFILE_OPTIONS);
+     let validate;
+     try {
+         // Every member is reachable and digest-verified (assertClosureProfile refuses extras), so

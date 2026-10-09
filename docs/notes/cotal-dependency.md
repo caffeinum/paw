@@ -53,6 +53,31 @@ Moved verbatim from CLAUDE.md (2026-10-02 split). Index: [CLAUDE.md](../../CLAUD
   `paw restart` were not run — operator's call); `e2e-headless`'s "paw open hl says it is headless"
   fails on a stale expectation from bfb66ed (open now prints a status summary), unrelated to cotal.
 
+### core meta-validator patch
+`patches/@cotal-ai__core@0.72.1.patch` (2026-10-09, perf only). Every contract compile in
+`schema-profile.js` built a fresh `Ajv2020`, and a fresh instance re-compiles the 2020-12 meta-schema
+the first time it validates a schema — ~90% of each compile, paid 66 times by a cold full resolve of
+the manager (33 commands × input/output) and enough to trip the `! schema: compile took …` note on a
+loaded host. The patch keeps the per-closure fresh instance with the exact `AJV_PROFILE_OPTIONS` (so
+members/`$id`s never leak between closures) and overrides only ajv's `validateSchema` hook on it: a
+document whose `$schema` is absent or a key every instance is born with is meta-validated by ONE
+lazily-built, process-wide `Ajv2020` that never registers caller documents; any other `$schema` (e.g.
+one naming a closure member) takes ajv's own path on the per-closure instance, as before. Because the
+hook fires where ajv always called it, error precedence is unchanged (a nested bad `$anchor` still
+reports `invalid anchor` before `schema is invalid`). The timing note is untouched; the first compile
+in a process still pays the one meta-schema compile inside its window.
+- Measured (one host, unloaded, 7 cold processes each, medians): the 66 real manager contracts
+  compile in 412ms → 83ms (per-compile median 5.6 → 0.56ms; first compile ~25ms both); a cold
+  `resolveService` of the manager is 441ms → 113ms wall, 659 → 183ms CPU. Meta-schema compiles per
+  process: one per contract → 1.
+- Semantics: 31-case before/after diff (valid verdicts + errors, refusals and their exact messages,
+  member `$ref`, same `$id` across closures, `$schema` naming a member/unknown/non-string, error
+  order) — identical except the meta-compile count.
+- NOT done: routing `resolveService` through `createCompiledContractCache`. Upstream compiles each
+  command's validators separately on purpose (endpoint-invoke.js "a compiled contract is not shared"),
+  an ajv validator carries mutable `.errors`, and paw's long-lived processes already resolve once
+  (`sharedManagerControl`); after this patch a whole resolve's compiles cost ~80ms.
+
 **Bumped 0.58.0 → 0.66.1 on 2026-10-05** (operator's ask, inside the 7-day min-release-age window:
 `pnpm-workspace.yaml` `minimumReleaseAgeExclude` lists the ten 0.66.1 packages incl. transitive
 `@cotal-ai/seat` by EXACT version — delete it once 0.66.1 is a week old). What it took:
