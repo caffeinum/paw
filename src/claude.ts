@@ -39,7 +39,7 @@ import { readForeground, registerForeground, unregisterForeground } from "./fore
 import { daemonEnv, ensure, resolveSpace } from "./lifecycle.ts";
 import { withFileLockAsync } from "./lock.ts";
 import { resolveNamedSession } from "./named.ts";
-import { readClaudeArgs, readResumeId } from "./session.ts";
+import { readClaudeArgs, readModel, readResumeId } from "./session.ts";
 
 /**
  * Two-zone parse: consume LEADING paw-owned opts (`--space <s>`, `--name <n>`, and `--space=`/`--name=`
@@ -263,7 +263,9 @@ export async function runClaude(argv: string[]): Promise<void> {
       name,
       configPath,
       servers: server,
-      model: resolveModel(),
+      // cotal ≥0.68: the launcher resolves the model (flag/PAW_MODEL, else the persona's `model:`) — the
+      // connector renders only what it is handed, as the manager does for a detached spawn.
+      model: resolveModel() ?? readModel(configPath),
       workspaceRoot: pawCotalRoot(space),
     });
 

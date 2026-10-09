@@ -1,5 +1,5 @@
 diff --git a/dist/mcp.cjs b/dist/mcp.cjs
-index b69ca663d1fc6a1ac20e0acce95296d98aace385..d914cc265463a2b8b401e85a6c10e26bc1ca770a 100644
+index 8eddf5958f7c2e6aaf8cb7d6f52efb6e4238366e..ca399c3f101a2ab68580c09a073b00b60976f6fc 100644
 --- a/dist/mcp.cjs
 +++ b/dist/mcp.cjs
 @@ -28,6 +28,14 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
@@ -17,16 +17,17 @@ index b69ca663d1fc6a1ac20e0acce95296d98aace385..d914cc265463a2b8b401e85a6c10e26b
  
  // ../../node_modules/.pnpm/ajv@8.20.0/node_modules/ajv/dist/compile/codegen/code.js
  var require_code = __commonJS({
-@@ -74585,8 +74593,6 @@ async function createBoundClaudeTranscriptSource(path, sessionSource, opts = {})
+@@ -74764,9 +74772,6 @@ async function createBoundClaudeTranscriptSource(path, sessionSource, opts = {})
  }
  
  // src/mcp.ts
 -var events;
--var claude = createClaudeHandle({ events: () => events });
+-var wake;
+-var claude = createClaudeHandle({ events: () => events, surfaced: (items) => wake?.surfaced(items) });
  var HOW_TO_JOIN = "This Claude Code session is not on a Cotal mesh, so the cotal_* mesh tools are off. The Cotal plugin stays off the mesh unless the session was launched with a mesh identity (COTAL_NAME, COTAL_LINK or COTAL_AGENT_FILE in its environment). To work on a mesh, launch the session through Cotal: `cotal setup` once, `cotal up` to start a local mesh, then `cotal spawn` to start a Claude session that joins it (`cotal spawn <name> --detach` runs it under the manager). Docs: https://docs.cotal.ai/getting-started/";
  async function serveUnmanaged() {
    const server = new McpServer({ name: "cotal", version: "0.0.0" });
-@@ -74601,23 +74607,23 @@ async function serveUnmanaged() {
+@@ -74781,23 +74786,62 @@ async function serveUnmanaged() {
    );
    await server.connect(new StdioServerTransport());
  }
@@ -35,19 +36,57 @@ index b69ca663d1fc6a1ac20e0acce95296d98aace385..d914cc265463a2b8b401e85a6c10e26b
 -    process.stderr.write("[cotal-connector] no COTAL_NAME \u2014 not a managed session; staying off the mesh\n");
 -    await serveUnmanaged();
 -    return;
--  }
--  const config2 = configFromEnv();
 +async function serveClaudeSession(opts) {
 +  const { env } = opts;
 +  const log = opts.log ?? ((line) => process.stderr.write(`${line}
 +`));
-+  let events;
-+  const claude = createClaudeHandle({ events: () => events });
++  const control = controlFromEnv(env);
++  if (!control) {
++    throw new Error("managed session missing its control socket path or its control token - cannot serve the control plane");
+   }
+-  const config2 = configFromEnv();
 +  const config2 = configFromEnv(env);
    config2.connector = "claude";
++  let events;
++  let wake;
++  const claude = createClaudeHandle({ events: () => events, surfaced: (items) => wake?.surfaced(items) });
    const agent = new MeshAgent(config2);
    agent.start();
 -  if (/^(1|true|yes|on)$/i.test(process.env.COTAL_EVENTS ?? "") || config2.eventsRequired) {
++  let controlServer;
++  let mcp;
++  let closing;
++  const close = () => closing ??= (async () => {
++    try {
++      controlServer?.close();
++    } catch {
++    }
++    wake?.stop();
++    if (events) {
++      let bound;
++      try {
++        const settled = await Promise.race([
++          events.close().then(() => true),
++          new Promise((resolve) => {
++            bound = setTimeout(() => resolve(false), 5e3);
++            bound.unref?.();
++          })
++        ]);
++        if (!settled) log("[cotal-connector] AG-UI holder still draining after 5s - leaving the mesh without it");
++      } catch (e) {
++        log(`[cotal-connector] AG-UI holder close failed: ${e?.message ?? String(e)}`);
++      } finally {
++        clearTimeout(bound);
++      }
++    }
++    try {
++      await agent.stop();
++    } finally {
++      await mcp?.close().catch(() => {
++      });
++    }
++  })();
++  const stopSeat = (code) => void close().finally(() => opts.onShutdown?.(code));
 +  if (/^(1|true|yes|on)$/i.test(env.COTAL_EVENTS ?? "") || config2.eventsRequired) {
      let mapper;
      events = new AguiEmitterHolder(
@@ -56,58 +95,49 @@ index b69ca663d1fc6a1ac20e0acce95296d98aace385..d914cc265463a2b8b401e85a6c10e26b
          const startEmitter = async () => {
 -          const workspaceRoot = resolveEventsStateRoot(process.env);
 +          const workspaceRoot = resolveEventsStateRoot(env);
-           const threadId = (0, import_node_path6.basename)(transcriptPath, ".jsonl");
+           const threadId = (0, import_node_path7.basename)(transcriptPath, ".jsonl");
            const principal = principalKey(agent.ep.principal.owner, agent.ep.principal.actor).key;
            const { walPath, subjectPath } = await ensureEventWalDir({ workspaceRoot, space: config2.space, principal, threadId });
-@@ -74635,30 +74641,23 @@ async function main() {
-         await agent.whenConnected(2e4);
-         return startEmitter();
-       },
--      // Required, and not defaulted to a swallow: this runs behind a hook that must not throw, so
--      // a failure reaches a human only if it is written somewhere. The holder is terminal on
--      // error, it does not retry, so this line is the whole record of why events stopped.
--      (e) => process.stderr.write(`[cotal-connector] AG-UI emitter stopped: ${e.message}
+@@ -74818,86 +74862,103 @@ async function main() {
+       {
+         onError: eventPlaneStopped({
+           required: config2.eventsRequired === true,
+-          log: (line) => process.stderr.write(`[cotal-connector] ${line}
 -`),
--      // The turn terminal closes a run the record stream never described, so the mapper still
--      // believes that run is open. Without this it would attribute the next records to a run the
--      // published stream has already finished and the emitter would refuse the batch. Keyed on the
--      // id, so a newer run opened in between is left alone.
-+      (e) => log(`[cotal-connector] AG-UI emitter stopped: ${e.message}`),
-       (runId) => mapper?.forgetOpenRun(runId)
+-          stopSeat: () => void shutdown(1)
++          log: (line) => log(`[cotal-connector] ${line}`),
++          stopSeat: () => stopSeat(1)
+         }),
+-        // The turn terminal closes a run the record stream never described, so the mapper still
+-        // believes that run is open. Without this it would attribute the next records to a run the
+-        // published stream has already finished and the emitter would refuse the batch. Keyed on
+-        // the id, so a newer run opened in between is left alone.
+         onRunClosed: (runId) => mapper?.forgetOpenRun(runId)
+       }
      );
    }
 -  const control = controlFromEnv();
-+  const control = controlFromEnv(env);
-   if (!control) {
+-  if (!control) {
 -    process.stderr.write(
 -      "[cotal-connector] managed session missing its control socket path or its control token - cannot serve the control plane\n"
 -    );
 -    process.exit(1);
-+    await agent.stop().catch(() => {
-+    });
-+    throw new Error("managed session missing its control socket path or its control token - cannot serve the control plane");
-   }
+-  }
    const controlPath = control.path;
    const controlToken = control.token;
-   let controlServer;
-   let wake;
--  const shutdown = async () => {
-+  let mcp;
-+  let closing;
-+  const close = () => closing ??= (async () => {
-     try {
-       controlServer?.close();
-     } catch {
-@@ -74667,53 +74666,85 @@ async function main() {
-     try {
-       await agent.stop();
-     } finally {
--      process.exit(0);
-+      await mcp?.close().catch(() => {
-+      });
-     }
+-  let controlServer;
+-  const shutdown = async (code = 0) => {
+-    try {
+-      controlServer?.close();
+-    } catch {
+-    }
+-    wake?.stop();
+-    try {
+-      await agent.stop();
+-    } finally {
+-      process.exit(code);
+-    }
 -  };
-+  })();
    controlServer = startControlServer(
      agent,
      { path: controlPath, token: controlToken },
@@ -115,7 +145,7 @@ index b69ca663d1fc6a1ac20e0acce95296d98aace385..d914cc265463a2b8b401e85a6c10e26b
 -    { fatalBind: true, onShutdown: () => void shutdown(), onReply: claude.onReply }
 +    {
 +      fatalBind: opts.fatalBind ?? false,
-+      onShutdown: () => void close().finally(() => opts.onShutdown?.()),
++      onShutdown: () => stopSeat(0),
 +      onReply: claude.onReply
 +    }
    );
@@ -154,24 +184,26 @@ index b69ca663d1fc6a1ac20e0acce95296d98aace385..d914cc265463a2b8b401e85a6c10e26b
 -  process.on("SIGINT", () => void shutdown());
 -  process.on("SIGTERM", () => void shutdown());
 -  process.stdin.once("end", () => void shutdown());
++  opts.input.once("end", () => void close());
+   server.server.oninitialized = () => {
+     const clientCaps = server.server.getClientCapabilities();
+-    const envFlag = process.env.COTAL_CHANNEL;
++    const envFlag = env.COTAL_CHANNEL;
+     const channelActive = envFlag ? /^(1|true|yes|on)$/i.test(envFlag) : Boolean(clientCaps?.experimental?.["claude/channel"]);
+     wake?.setChannelActive(channelActive);
+-    process.stderr.write(
+-      `[cotal-connector] client capabilities: ${JSON.stringify(clientCaps ?? {})} \u2192 channel ${channelActive ? "ACTIVE" : "off"}
+-`
+-    );
++    log(`[cotal-connector] client capabilities: ${JSON.stringify(clientCaps ?? {})} → channel ${channelActive ? "ACTIVE" : "off"}`);
+   };
 -  const transport = new StdioServerTransport();
 -  await server.connect(transport);
-+  opts.input.once("end", () => void close());
-+  await server.connect(new StdioServerTransport(opts.input, opts.output));
-   const clientCaps = server.server.getClientCapabilities();
--  const envFlag = process.env.COTAL_CHANNEL;
-+  const envFlag = env.COTAL_CHANNEL;
-   const channelActive = envFlag ? /^(1|true|yes|on)$/i.test(envFlag) : Boolean(clientCaps?.experimental?.["claude/channel"]);
-   wake?.setChannelActive(channelActive);
--  process.stderr.write(
--    `[cotal-connector] client capabilities: ${JSON.stringify(clientCaps ?? {})} \u2192 channel ${channelActive ? "ACTIVE" : "off"}
--`
--  );
 -  process.stderr.write(
 -    `[cotal-connector] MCP ready (stdio) \u2014 space="${config2.space}" name="${config2.name}"${config2.role ? ` role="${config2.role}"` : ""}
 -`
 -  );
-+  log(`[cotal-connector] client capabilities: ${JSON.stringify(clientCaps ?? {})} → channel ${channelActive ? "ACTIVE" : "off"}`);
++  await server.connect(new StdioServerTransport(opts.input, opts.output));
 +  log(`[cotal-connector] MCP ready (stdio) — space="${config2.space}" name="${config2.name}"${config2.role ? ` role="${config2.role}"` : ""}`);
 +  return { name: config2.name, close };
  }
@@ -188,14 +220,25 @@ index b69ca663d1fc6a1ac20e0acce95296d98aace385..d914cc265463a2b8b401e85a6c10e26b
 +    input: process.stdin,
 +    output: process.stdout,
 +    fatalBind: true,
-+    onShutdown: () => process.exit(0)
++    onShutdown: (code) => process.exit(code)
 +  });
 +  const shutdown = () => void session.close().finally(() => process.exit(0));
 +  process.on("SIGINT", shutdown);
 +  process.on("SIGTERM", shutdown);
 +  process.stdin.once("end", shutdown);
 +}
-+if (typeof require !== "undefined" && require.main === module) {
++function isEntryPoint() {
++  if (typeof require !== "undefined" && require.main === module) return true;
++  const argv1 = process.argv[1];
++  if (!argv1) return false;
++  try {
++    const fs = require("node:fs");
++    return fs.realpathSync(argv1) === fs.realpathSync(__filename);
++  } catch {
++    return false;
++  }
++}
++if (isEntryPoint()) {
 +  main().catch((e) => {
 +    process.stderr.write(`[cotal-connector] fatal: ${e.stack ?? String(e)}
  `);
@@ -209,10 +252,10 @@ index b69ca663d1fc6a1ac20e0acce95296d98aace385..d914cc265463a2b8b401e85a6c10e26b
  /*! Bundled license information:
  
 diff --git a/dist/mcp.d.ts b/dist/mcp.d.ts
-index 31ad0fbda604cbbc00066dcf4b0ceb67d8ced421..eedef63510f2c51fa4ce2205e1bca42488e92cc6 100644
+index 31ad0fbda604cbbc00066dcf4b0ceb67d8ced421..c410c280067836e6a8222d745fba21e6fc0abf4e 100644
 --- a/dist/mcp.d.ts
 +++ b/dist/mcp.d.ts
-@@ -1,2 +1,43 @@
+@@ -1,2 +1,47 @@
 -export {};
 -//# sourceMappingURL=mcp.d.ts.map
 \ No newline at end of file
@@ -226,9 +269,9 @@ index 31ad0fbda604cbbc00066dcf4b0ceb67d8ced421..eedef63510f2c51fa4ce2205e1bca424
 + *
 + * stdio transport owns stdout for JSON-RPC — ALL diagnostics go to stderr.
 + *
-+ * Run directly (`node mcp.cjs`) it serves the one session its process env names. `require`d, it
-+ * runs nothing and exports {@link serveClaudeSession}, so a host can serve several sessions from one
-+ * process, each over its own stream pair and launch env.
++ * Run directly (`node mcp.cjs`) it serves the one session its process env names. Imported or
++ * `require`d, it runs nothing and exports {@link serveClaudeSession}, so a host can serve several
++ * sessions from one process, each over its own stream pair and launch env.
 + */
 +import type { Readable, Writable } from "node:stream";
 +/** Where a hosted session reads its launch env and speaks MCP. `mcp.cjs` run directly passes its
@@ -246,31 +289,35 @@ index 31ad0fbda604cbbc00066dcf4b0ceb67d8ced421..eedef63510f2c51fa4ce2205e1bca424
 +    /** Exit the process when the control socket can't be bound. Only the process that IS the session
 +     *  may do this; a host serving several sessions passes false and the call rejects instead. */
 +    fatalBind?: boolean;
-+    /** The manager asked this session to shut down (authenticated control frame). The session has
-+     *  already closed itself when this runs; the caller decides what else ends (mcp.cjs: the process). */
-+    onShutdown?: () => void;
++    /** The session ended itself: the manager asked it to shut down (authenticated control frame,
++     *  `code` 0), or the AG-UI event plane a space requires stopped for good (`code` 1). The session
++     *  has already closed when this runs; the caller decides what else ends (mcp.cjs: the process,
++     *  with `code`). */
++    onShutdown?: (code: number) => void;
 +}
 +export interface ClaudeSession {
 +    name: string;
-+    /** Leave the mesh and stop serving: control socket, wake policy, endpoint, MCP server. Idempotent. */
++    /** Leave the mesh and stop serving: control socket, wake policy, AG-UI holder, endpoint, MCP
++     *  server. Idempotent. */
 +    close(): Promise<void>;
 +}
 +/** Serve one managed Claude Code session: its mesh endpoint, hook control socket, `claude/channel`
 + *  wake policy and the cotal MCP server over `input`/`output`. Everything per-session lives in this
-+ *  call, so N calls in one process are N independent sessions. Rejects on a misconfigured launch. */
++ *  call, so N calls in one process are N independent sessions. Rejects on a misconfigured launch,
++ *  before anything joins the mesh. */
 +export declare function serveClaudeSession(opts: ClaudeSessionOptions): Promise<ClaudeSession>;
-\ No newline at end of file
 diff --git a/package.json b/package.json
-index 0e5e8f156f728a5042a928324867d92a838e0742..bcbec315786fe81bf85d5bdaec6769f03b6bda63 100644
+index 43634eeae361c236e9d4c772821b1cf936b68b59..a8517dcb303a7833f443b24e7c46024ffa562223 100644
 --- a/package.json
 +++ b/package.json
-@@ -15,6 +15,10 @@
+@@ -15,6 +15,11 @@
      ".": {
        "types": "./dist/index.d.ts",
        "import": "./dist/index.js"
 +    },
 +    "./mcp": {
 +      "types": "./dist/mcp.d.ts",
++      "import": "./dist/mcp.cjs",
 +      "require": "./dist/mcp.cjs"
      }
    },

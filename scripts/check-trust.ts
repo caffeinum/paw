@@ -9,7 +9,7 @@
  * Here a fake claude (same dialog text, same default, same keys) runs in a PRIVATE tmux server under a
  * temp HOME, so nothing touches the operator's tmux or ~/.claude.json:
  *   BEFORE  the old behaviour (Enter every poll) → the fake quits at the dialog       (the bug)
- *   AFTER   startupWatch: answers "Yes, I trust this folder", then the dev-channels gate → ready
+ *   AFTER   startupWatch: answers "Yes, I trust this folder", leaves the dev-channels gate to cotal's watch → ready
  *   PTY     no terminal to type into: the re-written entry alone saves a claude that reads it late
  *   POLICY  a folder paw does NOT pre-trust: nothing is sent, the log and cause() say why
  *   OTHER   an unrecognised prompt: nothing is sent, logged with its last lines
@@ -146,8 +146,22 @@ async function boot(name: string, opts: { poll: () => void; mode?: string; delay
   // Let claude read the erased file and draw its dialog BEFORE paw's first poll — the tmux half of
   // the fix is what's under test here (the PTY case below covers the re-write winning the race).
   ok("AFTER: claude is at the trust dialog before paw polls", await waitFor(() => state() === "trust", 5000), state());
-  for (let t0 = Date.now(); Date.now() - t0 < 10000 && state() !== "ready" && state() !== "exited"; await sleep(500)) w.poll();
-  ok("AFTER: startupWatch answers the dialog 'Yes' and clears the dev-channels gate — claude boots", state() === "ready", state());
+  for (let t0 = Date.now(); Date.now() - t0 < 10000 && state() !== "gate" && state() !== "exited"; await sleep(500)) w.poll();
+  ok("AFTER: startupWatch answers the dialog 'Yes' — claude reaches the dev-channels gate", state() === "gate", state());
+  // The gate is cotal's (≥0.71): paw must never type at it, or cotal's runtime misses its prompt and
+  // ends the seat at 15s. Poll on it for a while and prove nothing was pressed.
+  for (let i = 0; i < 4; i++, await sleep(500)) w.poll();
+  ok("AFTER: paw sends nothing at the dev-channels gate", state() === "gate", state());
+  // Then cotal's own watch (what the tmux runtime runs) clears it — with paw still polling beside it.
+  const { confirmWatch } = await import("@cotal-ai/core");
+  let failed: string | undefined;
+  confirmWatch("WARNING: Loading development channels")({
+    read: () => tmux("capture-pane", "-p", "-t", `cotal-${space}:after2`).stdout,
+    enter: () => void tmux("send-keys", "-t", `cotal-${space}:after2`, "Enter"),
+    fail: (m: string) => void (failed = m),
+  });
+  for (let t0 = Date.now(); Date.now() - t0 < 5000 && state() !== "ready" && !failed; await sleep(250)) w.poll();
+  ok("AFTER: cotal's confirm watch clears the gate beside paw's poll — claude boots", state() === "ready" && !failed, failed ?? state());
   ok("AFTER: the erased trust entry was re-written", isFolderTrusted(folder));
   ok("AFTER: the log names the erased entry and the answered dialog", logs.some((l) => /lost the trust entry/.test(l)) && logs.some((l) => /answered "Yes, I trust this folder"/.test(l)), logs.join(" | "));
 }

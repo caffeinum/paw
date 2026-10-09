@@ -102,9 +102,16 @@ export function writesClaudeTranscript(agentType: string | undefined): boolean {
  * Absent ⇒ undefined ⇒ EVERY server declared for the connector, which is cotal's own default and the
  * behaviour `paw mcp add` promises ("adds to all agents"). `none` is a real value meaning share
  * nothing, and is deliberately distinct from absent — "I chose none" must not read as "I said nothing".
+ * Since cotal 0.69 the spawn op takes the parsed list (core's `parseShareSelection`), not this string.
  */
 export function readShareTools(configPath: string | undefined): string | undefined {
   return scalar(configPath, "shareTools");
+}
+
+/** cotal ≥0.68 connectors no longer read the persona's `model:` themselves: the LAUNCHER resolves the
+ *  model (flag, else this pin) and hands it over as `LaunchOpts.model`. */
+export function readModel(configPath: string | undefined): string | undefined {
+  return scalar(configPath, "model");
 }
 
 /** The folder a registered agent runs in (`cwd:`) — undefined for an orphaned persona (no folder). */

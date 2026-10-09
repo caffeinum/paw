@@ -158,15 +158,18 @@ export function classifyStartupScreen(text: string): StartupScreen {
 /**
  * Answer claude's startup prompts in an agent's tmux window — by READING the window first.
  *
- * cotal's tmux runtime presses Enter at the dev-channels gate only 1s…5s after the window opens, and a
- * cold claude on a loaded machine reaches it later, so paw answers while it waits for the agent to
- * reach the mesh (`cotal-endpoint-telegram` hung ~90s until a human pressed Enter, 2026-08-17).
+ * The dev-channels gate is COTAL's (cotal ≥0.71): its tmux/cmux runtimes read the pane and press
+ * Enter once when the connector's declared `confirm` text is on screen, and END the seat when it has
+ * not appeared within 15s. paw used to answer it too (cotal's old blind 1s…5s Enters missed a cold
+ * claude — `cotal-endpoint-telegram` hung ~90s, 2026-08-17), but now a paw Enter that lands first
+ * clears the gate before cotal's 250ms read sees it, and cotal then kills a healthy seat at 15s. So paw
+ * only NAMES the gate (for `cause()`) and never types at it.
  *
  * This USED to be a blind Enter on every poll, and that was a bug with a body count: when the folder's
  * trust entry had been erased from ~/.claude.json (a concurrent claude rewrite), claude showed its
  * trust dialog, whose default is "No, exit" — the blind Enter chose it and the agent quit before it
  * ever reached MCP (reproduced against a real claude: exit 1). So now:
- *   - the dev-channels gate → Enter;
+ *   - the dev-channels gate → nothing (cotal's, above);
  *   - the trust dialog → ONLY when `trust()` says paw itself trusts this folder (it re-writes the
  *     entry first), move the cursor to "Yes, I trust this folder" and confirm; otherwise nothing;
  *   - anything else → nothing.
@@ -184,9 +187,7 @@ export function answerStartupPrompt(
   if (cap.status !== 0 || typeof cap.stdout !== "string") return undefined;
   const text = cap.stdout;
   const screen = classifyStartupScreen(text);
-  let keys: string[] | undefined;
-  if (screen.kind === "dev-channels") keys = ["Enter"];
-  else if (screen.kind === "trust" && screen.keys && trust()) keys = screen.keys;
+  const keys = screen.kind === "trust" && screen.keys && trust() ? screen.keys : undefined;
   // One key per send-keys, a beat apart: a menu redraws between keystrokes, and a single burst of
   // "Down Enter" can reach a TUI as one chunk it doesn't split.
   for (const [i, k] of (keys ?? []).entries()) {

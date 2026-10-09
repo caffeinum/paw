@@ -201,7 +201,10 @@ try {
   await prober.stop();
   prober = undefined;
   await ctl.close();
-  await stop({ space });
+  // The CLI verb, as the operator types it (`cli` appends `--space <test space>`): b36ce5c fixed a
+  // `paw down` that ignored --space and stopped the DEFAULT space — this must only ever reach ours.
+  const dn = cli("down");
+  ok("paw down --space exited 0", dn.status === 0, (dn.stdout + dn.stderr).split("\n").slice(-3).join(" | "));
   await sleep(3000);
   ok("paw down: hub + supervisor gone", hubProcs(space).length === 0);
   ok("paw down: no shim left", shims().length === 0, `${shims().length}`);

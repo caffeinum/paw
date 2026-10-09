@@ -2,7 +2,56 @@
 
 Moved verbatim from CLAUDE.md (2026-10-02 split). Index: [CLAUDE.md](../../CLAUDE.md)
 
-## cotal 0.66.1
+## cotal 0.72.1
+
+**Bumped 0.66.1 → 0.72.1 on 2026-10-07** (operator's ask, inside the 7-day min-release-age window:
+`minimumReleaseAgeExclude` lists the ten 0.72.1 packages by EXACT version — delete it after
+2026-10-14). What broke, and what paw changed:
+- **0.69 spawn `shareTools` is a LIST** (manager cluster doc rev 22). paw sent the persona's flag
+  string (`none`, `a,b`) and the manager refused it — "shareTools: expected an array of strings" —
+  so every kit agent (`shareTools: none`) and every `paw mcp share`-scoped agent would have failed to
+  spawn. The spawn site now sends core's `parseShareSelection(share)`; the persona keeps the string.
+- **0.71 tmux/cmux runtimes own the dev-channels gate**: they read the pane, press Enter ONCE when the
+  connector's `confirm` text shows, and END the seat if it hasn't shown within 15s. paw's
+  `answerStartupPrompt` also pressed Enter there; a paw Enter landing first clears the gate before
+  cotal's 250ms read sees it, and cotal then kills a healthy seat at 15s. paw no longer types at the
+  gate (it still answers the trust dialog, and `cause()` names a seat stuck at the gate).
+  `check:trust` runs core's `confirmWatch` beside paw's poll on a fake claude to prove the pair boots.
+  RISK, upstream's call: a claude that takes >15s to reach the gate (a loaded box — the 2026-08-17
+  telegram boot took ~90s) is now ended by cotal, where paw used to rescue it.
+- **0.68 untrusted seat dir refused before launch** (`LaunchOpts.cwd`, the manager's ~/.claude.json).
+  paw pre-trusts the exact canonical cwd, which the check accepts. The 2026-10-03 race (a booting
+  claude rewrites ~/.claude.json and erases the entry) now surfaces as that refusal instead of the
+  dialog, so `spawnPinned` re-writes the entry and retries ONCE on "Claude home does not trust".
+- **0.68 launcher-resolved model**: connectors no longer read the persona's `model:`. The manager
+  resolves flag-else-persona itself; paw's one direct `buildLaunch` caller (`paw claude --fg`) now
+  passes `resolveModel() ?? readModel(configPath)`.
+- **Hub patch re-keyed** to `@cotal-ai/connector-claude-code@0.72.1` (#2401 still open) and rebuilt
+  on 0.72.1's main(): per-session `wake` + `createClaudeHandle({surfaced})`, the named-hooks
+  `AguiEmitterHolder` with `eventPlaneStopped` (its stopSeat closes the session and calls
+  `onShutdown(1)` — `mcp.cjs` exits 1 as upstream does), channel detection on `oninitialized`. Plus the
+  #2401 review fixes: `./mcp` export has an `import` condition; the entry check is `require.main ===
+  module` OR realpath(argv[1]) === realpath(__filename); the control env is read BEFORE the agent
+  starts (a throwing `controlFromEnv` no longer leaks a joined agent); `close()` closes the AG-UI
+  holder (bounded 5s) and stops the wake policy. `onShutdown` now receives the exit code.
+- Audited, no change needed: 0.71 role grammar (paw sets no roles; no live persona has `role:`);
+  0.71 whitespace model refused (no blank `model:` in live personas); 0.71 `spawn.env` COTAL_ names
+  (live config has no `spawn.env`); 0.69 MCP-server reader — the live `~/.config/cotal/config.json`
+  loads under 0.72.1's `loadCotalConfig` (3 servers; command/arg paths exist); 0.70.1 hook relay
+  (bundled in the connector, nothing for paw to import); 0.70 `peerLabel`/`controlReplyFrom`.
+- Verified (isolated: own nats-server per run, temp PAW_HOME/space/cotal root, PAW_RELEASE=dev,
+  haiku): typecheck; all 33 hermetic `check:*`; `check:rail` with `PAW_RAIL_SPAWN=1` (real claude
+  spawned in 4s, despawned); `check:loop`; `e2e-hub` on TMUX (3 agents on shims, DM + #general wake,
+  hub SIGKILL gap, sleep/wake, `paw restart` CLI, then `paw down --space <test>` CLI — the
+  dev-channels gate answered by cotal alone); `e2e-headless` (claude -p woken by the hub, restart
+  resumes); kit e2e (`~/.paw/bin/kit`, fake provider; `paw chat --agent kit` born with `shareTools:
+  none` comes up — the list fix); `e2e-sleep`; `e2e-stale-forward`; `e2e-unmanaged` (0.72.1 spares a
+  tmux agent across a manager stop). The live `paw` manager/mailbox/hub pids were the same before and
+  after every run.
+- NOT verified / open: a `>15s` boot to the dev-channels gate under real load (cotal now ends that
+  seat — not reproduced); a 0.66.1 → 0.72.1 cutover of a live-shaped fleet (`paw release` +
+  `paw restart` were not run — operator's call); `e2e-headless`'s "paw open hl says it is headless"
+  fails on a stale expectation from bfb66ed (open now prints a status summary), unrelated to cotal.
 
 **Bumped 0.58.0 → 0.66.1 on 2026-10-05** (operator's ask, inside the 7-day min-release-age window:
 `pnpm-workspace.yaml` `minimumReleaseAgeExclude` lists the ten 0.66.1 packages incl. transitive

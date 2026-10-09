@@ -11,7 +11,7 @@
  * Opt-in per space (`paw hub on`). Each agent's claude launches the C shim (src/hub/cotal-shim.c) as its
  * cotal MCP server; the shim connects here, sends one handshake line `{"v":1,"pid":…,"env":{COTAL_*…}}`
  * and relays newline-delimited JSON-RPC. Per connection this calls cotal's own
- * `serveClaudeSession` (the export upstreamed in Cotal-AI/Cotal#2401, patched into 0.58.0 until it
+ * `serveClaudeSession` (the export upstreamed in Cotal-AI/Cotal#2401, patched into the pinned release until it
  * ships) — the SAME code `node mcp.cjs` runs, just handed a socket and an env instead of stdio and
  * `process.env`. So each session is its own mesh endpoint, hook control socket and wake policy,
  * and its identity comes from the launch env every time it (re)connects: a hub restart is the same

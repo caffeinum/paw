@@ -128,10 +128,10 @@ export class ManagerControl {
    *
    * paw takes the acceptance and does its OWN readiness wait rather than calling
    * `submitAndFollowGoal` (which would restore blocking), and the reason is specific rather than
-   * stylistic: paw's wait is not passive. It polls `ps` and, on the tmux runtime, presses Enter at
-   * claude's one-time dev-channels prompt on every poll (`nudgeStartupPrompt` in addressing.ts) —
-   * the prompt appears well after cotal's own 1s…5s nudge window on a cold or loaded machine, and
-   * a missed Enter leaves the agent sitting at a question forever with no mesh presence. Blocking
+   * stylistic: paw's wait is not passive. It polls `ps` and, on the tmux runtime, re-writes an
+   * erased folder-trust entry and answers claude's trust dialog (`startupWatch` in addressing.ts) —
+   * a missed answer leaves the agent at a question forever with no mesh presence (the dev-channels
+   * gate is cotal's own since 0.71: its runtime reads the pane and presses Enter once). Blocking
    * inside the spawn call would suspend paw for exactly the window in which its only recovery
    * action needs to run. So: acceptance here, readiness in `ensureAgentSpawned`, which already owns
    * the grace window, the nudge and the loud failure.
