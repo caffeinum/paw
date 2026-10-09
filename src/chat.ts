@@ -1153,6 +1153,8 @@ async function chat(argv: string[]): Promise<void> {
    *  finishes the message. Typing multi-line had no answer at all before: you got one line, or you sent
    *  three messages. See src/multiline.ts. */
   let held: string[] = [];
+  /** The on-screen preview entry of each held line, so taking a line back also takes it off screen. */
+  let heldEntries: Entry[] = [];
 
   /** Take what's typed onto the held stack and clear the line, so the next one starts fresh. */
   const holdLine = (line: string): void => {
@@ -1168,6 +1170,16 @@ async function chat(argv: string[]): Promise<void> {
     // they should read as a block. Spacing each one as its own event turned three typed lines into
     // eight lines of screen.
     emit(`${c.dim("│")} ${line}`, "you", true);
+    heldEntries.push(history.entries[history.entries.length - 1]);
+  };
+
+  /** Drop the last `n` held lines (and their previews) and reprint the screen without them. */
+  const unholdLines = (n: number): string[] => {
+    const taken = held.splice(held.length - n, n);
+    const gone = new Set(heldEntries.splice(heldEntries.length - n, n));
+    for (let i = history.entries.length - 1; i >= 0; i--) if (gone.has(history.entries[i])) history.entries.splice(i, 1);
+    redraw();
+    return taken;
   };
 
   /** Park a captured paste: placeholder into the line you're editing, preview onto the screen. */
@@ -1547,6 +1559,21 @@ async function chat(argv: string[]): Promise<void> {
       // except Backspace, which must be read BEFORE readline eats it against an already-empty buffer.
       const raw = typeof chunk === "string" ? chunk : chunk.toString("utf8");
       if (!rl || closing || scanner.pasting || picking) return;
+      // A multi-line draft is editable across lines: Backspace on an empty line takes the previous held
+      // line back into the input; Ctrl+U on an empty line throws the whole draft away (operator,
+      // 2026-10-09: "i can remove the last line, but not multiline"). Read BEFORE readline, which would
+      // otherwise spend the key on an already-empty buffer.
+      if (!bang && held.length && rl.line === "" && (raw === "\x7f" || raw === "\b")) {
+        const [line] = unholdLines(1);
+        setImmediate(() => rl && !closing && rl.write(line));
+        return;
+      }
+      if (!bang && held.length && rl.line === "" && raw === "\x15") {
+        const n = held.length;
+        unholdLines(n);
+        emit(c.dim(`✕ cleared the draft (${n} line${n === 1 ? "" : "s"})`));
+        return;
+      }
       if (bang && (raw === "\x7f" || raw === "\b") && rl.line === "") {
         bang = false;
         rl.setPrompt(promptFor());
@@ -1777,6 +1804,7 @@ async function chat(argv: string[]): Promise<void> {
     if (held.length) {
       const all = held;
       held = [];
+      heldEntries = [];
       raw = joinLines(all, raw);
     }
 

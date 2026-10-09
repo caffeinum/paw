@@ -125,6 +125,25 @@ try {
   ok("banner names the three views, no `logs + chat`", screen().includes("← → switch logs · chat · tasks") && !screen().includes("logs + chat"));
   ok("hint: chat │ ← logs ↓ mention tasks →", screen().includes("chat  │  ← logs   ↓ mention   tasks →"));
 
+  // ── a multi-line draft is editable across lines ──────────────────────────────────────────────
+  const repliesBefore = replies;
+  for (const ch of "first line") p.write(ch);
+  p.write("\x1b\r"); // alt+enter holds it
+  await sleep(300);
+  for (const ch of "second") p.write(ch);
+  p.write("\x1b\r");
+  await sleep(300);
+  p.write("\x7f"); // backspace on the empty line takes "second" back
+  const back = await until(() => (/kit \(only\)> second\s*$/m.test(screen()) && !/│ second/.test(screen()) ? true : undefined), 5_000, 50);
+  ok("backspace on an empty line takes the last held line back into the input", !!back, screen().split("\n").filter((l) => l.trim()).slice(-4).join(" | "));
+  p.write("\x15"); // ctrl+u: clears the typed line
+  await sleep(200);
+  p.write("\x15"); // ctrl+u on the empty line: drops the whole draft
+  const cleared = await until(() => (screen().includes("cleared the draft (1 line)") && !/│ first line/.test(screen()) ? true : undefined), 5_000, 50);
+  ok("ctrl+u on an empty line clears the whole multi-line draft", !!cleared);
+  await sleep(1500);
+  ok("nothing was sent while editing the draft", replies === repliesBefore);
+
   // ── → opens the tasks view ──────────────────────────────────────────────────────────────────
   p.write("\x1b[C");
   const tasks = await until(() => (screen().includes("tasks · kit") && screen().includes(ipId) ? true : undefined), 30_000, 50);
