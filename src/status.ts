@@ -19,6 +19,7 @@ import { ensure, formatHubLine, hubState, READY_PROBE_MS, readRuntimeMarker, res
 import { writeJson } from "./stdout.ts";
 import { liveSessionProcsMany, nameForSession, readIndex as readSessionIndex, type LiveSessionProc } from "./named.ts";
 import { KIT_AGENT } from "./kit.ts";
+import { HERMES_AGENT } from "./hermes-profile.ts";
 import { claudeProjectsRoot, isClaudeHarness, personaTranscriptRoots, readAgentType, readResumeId, transcriptPath, transcriptPaths, writesClaudeTranscript } from "./session.ts";
 import { lastFailure, lastUsage, type ContextUsage } from "./transcript.ts";
 import { tailRead, turnState, type PendingTool, type TurnState } from "./transcript.ts";
@@ -128,7 +129,8 @@ const BUSY_WINDOW_MS = 10_000;
  * showed as busy forever). Its pending tool is still reported, but only inside a turn presence vouches for.
  */
 export function liveTurn(t: Pick<TranscriptRead, "turn" | "mtimeMs"> | undefined, mesh: string, harness?: string): { busy: boolean; tool?: PendingTool } {
-  if (harness === KIT_AGENT) {
+  // hermes: presence alone too — cotal's hermes hooks set working/idle per turn, and paw reads no transcript.
+  if (harness === KIT_AGENT || harness === HERMES_AGENT) {
     const busy = mesh === "working" || mesh === "waiting";
     const state = busy ? t?.turn() : undefined;
     return { busy, tool: state?.inFlight ? state.tool : undefined };
@@ -291,7 +293,10 @@ export function meshStatus(row: PsRow | undefined): { text: string; live: boolea
 
 /** How to refer to an agent's session: its human name (claude --session-name / /rename — what an
  *  adopted-from-claude session carries) if set, else a short id, else — for a pinless agent. */
-function sessionRef(r: AgentStatus): string {
+export function sessionRef(r: Pick<AgentStatus, "sessionName" | "pin" | "harness">): string {
+  // A harness with no claude transcript keeps its session itself — its `resume:` pin names nothing, so
+  // the cell names the harness instead (otherwise a hermes/codex row is indistinguishable from claude).
+  if (!writesClaudeTranscript(r.harness)) return `(${r.harness})`;
   if (r.sessionName) return `"${r.sessionName}"`;
   if (r.pin) return `${r.pin.slice(0, 8)}…`;
   return "—";

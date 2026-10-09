@@ -226,3 +226,8 @@ export function transcriptMtime(sessionId: string, roots: string[] = [claudeProj
   const file = transcriptPath(sessionId, roots);
   return file ? statSync(file).mtimeMs : undefined;
 }
+
+/** A hermes agent's adopted Hermes profile (`hermesHome:`, src/hermes.ts) — absent ⇒ paw's own profile. */
+export function readHermesHome(configPath: string | undefined): string | undefined {
+  return scalar(configPath, "hermesHome");
+}

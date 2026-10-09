@@ -25,10 +25,12 @@ import "@cotal-ai/tmux"; // self-registers the `tmux` runtime (manager ships onl
 import "@cotal-ai/cmux"; // self-registers the `cmux` runtime + terminal-layout providers
 import "@cotal-ai/connector-codex"; // self-registers the `codex` connector (host-mode peer over codex app-server)
 import "@cotal-ai/connector-opencode"; // self-registers the `opencode` connector (in-process plugin)
+import "@cotal-ai/connector-hermes"; // self-registers cotal's `hermes` connector (gateway + plugin), replaced below
 import { isReachable, registry } from "@cotal-ai/core";
 import { pawServer } from "../src/server.ts";
 import { pawConnector } from "../src/connector.ts"; // importing this self-registers the VANILLA `claude` connector (0.12) + paw's `paw`
 import { kitConnector } from "../src/kit.ts";
+import { pawHermesConnector } from "../src/hermes.ts";
 
 // Replace the vanilla `claude` connector (just self-registered by the connector-claude-code import) with
 // paw's opinionated wrapper, so the manager's default agent type "claude" resolves to OURS. `register`
@@ -38,6 +40,9 @@ registry.register({ ...pawConnector, name: "claude" });
 registry.register({ ...pawConnector, name: "cotal" }); // back-compat alias for an explicit `--agent cotal`
 // `agent: kit` personas: the lean Go harness (src/kit.ts, docs/notes/kit.md) — speaks cotal itself.
 registry.register(kitConnector);
+// `agent: hermes` personas: cotal's Hermes connector in a durable paw-owned profile (src/hermes.ts).
+registry.unregister("connector", "hermes");
+registry.register(pawHermesConnector);
 
 /**
  * Minimal DIRECT-Manager `supervise` (installedExtensions:false → registry-only resolution) — the
