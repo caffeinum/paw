@@ -170,6 +170,13 @@ try {
   const small = screen();
   ok("14 rows: title, the reply's last line and the prompt + hint all on screen", small.includes("tasks · kit") && small.includes("50 runs green") && small.includes("you → kit") && small.includes("tasks  │"));
   show("tasks view, short terminal");
+  p.write("\x1b[6~"); // PgDn scrolls the bead list
+  const down = await until(() => (screen().includes("↑") && screen().includes("above · PgUp") ? true : undefined), 5_000, 50);
+  ok("PgDn scrolls the beads: an ↑ N above row appears", !!down);
+  show("tasks view, scrolled");
+  p.write("\x1b[5~");
+  const top = await until(() => (!screen().includes("above · PgUp") ? true : undefined), 5_000, 50);
+  ok("PgUp scrolls back to the top", !!top);
   ROWS = 30;
   term.resize(COLS, ROWS);
   p.resize(COLS, ROWS);

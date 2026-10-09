@@ -483,6 +483,22 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
   const info = agentInfo({ live: true, mesh: "working", ctx: "152k/1M 15%", ctxShare: 0.15, inbox: "2 queued", activeMs: now - 120_000, failure: { text: "session\nlimit" } }, now, st);
   assert(info === "online · ctx 152k/1M 15% · inbox 2 queued · active 2m ago · ! session limit", `info: paw status's words in one row (${info})`);
   assert(agentInfo({ live: false, mesh: "offline", ctx: "—", inbox: "—" }, now, st).startsWith("offline"), "info: an agent off the mesh says offline");
+  // scrolling: 30 flat beads in a 12-row budget
+  const many = Array.from({ length: 30 }, (_, i) => bead(`m${String(i).padStart(2, "0")}`, "open", { updatedAt: iso(i) }));
+  const page = (scroll: number) => {
+    let used = -1;
+    const rows = renderTasksView({ agent: "kit", operator: "op", beads: many }, { width: 60, height: 14, now, scroll, onScroll: (s) => (used = s) });
+    return { rows, used, ids: rows.filter((r) => /^○ m\d\d/.test(r)).map((r) => r.slice(2, 5)) };
+  };
+  const p0 = page(0);
+  assert(p0.used === 0 && p0.ids[0] === "m00" && !p0.rows.some((r) => r.includes("above")) && p0.rows.some((r) => r.includes("more · PgDn")), "scroll: at the top no ↑ row, a PgDn hint below");
+  const p5 = page(5);
+  assert(p5.ids[0] === "m05" && p5.rows.some((r) => r.includes("↑ 5 above · PgUp")), "scroll: scrolled, the list starts at that bead under an ↑ N above row");
+  const pEnd = page(999);
+  assert(pEnd.ids.at(-1) === "m29" && !pEnd.rows.some((r) => r.includes("more ·")) && pEnd.used < 29 && pEnd.rows.length === 14, `scroll: past the end it clamps to a FULL last page (start ${pEnd.used})`);
+  assert(page(pEnd.used + 5).used === pEnd.used, "scroll: overscroll reports the clamped start, so PgUp moves at once");
+  const { scrollKey } = await import("../src/chat-views.ts");
+  assert(scrollKey("\x1b[5~") === "up" && scrollKey("\x1b[6~") === "down" && scrollKey("\x1b[1;2A") === undefined, "scroll keys: PgUp/PgDn only (shift+↑ is readline history)");
   const err = renderTasksView({ agent: "kit", operator: "op", beadsError: "bd list: boom" }, { width: 60, height: 20, now });
   assert(err.some((r) => r.includes("! beads: bd list: boom")) && !err.some((r) => r.includes("no beads")), "render: a failed read is shown, never as 'no beads'");
   const mine = renderTasksView({ operator: "op", beads: [] }, { width: 60, height: 20, now });

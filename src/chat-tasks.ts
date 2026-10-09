@@ -317,7 +317,10 @@ interface MsgBlock {
  * OLDEST lines (a `⋮` in the indent marks the cut), then the beads go down to one row; a terminal too small even for
  * that gets the top `height` rows.
  */
-export function renderTasksView(m: TasksModel, opts: { width: number; height: number; now: number; style?: TasksStyle }): string[] {
+export function renderTasksView(
+  m: TasksModel,
+  opts: { width: number; height: number; now: number; style?: TasksStyle; /** first bead (tree row) shown; clamped */ scroll?: number; /** told the scroll actually used */ onScroll?: (start: number) => void },
+): string[] {
   const st = opts.style ?? plainStyle;
   const width = Math.max(10, opts.width);
   const height = Math.max(1, opts.height);
@@ -372,17 +375,26 @@ export function renderTasksView(m: TasksModel, opts: { width: number; height: nu
   }
 
   const out = [...head];
-  if (beadRows.length <= beadBudget) out.push(...beadRows);
+  const rowsFrom = (i: number): number => groups.slice(i).reduce((a, g) => a + g.length, 0);
+  let start = Math.min(Math.max(0, opts.scroll ?? 0), Math.max(0, groups.length - 1));
+  // Never scroll into blank space: pull back while the bead above still fits under the "↑" row.
+  while (start > 0 && rowsFrom(start - 1) + (start - 1 > 0 ? 1 : 0) <= beadBudget) start--;
+  opts.onScroll?.(start);
+  if (start === 0 && beadRows.length <= beadBudget) out.push(...beadRows);
   else if (beadBudget > 0) {
-    // Whole beads only (a bead never loses its PR row to the cut); the count is in beads, not rows.
+    // Whole beads only (a bead never loses its PR row to the cut); the counts are in beads, not rows.
+    const above = start > 0 && beadBudget > 1 ? 1 : 0;
+    const room = beadBudget - above;
+    const cap = rowsFrom(start) <= room ? room : room - 1;
     let used = 0;
-    let n = 0;
-    while (n < groups.length && used + groups[n].length <= beadBudget - 1) used += groups[n++].length;
-    if (n === 0 && beadBudget > 1) {
-      out.push(groups[0][0]);
-      n = 1;
-    } else out.push(...groups.slice(0, n).flat());
-    out.push(st.dim(`  … +${groups.length - n} more`));
+    let n = start;
+    while (n < groups.length && used + groups[n].length <= cap) used += groups[n++].length;
+    if (above) out.push(st.dim(`  ↑ ${start} above · PgUp`));
+    if (n === start && cap > 0) {
+      out.push(groups[start][0]);
+      n = start + 1;
+    } else out.push(...groups.slice(start, n).flat());
+    if (n < groups.length) out.push(st.dim(`  … +${groups.length - n} more · PgDn`));
   }
   const lower: string[] = [];
   msgs.forEach((b, j) => {

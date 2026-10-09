@@ -86,6 +86,14 @@ export function navKey(raw: string): "left" | "right" | "down" | undefined {
   }
 }
 
+/** The tasks view's bead-list scroll keys: PgUp/PgDn (fn+↑/↓ on a Mac). readline ignores them, so they
+ *  work mid-line too. Not shift+↑/↓ — readline reads those as ↑/↓ and would walk the input history. */
+export function scrollKey(raw: string): "up" | "down" | undefined {
+  if (raw === "\x1b[5~") return "up";
+  if (raw === "\x1b[6~") return "down";
+  return undefined;
+}
+
 /**
  * The hint line printed UNDER the input. It says where each key goes FROM HERE, so it changes with
  * the view — at the left end there is no "←", at the right end no "→" — and it names the current view

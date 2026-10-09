@@ -52,7 +52,7 @@ import { bashMessage, parseBang, runBash } from "./bash.ts";
 import { withManagerControl } from "./control.ts";
 import { advanceCursor } from "./cursor.ts";
 import { AwaitTracker } from "./chat-awaiting.ts";
-import { arrowRun, CLEAR_ALL, displayWidth, fitWidth, entryVisible, hintFor, History, LogFollower, navKey, Painter, type Entry, pickerWindow, showsChat, showsLogs, stepView, VIEW_LABEL, viewNeedsTarget, type ChatView } from "./chat-views.ts";
+import { arrowRun, CLEAR_ALL, displayWidth, fitWidth, entryVisible, hintFor, History, LogFollower, navKey, scrollKey, Painter, type Entry, pickerWindow, showsChat, showsLogs, stepView, VIEW_LABEL, viewNeedsTarget, type ChatView } from "./chat-views.ts";
 import { agentBeads, agentInfo, CLOSED_RECENT_MS, lastExchange, newer, renderTasksView, type InfoFacts, type Said } from "./chat-tasks.ts";
 import { collectStatus, contextShare, contextText, inboxText, toolLabel } from "./status.ts";
 import { listAssigned, type Task } from "./tasks.ts";
@@ -604,6 +604,9 @@ async function chat(argv: string[]): Promise<void> {
    *  when there is no target), the last message each way PER AGENT this session knows of, the notice
    *  line, and what was last painted so an unchanged repaint writes nothing. */
   let tasksBeads: { for: string; tasks: Task[] } | undefined;
+  /** The bead list's first row (src/chat-tasks.ts scroll); the renderer reports what it really used. */
+  let tasksScroll = 0;
+  let tasksScrollFor: string | undefined;
   /** `paw status`'s row for the target, read with the beads; an error is shown, never a guessed row. */
   let tasksInfo: { for: string; facts?: InfoFacts; error?: string; note?: string } | undefined;
   let tasksError: { for: string; message: string } | undefined;
@@ -1464,6 +1467,10 @@ async function chat(argv: string[]): Promise<void> {
     if (tasksBeads?.for !== who && tasksError?.for !== who) void refreshBeads(); // the target moved
     const said = curName ? lastSaid.get(curName.toLowerCase()) : undefined;
     const now = Date.now();
+    if (tasksScrollFor !== who) {
+      tasksScroll = 0; // a new agent's list starts at the top
+      tasksScrollFor = who;
+    }
     const rows = renderTasksView(
       {
         ...(curName ? { agent: curName } : {}),
@@ -1483,6 +1490,8 @@ async function chat(argv: string[]): Promise<void> {
         // Leave the prompt row and the hint row below the panel (and one spare for a wrapped input).
         height: Math.max(3, (process.stdout.rows || 24) - 3),
         now,
+        scroll: tasksScroll,
+        onScroll: (s) => (tasksScroll = s),
         style: { ...c, tag: (n) => agentTag(n), md: (t, w) => renderMarkdown(t, { width: w }) },
       },
     );
@@ -1508,6 +1517,15 @@ async function chat(argv: string[]): Promise<void> {
       const k = navKey(raw);
       if (k === "left" || k === "right") setImmediate(() => rl && !rl.line && switchView(k === "left" ? -1 : 1));
       else if (k === "down" && arrowRun(raw) === undefined) setImmediate(openPicker); // plain ↓ runs are the picker listener's
+    });
+    // The tasks view's bead list scrolls by a third of the screen per PgUp/PgDn.
+    process.stdin.prependListener("data", (chunk: Buffer | string) => {
+      if (view !== "tasks" || !rl || closing || picking) return;
+      const k = scrollKey(typeof chunk === "string" ? chunk : chunk.toString("utf8"));
+      if (!k) return;
+      const step = Math.max(3, Math.floor((process.stdout.rows || 24) / 3));
+      tasksScroll = Math.max(0, tasksScroll + (k === "up" ? -step : step));
+      setImmediate(() => paintTasks(true));
     });
     // readline repaints the whole input on some edits (history, a mid-line change) and wipes what's
     // below it — the hint included. Redraw after every keystroke; appended, so it runs after readline.
