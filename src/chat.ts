@@ -10,7 +10,6 @@
  * Registers a "chat" command into the cotal registry on import; bin/paw.ts ensures the mesh +
  * manager are up before it runs.
  */
-import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import * as readline from "node:readline";
@@ -54,8 +53,7 @@ import { withManagerControl } from "./control.ts";
 import { advanceCursor } from "./cursor.ts";
 import { AwaitTracker } from "./chat-awaiting.ts";
 import { arrowRun, CLEAR_ALL, displayWidth, fitWidth, entryVisible, hintFor, History, LogFollower, navKey, scrollKey, Painter, type Entry, pickerWindow, showsChat, showsLogs, stepView, VIEW_LABEL, viewNeedsTarget, type ChatView } from "./chat-views.ts";
-import { agentBeads, agentInfo, CLOSED_RECENT_MS, lastExchange, newer, renderTasksView, type ClickAction, type InfoFacts, type Said } from "./chat-tasks.ts";
-import { MOUSE_OFF, MOUSE_ON, stripMouse, type MouseEvent } from "./mouse.ts";
+import { agentBeads, agentInfo, CLOSED_RECENT_MS, lastExchange, newer, renderTasksView, type InfoFacts, type Said } from "./chat-tasks.ts";
 import { collectStatus, contextShare, contextText, inboxText, toolLabel } from "./status.ts";
 import { listAssigned, type Task } from "./tasks.ts";
 import { operatorName } from "./company.ts";
@@ -609,11 +607,6 @@ async function chat(argv: string[]): Promise<void> {
   /** The bead list's first row (src/chat-tasks.ts scroll); the renderer reports what it really used. */
   let tasksScroll = 0;
   let tasksScrollFor: string | undefined;
-  /** Parents the operator clicked open / shut (src/chat-tasks.ts FoldState), and what each painted
-   *  row does when clicked — rewritten by every paint. */
-  const foldOpen = new Set<string>();
-  const foldShut = new Set<string>();
-  let tasksClicks: (ClickAction | undefined)[] = [];
   /** `paw status`'s row for the target, read with the beads; an error is shown, never a guessed row. */
   let tasksInfo: { for: string; facts?: InfoFacts; error?: string; note?: string } | undefined;
   let tasksError: { for: string; message: string } | undefined;
@@ -1336,7 +1329,6 @@ async function chat(argv: string[]): Promise<void> {
     const leaving = view;
     view = next;
     if (leaving === "tasks") {
-      if (process.stdin.isTTY) process.stdout.write(MOUSE_OFF);
       clearInterval(tasksTimer);
       tasksTimer = undefined;
       tasksPainted = "";
@@ -1445,7 +1437,6 @@ async function chat(argv: string[]): Promise<void> {
   }
 
   function enterTasks(): void {
-    if (process.stdin.isTTY) process.stdout.write(MOUSE_ON); // clicks fold beads, the wheel scrolls (src/mouse.ts)
     tasksPainted = "";
     seedConversation();
     void refreshBeads();
@@ -1468,36 +1459,6 @@ async function chat(argv: string[]): Promise<void> {
     const p = ep.getRoster().find((r) => r.card.name.toLowerCase() === key && r.card.id !== me && r.status !== "offline");
     if (!p) return {};
     return { status: statusBadge(p.status) + (p.activity ? c.dim(" — " + activityLine(p.activity, 60)) : "") };
-  }
-
-  /** A click or wheel in the tasks view. The panel is painted from the top-left, so screen row N is
-   *  painted row N-1. */
-  function onMouse(e: MouseEvent): void {
-    if (view !== "tasks" || !rl || closing || picking || !e.press) return;
-    if (e.kind === "wheelUp" || e.kind === "wheelDown") {
-      tasksScroll = Math.max(0, tasksScroll + (e.kind === "wheelUp" ? -3 : 3));
-      return paintTasks(true);
-    }
-    if (e.kind !== "left") return;
-    const act = tasksClicks[e.row - 1];
-    if (!act) return;
-    if ("url" in act) {
-      execFile("open", [act.url], (err) => {
-        if (err) {
-          tasksNotice = `! couldn't open ${act.url}: ${err.message}`;
-          paintTasks(true);
-        }
-      });
-      return;
-    }
-    if (act.folded) {
-      foldOpen.add(act.toggle);
-      foldShut.delete(act.toggle);
-    } else {
-      foldShut.add(act.toggle);
-      foldOpen.delete(act.toggle);
-    }
-    paintTasks(true);
   }
 
   function paintTasks(force = false): void {
@@ -1531,8 +1492,6 @@ async function chat(argv: string[]): Promise<void> {
         now,
         scroll: tasksScroll,
         onScroll: (s) => (tasksScroll = s),
-        folds: { open: foldOpen, shut: foldShut },
-        onClicks: (k) => (tasksClicks = k),
         style: { ...c, tag: (n) => agentTag(n), md: (t, w) => renderMarkdown(t, { width: w }) },
       },
     );
@@ -1559,20 +1518,6 @@ async function chat(argv: string[]): Promise<void> {
       if (k === "left" || k === "right") setImmediate(() => rl && !rl.line && switchView(k === "left" ? -1 : 1));
       else if (k === "down" && arrowRun(raw) === undefined) setImmediate(openPicker); // plain ↓ runs are the picker listener's
     });
-    // Mouse reports (src/mouse.ts) are cut out of every chunk BEFORE any listener — readline included —
-    // sees it: readline would type `0;10;5M` into the line. Wrapping emit is the one place that sits
-    // in front of all of them.
-    const stdinEmit = process.stdin.emit.bind(process.stdin);
-    process.stdin.emit = ((event: string | symbol, ...args: unknown[]): boolean => {
-      if (event !== "data") return stdinEmit(event, ...args);
-      const chunk = args[0] as Buffer | string;
-      const text = typeof chunk === "string" ? chunk : chunk.includes("\x1b[<") ? chunk.toString("utf8") : undefined;
-      if (text === undefined) return stdinEmit(event, ...args);
-      const { rest, events } = stripMouse(text);
-      for (const e of events) onMouse(e);
-      if (!rest) return true;
-      return stdinEmit(event, typeof chunk === "string" ? rest : Buffer.from(rest, "utf8"));
-    }) as typeof process.stdin.emit;
     // The tasks view's bead list scrolls by a third of the screen per PgUp/PgDn.
     process.stdin.prependListener("data", (chunk: Buffer | string) => {
       if (view !== "tasks" || !rl || closing || picking) return;
@@ -1752,7 +1697,7 @@ async function chat(argv: string[]): Promise<void> {
     if (followTimer) clearInterval(followTimer);
     // Leave the terminal as we found it — bracketed paste is a MODE, and a shell that inherits it
     // set without knowing would see raw \e[200~ markers in its own input.
-    if (process.stdin.isTTY) process.stdout.write(DISABLE_BRACKETED_PASTE + MOUSE_OFF);
+    if (process.stdin.isTTY) process.stdout.write(DISABLE_BRACKETED_PASTE);
     rl?.close();
     await ep.stop().catch(() => {});
     process.exit(0);

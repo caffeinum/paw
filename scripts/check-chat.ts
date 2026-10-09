@@ -478,25 +478,7 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
   const label = (r: (typeof tree)[number]) => ("fold" in r ? `+${r.fold}@${r.depth}` : `${r.t.id}@${r.depth}`);
   assert(eq(tree.map(label), ["e@0", "e.7@1", "e.7.1@2", "+11@1", "s@0", "s.2@1", "s.10@1"]), `tree: parent first, in-flight branch kept, ${FOLD_AFTER}+ quiet children folded, ids in natural order (${tree.map(label).join(" ")})`);
   const treeRows = renderTasksView({ agent: "kit", operator: "op", beads: agentBeads(epic, "kit", now) }, { width: 60, height: 20, now });
-  assert(treeRows.some((r) => r.startsWith("  ▾ ○ .7  ")) && treeRows.some((r) => r.includes("▸ +11 more · click to open")) && treeRows.some((r) => r.startsWith("▸ ○ e  ")), "tree: a child shows its id suffix, indented; the fold says how many");
-  // clicking: the fold opens the parent, the parent's twisty shuts it, a PR row opens its URL
-  let clicks: (import("../src/chat-tasks.ts").ClickAction | undefined)[] = [];
-  const paint = (folds?: { open: Set<string>; shut: Set<string> }) =>
-    renderTasksView({ agent: "kit", operator: "op", beads: agentBeads(epic, "kit", now) }, { width: 60, height: 30, now, ...(folds ? { folds } : {}), onClicks: (k) => (clicks = k) });
-  const r0 = paint();
-  const foldAt = r0.findIndex((r) => r.includes("+11 more"));
-  assert(r0.length === clicks.length && eq(clicks[foldAt], { toggle: "e", folded: true }) && eq(clicks[r0.findIndex((r) => r.startsWith("▸ ○ e  "))], { toggle: "e", folded: true }), "click: the fold row and the folded parent both open it");
-  const opened = paint({ open: new Set(["e"]), shut: new Set() });
-  assert(!opened.some((r) => r.includes("more · click")) && opened.slice(opened.findIndex((r) => r.startsWith("▾ ○ e  ")), opened.findIndex((r) => r.startsWith("▾ ○ s  "))).filter((r) => /^  (▾ )?○ \.\d+ /.test(r)).length === 12 && opened.some((r) => r.startsWith("▾ ○ e  ")), "click: opened, all 12 children show (in id order) and the twisty turns ▾");
-  const shut = paint({ open: new Set(), shut: new Set(["e"]) });
-  assert(shut.some((r) => r.includes("▸ +13 more")) && !shut.some((r) => r.includes(".7.1")), "click: shut, every child folds — the in-flight branch too (13 = 12 children + 1 grandchild)");
-  assert(eq(clicks[shut.findIndex((r) => r.startsWith("▸ ○ e  "))], { toggle: "e", folded: true }), "click: a shut parent opens on the next click");
-  const prPaint = renderTasksView({ agent: "kit", operator: "op", beads: linked }, { width: 60, height: 20, now, onClicks: (k) => (clicks = k) });
-  assert(eq(clicks[prPaint.findIndex((r) => r.includes("pull/7"))], { url: "https://github.com/a/b/pull/7" }), "click: a PR row opens the PR");
-  const { stripMouse } = await import("../src/mouse.ts");
-  const mm = stripMouse("ab\x1b[<0;10;5M\x1b[<0;10;5m\x1b[<64;3;4M\x1b[<65;3;4Mcd");
-  assert(mm.rest === "abcd" && eq(mm.events.map((e) => `${e.kind}${e.press ? "↓" : "↑"}${e.col},${e.row}`), ["left↓10,5", "left↑10,5", "wheelUp↓3,4", "wheelDown↓3,4"]), "mouse: SGR reports are cut out (readline would type them) and decoded");
-  assert(stripMouse("plain").events.length === 0 && stripMouse("plain").rest === "plain", "mouse: other input passes untouched");
+  assert(treeRows.some((r) => r.startsWith("  ○ .7  ")) && treeRows.some((r) => r.includes("○ +11 more open")), "tree: a child shows its id suffix, indented; the fold says how many");
   const st = { dim: (x: string) => x, green: (x: string) => x, yellow: (x: string) => x, red: (x: string) => x };
   const info = agentInfo({ live: true, mesh: "working", ctx: "152k/1M 15%", ctxShare: 0.15, inbox: "2 queued", activeMs: now - 120_000, failure: { text: "session\nlimit" } }, now, st);
   assert(info === "online · ctx 152k/1M 15% · inbox 2 queued · active 2m ago · ! session limit", `info: paw status's words in one row (${info})`);
