@@ -155,6 +155,8 @@ export interface TasksModel {
   notice?: string;
   /** The agent's live presence, pre-styled (● working — activity); undefined when it isn't on the mesh. */
   status?: string;
+  /** What `paw status` says about it, pre-styled (see {@link agentInfo}) — a row under the title. */
+  info?: string;
 }
 
 export interface TasksStyle {
@@ -179,26 +181,126 @@ export const plainStyle: TasksStyle = {
   md: (t) => t.split("\n"),
 };
 
+/** The `paw status` facts the info row shows — a structural subset of status.ts's AgentStatus, so this
+ *  module stays free of status.ts's mesh/manager imports. */
+export interface InfoFacts {
+  live: boolean;
+  mesh: string;
+  busy?: boolean;
+  /** pre-formatted by status.ts (contextText / inboxText) with its share for the colour */
+  ctx: string;
+  ctxShare?: number;
+  inbox: string;
+  activeMs?: number;
+  failure?: { text: string };
+  tool?: string;
+}
+
+/** The info row: online or not, context fill, inbox, last active, and a failure when the last turn
+ *  failed — the same words `paw status` uses, so the two never disagree. */
+export function agentInfo(f: InfoFacts, now: number, st: Pick<TasksStyle, "dim" | "green" | "yellow" | "red">): string {
+  const bits: string[] = [];
+  bits.push(f.live ? st.green("online") : st.dim("offline"));
+  if (f.busy && f.mesh !== "working") bits.push(st.yellow("busy"));
+  if (f.tool) bits.push(st.dim(`in ${f.tool}`));
+  const ctx = `ctx ${f.ctx}`;
+  bits.push(f.ctxShare === undefined ? st.dim(ctx) : f.ctxShare >= 0.9 ? st.red(ctx) : f.ctxShare >= 0.75 ? st.yellow(ctx) : st.dim(ctx));
+  bits.push(f.inbox === "✓" || f.inbox === "—" ? st.dim(`inbox ${f.inbox}`) : st.yellow(`inbox ${f.inbox}`));
+  if (f.activeMs !== undefined) bits.push(st.dim(`active ${ago(f.activeMs, now)}`));
+  if (f.failure) bits.push(st.red(`! ${f.failure.text.replace(/\s+/g, " ")}`));
+  return bits.join(st.dim(" · "));
+}
+
 const GLYPH: Record<string, string> = { in_progress: "◐", blocked: "⊘", open: "○", deferred: "◌", closed: "✓" };
 
-function beadLine(t: Task, now: number, width: number, st: TasksStyle): string {
+/** One row of the bead tree: a bead at a depth, or a fold standing for a parent's quiet children. */
+export type TreeRow = { t: Task; depth: number } | { fold: number; depth: number };
+
+/** A parent with more QUIET children than this (open, nothing in flight below them) shows only the
+ *  ones in flight and folds the quiet ones into one `+N more open` row — N counts every bead hidden,
+ *  grandchildren included — so an epic of 40 asks is one line, not 40. */
+export const FOLD_AFTER = 3;
+
+/** Natural id order: beads-x.2 before beads-x.10. */
+const byId = (a: Task, b: Task): number => a.id.localeCompare(b.id, "en", { numeric: true });
+
+/**
+ * The open beads as a tree, in display order: a bead whose parent is also listed sits under it (the
+ * parent first — never below its children), children in id order with the ones in flight first. A
+ * branch ranks by its most urgent bead, so an epic with a child in progress sorts with the in-progress
+ * work. Closed beads follow flat, as {@link agentBeads} ordered them. Pure.
+ */
+export function beadTree(beads: Task[]): TreeRow[] {
+  const open = beads.filter((t) => t.status !== "closed");
+  const ids = new Set(open.map((t) => t.id));
+  const kids = new Map<string, Task[]>();
+  const roots: Task[] = [];
+  for (const t of open) {
+    if (t.parent && t.parent !== t.id && ids.has(t.parent)) kids.set(t.parent, [...(kids.get(t.parent) ?? []), t]);
+    else roots.push(t);
+  }
+  const memo = new Map<string, number>();
+  const rank = (t: Task, seen = new Set<string>()): number => {
+    const hit = memo.get(t.id);
+    if (hit !== undefined) return hit;
+    if (seen.has(t.id)) return RANK[t.status] ?? 9;
+    seen.add(t.id);
+    const r = Math.min(RANK[t.status] ?? 9, ...(kids.get(t.id) ?? []).map((k) => rank(k, seen)));
+    memo.set(t.id, r);
+    return r;
+  };
+  const order = new Map(open.map((t, i) => [t.id, i])); // agentBeads' order breaks ties among roots
+  roots.sort((a, b) => rank(a) - rank(b) || (order.get(a.id) ?? 0) - (order.get(b.id) ?? 0));
+  const rows: TreeRow[] = [];
+  const placed = new Set<string>();
+  const walk = (t: Task, depth: number): void => {
+    if (placed.has(t.id)) return;
+    placed.add(t.id);
+    rows.push({ t, depth });
+    const ch = (kids.get(t.id) ?? []).slice().sort((a, b) => rank(a) - rank(b) || byId(a, b));
+    const busy = ch.filter((c) => rank(c) <= RANK.blocked);
+    if (ch.length - busy.length > FOLD_AFTER) {
+      for (const c of busy) walk(c, depth + 1);
+      let hidden = 0;
+      const hide = (x: Task): void => {
+        if (placed.has(x.id)) return;
+        placed.add(x.id); // folded, not lost: the fallback below must not re-list it at the root
+        hidden++;
+        for (const k of kids.get(x.id) ?? []) hide(k);
+      };
+      for (const c of ch) if (!busy.includes(c)) hide(c);
+      rows.push({ fold: hidden, depth: depth + 1 });
+    } else for (const c of ch) walk(c, depth + 1);
+  };
+  for (const r of roots) walk(r, 0);
+  for (const t of open) walk(t, 0); // anything a cycle kept out of the walk still shows
+  for (const t of beads) if (t.status === "closed") rows.push({ t, depth: 0 });
+  return rows;
+}
+
+function beadLine(t: Task, now: number, width: number, st: TasksStyle, depth = 0): string {
   const when = t.status === "closed" ? t.closedAt : t.status === "in_progress" ? (t.startedAt ?? t.updatedAt) : t.updatedAt;
   const right = ` ${age(time(when), now)}`;
-  const left = `${GLYPH[t.status] ?? "·"} ${t.id}  `;
+  const indent = "  ".repeat(depth);
+  // Under its parent a child shows only its own suffix (.15) — the parent's id is right above it.
+  const id = depth && t.parent && t.id.startsWith(t.parent) ? t.id.slice(t.parent.length) : t.id;
+  const left = `${indent}${GLYPH[t.status] ?? "·"} ${id}  `;
   const room = Math.max(1, width - displayWidth(left) - displayWidth(right));
   const title = fitWidth(t.title.replace(/\s+/g, " "), room);
   const pad = " ".repeat(Math.max(0, room - displayWidth(title)));
   const glyph = GLYPH[t.status] ?? "·";
   if (t.status === "closed") return st.dim(left + title + pad + right);
   const g = t.status === "in_progress" ? st.yellow(glyph) : t.status === "blocked" ? st.red(glyph) : glyph;
-  return `${g} ${st.dim(t.id)}  ${title}${pad}${st.dim(right)}`;
+  return `${indent}${g} ${st.dim(id)}  ${title}${pad}${st.dim(right)}`;
 }
 
 /** A bead's rows: its line, then one `↳ <PR url>` row per linked PR (plain text, so the terminal
  *  links it; cut to the width like every row). */
-function beadGroup(t: Task, now: number, width: number, st: TasksStyle): string[] {
-  const links = prUrls(t).map((u) => `  ${st.dim("↳")} ${fitWidth(u, width - 4)}`);
-  return [beadLine(t, now, width, st), ...links];
+function beadGroup(r: TreeRow, now: number, width: number, st: TasksStyle): string[] {
+  const indent = "  ".repeat(r.depth);
+  if ("fold" in r) return [st.dim(fitWidth(`${indent}○ +${r.fold} more open`, width))];
+  const links = prUrls(r.t).map((u) => `${indent}  ${st.dim("↳")} ${fitWidth(u, Math.max(8, width - 4 - indent.length))}`);
+  return [beadLine(r.t, now, width, st, r.depth), ...links];
 }
 
 interface MsgBlock {
@@ -226,12 +328,13 @@ export function renderTasksView(m: TasksModel, opts: { width: number; height: nu
   const count = m.beads ? ` ${st.dim(`· ${m.beads.filter((t) => t.status !== "closed").length} open`)}` : "";
   const status = m.status ? ` ${st.dim("·")} ${m.status}` : "";
   head.push(fitWidth(`${st.bold("tasks")} ${st.dim("·")} ${m.agent ? st.tag(m.agent) : `yours ${st.dim(`(${m.operator})`)}`}${count}${status}`, width));
+  if (m.info) head.push(fitWidth(m.info, width));
 
   let groups: string[][];
   if (m.beadsError) groups = [[st.red(fitWidth(`! beads: ${m.beadsError}`, width))]];
   else if (!m.beads) groups = [[st.dim("reading beads…")]];
   else if (!m.beads.length) groups = [[st.dim(`no beads assigned to ${who}`)]];
-  else groups = m.beads.map((t) => beadGroup(t, now, width, st));
+  else groups = beadTree(m.beads).map((r) => beadGroup(r, now, width, st));
   const beadRows = groups.flat();
 
   const msgs: MsgBlock[] = [];

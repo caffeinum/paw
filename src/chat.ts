@@ -53,7 +53,8 @@ import { withManagerControl } from "./control.ts";
 import { advanceCursor } from "./cursor.ts";
 import { AwaitTracker } from "./chat-awaiting.ts";
 import { arrowRun, CLEAR_ALL, displayWidth, fitWidth, entryVisible, hintFor, History, LogFollower, navKey, Painter, type Entry, pickerWindow, showsChat, showsLogs, stepView, VIEW_LABEL, viewNeedsTarget, type ChatView } from "./chat-views.ts";
-import { agentBeads, CLOSED_RECENT_MS, lastExchange, newer, renderTasksView, type Said } from "./chat-tasks.ts";
+import { agentBeads, agentInfo, CLOSED_RECENT_MS, lastExchange, newer, renderTasksView, type InfoFacts, type Said } from "./chat-tasks.ts";
+import { collectStatus, contextShare, contextText, inboxText, toolLabel } from "./status.ts";
 import { listAssigned, type Task } from "./tasks.ts";
 import { operatorName } from "./company.ts";
 import { attachesAbove, openAgentLog, renderBlock } from "./log.ts";
@@ -603,6 +604,8 @@ async function chat(argv: string[]): Promise<void> {
    *  when there is no target), the last message each way PER AGENT this session knows of, the notice
    *  line, and what was last painted so an unchanged repaint writes nothing. */
   let tasksBeads: { for: string; tasks: Task[] } | undefined;
+  /** `paw status`'s row for the target, read with the beads; an error is shown, never a guessed row. */
+  let tasksInfo: { for: string; facts?: InfoFacts; error?: string; note?: string } | undefined;
   let tasksError: { for: string; message: string } | undefined;
   let tasksNotice: string | undefined;
   let tasksPainted = "";
@@ -1360,6 +1363,7 @@ async function chat(argv: string[]): Promise<void> {
     const who = tasksFor();
     beadsInFlight = true;
     beadsReadAt = Date.now();
+    const info = curName ? readInfo(who) : undefined;
     try {
       const tasks = await listAssigned(who, Date.now() - CLOSED_RECENT_MS);
       tasksBeads = { for: who, tasks };
@@ -1367,11 +1371,38 @@ async function chat(argv: string[]): Promise<void> {
     } catch (e) {
       tasksError = { for: who, message: (e as Error).message };
     } finally {
+      if (info) tasksInfo = await info;
       beadsInFlight = false;
     }
     if (tasksFor() !== who) return void refreshBeads(); // the target moved mid-read
     paintTasks();
   }
+  /** The target's `paw status` row (only that row's reads run). Never throws: a failure is the result. */
+  async function readInfo(name: string): Promise<{ for: string; facts?: InfoFacts; error?: string; note?: string }> {
+    try {
+      const { rows } = await collectStatus(space, undefined, { only: () => new Set([name]) });
+      const r = rows.find((x) => x.name === name);
+      if (!r) return { for: name, note: "not in paw status — a mesh-only peer, no ctx/inbox to show" };
+      const share = contextShare(r.context);
+      return {
+        for: name,
+        facts: {
+          live: r.live,
+          mesh: r.mesh,
+          ...(r.busy ? { busy: true } : {}),
+          ctx: contextText(r.context),
+          ...(share !== undefined ? { ctxShare: share } : {}),
+          inbox: inboxText(r.inbox),
+          ...(r.activeMs !== undefined ? { activeMs: r.activeMs } : {}),
+          ...(r.failure ? { failure: r.failure } : {}),
+          ...(r.tool ? { tool: toolLabel(r.tool) } : {}),
+        },
+      };
+    } catch (e) {
+      return { for: name, error: (e as Error).message };
+    }
+  }
+
   /** Mesh activity from the agent: re-read soon, but never more than once per few seconds. */
   function refreshBeadsSoon(): void {
     if (view !== "tasks") return;
@@ -1443,6 +1474,9 @@ async function chat(argv: string[]): Promise<void> {
         ...(said?.out ? { lastOut: said.out } : {}),
         ...(tasksNotice ? { notice: tasksNotice } : {}),
         ...(curName ? liveStatus(curName) : {}),
+        ...(tasksInfo && tasksInfo.for === curName
+          ? { info: tasksInfo.facts ? agentInfo(tasksInfo.facts, now, c) : tasksInfo.note ? c.dim(tasksInfo.note) : c.red(`! status: ${tasksInfo.error}`) }
+          : {}),
       },
       {
         width: (process.stdout.columns || 80) - 1,
