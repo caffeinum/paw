@@ -32,15 +32,13 @@ import {
   stopAgent,
   waitForMeshLive,
 } from "./addressing.ts";
-import { withManagerControl } from "./control.ts";
 import { readResumeId } from "./session.ts";
-import { adoptInFlight, adoptLogPath, ensure, finishDetachedAdopt, resolveSpace, spawnDetachedAdopt } from "./lifecycle.ts";
+import { adoptInFlight, adoptLogPath, finishDetachedAdopt, resolveSpace, spawnDetachedAdopt, withEnsuredManager } from "./lifecycle.ts";
 import { isSelfAncestor, liveSessionProcs, namesForFolder, resolveNamedSession, selfSessionProc } from "./named.ts";
 import { tailRead } from "./transcript.ts";
 import { resolveExistingFolderArg } from "./address.ts";
 import { gitToplevel, listWorktrees } from "./worktree.ts";
 import { attachResolved } from "./open.ts";
-import { pawServer } from "./server.ts";
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
@@ -446,8 +444,6 @@ async function adopt(argv: string[]): Promise<void> {
     return;
   }
 
-  const { server } = await ensure({ needMesh: true, needManager: true, space });
-
   // MAKE-BEFORE-BREAK: when a foreign claude still holds the session (--force, or the detached child),
   // bring the new mesh agent up and CONFIRM its mesh link is live FIRST, then kill the holder — a failed
   // spawn never strands the operator with a dead session (the holder is untouched until we're sure). We
@@ -459,7 +455,7 @@ async function adopt(argv: string[]): Promise<void> {
   // Confirmation is over the manager's ps (waitForMeshLive), NOT the control endpoint's roster — that
   // endpoint has watchPresence:false so its roster is always empty. Plain adopt (no holder) skips the kill.
   const takeover = foreign.length > 0;
-  const r = await withManagerControl(space, server, async (ctl) => {
+  const r = await withEnsuredManager(space, async (ctl) => {
     const spawnOpts = { space, name, cwd: folder, allowForeignWriter: takeover };
     const res = pinChanged
       ? await restartAgent(ctl, spawnOpts)

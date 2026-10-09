@@ -30,13 +30,12 @@ import {
   type PsRow,
 } from "./addressing.ts";
 import { claudeProjectDir, latestSession, pinClaudeArgs, pinSession } from "./adopt.ts";
-import { withManagerControl } from "./control.ts";
 import { pawConnector } from "./connector.ts";
 import { pawCotalRoot } from "./cotal-root.ts";
 import { confineAndTrustCwd } from "./cwd.ts";
 import { attachResolved } from "./open.ts";
 import { readForeground, registerForeground, unregisterForeground } from "./foreground.ts";
-import { daemonEnv, ensure, resolveSpace } from "./lifecycle.ts";
+import { daemonEnv, resolveSpace, withEnsuredManager } from "./lifecycle.ts";
 import { withFileLockAsync } from "./lock.ts";
 import { resolveNamedSession } from "./named.ts";
 import { readClaudeArgs, readResumeId } from "./session.ts";
@@ -184,17 +183,17 @@ async function runManaged(
         `\`paw stop ${name}\` first, or attach to that terminal`,
     );
 
-  const { server } = await ensure({ needMesh: true, needManager: true, space });
+  // ensure() first, as before: a manager that won't come up fails before any pin is written. One
+  // control handle serves its probe and the spawn (lifecycle.ts ensureManagerOn).
+  await withEnsuredManager(space, async (ctl) => {
+    // Pin the conversation first, then the flags: both are read at LAUNCH by the connector, so they
+    // must be on disk before the spawn below rather than applied to an already-running claude.
+    if (sessionId) pinSession(space, name, sessionId);
+    const configPath = ensurePersonaFile(space, name, { kind: "folder" });
+    const wanted = stripSessionFlags(claudeArgs);
+    const changed = JSON.stringify(readClaudeArgs(configPath)) !== JSON.stringify(wanted);
+    pinClaudeArgs(space, name, wanted);
 
-  // Pin the conversation first, then the flags: both are read at LAUNCH by the connector, so they
-  // must be on disk before the spawn below rather than applied to an already-running claude.
-  if (sessionId) pinSession(space, name, sessionId);
-  const configPath = ensurePersonaFile(space, name, { kind: "folder" });
-  const wanted = stripSessionFlags(claudeArgs);
-  const changed = JSON.stringify(readClaudeArgs(configPath)) !== JSON.stringify(wanted);
-  pinClaudeArgs(space, name, wanted);
-
-  await withManagerControl(space, server, async (ctl) => {
     // A live agent launched under DIFFERENT flags (or a different session) is not the agent the
     // operator just asked for, and flags are only read at launch — so restart it rather than
     // attaching to something that silently ignores what they typed. Unchanged → plain ensure, so a
@@ -233,12 +232,11 @@ export async function runClaude(argv: string[]): Promise<void> {
       );
     }
 
-    // (c) Bring the mesh + manager up (the connector wires the session to this mesh).
-    const { server } = await ensure({ needMesh: true, needManager: true, space });
-
-    // (a, cont.) Dedup against a live MANAGER agent (pty/tmux/cmux) already holding this name — BEFORE any
-    //            persona-pin write, so a refused launch never mutates a running agent's state.
-    await withManagerControl(space, server, async (ctl) => {
+    // (c) Bring the mesh + manager up (the connector wires the session to this mesh), and
+    // (a, cont.) dedup against a live MANAGER agent (pty/tmux/cmux) already holding this name — BEFORE any
+    //            persona-pin write, so a refused launch never mutates a running agent's state. One
+    //            control handle serves ensure()'s probe and the dedup ps (lifecycle.ts ensureManagerOn).
+    const server = await withEnsuredManager(space, async (ctl, server) => {
       const ps = await ctl.ps();
       if (!ps.ok) throw new Error(`paw: manager isn't answering (${ps.error ?? "no reply"})`);
       const row = ((ps.data as PsRow[]) ?? []).find((r) => r.name === name);
@@ -248,6 +246,7 @@ export async function runClaude(argv: string[]): Promise<void> {
             `\`paw open ${name}\` to attach, or \`paw stop ${name}\` first`,
         );
       }
+      return server;
     });
 
     // (b) Pin the durable resume session AFTER the dedup passes → a later `paw open`/`paw chat` resumes
