@@ -170,6 +170,11 @@ try {
   const small = screen();
   ok("14 rows: title, the reply's last line and the prompt + hint all on screen", small.includes("tasks · kit") && small.includes("50 runs green") && small.includes("you → kit") && small.includes("tasks  │"));
   show("tasks view, short terminal");
+  p.write("\x1b[<0;5;3M\x1b[<0;5;3m\x1b[<65;5;3M"); // a click + a wheel: handled, never typed
+  await sleep(400);
+  ok("mouse reports never reach the input line", !/\d+;\d+;\d+[Mm]/.test(screen()), screen().split("\n").filter((l) => /;\d+[Mm]/.test(l)).join(" | "));
+  p.write("\x1b[<64;5;3M\x1b[<64;5;3M\x1b[<64;5;3M");
+  await sleep(300);
   p.write("\x1b[6~"); // PgDn scrolls the bead list
   const down = await until(() => (screen().includes("↑") && screen().includes("above · PgUp") ? true : undefined), 5_000, 50);
   ok("PgDn scrolls the beads: an ↑ N above row appears", !!down);
