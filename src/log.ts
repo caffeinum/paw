@@ -18,6 +18,7 @@ import { registry, type Command } from "@cotal-ai/core";
 import { assertUnambiguousTarget, canonicalDir, folderForName, lookupFolderName, personaFilePath, sanitizeAgentName } from "./addressing.ts";
 import { claudeProjectDir, latestSession } from "./adopt.ts";
 import { CodexParser, findCodexSessionFile, resolveCodexRoots } from "./codex-log.ts";
+import { HERMES_AGENT, hermesHomeFor, hermesVenv } from "./hermes-profile.ts";
 import { meshAgentSession } from "./named.ts";
 import { labelPeer } from "./peer-ledger.ts";
 import { latestOpencodeSession, opencodeBlocks, resolveOpencodeDb } from "./opencode-log.ts";
@@ -173,6 +174,13 @@ export function openAgentLog(space: string, name: string, folder: string, bytes 
   if (writesClaudeTranscript(agentType)) return namedReplies(space, openClaudeLog(space, name, folder, bytes, sessionId));
   if (agentType === "opencode") return namedReplies(space, openOpencodeLog(space, name, folder));
   if (agentType === "codex") return namedReplies(space, openCodexLog(space, name, folder, bytes));
+  if (agentType === HERMES_AGENT) {
+    const home = hermesHomeFor(persona, space, name);
+    throw new Error(
+      `paw: "${name}" is a hermes agent — paw log does not read hermes sessions yet. Its profile is ${home}: ` +
+        `the gateway log is ${join(home, "logs")}, the sessions are in ${join(home, "state.db")} (\`HERMES_HOME=${home} ${join(hermesVenv(), "bin", "hermes")} sessions list\`).`,
+    );
+  }
   throw new Error(`paw: "${name}" is a ${agentType} agent — paw log does not read ${agentType} sessions yet.`);
 }
 

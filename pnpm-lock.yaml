@@ -24,6 +24,9 @@ importers:
       '@cotal-ai/connector-codex':
         specifier: 0.72.1
         version: 0.72.1(@cotal-ai/core@0.72.1(patch_hash=70d76cb2fb4fb3d163ac2be852b9515ec31b1447ca0eeb05e8410f682100c804))
+      '@cotal-ai/connector-hermes':
+        specifier: 0.72.1
+        version: 0.72.1(@cotal-ai/core@0.72.1(patch_hash=70d76cb2fb4fb3d163ac2be852b9515ec31b1447ca0eeb05e8410f682100c804))
       '@cotal-ai/connector-opencode':
         specifier: 0.72.1
         version: 0.72.1(@cotal-ai/core@0.72.1(patch_hash=70d76cb2fb4fb3d163ac2be852b9515ec31b1447ca0eeb05e8410f682100c804))
@@ -88,6 +91,12 @@ packages:
 
   '@cotal-ai/connector-codex@0.72.1':
     resolution: {integrity: sha512-0zRJaT+hb18BpypmAEnELXWT5kFUS5hOUJAkak3Ozr0zugZby+CPEculDM4BKF8i3a5g7UV/XY7f4Hr1trlCfw==}
+    peerDependencies:
+      '@cotal-ai/core': '>=0.1.0'
+
+  '@cotal-ai/connector-hermes@0.72.1':
+    resolution: {integrity: sha512-CTHwezGVs18ItAX5C7+nAV5Knad4g280+T7pvu9CKrp97GqZWlACdfshv2DOgWkkoDxiHbZxLUUDu63nLicXdA==}
+    hasBin: true
     peerDependencies:
       '@cotal-ai/core': '>=0.1.0'
 
@@ -687,6 +696,10 @@ snapshots:
       '@cotal-ai/core': 0.72.1(patch_hash=70d76cb2fb4fb3d163ac2be852b9515ec31b1447ca0eeb05e8410f682100c804)
 
   '@cotal-ai/connector-codex@0.72.1(@cotal-ai/core@0.72.1(patch_hash=70d76cb2fb4fb3d163ac2be852b9515ec31b1447ca0eeb05e8410f682100c804))':
+    dependencies:
+      '@cotal-ai/core': 0.72.1(patch_hash=70d76cb2fb4fb3d163ac2be852b9515ec31b1447ca0eeb05e8410f682100c804)
+
+  '@cotal-ai/connector-hermes@0.72.1(@cotal-ai/core@0.72.1(patch_hash=70d76cb2fb4fb3d163ac2be852b9515ec31b1447ca0eeb05e8410f682100c804))':
     dependencies:
       '@cotal-ai/core': 0.72.1(patch_hash=70d76cb2fb4fb3d163ac2be852b9515ec31b1447ca0eeb05e8410f682100c804)
 

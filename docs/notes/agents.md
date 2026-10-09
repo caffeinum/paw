@@ -100,6 +100,45 @@ Moved verbatim from CLAUDE.md (2026-10-02 split). Index: [CLAUDE.md](../../CLAUD
   paw-side connector — see [kit.md](kit.md). Non-claude agents are still NOT in the launchd fleet list on
   purpose (booting them at login spends codex/grok sessions — the operator's call). Test: `check:mcp`.
 
+## hermes
+
+- **`agent: hermes` (src/hermes.ts, src/hermes-profile.ts, 2026-10-09):** cotal's own
+  `@cotal-ai/connector-hermes@0.72.1`, registered in cotald and REPLACED by a paw wrapper (like claude).
+  cotal's launcher owns the seat: it joins the mesh, then runs `uv run --project <pkg> hermes gateway run`
+  (hermes-agent from PyPI, range >=0.18,<0.22 — resolves to 0.19.0; the operator's own `hermes` CLI is
+  NOT used) with an in-gateway cotal plugin (platform adapter + hooks + cotal_* tools). A reply to a DM
+  goes back to the sender on its own. No AG-UI event plane ⇒ paw spawns it `events: false` (as kit).
+- **Persona:** `agent: hermes`, `model: grok-4.7`, `provider: xai-oauth` (Hermes' provider id; required),
+  optional `baseUrl:` (custom endpoint), `shareTools: none` (its tools come from the plugin). `paw chat
+  <folder> --agent hermes --provider xai-oauth --model grok-4.7` births one. `PAW_MODEL` (a claude
+  name) never applies to it.
+- **Its own durable profile.** cotal's default is a disposable tmp profile deleted on every stop; paw
+  instead runs each agent in `$PAW_HOME/hermes/profiles/<space>-<name>` via cotal's adopt mode
+  (`COTAL_HERMES_ADOPT_HOME`). Hermes reads that as profile `<space>-<name>` of root `$PAW_HOME/hermes`, so
+  its launchd label (`ai.hermes.gateway-<p>`), auth store and sessions never touch `~/.hermes`. paw
+  REGENERATES config.yaml (model/provider/base_url, plugin + platform on, approvals off = bypass parity,
+  `terminal.cwd` = the agent folder) and SOUL.md (persona body + paw brief) every launch; sessions,
+  memories and auth.json are Hermes' and survive restarts/reboots (e2e: the MARK-ONE session is still
+  listed after stop + start). The launcher gets a frontmatter-only copy of the persona (adopt mode refuses
+  a body). Venv: `$PAW_HOME/hermes/venv` (`UV_PROJECT_ENVIRONMENT`, never inside a release). TMPDIR:
+  `/tmp/paw-hermes-<uid>/<digest>` — the bridge socket name is 58 bytes and macOS caps socket paths at
+  104, so `/var/folders/…` fails with a bare EINVAL; leftover `cotal-launch-*` there are wiped per launch.
+- **OAuth = one login per profile, on purpose.** A login provider (`xai-oauth`, `openai-codex`, `nous`,
+  …) refuses to launch until the profile has a credential, printing the command:
+  `HERMES_HOME=<profile> ~/.paw/hermes/venv/bin/hermes auth add xai-oauth` (or the `uv run` form before
+  the venv exists). Not shared with `~/.hermes`: hermes 0.19 reads a global credential as a fallback but
+  writes a refreshed (rotated) token only to the profile, which would strand the other copy.
+- **`hermesHome: /abs/profile`** runs the agent in an EXISTING Hermes profile (the hand-made seat's
+  `~/.hermes/profiles/mesh`): paw writes nothing there but cotal's `plugins/cotal`; that profile's
+  config.yaml must enable plugin + platform and picks the model, so `model:`/`provider:`/`baseUrl:` beside
+  it are refused. Hermes is a singleton per profile — never run a paw agent on a profile another gateway
+  (e.g. tmux `hermes-seat`) is using.
+- **status / log / wake:** busy = presence only (no transcript; hooks set working/idle); the SESSION cell
+  reads `(hermes)`. `paw log` fails loud naming the profile's `logs/` and `state.db`. Wake, `paw start`,
+  restart revival and launchd fleet revival are the normal `ensureAgentSpawned` path.
+- Tests: `check:hermes` (hermetic), `scripts/e2e-hermes.ts` (isolated mesh, fake OpenAI-compatible model:
+  start → status → DM reply → stop → start → DM reply → log refusal).
+
 ## src/session.ts
 
 - `src/session.ts` — leaf module shared by connector (launch), spawn site (guard), and status:

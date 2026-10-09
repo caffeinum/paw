@@ -291,8 +291,8 @@ export function parseArgs(argv: string[]): ChatArgs {
     if (a === "--space") out.space = argv[++i];
     else if (a === "--server") out.server = argv[++i];
     else if (a === "--model") out.model = argv[++i];
-    else if (a === "--agent") out.agent = value(a, argv[++i]); // create (or target) an agent on this harness — kit, codex, opencode, claude
-    else if (a === "--provider") out.provider = value(a, argv[++i]); // kit's model provider: codex (default) | grok
+    else if (a === "--agent") out.agent = value(a, argv[++i]); // create (or target) an agent on this harness — kit, codex, opencode, hermes, claude
+    else if (a === "--provider") out.provider = value(a, argv[++i]); // kit's model provider: codex (default) | grok; hermes' provider id (e.g. xai-oauth)
     else if (a === "--name") out.name = argv[++i]; // pin an EXTRA agent instance at the folder (multi-instance)
     else if (a === "--personality") out.personality = value(a, argv[++i]); // birth personality: a seed, a quoted vibe, or none (docs/notes/personalities.md)
     else if (a === "--fresh") out.fresh = true; // birth a NEW agent (was `paw create`); fails loud if one exists
@@ -358,7 +358,7 @@ async function chat(argv: string[]): Promise<void> {
   // A personality is given at BIRTH; an existing agent's is changed with `paw persona <name> --reroll`.
   if (personalityFlag !== undefined && !fresh) throw new Error("paw: --personality is for a new agent (`paw chat --fresh <folder> --personality …`) — for an existing one use `paw persona <name> --reroll [seed]`");
   const personalityArg = personalityFlag !== undefined ? parsePersonalityArg(personalityFlag) : undefined; // validated before anything is registered
-  if (provider !== undefined && agentFlag === undefined) throw new Error("paw: --provider picks kit's model provider — pass it with --agent kit");
+  if (provider !== undefined && agentFlag === undefined) throw new Error("paw: --provider picks kit's or hermes' model provider — pass it with --agent kit|hermes");
   if (agentFlag !== undefined && all) throw new Error("paw: --agent creates or targets ONE agent at a folder — it can't combine with --all");
   const agentSpec = agentFlag !== undefined ? { agent: agentFlag, provider, model } : undefined;
   if (agentSpec) checkAgentSpec(agentSpec); // before any name is registered for it
@@ -2030,7 +2030,7 @@ const chatCommand: Command = {
   name: "chat",
   group: "Mesh",
   summary: "chat with an EXISTING agent (by @name or folder; wakes it if offline); replies stream back live — --fresh creates a new one",
-  usage: 'chat [<folder>|<name>|@<name>|#<channel>] [--only] [--all] [--name <n>] [--fresh [--personality <seed|"vibe"|none>]] [--agent kit|codex|opencode|claude [--provider codex|grok] [--model m]]   (default: "." — this folder\'s agent; --all = every conversation, nothing preselected; --name pins a 2nd+ EXTRA agent at the folder; --fresh births a NEW default agent, fails loud if one already exists; --agent creates the agent on that harness, or targets it if it already runs there)',
+  usage: 'chat [<folder>|<name>|@<name>|#<channel>] [--only] [--all] [--name <n>] [--fresh [--personality <seed|"vibe"|none>]] [--agent kit|codex|opencode|hermes|claude [--provider codex|grok|<hermes provider>] [--model m]]   (default: "." — this folder\'s agent; --all = every conversation, nothing preselected; --name pins a 2nd+ EXTRA agent at the folder; --fresh births a NEW default agent, fails loud if one already exists; --agent creates the agent on that harness, or targets it if it already runs there)',
   run: (a) => chat([...a.raw]),
 };
 
