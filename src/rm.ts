@@ -5,19 +5,18 @@
  * verb of the lifecycle set: chat --fresh = new, adopt = resume, rename = relabel, rm = forget.
  *
  * Resolves the target three ways (no spawning, no cloning): a registered agent NAME, a folder/handle
- * with a registered agent, or an orphaned persona (a personas/<name>.md with no folder). In
- * NEEDS_MANAGER so the mesh+manager are up to stop a live agent (a no-op if it's already offline).
+ * with a registered agent, or an orphaned persona (a personas/<name>.md with no folder). Ensures the
+ * mesh+manager itself to stop a managed agent (a no-op if it's already offline), on the same control
+ * handle as the stop (lifecycle.ts ensureManagerOn).
  */
 import { existsSync, rmSync } from "node:fs";
 import { registry, type Command } from "@cotal-ai/core";
 import { agentNamesForFolder, assertUnambiguousTarget, canonicalDir, folderForName, listAgents, lookupFolderName, personaFilePath, stopAgent } from "./addressing.ts";
-import { withManagerControl } from "./control.ts";
 import { readForeground, unregisterForeground } from "./foreground.ts";
 import { parseGithubHandle, repoDir } from "./github.ts";
-import { resolveSpace } from "./lifecycle.ts";
+import { resolveSpace, withEnsuredManager } from "./lifecycle.ts";
 import { readResumeId } from "./session.ts";
 import { parseWorktreeRef, resolveWorktreeFolder } from "./worktree.ts";
-import { pawServer } from "./server.ts";
 
 function parseArgs(argv: string[]): { space?: string; target?: string } {
   const out: { space?: string; target?: string } = {};
@@ -96,7 +95,7 @@ async function rm(argv: string[]): Promise<void> {
     unregisterForeground(space, name);
     stopped = true;
   } else {
-    stopped = await withManagerControl(space, pawServer(), (ctl) => stopAgent(ctl, name)); // no-op if offline
+    stopped = await withEnsuredManager(space, (ctl) => stopAgent(ctl, name), { ensureSpace: resolveSpace() }); // no-op if offline
   }
   rmSync(persona, { force: true }); // the persona IS the registration — deleting it forgets the agent
 

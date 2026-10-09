@@ -20,9 +20,8 @@
 import { existsSync } from "node:fs";
 import { registry, type Command } from "@cotal-ai/core";
 import { psRowAlive, restartAgent, stopAgent, type PsRow } from "../addressing.ts";
-import { withManagerControl } from "../control.ts";
 import { fmtMb, machineLine, pawMb, renderTable, serverPorts, snapshotFleet, sortRows, topRows, verdictText, type Fleet } from "../fleet.ts";
-import { ensure, resolveSpace } from "../lifecycle.ts";
+import { resolveSpace, withEnsuredManager } from "../lifecycle.ts";
 import { liveSessionProcs, type LiveSessionProc } from "../named.ts";
 import { awaitSpawnHeadroom } from "../pacing.ts";
 import { collectStatus, type AgentStatus } from "../status.ts";
@@ -89,9 +88,7 @@ const memOf = async (space: string, name: string) => (await snapshotFleet(space,
 async function optimize(argv: string[]): Promise<void> {
   const args = parseOptimizeArgs(argv);
   const space = args.space ?? resolveSpace();
-  const { server } = await ensure({ needMesh: true, needManager: true, space });
-
-  await withManagerControl(space, server, async (ctl) => {
+  await withEnsuredManager(space, async (ctl) => {
     const pick = (rows: AgentStatus[]) => (args.names.length ? rows.filter((r) => args.names.includes(r.name)) : rows);
     const [status, fleet] = await Promise.all([collectStatus(space, ctl, { git: false }), snapshotFleet(space)]);
     const first = pick(status.rows);

@@ -7,8 +7,8 @@
  * reply. Here the peer stays present and consuming, so cotal_dm(HUMAN_PEER, …) from the agent lands.
  *
  * Pure cotal underneath: a CotalEndpoint for presence/DMs, the manager control plane for spawn.
- * Registers a "chat" command into the cotal registry on import; bin/paw.ts ensures the mesh +
- * manager are up before it runs.
+ * Registers a "chat" command into the cotal registry on import; it ensures the mesh + manager
+ * itself (see `startup` in chat()), so ensure()'s manager probe and the startup spawn share one rail.
  */
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
@@ -49,7 +49,7 @@ import {
 import { isAddressHandle, resolveAddress } from "./address.ts";
 import { HOST_RE } from "./url.ts";
 import { bashMessage, parseBang, runBash } from "./bash.ts";
-import { withManagerControl } from "./control.ts";
+import { ManagerControl, withManagerControl } from "./control.ts";
 import { advanceCursor } from "./cursor.ts";
 import { AwaitTracker } from "./chat-awaiting.ts";
 import { arrowRun, CLEAR_ALL, displayWidth, fitWidth, entryVisible, hintFor, History, LogFollower, navKey, scrollKey, Painter, type Entry, pickerWindow, showsChat, showsLogs, stepView, VIEW_LABEL, viewNeedsTarget, type ChatView } from "./chat-views.ts";
@@ -74,7 +74,7 @@ import { FRESH_SPAWN_MS, LIVE_AGENT_MS } from "./dm.ts";
 import { messageText as textOf, readConversation, type Entry as FeedEntry } from "./feed.ts";
 import { dedupeRoster } from "./commands/who.ts";
 import { isContinueKey, joinLines, peelContinuation } from "./multiline.ts";
-import { resolveSpace } from "./lifecycle.ts";
+import { ensureManagerOn, resolveSpace } from "./lifecycle.ts";
 import { chatAgentInfo } from "./agent-summary.ts";
 import { renderMarkdown } from "./markdown.ts";
 import { HUMAN_PEER } from "./names.ts";
@@ -374,6 +374,14 @@ async function chat(argv: string[]): Promise<void> {
   const room = addressed.mode === "channel" ? addressed.target! : ROOM;
   const space = spaceArg ?? resolveSpace();
   const server = serverArg ?? pawServer();
+  // ONE resolved control handle for startup: ensure()'s "is the manager up?" probe and the target's
+  // spawn/reuse below. bin/paw.ts used to ensure() first and the spawn then resolved the manager's
+  // service again — a describe, a contract fetch and an Ajv compile of every validator, twice per
+  // `paw chat <folder>`. Ensured FIRST, as the bin gate did, so a manager that won't come up fails
+  // before anything is registered. Closed once the target is resolved; the REPL's later calls open
+  // their own (a throw before then exits the process — bin/paw.ts — so it never strands a socket).
+  const startup = new ManagerControl(space, server);
+  await ensureManagerOn(startup, resolveSpace());
   if (!fresh) assertUnambiguousTarget(space, target); // a bare token that's BOTH a known name and a folder → fail loud (skipped under --fresh: the only interpretation there is a folder)
 
   // No target (only `--all` gets here) => start in broadcast mode: plain lines go to #general, and @name latches a sticky DM
@@ -708,7 +716,7 @@ async function chat(argv: string[]): Promise<void> {
     process.stdout.write(c.dim(`  connecting to ${name}…\n`));
     try {
       if (folder) {
-        const r = await withManagerControl(space, server, (ctl) => ensureAgentSpawned(ctl, { space, name, cwd: folder, model, brief, kind }));
+        const r = await ensureAgentSpawned(startup, { space, name, cwd: folder, model, brief, kind });
         spawned = r.spawned;
         // A fresh spawn is the genuinely slow path (a cold claude, resuming a long session). Naming it
         // turns "it hung" into "it is doing the slow thing", which is the difference between waiting
@@ -730,6 +738,7 @@ async function chat(argv: string[]): Promise<void> {
     }
     curName = name;
   }
+  await startup.close();
 
   // Attachments staged but not yet sent. A line that is ONLY paths (the shape you get from dragging
   // an image in and hitting Enter) stages them and does NOT send — otherwise you'd fire a message

@@ -25,8 +25,8 @@ import { registry, dmStream, parsePrincipalKey, unicastRecvFilter, type Command 
 import { connect } from "@nats-io/transport-node";
 import { jetstreamManager } from "@nats-io/jetstream";
 import { agentRecord, listAgents, personaFilePath, setPersonaKeys, wirePrincipal, type PsRow } from "./addressing.ts";
-import { withManagerControl, type ManagerControl } from "./control.ts";
-import { ensure, resolveSpace } from "./lifecycle.ts";
+import type { ManagerControl } from "./control.ts";
+import { resolveSpace, withEnsuredManager } from "./lifecycle.ts";
 import { liveSessionProcs } from "./named.ts";
 import { personaTranscriptRoots, personaValue, readResumeId, transcriptMtime, transcriptPath } from "./session.ts";
 import { dmsSince } from "./sleep-host.ts";
@@ -385,8 +385,7 @@ async function sleepCmd(argv: string[]): Promise<void> {
     if (!o.now) return;
   }
   if (o.now || o.sweep) {
-    const { server } = await ensure({ needMesh: true, needManager: true, space });
-    await withManagerControl(space, server, async (ctl) => {
+    await withEnsuredManager(space, async (ctl, server) => {
       if (o.sweep) {
         const r = await sleepSweep(space, ctl);
         for (const s of r.skipped) console.log(`  ${s.name}: awake — ${s.reason}`);

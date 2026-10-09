@@ -16,8 +16,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { registry, type Command } from "@cotal-ai/core";
 import { canonicalDir, ensureAgentSpawned, lookupFolderName, setFolderName } from "./addressing.ts";
-import { withManagerControl } from "./control.ts";
-import { ensure, resolveSpace } from "./lifecycle.ts";
+import { resolveSpace, withEnsuredManager } from "./lifecycle.ts";
 import { optedIn, sleepSweep } from "./sleep.ts";
 
 /** The always-on agent's fixed mesh name. Exported so other surfaces can reference it without a literal. */
@@ -61,8 +60,7 @@ async function globalUp(argv: string[]): Promise<void> {
     );
   }
   const name = setFolderName(space, folder, GLOBAL_NAME).name; // pin the folder→name mapping to `global`
-  const { server } = await ensure({ needMesh: true, needManager: true, space });
-  const { spawned } = await withManagerControl(space, server, async (ctl) => {
+  const { spawned } = await withEnsuredManager(space, async (ctl) => {
     const r = await ensureAgentSpawned(ctl, { space, name, cwd: folder, brief: GLOBAL_BRIEF });
     // The hibernation sweep rides this 60s keeper tick. It only ever touches agents the operator OPTED IN
     // (`hibernate:` in the persona, via `paw sleep <name> --after 60m`), logs every sleep to sleep.log, and

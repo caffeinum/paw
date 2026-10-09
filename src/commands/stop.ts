@@ -18,11 +18,9 @@ import {
   lookupFolderName,
   stopAgent,
 } from "../addressing.ts";
-import { withManagerControl } from "../control.ts";
 import { readForeground, unregisterForeground } from "../foreground.ts";
-import { resolveSpace } from "../lifecycle.ts";
+import { resolveSpace, withEnsuredManager } from "../lifecycle.ts";
 import { sleepState } from "../sleep-state.ts";
-import { pawServer } from "../server.ts";
 
 /** The success line for `paw stop`, or undefined when nothing was stopped. A sleeping agent has no seat
  *  to stop, but stopping it is real — it no longer wakes on a DM — so say that, not "isn't running". */
@@ -110,7 +108,8 @@ async function stop(argv: string[]): Promise<void> {
   }
 
   const wasAsleep = sleepState(space, name) !== undefined; // read BEFORE stopAgent clears it
-  const stopped = await withManagerControl(space, pawServer(), (ctl) => stopAgent(ctl, name));
+  // Ensured here, not by the bin/paw.ts gate: ensure()'s manager probe and the stop share one rail.
+  const stopped = await withEnsuredManager(space, (ctl) => stopAgent(ctl, name), { ensureSpace: resolveSpace() });
   const done = stopMessage(name, stopped, wasAsleep);
   if (done) console.log(done);
   else if (rawName === undefined && !agentRecord(space, name)) {

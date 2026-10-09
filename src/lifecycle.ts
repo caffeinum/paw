@@ -49,7 +49,7 @@ import { connect } from "@nats-io/transport-node";
 import { authDir, loadSpaceAuth, saveSpaceAuth } from "@cotal-ai/workspace";
 import { daemonRoot } from "./release.ts";
 import { pawCotalRoot } from "./cotal-root.ts";
-import { withManagerControl } from "./control.ts";
+import { withManagerControl, type ManagerControl } from "./control.ts";
 import { withFileLock } from "./lock.ts";
 import { customServer, pawServer } from "./server.ts";
 import { ensureShim, hubEnabled, hubModeFile, hubSocketPath } from "./hub/paths.ts";
@@ -1668,6 +1668,42 @@ export async function ensure(opts: EnsureOpts = {}): Promise<{ space: string; se
     if (opts.needMesh || opts.needManager) ensureMailbox(space);
   });
   return { space, server };
+}
+
+/**
+ * ensure() the mesh + manager with its "is the manager up?" probe riding `ctl` — the handle the
+ * command then drives the manager with. Every probe is a full service resolve (describe + contract
+ * fetch + an Ajv compile of every validator), so a command that ensure()d and then opened its own
+ * control resolved TWICE: `paw chat <folder>` paid it once in the probe and again for the spawn, which
+ * on a loaded host is two of cotal's `! schema: compile took …` advisories. Same move `paw status`
+ * makes with its ps read.
+ *
+ * `ensureSpace` is the space ensure() brings up — the bin/paw.ts gate always ensured the DEFAULT
+ * space whatever `--space` a command got, and a command moved off that gate keeps doing so. The
+ * probe is only shared when that is `ctl`'s own space on paw's server; otherwise ensure() probes as
+ * it always did. A probe that didn't answer drops `ctl`'s rails: ensure() may then have started a
+ * fresh manager, and a rail resolved against the one before would address a ghost.
+ */
+export async function ensureManagerOn(ctl: ManagerControl, ensureSpace: string = ctl.space): Promise<void> {
+  let answered = false;
+  const managerProbe = async () => (answered = (await ctl.ps(2000, READY_PROBE_MS)).ok);
+  const shared = ensureSpace === ctl.space && ctl.server === pawServer();
+  await ensure({ needMesh: true, needManager: true, space: ensureSpace, ...(shared ? { managerProbe } : {}) });
+  if (!answered) await ctl.close();
+}
+
+/** {@link ensureManagerOn} scoped like `withManagerControl`: one resolved handle for the whole command,
+ *  always closed. For the commands that used to `ensure()` and then `withManagerControl` back to back. */
+export async function withEnsuredManager<T>(
+  space: string,
+  fn: (ctl: ManagerControl, server: string) => Promise<T>,
+  opts: { ensureSpace?: string } = {},
+): Promise<T> {
+  const server = pawServer();
+  return withManagerControl(space, server, async (ctl) => {
+    await ensureManagerOn(ctl, opts.ensureSpace ?? space);
+    return fn(ctl, server);
+  });
 }
 
 /**

@@ -17,10 +17,8 @@ import {
   stopAgent,
   withRegistryLock,
 } from "./addressing.ts";
-import { withManagerControl } from "./control.ts";
-import { resolveSpace } from "./lifecycle.ts";
+import { resolveSpace, withEnsuredManager } from "./lifecycle.ts";
 import { resolveExistingFolderArg } from "./address.ts";
-import { pawServer } from "./server.ts";
 import { renameInFleetJob } from "./commands/launchd.ts";
 import { reassignOpenTasks } from "./tasks.ts";
 import { renameInCompanies } from "./company-service.ts";
@@ -90,16 +88,21 @@ async function rename(argv: string[]): Promise<void> {
   const space = spaceArg ?? resolveSpace();
   assertUnambiguousTarget(space, target); // a bare token that's BOTH a known name and a folder here → fail loud
   const canonical = resolveTarget(space, target);
-  // An agent NAME renames that agent (default or extra); a folder path relabels the folder's default.
-  const { from, to } = renameAgentOnDisk(space, canonical, newName, target);
-
-  // If the agent is live under the old name, retire it and respawn under the new one — it resumes
-  // via the moved persona pin. The mesh + manager are already up (rename is in NEEDS_MANAGER).
-  const restarted = await withManagerControl(space, pawServer(), async (ctl) => {
-    const wasLive = await stopAgent(ctl, from);
-    if (wasLive) await ensureAgentSpawned(ctl, { space, name: to, cwd: canonical });
-    return wasLive;
-  });
+  // Mesh + manager up BEFORE anything moves on disk (as the bin/paw.ts gate had it), on ONE control
+  // handle that also serves ensure()'s probe — see ensureManagerOn.
+  const { from, to, restarted } = await withEnsuredManager(
+    space,
+    async (ctl) => {
+      // An agent NAME renames that agent (default or extra); a folder path relabels the folder's default.
+      const { from, to } = renameAgentOnDisk(space, canonical, newName, target);
+      // If the agent is live under the old name, retire it and respawn under the new one — it resumes
+      // via the moved persona pin.
+      const wasLive = await stopAgent(ctl, from);
+      if (wasLive) await ensureAgentSpawned(ctl, { space, name: to, cwd: canonical });
+      return { from, to, restarted: wasLive };
+    },
+    { ensureSpace: resolveSpace() },
+  );
 
   const fleetPlist = renameInFleetJob(space, from, to);
   // The agent's queue follows it: open beads assigned to the old name would otherwise be orphaned.
