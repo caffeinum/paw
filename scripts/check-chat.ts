@@ -388,7 +388,7 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
 
 // ── the tasks view model (src/chat-tasks.ts, 2026-10-07) ─────────────────────────────────────────
 {
-  const { agentBeads, beadTree, agentInfo, lastExchange, renderTasksView, wrapAnsi, age, CLOSED_MAX, FOLD_AFTER } = await import("../src/chat-tasks.ts");
+  const { agentBeads, beadTree, agentInfo, lastExchange, renderTasksView, wrapAnsi, age, CLOSED_MAX } = await import("../src/chat-tasks.ts");
   const { displayWidth } = await import("../src/width.ts");
   type T = import("../src/tasks.ts").Task;
   const now = Date.parse("2026-10-07T12:00:00Z");
@@ -465,7 +465,7 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
   assert(withPr[3].includes("p2") && withPr[4].includes("pull/9") && withPr[5].includes("p3") && !withPr.some((r) => r.includes("issues/3")), "render: PR URLs in the description count; issue links don't");
   const tight = renderTasksView({ agent: "kit", operator: "op", beads: linked }, { width: 60, height: 5, now });
   assert(!tight.some((r) => r.includes("p2") && !tight.some((x) => x.includes("pull/9"))) && tight.some((r) => r.includes("… +")), "render: clipping keeps whole beads — never a bead without its PR row");
-  // the tree: parent above its children, children in id order, a big quiet epic folded
+  // the tree: parent above its children, in-flight first, then id order — nothing folded
   const epic = [
     ...Array.from({ length: 12 }, (_, i) => bead(`e.${i + 1}`, "open", { parent: "e", updatedAt: iso(12 - i) })),
     bead("e", "open"),
@@ -475,10 +475,11 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
     bead("s.10", "open", { parent: "s" }),
   ];
   const tree = beadTree(agentBeads(epic, "kit", now));
-  const label = (r: (typeof tree)[number]) => ("fold" in r ? `+${r.fold}@${r.depth}` : `${r.t.id}@${r.depth}`);
-  assert(eq(tree.map(label), ["e@0", "e.7@1", "e.7.1@2", "+11@1", "s@0", "s.2@1", "s.10@1"]), `tree: parent first, in-flight branch kept, ${FOLD_AFTER}+ quiet children folded, ids in natural order (${tree.map(label).join(" ")})`);
+  const label = (r: (typeof tree)[number]) => `${r.t.id}@${r.depth}`;
+  const want = ["e@0", "e.7@1", "e.7.1@2", ...[1, 2, 3, 4, 5, 6, 8, 9, 10, 11, 12].map((i) => `e.${i}@1`), "s@0", "s.2@1", "s.10@1"];
+  assert(eq(tree.map(label), want), `tree: parent first, in-flight branch first, the rest in natural id order, nothing folded (${tree.map(label).join(" ")})`);
   const treeRows = renderTasksView({ agent: "kit", operator: "op", beads: agentBeads(epic, "kit", now) }, { width: 60, height: 20, now });
-  assert(treeRows.some((r) => r.startsWith("  ○ .7  ")) && treeRows.some((r) => r.includes("○ +11 more open")), "tree: a child shows its id suffix, indented; the fold says how many");
+  assert(treeRows.some((r) => r.startsWith("  ○ .7  ")) && treeRows.some((r) => r.startsWith("  ○ .12  ")) && !treeRows.some((r) => r.includes("more open")), "tree: a child shows its id suffix, indented; no fold rows");
   const st = { dim: (x: string) => x, green: (x: string) => x, yellow: (x: string) => x, red: (x: string) => x };
   const info = agentInfo({ live: true, mesh: "working", ctx: "152k/1M 15%", ctxShare: 0.15, inbox: "2 queued", activeMs: now - 120_000, failure: { text: "session\nlimit" } }, now, st);
   assert(info === "online · ctx 152k/1M 15% · inbox 2 queued · active 2m ago · ! session limit", `info: paw status's words in one row (${info})`);

@@ -213,13 +213,10 @@ export function agentInfo(f: InfoFacts, now: number, st: Pick<TasksStyle, "dim" 
 
 const GLYPH: Record<string, string> = { in_progress: "◐", blocked: "⊘", open: "○", deferred: "◌", closed: "✓" };
 
-/** One row of the bead tree: a bead at a depth, or a fold standing for a parent's quiet children. */
-export type TreeRow = { t: Task; depth: number } | { fold: number; depth: number };
-
-/** A parent with more QUIET children than this (open, nothing in flight below them) shows only the
- *  ones in flight and folds the quiet ones into one `+N more open` row — N counts every bead hidden,
- *  grandchildren included — so an epic of 40 asks is one line, not 40. */
-export const FOLD_AFTER = 3;
+/** One row of the bead tree: a bead at a depth. No folds — every bead is reachable by PgUp/PgDn
+ *  (operator, 2026-10-09: folds hid beads the scroll couldn't reach, and click-to-fold cost text
+ *  selection). */
+export type TreeRow = { t: Task; depth: number };
 
 /** Natural id order: beads-x.2 before beads-x.10. */
 const byId = (a: Task, b: Task): number => a.id.localeCompare(b.id, "en", { numeric: true });
@@ -258,19 +255,7 @@ export function beadTree(beads: Task[]): TreeRow[] {
     placed.add(t.id);
     rows.push({ t, depth });
     const ch = (kids.get(t.id) ?? []).slice().sort((a, b) => rank(a) - rank(b) || byId(a, b));
-    const busy = ch.filter((c) => rank(c) <= RANK.blocked);
-    if (ch.length - busy.length > FOLD_AFTER) {
-      for (const c of busy) walk(c, depth + 1);
-      let hidden = 0;
-      const hide = (x: Task): void => {
-        if (placed.has(x.id)) return;
-        placed.add(x.id); // folded, not lost: the fallback below must not re-list it at the root
-        hidden++;
-        for (const k of kids.get(x.id) ?? []) hide(k);
-      };
-      for (const c of ch) if (!busy.includes(c)) hide(c);
-      rows.push({ fold: hidden, depth: depth + 1 });
-    } else for (const c of ch) walk(c, depth + 1);
+    for (const c of ch) walk(c, depth + 1);
   };
   for (const r of roots) walk(r, 0);
   for (const t of open) walk(t, 0); // anything a cycle kept out of the walk still shows
@@ -298,7 +283,6 @@ function beadLine(t: Task, now: number, width: number, st: TasksStyle, depth = 0
  *  links it; cut to the width like every row). */
 function beadGroup(r: TreeRow, now: number, width: number, st: TasksStyle): string[] {
   const indent = "  ".repeat(r.depth);
-  if ("fold" in r) return [st.dim(fitWidth(`${indent}○ +${r.fold} more open`, width))];
   const links = prUrls(r.t).map((u) => `${indent}  ${st.dim("↳")} ${fitWidth(u, Math.max(8, width - 4 - indent.length))}`);
   return [beadLine(r.t, now, width, st, r.depth), ...links];
 }
