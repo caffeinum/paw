@@ -94,6 +94,7 @@ async function resolveTarget(
   model: string | undefined,
   nameFlag: string | undefined,
 ): Promise<{ id: string; name: string }> {
+  if (target.startsWith("@")) target = target.slice(1); // `@name` = that agent, like everywhere else
   const me = ep.card.id;
   const live = (name: string) =>
     ep.getRoster().filter((p) => p.card.name.toLowerCase() === name.toLowerCase() && p.card.id !== me).find((p) => p.status !== "offline");

@@ -38,7 +38,8 @@ function parseArgs(argv: string[]): { space?: string; target?: string; model?: s
 }
 
 async function open(argv: string[]): Promise<void> {
-  const { space: spaceArg, target, model, name: nameFlag } = parseArgs(argv);
+  const { space: spaceArg, target: rawTarget, model, name: nameFlag } = parseArgs(argv);
+  const target = rawTarget?.startsWith("@") ? rawTarget.slice(1) : rawTarget; // `@name` = that agent
   const space = spaceArg ?? resolveSpace();
   assertUnambiguousTarget(space, target); // a bare token that's BOTH a known name and a folder here → fail loud
 

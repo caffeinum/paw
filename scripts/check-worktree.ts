@@ -32,6 +32,7 @@ const g = (cwd: string, ...args: string[]) =>
 assert(JSON.stringify(parseWorktreeRef("~/r@feat/x")) === JSON.stringify({ repo: "~/r", branch: "feat/x" }), "parse repo@branch (branch keeps slashes)");
 assert(parseWorktreeRef("~/r@a@b")?.branch === "a@b", "parse splits on the FIRST @");
 assert(parseWorktreeRef("/just/a/path") === null, "no @ → not a worktree ref");
+assert(parseWorktreeRef("@yapless") === null, "a LEADING @ is an agent name, never a worktree ref");
 assert(throws(() => parseWorktreeRef("repo@")), "trailing @ with no branch throws");
 
 // a throwaway repo with one commit
