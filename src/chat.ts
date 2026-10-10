@@ -10,7 +10,7 @@
  * Registers a "chat" command into the cotal registry on import; bin/paw.ts ensures the mesh +
  * manager are up before it runs.
  */
-import { existsSync } from "node:fs";
+import { existsSync, writeSync } from "node:fs";
 import { homedir } from "node:os";
 import * as readline from "node:readline";
 import { stripVTControlCharacters } from "node:util";
@@ -53,7 +53,8 @@ import { withManagerControl } from "./control.ts";
 import { advanceCursor } from "./cursor.ts";
 import { AwaitTracker } from "./chat-awaiting.ts";
 import { arrowRun, CLEAR_ALL, displayWidth, fitWidth, entryVisible, hintFor, History, LogFollower, navKey, scrollKey, Painter, type Entry, pickerWindow, showsChat, showsLogs, stepView, VIEW_LABEL, viewNeedsTarget, type ChatView } from "./chat-views.ts";
-import { agentBeads, agentInfo, CLOSED_RECENT_MS, lastExchange, newer, renderTasksView, type InfoFacts, type Said } from "./chat-tasks.ts";
+import { agentBeads, agentInfo, CLOSED_RECENT_MS, hitAt, lastExchange, newer, renderTasksPanel, type InfoFacts, type Said, type TasksHit } from "./chat-tasks.ts";
+import { CLICK_MODE_KEY, MOUSE_OFF, MOUSE_ON, stripMouse, type MouseEvent } from "./mouse.ts";
 import { collectStatus, contextShare, contextText, inboxText, toolLabel } from "./status.ts";
 import { listAssigned, type Task } from "./tasks.ts";
 import { operatorName } from "./company.ts";
@@ -611,6 +612,12 @@ async function chat(argv: string[]): Promise<void> {
   let tasksInfo: { for: string; facts?: InfoFacts; error?: string; note?: string } | undefined;
   let tasksError: { for: string; message: string } | undefined;
   let tasksNotice: string | undefined;
+  /** Click mode (src/mouse.ts, ctrl+o in the tasks view): mouse reporting on, so a click on a parent's
+   *  icon folds it and the wheel scrolls — and the terminal's own text selection is off meanwhile.
+   *  `folded` is view state: it outlives click mode. `tasksHits` = the icon on each painted row. */
+  let clickMode = false;
+  const folded = new Set<string>();
+  let tasksHits: (TasksHit | undefined)[] = [];
   let tasksPainted = "";
   const lastSaid = new Map<string, { in?: Said; out?: Said }>();
   const noteSaid = (agent: string, dir: "in" | "out", said: Said): void => {
@@ -638,7 +645,7 @@ async function chat(argv: string[]): Promise<void> {
    */
   function drawHint(): void {
     if (!rl || closing || !process.stdout.isTTY) return;
-    const hint = hintFor({ view, picking, hasTarget: !!curName, bang });
+    const hint = hintFor({ view, picking, hasTarget: !!curName, bang, clickMode });
     const cols = process.stdout.columns || 80;
     const pos = rl.getCursorPos();
     const shown = displayWidth(stripVTControlCharacters(promptFor())) + displayWidth(rl.line);
@@ -1329,6 +1336,7 @@ async function chat(argv: string[]): Promise<void> {
     const leaving = view;
     view = next;
     if (leaving === "tasks") {
+      setClickMode(false); // selection comes back with every other view
       clearInterval(tasksTimer);
       tasksTimer = undefined;
       tasksPainted = "";
@@ -1461,6 +1469,32 @@ async function chat(argv: string[]): Promise<void> {
     return { status: statusBadge(p.status) + (p.activity ? c.dim(" — " + activityLine(p.activity, 60)) : "") };
   }
 
+  /** Turn mouse reporting on/off. Off is written on EVERY way out (leaving tasks, shutdown, exit) —
+   *  a terminal left in mouse mode is the worst failure here. */
+  function setClickMode(on: boolean): void {
+    if (on === clickMode) return;
+    clickMode = on;
+    if (process.stdin.isTTY) process.stdout.write(on ? MOUSE_ON : MOUSE_OFF);
+    if (view !== "tasks") return; // leaving the view: its own redraw follows
+    paintTasks(true);
+    drawHint();
+  }
+
+  /** A click or wheel in click mode. The panel is painted from the top-left, so screen row N is
+   *  painted row N-1. Clicks off a parent's icon do nothing. */
+  function onMouse(e: MouseEvent): void {
+    if (!clickMode || view !== "tasks" || !rl || closing || picking || !e.press) return;
+    if (e.kind === "wheelUp" || e.kind === "wheelDown") {
+      tasksScroll = Math.max(0, tasksScroll + (e.kind === "wheelUp" ? -3 : 3));
+      return paintTasks(true);
+    }
+    if (e.kind !== "left") return;
+    const id = hitAt(tasksHits, e.row - 1, e.col - 1);
+    if (!id) return;
+    if (!folded.delete(id)) folded.add(id);
+    paintTasks(true);
+  }
+
   function paintTasks(force = false): void {
     if (view !== "tasks" || !rl || closing || !process.stdout.isTTY || picking) return;
     const who = tasksFor();
@@ -1471,7 +1505,7 @@ async function chat(argv: string[]): Promise<void> {
       tasksScroll = 0; // a new agent's list starts at the top
       tasksScrollFor = who;
     }
-    const rows = renderTasksView(
+    const { rows, hits } = renderTasksPanel(
       {
         ...(curName ? { agent: curName } : {}),
         operator: operatorName(),
@@ -1484,6 +1518,7 @@ async function chat(argv: string[]): Promise<void> {
         ...(tasksInfo && tasksInfo.for === curName
           ? { info: tasksInfo.facts ? agentInfo(tasksInfo.facts, now, c) : tasksInfo.note ? c.dim(tasksInfo.note) : c.red(`! status: ${tasksInfo.error}`) }
           : {}),
+        clickMode,
       },
       {
         width: (process.stdout.columns || 80) - 1,
@@ -1492,9 +1527,11 @@ async function chat(argv: string[]): Promise<void> {
         now,
         scroll: tasksScroll,
         onScroll: (s) => (tasksScroll = s),
+        folded,
         style: { ...c, tag: (n) => agentTag(n), md: (t, w) => renderMarkdown(t, { width: w }) },
       },
     );
+    tasksHits = hits;
     const text = rows.map((r) => `${r}\x1b[K`).join("\n");
     if (!force && tasksPainted && text === tasksPainted) return;
     const first = !tasksPainted;
@@ -1517,6 +1554,27 @@ async function chat(argv: string[]): Promise<void> {
       const k = navKey(raw);
       if (k === "left" || k === "right") setImmediate(() => rl && !rl.line && switchView(k === "left" ? -1 : 1));
       else if (k === "down" && arrowRun(raw) === undefined) setImmediate(openPicker); // plain ↓ runs are the picker listener's
+    });
+    // Mouse reports (src/mouse.ts) are cut out of every chunk BEFORE any listener — readline included —
+    // sees it: readline would type `0;10;5M` into the line. Wrapping emit is the one place that sits in
+    // front of all of them. Always on (cheap: a chunk without `\e[<` passes untouched), so a report
+    // that lands just after click mode ends is still eaten.
+    const stdinEmit = process.stdin.emit.bind(process.stdin);
+    process.stdin.emit = ((event: string | symbol, ...args: unknown[]): boolean => {
+      if (event !== "data") return stdinEmit(event, ...args);
+      const chunk = args[0] as Buffer | string;
+      const text = typeof chunk === "string" ? chunk : chunk.includes("\x1b[<") ? chunk.toString("utf8") : undefined;
+      if (text === undefined || !text.includes("\x1b[<")) return stdinEmit(event, ...args);
+      const { rest, events } = stripMouse(text);
+      for (const e of events) onMouse(e);
+      if (!rest) return true;
+      return stdinEmit(event, typeof chunk === "string" ? rest : Buffer.from(rest, "utf8"));
+    }) as typeof process.stdin.emit;
+    // ctrl+o in the tasks view toggles click mode (readline binds nothing to it, so it needs no eating).
+    process.stdin.prependListener("data", (chunk: Buffer | string) => {
+      if (view !== "tasks" || !rl || closing || picking || scanner.pasting) return;
+      if ((typeof chunk === "string" ? chunk : chunk.toString("utf8")) !== CLICK_MODE_KEY) return;
+      setImmediate(() => view === "tasks" && setClickMode(!clickMode));
     });
     // The tasks view's bead list scrolls by a third of the screen per PgUp/PgDn.
     process.stdin.prependListener("data", (chunk: Buffer | string) => {
@@ -1697,7 +1755,8 @@ async function chat(argv: string[]): Promise<void> {
     if (followTimer) clearInterval(followTimer);
     // Leave the terminal as we found it — bracketed paste is a MODE, and a shell that inherits it
     // set without knowing would see raw \e[200~ markers in its own input.
-    if (process.stdin.isTTY) process.stdout.write(DISABLE_BRACKETED_PASTE);
+    if (process.stdin.isTTY) process.stdout.write(DISABLE_BRACKETED_PASTE + MOUSE_OFF);
+    clickMode = false;
     rl?.close();
     await ep.stop().catch(() => {});
     process.exit(0);
@@ -1983,6 +2042,14 @@ async function chat(argv: string[]): Promise<void> {
   });
   rl.on("close", () => void shutdown());
   process.on("SIGINT", () => void shutdown());
+  process.on("SIGTERM", () => void shutdown());
+  // Last line of defence — a crash, or any exit that skipped shutdown(): never leave mouse mode on.
+  process.on("exit", () => {
+    if (!clickMode || !process.stdin.isTTY) return;
+    try {
+      writeSync(1, MOUSE_OFF);
+    } catch {} // the terminal is already gone — nothing left in mouse mode to restore
+  });
 
   rl.prompt();
   await new Promise<void>(() => {}); // park until shutdown() exits the process
