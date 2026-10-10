@@ -157,7 +157,12 @@ export interface TasksModel {
   status?: string;
   /** What `paw status` says about it, pre-styled (see {@link agentInfo}) — a row under the title. */
   info?: string;
+  /** Click mode is on (chat.ts, ctrl+o): mouse capture took text selection, so the view says so. */
+  clickMode?: boolean;
 }
+
+/** The hint row shown while click mode is on. */
+export const CLICK_MODE_HINT = "click mode · ctrl+o to leave · select is off · click ▾/▸ to fold, wheel scrolls";
 
 export interface TasksStyle {
   dim(s: string): string;
@@ -213,10 +218,10 @@ export function agentInfo(f: InfoFacts, now: number, st: Pick<TasksStyle, "dim" 
 
 const GLYPH: Record<string, string> = { in_progress: "◐", blocked: "⊘", open: "○", deferred: "◌", closed: "✓" };
 
-/** One row of the bead tree: a bead at a depth. No folds — every bead is reachable by PgUp/PgDn
- *  (operator, 2026-10-09: folds hid beads the scroll couldn't reach, and click-to-fold cost text
- *  selection). */
-export type TreeRow = { t: Task; depth: number };
+/** One row of the bead tree: a bead at a depth. A parent knows its listed children (`kids`); a folded
+ *  one (the operator clicked its icon in click mode, 2026-10-10) also how many beads it hides. A
+ *  hidden bead is no row at all, so the scroll only ever counts what is painted. */
+export type TreeRow = { t: Task; depth: number; kids?: number; folded?: boolean; hidden?: number };
 
 /** Natural id order: beads-x.2 before beads-x.10. */
 const byId = (a: Task, b: Task): number => a.id.localeCompare(b.id, "en", { numeric: true });
@@ -227,7 +232,7 @@ const byId = (a: Task, b: Task): number => a.id.localeCompare(b.id, "en", { nume
  * branch ranks by its most urgent bead, so an epic with a child in progress sorts with the in-progress
  * work. Closed beads follow flat, as {@link agentBeads} ordered them. Pure.
  */
-export function beadTree(beads: Task[]): TreeRow[] {
+export function beadTree(beads: Task[], folded: ReadonlySet<string> = new Set()): TreeRow[] {
   const open = beads.filter((t) => t.status !== "closed");
   const ids = new Set(open.map((t) => t.id));
   const kids = new Map<string, Task[]>();
@@ -253,9 +258,23 @@ export function beadTree(beads: Task[]): TreeRow[] {
   const walk = (t: Task, depth: number): void => {
     if (placed.has(t.id)) return;
     placed.add(t.id);
-    rows.push({ t, depth });
     const ch = (kids.get(t.id) ?? []).slice().sort((a, b) => rank(a) - rank(b) || byId(a, b));
-    for (const c of ch) walk(c, depth + 1);
+    if (!ch.length) return void rows.push({ t, depth });
+    if (!folded.has(t.id)) {
+      rows.push({ t, depth, kids: ch.length });
+      for (const c of ch) walk(c, depth + 1);
+      return;
+    }
+    // Folded: every descendant is placed (so the cycle sweep below never resurrects one) and counted.
+    let hidden = 0;
+    const hide = (x: Task): void => {
+      if (placed.has(x.id)) return;
+      placed.add(x.id);
+      hidden++;
+      for (const k of kids.get(x.id) ?? []) hide(k);
+    };
+    for (const c of ch) hide(c);
+    rows.push({ t, depth, kids: ch.length, folded: true, hidden });
   };
   for (const r of roots) walk(r, 0);
   for (const t of open) walk(t, 0); // anything a cycle kept out of the walk still shows
@@ -263,12 +282,16 @@ export function beadTree(beads: Task[]): TreeRow[] {
   return rows;
 }
 
-function beadLine(t: Task, now: number, width: number, st: TasksStyle, depth = 0): string {
+/** A parent's twisty: ▾ open, ▸ folded — the click target in click mode, with the status glyph after it. */
+const twistyOf = (r: TreeRow): string => (r.kids ? `${r.folded ? "▸" : "▾"} ` : "");
+
+function beadLine(r: TreeRow, now: number, width: number, st: TasksStyle): string {
+  const { t, depth } = r;
   const when = t.status === "closed" ? t.closedAt : t.status === "in_progress" ? (t.startedAt ?? t.updatedAt) : t.updatedAt;
   const right = ` ${age(time(when), now)}`;
-  const indent = "  ".repeat(depth);
+  const indent = "  ".repeat(depth) + twistyOf(r);
   // Under its parent a child shows only its own suffix (.15) — the parent's id is right above it.
-  const id = depth && t.parent && t.id.startsWith(t.parent) ? t.id.slice(t.parent.length) : t.id;
+  const id = (depth && t.parent && t.id.startsWith(t.parent) ? t.id.slice(t.parent.length) : t.id) + (r.folded ? ` (+${r.hidden})` : "");
   const left = `${indent}${GLYPH[t.status] ?? "·"} ${id}  `;
   const room = Math.max(1, width - displayWidth(left) - displayWidth(right));
   const title = fitWidth(t.title.replace(/\s+/g, " "), room);
@@ -279,12 +302,32 @@ function beadLine(t: Task, now: number, width: number, st: TasksStyle, depth = 0
   return `${indent}${g} ${st.dim(id)}  ${title}${pad}${st.dim(right)}`;
 }
 
+/** A clickable cell on a painted row: the parent bead `id` folds/unfolds from a click in columns
+ *  [col, col + span) (0-based) — its twisty and its status glyph. */
+export interface TasksHit {
+  id: string;
+  col: number;
+  span: number;
+}
+
+interface Group {
+  rows: string[];
+  hits: (TasksHit | undefined)[];
+}
+
 /** A bead's rows: its line, then one `↳ <PR url>` row per linked PR (plain text, so the terminal
  *  links it; cut to the width like every row). */
-function beadGroup(r: TreeRow, now: number, width: number, st: TasksStyle): string[] {
+function beadGroup(r: TreeRow, now: number, width: number, st: TasksStyle): Group {
   const indent = "  ".repeat(r.depth);
   const links = prUrls(r.t).map((u) => `${indent}  ${st.dim("↳")} ${fitWidth(u, Math.max(8, width - 4 - indent.length))}`);
-  return [beadLine(r.t, now, width, st, r.depth), ...links];
+  const hit = r.kids ? { id: r.t.id, col: displayWidth(indent), span: 3 } : undefined;
+  return { rows: [beadLine(r, now, width, st), ...links], hits: [hit, ...links.map(() => undefined)] };
+}
+
+/** Which bead a click at a 0-based (row, col) of the panel folds/unfolds — undefined off every icon. */
+export function hitAt(hits: readonly (TasksHit | undefined)[], row: number, col: number): string | undefined {
+  const h = hits[row];
+  return h && col >= h.col && col < h.col + h.span ? h.id : undefined;
 }
 
 interface MsgBlock {
@@ -301,10 +344,25 @@ interface MsgBlock {
  * OLDEST lines (a `⋮` in the indent marks the cut), then the beads go down to one row; a terminal too small even for
  * that gets the top `height` rows.
  */
-export function renderTasksView(
-  m: TasksModel,
-  opts: { width: number; height: number; now: number; style?: TasksStyle; /** first bead (tree row) shown; clamped */ scroll?: number; /** told the scroll actually used */ onScroll?: (start: number) => void },
-): string[] {
+export function renderTasksView(m: TasksModel, opts: TasksViewOpts): string[] {
+  return renderTasksPanel(m, opts).rows;
+}
+
+export interface TasksViewOpts {
+  width: number;
+  height: number;
+  now: number;
+  style?: TasksStyle;
+  /** first bead (tree row) shown; clamped */
+  scroll?: number;
+  /** told the scroll actually used */
+  onScroll?: (start: number) => void;
+  /** parents the operator folded (click mode) */
+  folded?: ReadonlySet<string>;
+}
+
+/** {@link renderTasksView}'s rows plus the hit map: `hits[i]` is the clickable icon on `rows[i]`. */
+export function renderTasksPanel(m: TasksModel, opts: TasksViewOpts): { rows: string[]; hits: (TasksHit | undefined)[] } {
   const st = opts.style ?? plainStyle;
   const width = Math.max(10, opts.width);
   const height = Math.max(1, opts.height);
@@ -316,13 +374,15 @@ export function renderTasksView(
   const status = m.status ? ` ${st.dim("·")} ${m.status}` : "";
   head.push(fitWidth(`${st.bold("tasks")} ${st.dim("·")} ${m.agent ? st.tag(m.agent) : `yours ${st.dim(`(${m.operator})`)}`}${count}${status}`, width));
   if (m.info) head.push(fitWidth(m.info, width));
+  if (m.clickMode) head.push(st.yellow(fitWidth(CLICK_MODE_HINT, width)));
 
-  let groups: string[][];
-  if (m.beadsError) groups = [[st.red(fitWidth(`! beads: ${m.beadsError}`, width))]];
-  else if (!m.beads) groups = [[st.dim("reading beads…")]];
-  else if (!m.beads.length) groups = [[st.dim(`no beads assigned to ${who}`)]];
-  else groups = beadTree(m.beads).map((r) => beadGroup(r, now, width, st));
-  const beadRows = groups.flat();
+  const note = (row: string): Group[] => [{ rows: [row], hits: [undefined] }];
+  let groups: Group[];
+  if (m.beadsError) groups = note(st.red(fitWidth(`! beads: ${m.beadsError}`, width)));
+  else if (!m.beads) groups = note(st.dim("reading beads…"));
+  else if (!m.beads.length) groups = note(st.dim(`no beads assigned to ${who}`));
+  else groups = beadTree(m.beads, opts.folded).map((r) => beadGroup(r, now, width, st));
+  const beadRows = groups.flatMap((g) => g.rows);
 
   const msgs: MsgBlock[] = [];
   if (m.agent) {
@@ -359,12 +419,24 @@ export function renderTasksView(
   }
 
   const out = [...head];
-  const rowsFrom = (i: number): number => groups.slice(i).reduce((a, g) => a + g.length, 0);
+  // The clickable icon on each row of `out`, kept in step with every push.
+  const hits: (TasksHit | undefined)[] = head.map(() => undefined);
+  const put = (g: Group[]): void => {
+    for (const x of g) {
+      out.push(...x.rows);
+      hits.push(...x.hits);
+    }
+  };
+  const plain = (row: string): void => {
+    out.push(row);
+    hits.push(undefined);
+  };
+  const rowsFrom = (i: number): number => groups.slice(i).reduce((a, g) => a + g.rows.length, 0);
   let start = Math.min(Math.max(0, opts.scroll ?? 0), Math.max(0, groups.length - 1));
   // Never scroll into blank space: pull back while the bead above still fits under the "↑" row.
   while (start > 0 && rowsFrom(start - 1) + (start - 1 > 0 ? 1 : 0) <= beadBudget) start--;
   opts.onScroll?.(start);
-  if (start === 0 && beadRows.length <= beadBudget) out.push(...beadRows);
+  if (start === 0 && beadRows.length <= beadBudget) put(groups);
   else if (beadBudget > 0) {
     // Whole beads only (a bead never loses its PR row to the cut); the counts are in beads, not rows.
     const above = start > 0 && beadBudget > 1 ? 1 : 0;
@@ -372,13 +444,13 @@ export function renderTasksView(
     const cap = rowsFrom(start) <= room ? room : room - 1;
     let used = 0;
     let n = start;
-    while (n < groups.length && used + groups[n].length <= cap) used += groups[n++].length;
-    if (above) out.push(st.dim(`  ↑ ${start} above · PgUp`));
+    while (n < groups.length && used + groups[n].rows.length <= cap) used += groups[n++].rows.length;
+    if (above) plain(st.dim(`  ↑ ${start} above · PgUp`));
     if (n === start && cap > 0) {
-      out.push(groups[start][0]);
+      put([{ rows: [groups[start].rows[0]], hits: [groups[start].hits[0]] }]);
       n = start + 1;
-    } else out.push(...groups.slice(start, n).flat());
-    if (n < groups.length) out.push(st.dim(`  … +${groups.length - n} more · PgDn`));
+    } else put(groups.slice(start, n));
+    if (n < groups.length) plain(st.dim(`  … +${groups.length - n} more · PgDn`));
   }
   const lower: string[] = [];
   msgs.forEach((b, j) => {
@@ -395,5 +467,7 @@ export function renderTasksView(
   lower.push(...tail);
   const gap = Math.max(1, height - out.length - lower.length);
   out.push(...Array<string>(gap).fill(""), ...lower);
-  return out.slice(0, height);
+  const rows = out.slice(0, height);
+  // Filler and conversation rows carry no icon.
+  return { rows, hits: rows.map((_, i) => hits[i]) };
 }

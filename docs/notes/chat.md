@@ -343,3 +343,26 @@ Moved verbatim from CLAUDE.md (2026-10-02 split). Index: [CLAUDE.md](../../CLAUD
   `scripts/lean/e2e-chat-tasks.ts` (isolated nats + PAW_HOME + PAW_BEADS_DIR, fake `kit` peer, node-pty
   + @xterm/headless — order, glyphs, round-trip, no-flicker idle, a bead closed elsewhere turning ✓,
   a 14-row terminal, ← back through chat to logs).
+- **Click mode in the tasks view (ctrl+o, 2026-10-10; `src/mouse.ts`)** — selection by default, folds on
+  demand. Always-on SGR mouse capture (7b39ffe) killed native drag-select and was reverted; terminals
+  can't capture clicks for part of the screen, so capture is now an opt-in toggle. **Default: no
+  mouse reporting at all** (e2e asserts no `?1000h` is ever written). **ctrl+o** in the tasks view
+  turns on `?1000h ?1006h`, adds a yellow `click mode · ctrl+o to leave · select is off` row under the
+  title, and swaps the hint's `ctrl+o click to fold` for `ctrl+o select`. ctrl+o was picked because
+  readline binds nothing to it (probed: inserts nothing, moves nothing), unlike ctrl+f (forward-char)
+  and the kill/yank/history keys; it's ignored while picking or mid-paste. In click mode a left click
+  on a parent's icon cell (`▾`/`▸` + its status glyph, 3 cols) toggles its fold, the wheel scrolls
+  the bead list by 3, everything else is a no-op. Mouse reports are cut out of every stdin chunk by a
+  wrapper on `process.stdin.emit` (in front of every listener, readline included — readline would
+  otherwise type `0;10;5M` into the line); the strip is always on. **Off on every way out:** ctrl+o
+  again, leaving the tasks view, `shutdown()` (ctrl+c/EOF/SIGINT/SIGTERM) writes `?1000l ?1006l`
+  unconditionally, and a `process.on("exit")` hook writes it synchronously if click mode is still on
+  (crash path). Folds are view state and outlive click mode. A folded parent renders `▸ ○ id (+N)`
+  (N = every hidden descendant); its descendants are NOT rows at all, so the pager's `↑ N above` /
+  `… +N more` count only painted rows and PgUp/PgDn reach every one (the old fold-row bug).
+  `renderTasksPanel` (pure) returns `{ rows, hits }` — `hits[i]` = the clickable icon on row i —
+  and `hitAt` resolves a click; `renderTasksView` is the rows-only wrapper. Caveat: needs SGR (1006)
+  mouse support — every modern terminal (iTerm2, Terminal.app, kitty, ghostty/cmux, tmux with
+  `mouse on`) has it; under tmux with `mouse off` the clicks never reach chat. Tests: `check:chat`
+  (fold tree + hidden counts, scroll with folds reaching every row, hit map, SGR decode/strip, hint);
+  live `scripts/lean/e2e-chat-tasks.ts` §5.

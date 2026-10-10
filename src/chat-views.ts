@@ -102,7 +102,7 @@ export function scrollKey(raw: string): "up" | "down" | undefined {
  * No target (broadcast, or a channel) has no transcript to follow, so `logs` is not offered — only
  * chat ⇄ tasks (the operator's own beads) and the picker.
  */
-export function hintFor(s: { view: ChatView; picking: boolean; hasTarget: boolean; bang: boolean }): string {
+export function hintFor(s: { view: ChatView; picking: boolean; hasTarget: boolean; bang: boolean; clickMode?: boolean }): string {
   if (s.picking) return "↑↓ select · enter picks · esc closes · type to filter";
   if (s.bang) return "$ command mode · esc or backspace leaves";
   const prev = stepView(s.view, -1);
@@ -111,6 +111,7 @@ export function hintFor(s: { view: ChatView; picking: boolean; hasTarget: boolea
   if (prev !== s.view && (s.hasTarget || !viewNeedsTarget(prev))) parts.push(`← ${VIEW_LABEL[prev]}`);
   parts.push(s.hasTarget ? "↓ mention" : "↓ mention an agent");
   if (next !== s.view) parts.push(`${VIEW_LABEL[next]} →`);
+  if (s.view === "tasks") parts.push(s.clickMode ? "ctrl+o select" : "ctrl+o click to fold");
   return `${VIEW_LABEL[s.view]}  │  ${parts.join("   ")}`;
 }
 

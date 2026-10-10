@@ -176,7 +176,8 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
   assert(!hintFor({ view: "logs", picking: false, hasTarget: true, bang: false }).includes("←"), "hint: at the left end there is no ←");
   assert(!hintFor({ view: "tasks", picking: false, hasTarget: true, bang: false }).includes("→"), "hint: at the right end there is no →");
   assert(hintFor({ view: "chat", picking: false, hasTarget: false, bang: false }) === "chat  │  ↓ mention an agent   tasks →", "hint: with no target, logs isn't offered — tasks (your own beads) is");
-  assert(hintFor({ view: "tasks", picking: false, hasTarget: false, bang: false }) === "tasks  │  ← chat   ↓ mention an agent", "hint: tasks with no target goes back to chat");
+  assert(hintFor({ view: "tasks", picking: false, hasTarget: false, bang: false }) === "tasks  │  ← chat   ↓ mention an agent   ctrl+o click to fold", "hint: tasks with no target goes back to chat, and offers click mode");
+  assert(hintFor({ view: "tasks", picking: false, hasTarget: true, bang: false, clickMode: true }).endsWith("ctrl+o select") && !hintFor({ view: "chat", picking: false, hasTarget: true, bang: false }).includes("ctrl+o"), "hint: in click mode ctrl+o gives selection back; other views don't offer it");
   assert(hintFor({ view: "chat", picking: true, hasTarget: true, bang: false }).startsWith("↑↓ select"), "hint: the picker's own keys while it is open");
 
   assert(JSON.stringify(pickerWindow(5, 2, 12)) === JSON.stringify({ start: 0, end: 5 }), "picker: a short list shows whole");
@@ -388,7 +389,7 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
 
 // ── the tasks view model (src/chat-tasks.ts, 2026-10-07) ─────────────────────────────────────────
 {
-  const { agentBeads, beadTree, agentInfo, lastExchange, renderTasksView, wrapAnsi, age, CLOSED_MAX } = await import("../src/chat-tasks.ts");
+  const { agentBeads, beadTree, agentInfo, lastExchange, renderTasksView, renderTasksPanel, hitAt, CLICK_MODE_HINT, wrapAnsi, age, CLOSED_MAX } = await import("../src/chat-tasks.ts");
   const { displayWidth } = await import("../src/width.ts");
   type T = import("../src/tasks.ts").Task;
   const now = Date.parse("2026-10-07T12:00:00Z");
@@ -479,7 +480,46 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
   const want = ["e@0", "e.7@1", "e.7.1@2", ...[1, 2, 3, 4, 5, 6, 8, 9, 10, 11, 12].map((i) => `e.${i}@1`), "s@0", "s.2@1", "s.10@1"];
   assert(eq(tree.map(label), want), `tree: parent first, in-flight branch first, the rest in natural id order, nothing folded (${tree.map(label).join(" ")})`);
   const treeRows = renderTasksView({ agent: "kit", operator: "op", beads: agentBeads(epic, "kit", now) }, { width: 60, height: 20, now });
-  assert(treeRows.some((r) => r.startsWith("  ○ .7  ")) && treeRows.some((r) => r.startsWith("  ○ .12  ")) && !treeRows.some((r) => r.includes("more open")), "tree: a child shows its id suffix, indented; no fold rows");
+  assert(treeRows.some((r) => r.startsWith("  ▾ ○ .7  ")) && treeRows.some((r) => r.startsWith("  ○ .12  ")) && !treeRows.some((r) => r.includes("more open")), "tree: a child shows its id suffix, indented; no fold rows; a parent leads with ▾");
+  // folds (click mode, 2026-10-10): a folded parent hides EVERY descendant and says how many
+  const eb = agentBeads(epic, "kit", now);
+  const ftree = beadTree(eb, new Set(["e"]));
+  assert(eq(ftree.map(label), ["e@0", "s@0", "s.2@1", "s.10@1"]) && ftree[0].folded === true && ftree[0].hidden === 13, `fold: e hides its 12 children + the grandchild (${ftree.map(label).join(" ")}, hidden ${ftree[0].hidden})`);
+  const inner = beadTree(eb, new Set(["e.7"]));
+  assert(inner.find((r) => r.t.id === "e.7")?.hidden === 1 && !inner.some((r) => r.t.id === "e.7.1") && inner.length === tree.length - 1, "fold: a nested parent folds only its own branch");
+  const fp = renderTasksPanel({ agent: "kit", operator: "op", beads: eb }, { width: 60, height: 20, now, folded: new Set(["e"]) });
+  assert(fp.rows[1].startsWith("▸ ○ e (+13)  ") && fp.rows[2].startsWith("▾ ○ s  ") && fp.rows[3].startsWith("  ○ .2  "), `fold: ▸ e (+13), ▾ on an open parent (${fp.rows.slice(1, 4).join(" | ")})`);
+  assert(fp.rows.every((r) => displayWidth(r) <= 60) && fp.hits.length === fp.rows.length, "fold: rows fit; one hit slot per row");
+  // the hit map: a parent's icon (twisty + glyph) only
+  assert(fp.hits[1]?.id === "e" && fp.hits[2]?.id === "s" && fp.hits[3] === undefined && fp.hits[0] === undefined, "hits: parent rows carry their id, leaves and the title don't");
+  assert(hitAt(fp.hits, 1, 0) === "e" && hitAt(fp.hits, 1, 2) === "e" && hitAt(fp.hits, 1, 3) === undefined && hitAt(fp.hits, 1, 10) === undefined && hitAt(fp.hits, 3, 2) === undefined && hitAt(fp.hits, 99, 0) === undefined, "hits: only the ▸/▾ and status-glyph cells resolve; the title, a leaf and off-panel don't");
+  const open7 = renderTasksPanel({ agent: "kit", operator: "op", beads: eb }, { width: 60, height: 20, now });
+  const r7 = open7.rows.findIndex((r) => r.startsWith("  ▾ ○ .7"));
+  assert(r7 > 0 && hitAt(open7.hits, r7, 2) === "e.7" && hitAt(open7.hits, r7, 0) === undefined, "hits: a nested parent's icon sits after its indent");
+  const cm = renderTasksView({ agent: "kit", operator: "op", beads: eb, clickMode: true }, { width: 200, height: 20, now });
+  assert(cm[1] === CLICK_MODE_HINT && CLICK_MODE_HINT.includes("ctrl+o to leave") && CLICK_MODE_HINT.includes("select is off"), "click mode: the view says so, and how to leave");
+  // scroll with folds: 10 parents × 4 children; every other folded. The pager counts PAINTED rows only.
+  const fam = Array.from({ length: 10 }, (_, i) => [bead(`f${i}`, "open", { updatedAt: iso(i) }), ...Array.from({ length: 4 }, (_, k) => bead(`f${i}.${k + 1}`, "open", { parent: `f${i}` }))]).flat();
+  const shut = new Set(["f0", "f2", "f4", "f6", "f8"]);
+  const famBeads = agentBeads(fam, "kit", now);
+  const total = beadTree(famBeads, shut).length;
+  assert(total === 5 + 5 * 5, `fold scroll: 5 folded + 5 open families = 30 rows (${total})`);
+  const seen = new Set<string>();
+  let scroll = 0;
+  let pages = 0;
+  for (;;) {
+    let used = -1;
+    const rows = renderTasksView({ agent: "kit", operator: "op", beads: famBeads }, { width: 60, height: 12, now, scroll, folded: shut, onScroll: (x) => (used = x) });
+    const shown = rows.filter((r) => /^\s*[▾▸]? ?○ (f\d|\.\d)/.test(r));
+    const more = rows.find((r) => r.includes("more · PgDn"));
+    const above = rows.find((r) => r.includes("above · PgUp"));
+    if (above) assert(above.includes(`↑ ${used} above`), `fold scroll: "N above" is the rows above (${above.trim()} at ${used})`);
+    if (more) assert(more.includes(`+${total - used - shown.length} more`), `fold scroll: "+N more" counts exactly the painted rows left (${more.trim()})`);
+    for (let i = 0; i < shown.length; i++) seen.add(`${used + i}`);
+    if (!more || ++pages > 20) break;
+    scroll = used + shown.length;
+  }
+  assert(seen.size === total, `fold scroll: PgDn reaches every painted row (${seen.size}/${total})`);
   const st = { dim: (x: string) => x, green: (x: string) => x, yellow: (x: string) => x, red: (x: string) => x };
   const info = agentInfo({ live: true, mesh: "working", ctx: "152k/1M 15%", ctxShare: 0.15, inbox: "2 queued", activeMs: now - 120_000, failure: { text: "session\nlimit" } }, now, st);
   assert(info === "online · ctx 152k/1M 15% · inbox 2 queued · active 2m ago · ! session limit", `info: paw status's words in one row (${info})`);
@@ -500,6 +540,13 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
   assert(page(pEnd.used + 5).used === pEnd.used, "scroll: overscroll reports the clamped start, so PgUp moves at once");
   const { scrollKey } = await import("../src/chat-views.ts");
   assert(scrollKey("\x1b[5~") === "up" && scrollKey("\x1b[6~") === "down" && scrollKey("\x1b[1;2A") === undefined, "scroll keys: PgUp/PgDn only (shift+↑ is readline history)");
+  // mouse reports (src/mouse.ts): decoded and cut out, so readline never types them
+  const { stripMouse, MOUSE_ON, MOUSE_OFF, CLICK_MODE_KEY } = await import("../src/mouse.ts");
+  const sm = stripMouse("ab\x1b[<0;3;5M\x1b[<0;3;5mcd\x1b[<64;1;1M\x1b[<65;1;1M\x1b[<35;4;4M");
+  assert(sm.rest === "abcd", `mouse: every report cut out, the typing kept (${JSON.stringify(sm.rest)})`);
+  assert(eq(sm.events.map((e) => `${e.kind}${e.press ? "↓" : "↑"}@${e.col},${e.row}`), ["left↓@3,5", "left↑@3,5", "wheelUp↓@1,1", "wheelDown↓@1,1", "other↓@4,4"]), `mouse: press/release, wheel, motion decoded (${sm.events.map((e) => e.kind).join(",")})`);
+  assert(stripMouse("plain \x1b[A").rest === "plain \x1b[A" && stripMouse("plain").events.length === 0, "mouse: other input passes untouched");
+  assert(MOUSE_ON === "\x1b[?1000h\x1b[?1006h" && MOUSE_OFF === "\x1b[?1000l\x1b[?1006l" && CLICK_MODE_KEY === "\x0f", "mouse: SGR clicks on/off; ctrl+o toggles");
   const err = renderTasksView({ agent: "kit", operator: "op", beadsError: "bd list: boom" }, { width: 60, height: 20, now });
   assert(err.some((r) => r.includes("! beads: bd list: boom")) && !err.some((r) => r.includes("no beads")), "render: a failed read is shown, never as 'no beads'");
   const mine = renderTasksView({ operator: "op", beads: [] }, { width: 60, height: 20, now });

@@ -7,6 +7,9 @@
  *   3 send a line from the tasks view → the reply replaces "its last message"; an idle stretch
  *     writes NOTHING (no flicker); a bead closed behind its back shows up on the next refresh
  *   4 a short terminal: the panel still fits; ← goes back to chat, ← again to logs
+ *   5 click mode (ctrl+o): no mouse capture by default; ctrl+o emits ?1000h, a synthetic SGR click on
+ *     a parent's icon folds it (▸ … (+3)), ctrl+o emits ?1000l; leaving tasks or quitting chat in
+ *     click mode emits ?1000l
  *
  *   XTERM_DIR=<dir with node_modules/@xterm/headless + addon-unicode11> \
  *   PAW_HOME=$(mktemp -d) PAW_SPACE=chat-tasks-$$ PAW_RELEASE=dev PAW_COTAL_ROOT=$(mktemp -d) PAW_BEADS_DIR=$(mktemp -d) \
@@ -95,9 +98,12 @@ mk("Someone else's bead — must not show", "evals");
 bd("update", ipId, "--status", "in_progress");
 bd("update", blkId, "--status", "blocked");
 bd("close", doneId);
+const epicId = mk("Epic: polish the tasks view", "kit");
+for (const t of ["child one", "child two", "child three"]) bd("create", t, "-a", "kit", "--parent", epicId, "--silent");
 
 let kit: CotalEndpoint | undefined;
 let p: pty.IPty | undefined;
+let exited = false;
 try {
   await until(() => spawnSync("nc", ["-z", "127.0.0.1", String(port)]).status === 0 || undefined, 10_000);
   await ensure({ needMesh: true, needManager: true, space });
@@ -116,6 +122,7 @@ try {
 
   p = pty.spawn(process.execPath, [join(REPO, "bin/paw.mjs"), "chat", "@kit", "--space", space], { cols: COLS, rows: ROWS, cwd: tmpdir(), env: { ...process.env, TERM: "xterm-256color" } as Record<string, string> });
   let raw = "";
+  p.onExit(() => (exited = true));
   p.onData((d) => {
     raw += d;
     term.write(d);
@@ -201,6 +208,37 @@ try {
   p.resize(COLS, ROWS);
   await sleep(500);
 
+  // ── click mode ──────────────────────────────────────────────────────────────────────────────
+  const ON = "\x1b[?1000h";
+  const OFF = "\x1b[?1000l";
+  ok("default: no mouse-enable sequence ever written (selection stays the terminal's)", !raw.includes(ON) && !raw.includes("\x1b[?1006h"));
+  ok("an open parent leads with ▾ and lists its children", screen().split("\n").some((l) => l.includes(`▾ ○ ${epicId}`)) && screen().includes("child three"));
+  ok("hint offers ctrl+o", screen().includes("ctrl+o click to fold"));
+  let mark = raw.length;
+  p.write("\x0f");
+  const cOn = await until(() => (raw.slice(mark).includes(ON) && screen().includes("click mode · ctrl+o to leave · select is off") ? true : undefined), 5_000, 50);
+  ok("ctrl+o: ?1000h written, the click-mode hint shows", !!cOn);
+  show("click mode");
+  const lines = screen().split("\n");
+  const row = lines.findIndex((l) => l.includes(`▾ ○ ${epicId}`));
+  const col = row >= 0 ? lines[row].indexOf("▾") : -1;
+  ok("the epic's icon is on screen", row >= 0 && col >= 0, `row ${row + 1}, col ${col + 1}`);
+  const click = (x: number, y: number) => p!.write(`\x1b[<0;${x};${y}M\x1b[<0;${x};${y}m`);
+  click(col + 10, row + 1); // the title: nothing
+  await sleep(400);
+  ok("a click on the title does nothing", screen().includes("child three") && !screen().includes("(+3)"));
+  click(col + 1, row + 1);
+  const foldedNow = await until(() => (screen().includes(`▸ ○ ${epicId} (+3)`) && !screen().includes("child three") ? true : undefined), 5_000, 50);
+  ok("a click on a parent's icon folds it: ▸ <id> (+3), the children gone", !!foldedNow);
+  const leak = screen().match(/\d+;\d+;\d+[Mm]?|\[<\d/);
+  ok("no mouse report leaked into the input line (or anywhere on screen)", !leak, leak?.[0] ?? "");
+  show("click mode, epic folded");
+  mark = raw.length;
+  p.write("\x0f");
+  const cOff = await until(() => (raw.slice(mark).includes(OFF) && !screen().includes("click mode ·") ? true : undefined), 5_000, 50);
+  ok("ctrl+o again: ?1000l written, the hint gone", !!cOff);
+  ok("the fold outlives click mode", screen().includes(`▸ ○ ${epicId} (+3)`));
+
   // ── ← back to chat, ← again to logs ──────────────────────────────────────────────────────────
   p.write("\x1b[D");
   const chat = await until(() => (screen().includes("chat  │  ← logs") && !screen().includes("tasks · kit") ? true : undefined), 5_000, 50);
@@ -211,6 +249,28 @@ try {
   p.write("\x1b[D");
   await sleep(300);
   ok("← at the left end stays on logs (3 views, clamped)", screen().includes("logs  │"));
+
+  // ── leaving tasks in click mode turns it off; quitting chat in click mode turns it off ─────────
+  p.write("\x1b[C");
+  await sleep(300);
+  p.write("\x1b[C");
+  await until(() => (screen().includes("tasks · kit") ? true : undefined), 5_000, 50);
+  mark = raw.length;
+  p.write("\x0f");
+  await until(() => (raw.slice(mark).includes(ON) ? true : undefined), 5_000, 50);
+  p.write("\x1b[D");
+  const leftOff = await until(() => (raw.slice(mark).includes(OFF) && screen().includes("chat  │") ? true : undefined), 5_000, 50);
+  ok("← out of the tasks view in click mode writes ?1000l", !!leftOff);
+  p.write("\x1b[C");
+  await until(() => (screen().includes("tasks · kit") ? true : undefined), 5_000, 50);
+  mark = raw.length;
+  p.write("\x0f");
+  const on2 = await until(() => (raw.slice(mark).includes(ON) ? true : undefined), 5_000, 50);
+  ok("back in tasks, ctrl+o: ?1000h", !!on2);
+  mark = raw.length;
+  p.write("\x03"); // ctrl+c quits chat
+  const quit = await until(() => (exited ? true : undefined), 10_000, 50);
+  ok("ctrl+c in click mode: chat exits and writes ?1000l on the way out", !!quit && raw.slice(mark).includes(OFF), `exited=${exited}`);
 } finally {
   try {
     p?.kill();
