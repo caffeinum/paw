@@ -104,6 +104,8 @@ Each entry: what it is + the most load-bearing rule. Full notes behind the link.
 - `src/foreground.ts` — registry of `paw claude --fg` agents; self-reaps dead pids; prevents duplicate
   manager copies. → [agents.md#foreground-registry](docs/notes/agents.md#foreground-registry)
 - persona `agent:` pin — which connector (claude/codex/opencode) respawns the agent. → [agents.md#agent-persona-pin](docs/notes/agents.md#agent-persona-pin)
+- `src/hermes.ts` — `agent: hermes`: cotal's hermes connector in a durable paw-owned profile
+  (`$PAW_HOME/hermes/profiles/<space>-<name>`), one OAuth login per profile, `hermesHome:` adopts one. → [agents.md#hermes](docs/notes/agents.md#hermes)
 - `src/session.ts` — `readResumeId`, `transcriptExists`; leaf module. → [agents.md#srcsessionts](docs/notes/agents.md#srcsessionts)
 - **Two-writer guard** — never start an agent whose pinned session a standalone claude holds. → [agents.md#two-writer-guard](docs/notes/agents.md#two-writer-guard)
 - `src/open.ts` — `paw open`/`paw attach`: runtime-aware; tmux → real window, cmux → names the tab, pty

@@ -47,13 +47,15 @@
     "check:trust": "node scripts/check-trust.ts",
     "check:kit": "node scripts/check-kit.ts",
     "check:personality": "node scripts/check-personality.ts",
-    "check:stale-forward": "node scripts/check-stale-forward.ts"
+    "check:stale-forward": "node scripts/check-stale-forward.ts",
+    "check:hermes": "node scripts/check-hermes.ts"
   },
   "dependencies": {
     "@cotal-ai/cli": "0.72.1",
     "@cotal-ai/cmux": "0.72.1",
     "@cotal-ai/connector-claude-code": "0.72.1",
     "@cotal-ai/connector-codex": "0.72.1",
+    "@cotal-ai/connector-hermes": "0.72.1",
     "@cotal-ai/connector-opencode": "0.72.1",
     "@cotal-ai/core": "0.72.1",
     "@cotal-ai/manager": "0.72.1",

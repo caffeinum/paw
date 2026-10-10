@@ -107,3 +107,16 @@ history). Tests: `check:commands` (predicate), `check:web` (late naming).
 from three separate fresh processes in 340/311/309ms; unknown-name `inspect`/`despawn` refused in
 216ms/1ms; and with `PAW_RAIL_SPAWN=1` a real claude spawned in 4.4s (`id=local.UBDG…`), appeared in a
 separate process's `ps`, and despawned.
+
+**One resolve per one-shot command — `ensureManagerOn` / `withEnsuredManager` (lifecycle.ts, 2026-10-09).**
+`ensure()`'s "is the manager up?" probe is itself a full service resolve, so every command that
+ensure()d and then opened its own `withManagerControl` resolved TWICE (`paw chat <folder>`: the bin gate's
+probe, then the spawn). The probe now rides the command's own handle (`managerProbe`, the trick `paw
+status` already used): `chat`, `stop`, `rm`, `rename` left the bin/paw.ts NEEDS_MANAGER gate and ensure
+themselves; `start`, `global` (the 60s keeper tick), `optimize`, `sleep`, `adopt`, `claude` swapped
+`ensure()` + `withManagerControl` for `withEnsuredManager`. Measured in an isolated space: chat 2→1,
+stop/rm/rename/start 2→1 (stop ~1.29s → ~0.88s). Kept: a probe that did NOT answer closes the handle's
+rails (ensure() may have started a new manager — a rail resolved before would address a ghost); a
+command moved off the bin gate still ensures the DEFAULT space (the probe is shared only when that is
+its own space on paw's server). Not done: `open`/`attach`/`dm` (still gated; `attachResolved` and
+`sendAsYou` are shared with adopt/claude/web), and a cold start still costs probe + readiness + command.

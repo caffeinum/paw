@@ -61,7 +61,7 @@ export function resolveAddress(target: string | undefined): ResolvedAddress {
   }
   if (target.startsWith("gh:")) return resolveGithubAddress("github:" + target.slice("gh:".length).replace("@", "#"));
   if (target.startsWith("github:")) return resolveGithubAddress(target);
-  if (target.includes("@")) return { cwd: resolveWorktreeFolder(target), kind: "worktree" };
+  if (isWorktreeRef(target)) return { cwd: resolveWorktreeFolder(target), kind: "worktree" };
   if (HOST_RE.test(target) && !existsSync(resolve(process.cwd(), target))) {
     // A dotted word you already have an agent for is THAT agent, not a website to scaffold — see
     // registeredAgentFor (`getslash.co` minted `getslash-co-a1d2ac` beside the real `getslash-co`).
@@ -71,6 +71,11 @@ export function resolveAddress(target: string | undefined): ResolvedAddress {
     return executeUrlPlan(routeUrl("https://" + target));
   }
   return { cwd: canonicalDir(target), kind: "folder" };
+}
+
+/** `<repo>@<branch>` — an `@` AFTER something. A leading `@name` is an agent, not a worktree. */
+function isWorktreeRef(target: string): boolean {
+  return target.indexOf("@") > 0;
 }
 
 /** `.cwd` shim: the folder a cwd-only caller (chat/open/dm) points at. Keeps the old signature. */
@@ -94,7 +99,7 @@ export function resolveExistingFolderArg(target: string | undefined): string {
         `not a clone/mint. Bring it up first with \`paw chat ${target}\`, then adopt/rename by folder or name.`,
     );
   }
-  if (target.includes("@")) return resolveWorktreeFolder(target);
+  if (isWorktreeRef(target)) return resolveWorktreeFolder(target);
   return canonicalDir(target);
 }
 
@@ -110,7 +115,7 @@ export function isAddressHandle(target: string): boolean {
     target.startsWith("web:") ||
     target.startsWith("gh:") ||
     target.startsWith("github:") ||
-    target.includes("@") ||
+    isWorktreeRef(target) ||
     (HOST_RE.test(target) && !existsSync(resolve(process.cwd(), target)))
   );
 }

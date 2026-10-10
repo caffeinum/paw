@@ -21,7 +21,9 @@ export interface WorktreeRef {
  *  Returns null when there's no `@` (not a worktree ref). */
 export function parseWorktreeRef(target: string): WorktreeRef | null {
   const i = target.indexOf("@");
-  if (i === -1) return null;
+  // A LEADING `@` is an agent name (`paw dm @yapless`), the way `@name` reads everywhere else in paw —
+  // never "this repo @ branch" (operator, 2026-10-09: `@yapless` failed with "no branch yapless").
+  if (i <= 0) return null;
   const branch = target.slice(i + 1);
   if (!branch) throw new Error(`paw: "${target}" is missing a branch after "@" (use <repo>@<branch>)`);
   return { repo: target.slice(0, i) || ".", branch };

@@ -7,8 +7,8 @@
  * reply. Here the peer stays present and consuming, so cotal_dm(HUMAN_PEER, …) from the agent lands.
  *
  * Pure cotal underneath: a CotalEndpoint for presence/DMs, the manager control plane for spawn.
- * Registers a "chat" command into the cotal registry on import; bin/paw.ts ensures the mesh +
- * manager are up before it runs.
+ * Registers a "chat" command into the cotal registry on import; it ensures the mesh + manager
+ * itself (see `startup` in chat()), so ensure()'s manager probe and the startup spawn share one rail.
  */
 import { existsSync, writeSync } from "node:fs";
 import { homedir } from "node:os";
@@ -49,7 +49,7 @@ import {
 import { isAddressHandle, resolveAddress } from "./address.ts";
 import { HOST_RE } from "./url.ts";
 import { bashMessage, parseBang, runBash } from "./bash.ts";
-import { withManagerControl } from "./control.ts";
+import { ManagerControl, withManagerControl } from "./control.ts";
 import { advanceCursor } from "./cursor.ts";
 import { AwaitTracker } from "./chat-awaiting.ts";
 import { arrowRun, CLEAR_ALL, displayWidth, fitWidth, entryVisible, hintFor, History, LogFollower, navKey, scrollKey, Painter, type Entry, pickerWindow, showsChat, showsLogs, stepView, VIEW_LABEL, viewNeedsTarget, type ChatView } from "./chat-views.ts";
@@ -75,7 +75,7 @@ import { FRESH_SPAWN_MS, LIVE_AGENT_MS } from "./dm.ts";
 import { messageText as textOf, readConversation, type Entry as FeedEntry } from "./feed.ts";
 import { dedupeRoster } from "./commands/who.ts";
 import { isContinueKey, joinLines, peelContinuation } from "./multiline.ts";
-import { resolveSpace } from "./lifecycle.ts";
+import { ensureManagerOn, resolveSpace } from "./lifecycle.ts";
 import { chatAgentInfo } from "./agent-summary.ts";
 import { renderMarkdown } from "./markdown.ts";
 import { HUMAN_PEER } from "./names.ts";
@@ -292,8 +292,8 @@ export function parseArgs(argv: string[]): ChatArgs {
     if (a === "--space") out.space = argv[++i];
     else if (a === "--server") out.server = argv[++i];
     else if (a === "--model") out.model = argv[++i];
-    else if (a === "--agent") out.agent = value(a, argv[++i]); // create (or target) an agent on this harness — kit, codex, opencode, claude
-    else if (a === "--provider") out.provider = value(a, argv[++i]); // kit's model provider: codex (default) | grok
+    else if (a === "--agent") out.agent = value(a, argv[++i]); // create (or target) an agent on this harness — kit, codex, opencode, hermes, claude
+    else if (a === "--provider") out.provider = value(a, argv[++i]); // kit's model provider: codex (default) | grok; hermes' provider id (e.g. xai-oauth)
     else if (a === "--name") out.name = argv[++i]; // pin an EXTRA agent instance at the folder (multi-instance)
     else if (a === "--personality") out.personality = value(a, argv[++i]); // birth personality: a seed, a quoted vibe, or none (docs/notes/personalities.md)
     else if (a === "--fresh") out.fresh = true; // birth a NEW agent (was `paw create`); fails loud if one exists
@@ -359,7 +359,7 @@ async function chat(argv: string[]): Promise<void> {
   // A personality is given at BIRTH; an existing agent's is changed with `paw persona <name> --reroll`.
   if (personalityFlag !== undefined && !fresh) throw new Error("paw: --personality is for a new agent (`paw chat --fresh <folder> --personality …`) — for an existing one use `paw persona <name> --reroll [seed]`");
   const personalityArg = personalityFlag !== undefined ? parsePersonalityArg(personalityFlag) : undefined; // validated before anything is registered
-  if (provider !== undefined && agentFlag === undefined) throw new Error("paw: --provider picks kit's model provider — pass it with --agent kit");
+  if (provider !== undefined && agentFlag === undefined) throw new Error("paw: --provider picks kit's or hermes' model provider — pass it with --agent kit|hermes");
   if (agentFlag !== undefined && all) throw new Error("paw: --agent creates or targets ONE agent at a folder — it can't combine with --all");
   const agentSpec = agentFlag !== undefined ? { agent: agentFlag, provider, model } : undefined;
   if (agentSpec) checkAgentSpec(agentSpec); // before any name is registered for it
@@ -375,6 +375,14 @@ async function chat(argv: string[]): Promise<void> {
   const room = addressed.mode === "channel" ? addressed.target! : ROOM;
   const space = spaceArg ?? resolveSpace();
   const server = serverArg ?? pawServer();
+  // ONE resolved control handle for startup: ensure()'s "is the manager up?" probe and the target's
+  // spawn/reuse below. bin/paw.ts used to ensure() first and the spawn then resolved the manager's
+  // service again — a describe, a contract fetch and an Ajv compile of every validator, twice per
+  // `paw chat <folder>`. Ensured FIRST, as the bin gate did, so a manager that won't come up fails
+  // before anything is registered. Closed once the target is resolved; the REPL's later calls open
+  // their own (a throw before then exits the process — bin/paw.ts — so it never strands a socket).
+  const startup = new ManagerControl(space, server);
+  await ensureManagerOn(startup, resolveSpace());
   if (!fresh) assertUnambiguousTarget(space, target); // a bare token that's BOTH a known name and a folder → fail loud (skipped under --fresh: the only interpretation there is a folder)
 
   // No target (only `--all` gets here) => start in broadcast mode: plain lines go to #general, and @name latches a sticky DM
@@ -715,7 +723,7 @@ async function chat(argv: string[]): Promise<void> {
     process.stdout.write(c.dim(`  connecting to ${name}…\n`));
     try {
       if (folder) {
-        const r = await withManagerControl(space, server, (ctl) => ensureAgentSpawned(ctl, { space, name, cwd: folder, model, brief, kind }));
+        const r = await ensureAgentSpawned(startup, { space, name, cwd: folder, model, brief, kind });
         spawned = r.spawned;
         // A fresh spawn is the genuinely slow path (a cold claude, resuming a long session). Naming it
         // turns "it hung" into "it is doing the slow thing", which is the difference between waiting
@@ -737,6 +745,7 @@ async function chat(argv: string[]): Promise<void> {
     }
     curName = name;
   }
+  await startup.close();
 
   // Attachments staged but not yet sent. A line that is ONLY paths (the shape you get from dragging
   // an image in and hitting Enter) stages them and does NOT send — otherwise you'd fire a message
@@ -1151,6 +1160,8 @@ async function chat(argv: string[]): Promise<void> {
    *  finishes the message. Typing multi-line had no answer at all before: you got one line, or you sent
    *  three messages. See src/multiline.ts. */
   let held: string[] = [];
+  /** The on-screen preview entry of each held line, so taking a line back also takes it off screen. */
+  let heldEntries: Entry[] = [];
 
   /** Take what's typed onto the held stack and clear the line, so the next one starts fresh. */
   const holdLine = (line: string): void => {
@@ -1166,6 +1177,16 @@ async function chat(argv: string[]): Promise<void> {
     // they should read as a block. Spacing each one as its own event turned three typed lines into
     // eight lines of screen.
     emit(`${c.dim("│")} ${line}`, "you", true);
+    heldEntries.push(history.entries[history.entries.length - 1]);
+  };
+
+  /** Drop the last `n` held lines (and their previews) and reprint the screen without them. */
+  const unholdLines = (n: number): string[] => {
+    const taken = held.splice(held.length - n, n);
+    const gone = new Set(heldEntries.splice(heldEntries.length - n, n));
+    for (let i = history.entries.length - 1; i >= 0; i--) if (gone.has(history.entries[i])) history.entries.splice(i, 1);
+    redraw();
+    return taken;
   };
 
   /** Park a captured paste: placeholder into the line you're editing, preview onto the screen. */
@@ -1596,6 +1617,21 @@ async function chat(argv: string[]): Promise<void> {
       // except Backspace, which must be read BEFORE readline eats it against an already-empty buffer.
       const raw = typeof chunk === "string" ? chunk : chunk.toString("utf8");
       if (!rl || closing || scanner.pasting || picking) return;
+      // A multi-line draft is editable across lines: Backspace on an empty line takes the previous held
+      // line back into the input; Ctrl+U on an empty line throws the whole draft away (operator,
+      // 2026-10-09: "i can remove the last line, but not multiline"). Read BEFORE readline, which would
+      // otherwise spend the key on an already-empty buffer.
+      if (!bang && held.length && rl.line === "" && (raw === "\x7f" || raw === "\b")) {
+        const [line] = unholdLines(1);
+        setImmediate(() => rl && !closing && rl.write(line));
+        return;
+      }
+      if (!bang && held.length && rl.line === "" && raw === "\x15") {
+        const n = held.length;
+        unholdLines(n);
+        emit(c.dim(`✕ cleared the draft (${n} line${n === 1 ? "" : "s"})`));
+        return;
+      }
       if (bang && (raw === "\x7f" || raw === "\b") && rl.line === "") {
         bang = false;
         rl.setPrompt(promptFor());
@@ -1827,6 +1863,7 @@ async function chat(argv: string[]): Promise<void> {
     if (held.length) {
       const all = held;
       held = [];
+      heldEntries = [];
       raw = joinLines(all, raw);
     }
 
@@ -2060,7 +2097,7 @@ const chatCommand: Command = {
   name: "chat",
   group: "Mesh",
   summary: "chat with an EXISTING agent (by @name or folder; wakes it if offline); replies stream back live — --fresh creates a new one",
-  usage: 'chat [<folder>|<name>|@<name>|#<channel>] [--only] [--all] [--name <n>] [--fresh [--personality <seed|"vibe"|none>]] [--agent kit|codex|opencode|claude [--provider codex|grok] [--model m]]   (default: "." — this folder\'s agent; --all = every conversation, nothing preselected; --name pins a 2nd+ EXTRA agent at the folder; --fresh births a NEW default agent, fails loud if one already exists; --agent creates the agent on that harness, or targets it if it already runs there)',
+  usage: 'chat [<folder>|<name>|@<name>|#<channel>] [--only] [--all] [--name <n>] [--fresh [--personality <seed|"vibe"|none>]] [--agent kit|codex|opencode|hermes|claude [--provider codex|grok|<hermes provider>] [--model m]]   (default: "." — this folder\'s agent; --all = every conversation, nothing preselected; --name pins a 2nd+ EXTRA agent at the folder; --fresh births a NEW default agent, fails loud if one already exists; --agent creates the agent on that harness, or targets it if it already runs there)',
   run: (a) => chat([...a.raw]),
 };
 

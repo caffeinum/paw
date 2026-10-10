@@ -6,6 +6,7 @@ settings:
 
 patchedDependencies:
   '@cotal-ai/connector-claude-code@0.72.1': 072bc5499ec2a3fe541aaa02c91405f06b2767985c14b78095074c2cfd984744
+  '@cotal-ai/core@0.72.1': 70d76cb2fb4fb3d163ac2be852b9515ec31b1447ca0eeb05e8410f682100c804
 
 importers:
 
@@ -16,25 +17,28 @@ importers:
         version: 0.72.1
       '@cotal-ai/cmux':
         specifier: 0.72.1
-        version: 0.72.1(@cotal-ai/core@0.72.1)
+        version: 0.72.1(@cotal-ai/core@0.72.1(patch_hash=70d76cb2fb4fb3d163ac2be852b9515ec31b1447ca0eeb05e8410f682100c804))
       '@cotal-ai/connector-claude-code':
         specifier: 0.72.1
-        version: 0.72.1(patch_hash=072bc5499ec2a3fe541aaa02c91405f06b2767985c14b78095074c2cfd984744)(@cotal-ai/core@0.72.1)
+        version: 0.72.1(patch_hash=072bc5499ec2a3fe541aaa02c91405f06b2767985c14b78095074c2cfd984744)(@cotal-ai/core@0.72.1(patch_hash=70d76cb2fb4fb3d163ac2be852b9515ec31b1447ca0eeb05e8410f682100c804))
       '@cotal-ai/connector-codex':
         specifier: 0.72.1
-        version: 0.72.1(@cotal-ai/core@0.72.1)
+        version: 0.72.1(@cotal-ai/core@0.72.1(patch_hash=70d76cb2fb4fb3d163ac2be852b9515ec31b1447ca0eeb05e8410f682100c804))
+      '@cotal-ai/connector-hermes':
+        specifier: 0.72.1
+        version: 0.72.1(@cotal-ai/core@0.72.1(patch_hash=70d76cb2fb4fb3d163ac2be852b9515ec31b1447ca0eeb05e8410f682100c804))
       '@cotal-ai/connector-opencode':
         specifier: 0.72.1
-        version: 0.72.1(@cotal-ai/core@0.72.1)
+        version: 0.72.1(@cotal-ai/core@0.72.1(patch_hash=70d76cb2fb4fb3d163ac2be852b9515ec31b1447ca0eeb05e8410f682100c804))
       '@cotal-ai/core':
         specifier: 0.72.1
-        version: 0.72.1
+        version: 0.72.1(patch_hash=70d76cb2fb4fb3d163ac2be852b9515ec31b1447ca0eeb05e8410f682100c804)
       '@cotal-ai/manager':
         specifier: 0.72.1
         version: 0.72.1
       '@cotal-ai/tmux':
         specifier: 0.72.1
-        version: 0.72.1(@cotal-ai/core@0.72.1)
+        version: 0.72.1(@cotal-ai/core@0.72.1(patch_hash=70d76cb2fb4fb3d163ac2be852b9515ec31b1447ca0eeb05e8410f682100c804))
       '@cotal-ai/workspace':
         specifier: 0.72.1
         version: 0.72.1
@@ -87,6 +91,12 @@ packages:
 
   '@cotal-ai/connector-codex@0.72.1':
     resolution: {integrity: sha512-0zRJaT+hb18BpypmAEnELXWT5kFUS5hOUJAkak3Ozr0zugZby+CPEculDM4BKF8i3a5g7UV/XY7f4Hr1trlCfw==}
+    peerDependencies:
+      '@cotal-ai/core': '>=0.1.0'
+
+  '@cotal-ai/connector-hermes@0.72.1':
+    resolution: {integrity: sha512-CTHwezGVs18ItAX5C7+nAV5Knad4g280+T7pvu9CKrp97GqZWlACdfshv2DOgWkkoDxiHbZxLUUDu63nLicXdA==}
+    hasBin: true
     peerDependencies:
       '@cotal-ai/core': '>=0.1.0'
 
@@ -653,7 +663,7 @@ snapshots:
   '@cotal-ai/cli@0.72.1':
     dependencies:
       '@clack/prompts': 1.6.0
-      '@cotal-ai/core': 0.72.1
+      '@cotal-ai/core': 0.72.1(patch_hash=70d76cb2fb4fb3d163ac2be852b9515ec31b1447ca0eeb05e8410f682100c804)
       '@cotal-ai/workspace': 0.72.1
       '@nats-io/jetstream': 3.4.0
       '@nats-io/kv': 3.4.0
@@ -677,23 +687,27 @@ snapshots:
       - react-devtools-core
       - utf-8-validate
 
-  '@cotal-ai/cmux@0.72.1(@cotal-ai/core@0.72.1)':
+  '@cotal-ai/cmux@0.72.1(@cotal-ai/core@0.72.1(patch_hash=70d76cb2fb4fb3d163ac2be852b9515ec31b1447ca0eeb05e8410f682100c804))':
     dependencies:
-      '@cotal-ai/core': 0.72.1
+      '@cotal-ai/core': 0.72.1(patch_hash=70d76cb2fb4fb3d163ac2be852b9515ec31b1447ca0eeb05e8410f682100c804)
 
-  '@cotal-ai/connector-claude-code@0.72.1(patch_hash=072bc5499ec2a3fe541aaa02c91405f06b2767985c14b78095074c2cfd984744)(@cotal-ai/core@0.72.1)':
+  '@cotal-ai/connector-claude-code@0.72.1(patch_hash=072bc5499ec2a3fe541aaa02c91405f06b2767985c14b78095074c2cfd984744)(@cotal-ai/core@0.72.1(patch_hash=70d76cb2fb4fb3d163ac2be852b9515ec31b1447ca0eeb05e8410f682100c804))':
     dependencies:
-      '@cotal-ai/core': 0.72.1
+      '@cotal-ai/core': 0.72.1(patch_hash=70d76cb2fb4fb3d163ac2be852b9515ec31b1447ca0eeb05e8410f682100c804)
 
-  '@cotal-ai/connector-codex@0.72.1(@cotal-ai/core@0.72.1)':
+  '@cotal-ai/connector-codex@0.72.1(@cotal-ai/core@0.72.1(patch_hash=70d76cb2fb4fb3d163ac2be852b9515ec31b1447ca0eeb05e8410f682100c804))':
     dependencies:
-      '@cotal-ai/core': 0.72.1
+      '@cotal-ai/core': 0.72.1(patch_hash=70d76cb2fb4fb3d163ac2be852b9515ec31b1447ca0eeb05e8410f682100c804)
 
-  '@cotal-ai/connector-opencode@0.72.1(@cotal-ai/core@0.72.1)':
+  '@cotal-ai/connector-hermes@0.72.1(@cotal-ai/core@0.72.1(patch_hash=70d76cb2fb4fb3d163ac2be852b9515ec31b1447ca0eeb05e8410f682100c804))':
     dependencies:
-      '@cotal-ai/core': 0.72.1
+      '@cotal-ai/core': 0.72.1(patch_hash=70d76cb2fb4fb3d163ac2be852b9515ec31b1447ca0eeb05e8410f682100c804)
 
-  '@cotal-ai/core@0.72.1':
+  '@cotal-ai/connector-opencode@0.72.1(@cotal-ai/core@0.72.1(patch_hash=70d76cb2fb4fb3d163ac2be852b9515ec31b1447ca0eeb05e8410f682100c804))':
+    dependencies:
+      '@cotal-ai/core': 0.72.1(patch_hash=70d76cb2fb4fb3d163ac2be852b9515ec31b1447ca0eeb05e8410f682100c804)
+
+  '@cotal-ai/core@0.72.1(patch_hash=70d76cb2fb4fb3d163ac2be852b9515ec31b1447ca0eeb05e8410f682100c804)':
     dependencies:
       '@nats-io/jetstream': 3.4.0
       '@nats-io/jwt': 0.0.10-5
@@ -708,7 +722,7 @@ snapshots:
 
   '@cotal-ai/manager@0.72.1':
     dependencies:
-      '@cotal-ai/core': 0.72.1
+      '@cotal-ai/core': 0.72.1(patch_hash=70d76cb2fb4fb3d163ac2be852b9515ec31b1447ca0eeb05e8410f682100c804)
       '@cotal-ai/seat': 0.72.1(@xterm/xterm@5.5.0)
       '@cotal-ai/workspace': 0.72.1
       '@lydell/node-pty': 1.2.0-beta.12
@@ -735,13 +749,13 @@ snapshots:
     transitivePeerDependencies:
       - '@xterm/xterm'
 
-  '@cotal-ai/tmux@0.72.1(@cotal-ai/core@0.72.1)':
+  '@cotal-ai/tmux@0.72.1(@cotal-ai/core@0.72.1(patch_hash=70d76cb2fb4fb3d163ac2be852b9515ec31b1447ca0eeb05e8410f682100c804))':
     dependencies:
-      '@cotal-ai/core': 0.72.1
+      '@cotal-ai/core': 0.72.1(patch_hash=70d76cb2fb4fb3d163ac2be852b9515ec31b1447ca0eeb05e8410f682100c804)
 
   '@cotal-ai/workspace@0.72.1':
     dependencies:
-      '@cotal-ai/core': 0.72.1
+      '@cotal-ai/core': 0.72.1(patch_hash=70d76cb2fb4fb3d163ac2be852b9515ec31b1447ca0eeb05e8410f682100c804)
 
   '@eplightning/nats-server-darwin-arm64@2.14.0':
     optional: true

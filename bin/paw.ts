@@ -65,10 +65,10 @@ const LONE_MODULE: Record<string, () => Promise<unknown>> = { status: () => impo
 /** Commands that talk to the mesh — they need NATS reachable before they run. */
 const NEEDS_MESH = new Set(["inbox", "msg", "ask", "who", "history", "watch", "files", "bind"]);
 /** Commands that drive the control plane — they additionally need the manager answering.
- *  `chat`/`open`/`dm` are here too: they spawn the folder's agent through the manager.
+ *  `open`/`dm` are here too: they spawn the folder's agent through the manager.
  *  (`sessions`/`log` are local reads; `adopt` runs its own ensure once it decides to start;
  *  `mailbox` is the daemon ensure() itself spawns — gating it would recurse into the lock.) */
-const NEEDS_MANAGER = new Set(["chat", "open", "attach", "dm", "rename", "rm", "stop"]); // status runs ensure() itself — it shares its control rail (src/status.ts)
+const NEEDS_MANAGER = new Set(["open", "attach", "dm"]); // status, chat, rename, rm and stop ensure() themselves — each shares ensure()'s probe rail (lifecycle.ts ensureManagerOn)
 
 /** Raw cotal verbs that drive the control plane — the passthrough must bring the manager up too,
  *  or a cold-machine `paw cotal ps`/`start` dead-ends on a mesh with no manager answering. */

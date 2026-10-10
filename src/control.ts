@@ -102,7 +102,7 @@ export class ManagerControl {
    * the patient default.
    */
   readonly space: string;
-  private readonly server: string;
+  readonly server: string;
   private readonly resolveMs: number;
   /** Resolve ONLY these commands' contracts (see {@link resolveCommands}); absent = the whole surface. */
   private readonly only?: ReadonlySet<string>;

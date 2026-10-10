@@ -32,6 +32,7 @@ import { pawServer } from "./server.ts";
 import { withFileLock, withFileLockAsync } from "./lock.ts";
 import { liveSessionProcs, meshAgentSession, meshIdentity, type LiveSessionProc } from "./named.ts";
 import { ensureKitBinary, isKitProvider, KIT_AGENT } from "./kit.ts";
+import { HERMES_AGENT } from "./hermes-profile.ts";
 import { isClaudeHarness, personaTranscriptRoots, personaValue, readAgentType, readCwd, readResumeId, readShareTools, transcriptMtime } from "./session.ts";
 import { defaultTmuxEnv, readRuntimeMarker } from "./lifecycle.ts";
 import { answerStartupPrompt, tmuxSplit, tmuxSplitAdvice, type StartupScreen } from "./native-attach.ts";
@@ -507,19 +508,25 @@ export function ensurePersonaFile(space: string, name: string, opts?: { brief?: 
   return file;
 }
 
-/** The harnesses `--agent` can name: paw's claude, cotal's codex/opencode connectors, and kit. */
-export const AGENT_TYPES = ["claude", "codex", "opencode", KIT_AGENT] as const;
+/** The harnesses `--agent` can name: paw's claude, cotal's codex/opencode connectors, kit, and hermes. */
+export const AGENT_TYPES = ["claude", "codex", "opencode", KIT_AGENT, HERMES_AGENT] as const;
 export type AgentTypeSpec = { agent: string; provider?: string; model?: string };
 
 /** Validate an `--agent`/`--provider` pair before anything is registered; returns the harness and the
- *  kit provider it implies (codex unless given). Unknown harness or a provider on a non-kit harness throws. */
+ *  provider it implies — kit's (codex unless given) or hermes' (required: Hermes' provider id, e.g.
+ *  xai-oauth). Unknown harness, or a provider on a harness without one, throws. */
 export function checkAgentSpec(spec: AgentTypeSpec): { agent: string; provider?: string } {
   const agent = spec.agent.trim();
   if (!(AGENT_TYPES as readonly string[]).includes(agent)) {
     throw new Error(`paw: --agent "${spec.agent}" — unknown harness; pick one of ${AGENT_TYPES.join(", ")}`);
   }
   const kit = agent === KIT_AGENT;
-  if (spec.provider !== undefined && !kit) throw new Error(`paw: --provider is kit's (codex|grok) — it can't apply to --agent ${agent}`);
+  if (agent === HERMES_AGENT) {
+    const provider = spec.provider?.trim();
+    if (!provider) throw new Error("paw: --agent hermes needs --provider <Hermes provider id> (e.g. xai-oauth) and --model");
+    return { agent, provider };
+  }
+  if (spec.provider !== undefined && !kit) throw new Error(`paw: --provider is kit's (codex|grok) or hermes' — it can't apply to --agent ${agent}`);
   const provider = kit ? spec.provider?.trim() || "codex" : undefined;
   if (provider !== undefined && !isKitProvider(provider)) throw new Error(`paw: --provider "${provider}" — kit drives codex or grok`);
   return { agent, provider };
@@ -554,14 +561,17 @@ export function applyAgentType(space: string, name: string, spec: AgentTypeSpec,
           `for a ${agent} agent beside it use \`--name <new-name>\`, or \`paw rm ${name}\` first to replace it.`,
       );
     }
-    const currentProvider = kit ? personaValue(file, "provider") : undefined;
-    if (kit && spec.provider !== undefined && currentProvider !== provider) {
-      throw new Error(`paw: "${name}" is a kit agent on provider ${currentProvider ?? "(none)"}, not ${provider} — edit its persona (${file}) to switch`);
+    const hasProvider = kit || agent === HERMES_AGENT;
+    const currentProvider = hasProvider ? personaValue(file, "provider") : undefined;
+    if (hasProvider && spec.provider !== undefined && currentProvider !== provider) {
+      throw new Error(`paw: "${name}" is a ${agent} agent on provider ${currentProvider ?? "(none)"}, not ${provider} — edit its persona (${file}) to switch`);
     }
     return file;
   }
   const model = agent === "claude" ? undefined : spec.model?.trim() || undefined;
-  setPersonaKeys(space, name, { agent: agent === "claude" ? undefined : agent, provider, model, shareTools: kit ? "none" : undefined });
+  // kit has no MCP client; Hermes' tools come from its own cotal plugin, not shared MCP servers.
+  const noMcp = kit || agent === HERMES_AGENT;
+  setPersonaKeys(space, name, { agent: agent === "claude" ? undefined : agent, provider, model, shareTools: noMcp ? "none" : undefined });
   return ensurePersonaFile(space, name, persona);
 }
 
@@ -831,9 +841,10 @@ export async function ensureAgentSpawned(
     const args: Record<string, unknown> = { name: opts.name, config, cwd, identity: opts.name };
     const agentType = readAgentType(config);
     const kit = agentType === KIT_AGENT;
-    // explicit --model wins, else PAW_MODEL env default — a CLAUDE model name, so never for a kit agent
-    // (its persona's `model:` names a codex/grok model; an explicit --model still applies).
-    const model = kit ? opts.model?.trim() || undefined : resolveModel(opts.model);
+    const hermes = agentType === HERMES_AGENT;
+    // explicit --model wins, else PAW_MODEL env default — a CLAUDE model name, so never for a kit or hermes
+    // agent (its persona's `model:` names a codex/grok model; an explicit --model still applies).
+    const model = kit || hermes ? opts.model?.trim() || undefined : resolveModel(opts.model);
     if (model) args.model = model;
     // Which of the operator's MCP servers this agent gets (`paw mcp share`). Absent ⇒ not sent ⇒ cotal
     // shares every declared server, which is what `paw mcp add` promises. The persona keeps the flag
@@ -850,6 +861,8 @@ export async function ensureAgentSpawned(
       args.events = false;
       ensureKitBinary();
     }
+    // Hermes publishes no AG-UI event plane either (cotal's connector has no eventChannel).
+    if (hermes) args.events = false;
     const reply = await spawnPinned(ctl, args, opts.name);
     if (!reply.ok) {
       const err = reply.error ?? "no reply";
@@ -888,7 +901,8 @@ export async function ensureAgentSpawned(
     // tmux trust dialog (an erased ~/.claude.json entry) appears and only paw answers it. The
     // dev-channels gate is cotal's to answer since 0.71 (answerStartupPrompt).
     // kit has no TUI: no trust dialog, no dev-channels gate, nothing on a pane to answer.
-    const watch = kit ? { poll: () => {}, cause: () => "" } : startupWatch(opts.space, opts.name, cwd);
+    // Nor does hermes: its gateway is a daemon, not a pane to read.
+    const watch = kit || hermes ? { poll: () => {}, cause: () => "" } : startupWatch(opts.space, opts.name, cwd);
     if (!(await waitForMeshLive(ctl, opts.name, SPAWN_READY_MS, watch.poll))) {
       throw new Error(
         `paw: the manager accepted "${opts.name}" but it never reached the mesh within ${Math.round(SPAWN_READY_MS / 1000)}s` +

@@ -28,6 +28,11 @@ allowBuilds:
 #   on `./mcp`, a realpath entry check beside `require.main`, the control env read BEFORE the agent
 #   joins (no leaked agent on a throw), and close() closing the AG-UI holder (bounded 5s). Re-key it
 #   on every cotal bump. DELETE this entry and patches/ when a cotal release carrying #2401 lands.
+# '@cotal-ai/core' — perf only, no behaviour change: dist/schema-profile.js meta-validates contract
+#   schemas with ONE process-wide Ajv (the 2020-12 meta-schema compiles once, not once per contract)
+#   while every closure still compiles in its own fresh Ajv with the exact profile options. A cold
+#   full manager resolve (66 compiles) went 441ms → 113ms. Re-key on every cotal bump; drop it when
+#   upstream ships the same fix. → docs/notes/cotal-dependency.md#core-meta-validator-patch
 verifyDepsBeforeRun: false
 # minimumReleaseAgeExclude — the operator explicitly asked for cotal 0.72.1 on 2026-10-07, inside
 #   the global 7-day minimum-release-age window. Exempted by EXACT version only (every other package
@@ -38,6 +43,7 @@ minimumReleaseAgeExclude:
   - '@cotal-ai/cmux@0.72.1'
   - '@cotal-ai/connector-claude-code@0.72.1'
   - '@cotal-ai/connector-codex@0.72.1'
+  - '@cotal-ai/connector-hermes@0.72.1'
   - '@cotal-ai/connector-opencode@0.72.1'
   - '@cotal-ai/core@0.72.1'
   - '@cotal-ai/manager@0.72.1'
@@ -46,3 +52,4 @@ minimumReleaseAgeExclude:
   - '@cotal-ai/workspace@0.72.1'
 patchedDependencies:
   '@cotal-ai/connector-claude-code@0.72.1': patches/@cotal-ai__connector-claude-code@0.72.1.patch
+  '@cotal-ai/core@0.72.1': patches/@cotal-ai__core@0.72.1.patch

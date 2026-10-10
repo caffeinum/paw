@@ -13,10 +13,8 @@
 import { existsSync } from "node:fs";
 import { registry, type Command } from "@cotal-ai/core";
 import { ensureAgentSpawned, folderForName, listAgents, psRowAlive, type PsRow } from "./addressing.ts";
-import { withManagerControl } from "./control.ts";
-import { ensure, resolveSpace } from "./lifecycle.ts";
+import { resolveSpace, withEnsuredManager } from "./lifecycle.ts";
 import { awaitSpawnHeadroom } from "./pacing.ts";
-import { pawServer } from "./server.ts";
 
 function parseArgs(argv: string[]): { space?: string; names: string[] } {
   const out: { space?: string; names: string[] } = { names: [] };
@@ -43,13 +41,11 @@ async function start(argv: string[]): Promise<void> {
     return;
   }
 
-  const { server } = await ensure({ needMesh: true, needManager: true, space });
-
   const started: string[] = [];
   const alive: string[] = [];
   const skipped: string[] = [];
 
-  await withManagerControl(space, server, async (ctl) => {
+  await withEnsuredManager(space, async (ctl) => {
     // One ps read up front so we can report "already live" vs "started" without a spawn round-trip each.
     const ps = await ctl.ps();
     const live = new Set(ps.ok ? ((ps.data as PsRow[]) ?? []).filter(psRowAlive).map((r) => r.name) : []);
