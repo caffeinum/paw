@@ -26,7 +26,7 @@ import { tailRead, turnState, type PendingTool, type TurnState } from "./transcr
 import { gitInfoMany, type GitInfo } from "./git.ts";
 import { pawServer } from "./server.ts";
 import { pickRoster, presenceLive, readMeshRoster } from "./roster.ts";
-import { probePresenceWrites } from "./presence-health.ts";
+import { authGapWarning, probePresenceWrites } from "./presence-health.ts";
 import { personaGlyph } from "./personality.ts";
 
 const tty = process.stdout.isTTY === true;
@@ -996,6 +996,7 @@ async function status(argv: string[]): Promise<void> {
     const h = await presence;
     if (h.kind === "latched") all.errors.unshift(`paw: presence store "${h.bucket}" isn't accepting writes (latched broker, cotal #1356) — every agent reads offline; restart the mesh broker`);
     if (h.kind === "unknown") all.errors.push(`paw: couldn't probe the presence store (${h.message})`);
+    if (h.kind === "not-permitted") all.errors.push(authGapWarning(h.message, "rows below can't be checked for a latch"));
     return { all, hub: await hub };
   }, { only: ["ps"] }); // status sends nothing but ps — resolve just its contract (control.ts resolveCommands)
   const rows = selectRows(all.rows, targets, folderAgents);

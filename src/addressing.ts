@@ -26,9 +26,9 @@ import { authDir, loadSpaceAuth } from "@cotal-ai/workspace";
 import { pawCotalRoot } from "./cotal-root.ts";
 import { confineAndTrustCwd, isFolderTrusted, pawTrustedFolder, pretrustFolder } from "./cwd.ts";
 import { readForeground } from "./foreground.ts";
-import { clearSleep, prepareWake, sleepLog } from "./sleep-state.ts";
+import { clearSleep, prepareWake, sleepLog, sleepState } from "./sleep-state.ts";
 import { presenceLive, readMeshRoster } from "./roster.ts";
-import { PRESENCE_PROBE_MS, presenceLatchRefusal, probePresenceWrites, type PresenceHealth } from "./presence-health.ts";
+import { authGapWarning, PRESENCE_PROBE_MS, presenceLatchRefusal, probePresenceWrites, type PresenceHealth } from "./presence-health.ts";
 import { pawServer } from "./server.ts";
 import { withFileLock, withFileLockAsync, type LockOpts } from "./lock.ts";
 import { liveSessionProcs, meshAgentSession, meshIdentity, type LiveSessionProc } from "./named.ts";
@@ -801,6 +801,19 @@ export async function ensureAgentSpawned(
       }
       action = "restart";
     }
+    const sleeping = sleepState(opts.space, opts.name);
+    const offlineRow = rows.find((r) => r.name === opts.name);
+    if (action === "restart" && sleeping && offlineRow?.status !== "exited" && offlineRow?.mesh === "offline") {
+      // ps matches `mesh` BY NAME, and a sleeping/waking agent's name is held by the sleep host's stand-in,
+      // which reads `offline` while it yields the name to a boot. So this "offline" is the stand-in's record,
+      // not the seat's: the seat just hasn't reached the mesh yet. 2026-10-11 the sleep host's own wake read
+      // exactly this and restarted the seat `paw chat @evals` had spawned seconds before. Judge it like
+      // `starting…`: a bounded wait, then the restart below if it never comes up.
+      console.error(
+        `paw: "${opts.name}" is ${sleeping} — its ps row reads offline through the sleep stand-in, not its own presence; giving the seat ${Math.round(STARTING_GRACE_MS / 1000)}s to reach the mesh before judging it`,
+      );
+      if (await waitForMeshLive(ctl, opts.name, STARTING_GRACE_MS, startupWatch(opts.space, opts.name, opts.cwd).poll)) return healSleep(opts.space, opts.name);
+    }
     if (action === "reuse") return healSleep(opts.space, opts.name);
     const reuseUnmanaged = action === "start" && opts.reuseUnmanaged !== false;
     if (reuseUnmanaged) {
@@ -995,6 +1008,7 @@ async function refuseOnPresenceLatch(space: string, name: string, probe?: () => 
   const h = probe ? await probe() : await probePresenceWrites(space, pawServer(), await controlCreds(space));
   if (h.kind === "latched") throw new Error(presenceLatchRefusal(name, h, pawServer()));
   if (h.kind === "unknown") console.error(`paw: couldn't probe the presence store before starting "${name}" (${h.message}) — proceeding`);
+  if (h.kind === "not-permitted") console.error(authGapWarning(h.message, `starting "${name}" anyway`));
 }
 
 /**

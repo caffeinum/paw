@@ -355,6 +355,8 @@ tool temp files from agents accumulate there. `check:spawn-env` covers it.
 ## Env knobs
 - `PAW_SPACE` — override the machine-wide default space (`paw`). Folder → agent NAME, not space.
 - `PAW_AUTH=1` — JWT-authed mesh instead of the default open localhost mesh (open needs no creds).
+  ⚠ KNOWN GAP: presence-latch detection is DISABLED under it (control creds can't write the presence KV) —
+  see [addressing.md#presence-latch-guard](addressing.md#presence-latch-guard), grep `AUTH-GAP`.
 - `PAW_PERMISSION` — override the default `bypassPermissions` (one of default/acceptEdits/bypassPermissions/plan).
 - `PAW_MODEL` — default model for spawned agents (cotal's per-agent `--model`); a `--model` flag on
   `paw chat`/`paw open` overrides it. Blank = unset (no fabricated default).

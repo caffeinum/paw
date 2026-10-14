@@ -195,5 +195,57 @@ ok("F3 no failures → no delay", retryDelayMs(0) === 0);
 ok("F3 backoff doubles from 1m", retryDelayMs(1) === 60_000 && retryDelayMs(2) === 120_000 && retryDelayMs(3) === 240_000);
 ok("F3 backoff caps at 30m", retryDelayMs(20) === 30 * 60_000);
 
+// B (2026-10-11 evals): a waking agent's ps row reads `offline` through the sleep stand-in (ps matches
+// mesh BY NAME). The wake gate must not read that as a zombie and restart the seat that is still booting.
+const ok1 = { kind: "ok" as const };
+const calls: string[] = [];
+const bootCtl = (comesUpAfter: number) => {
+  let polls = 0;
+  return {
+    space: "s",
+    ps: async () => ({ ok: true, data: [{ name: "w", status: "running", mesh: ++polls > comesUpAfter ? "idle" : "offline", id: "local.SEAT" }] }),
+    despawn: async (n: string) => (calls.push(`despawn ${n}`), { ok: true }),
+    spawn: async (a: { name: string }) => (calls.push(`spawn ${a.name}`), { ok: false, error: "stub" }),
+  } as unknown as Parameters<typeof ensureAgentSpawned>[0];
+};
+const { ensurePersonaFile, setPersonaKeys } = await import("../src/addressing.ts");
+ensurePersonaFile("s", "w"); // the restart branch reads its resume pin
+writeSleepRecord("s", { name: "w", folder: "/x", since: 1, cursorSeq: 7, reason: "t" });
+prepareWake("s", "w"); // another process (`paw chat @w`) started the wake and spawned the seat
+const booted = await ensureAgentSpawned(bootCtl(3), { space: "s", name: "w", cwd: "/x", probePresence: async () => ok1 });
+ok("B a waking agent's stand-in-offline row is given time, not restarted", !booted.spawned && calls.length === 0, calls.join() || "no calls");
+ok("B the wake stays handed to the host", readWakingRecord("s", "w")?.cursorSeq === 7);
+const t0 = Date.now();
+await ensureAgentSpawned(bootCtl(Infinity), { space: "s", name: "w", cwd: "/x", probePresence: async () => ok1 }).catch((e: Error) => console.log("   (gate threw:", e.message.split("\n")[0], ")"));
+ok("B a seat that never comes up is still restarted after the grace", calls[0] === "despawn w" && Date.now() - t0 >= 14_000, `${calls.join()} after ${Date.now() - t0}ms`);
+clearSleep("s", "w");
+calls.length = 0;
+await ensureAgentSpawned(bootCtl(Infinity), { space: "s", name: "w", cwd: "/x", probePresence: async () => ok1 }).catch((e: Error) => console.log("   (gate threw:", e.message.split("\n")[0], ")"));
+ok("B an agent with no sleep record keeps the immediate zombie restart", calls[0] === "despawn w", calls.join());
+
+// B: `paw sleep` proves the seat is gone before it records the agent asleep.
+const { seatLingers, sleepAgent } = await import("../src/sleep.ts");
+ensurePersonaFile("s", "z");
+setPersonaKeys("s", "z", { cwd: "/x" });
+const sleepCtl = (stays: boolean) => {
+  let gone = false;
+  return {
+    space: "s",
+    ps: async () => ({ ok: true, data: gone && !stays ? [] : [{ name: "z", status: "running", mesh: "idle", id: "local.Z" }] }),
+    despawn: async () => ((gone = true), { ok: true }),
+  } as unknown as Parameters<typeof sleepAgent>[1];
+};
+let sleepErr = "";
+await sleepAgent("s", sleepCtl(true), "z", "test", { cursorSeq: 1, force: true }).catch((e: Error) => (sleepErr = e.message));
+ok("B a seat still listed after despawn fails the sleep loudly", /still lists its seat/.test(sleepErr) && !isAsleep("s", "z"), sleepErr);
+sleepErr = "";
+await sleepAgent("s", sleepCtl(false), "z", "test", { cursorSeq: 1, force: true }).catch((e: Error) => (sleepErr = e.message));
+ok("B a seat that went is recorded asleep", !sleepErr && isAsleep("s", "z"), sleepErr);
+clearSleep("s", "z");
+ok("B a different seat under the name is not the despawned one", (await seatLingers({ ps: async () => ({ ok: true, data: [{ name: "z", id: "local.NEW" }] }) } as unknown as Parameters<typeof seatLingers>[0], "z", "local.Z", 0)) === undefined);
+let psErr = "";
+await seatLingers({ ps: async () => ({ ok: false, error: "down" }) } as unknown as Parameters<typeof seatLingers>[0], "z", "local.Z", 0).catch((e: Error) => (psErr = e.message));
+ok("B a silent ps is no proof the seat went — it throws", /can't confirm the seat is gone/.test(psErr), psErr);
+
 console.log(fails ? `\n${fails} FAILED` : "\nall passed");
 process.exit(fails ? 1 : 0);
