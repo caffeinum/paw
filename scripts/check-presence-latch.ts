@@ -10,8 +10,8 @@
  * "Critical write error: no space left on device" and the probe read latched even after the disk was
  * freed — but a ramdisk is not hermetic, so it isn't run here.) Run: pnpm check:presence-latch
  */
-import { spawn } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { spawn, type ChildProcess } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -22,7 +22,7 @@ const storeDir = mkdtempSync(join(tmpdir(), "paw-latch-js-"));
 
 const { connect } = await import("@nats-io/transport-node");
 const { jetstreamManager } = await import("@nats-io/jetstream");
-const { probePresenceWrites, presenceLatchRefusal } = await import("../src/presence-health.ts");
+const { probePresenceWrites, presenceLatchRefusal, isPermissionViolation } = await import("../src/presence-health.ts");
 const { ensureAgentSpawned, ensurePersonaFile, restartAgent } = await import("../src/addressing.ts");
 
 let failures = 0;
@@ -49,6 +49,7 @@ for (let i = 0; !nc; i++) {
   }
 }
 const jsm = await jetstreamManager(nc);
+let denySrv: ChildProcess | undefined;
 
 try {
   // --- the probe itself -------------------------------------------------------
@@ -123,7 +124,62 @@ try {
   });
   await Promise.race([reached, new Promise((r) => setTimeout(r, 5000))]);
   assert(calls.join() === "despawn evals", `gate (healthy store, real probe): still restarts a genuine zombie (${calls.join() || "no calls"})`);
+
+  // --- auth refusal (PAW_AUTH) -------------------------------------------------------
+  // paw's control creds hold no `$KV` grant, so under PAW_AUTH the probe's put is REFUSED by the broker.
+  // A second private broker denies the presence publish to its default user — the same server -ERR a JWT
+  // mesh sends (measured there too: RequestError ← PermissionViolationError, at once). It must read
+  // not-permitted, fast, and the gate must proceed rather than call it a latch.
+  const denyPort = port + 1;
+  const denyServer = `nats://127.0.0.1:${denyPort}`;
+  const denyConf = join(storeDir, "deny.conf");
+  writeFileSync(
+    denyConf,
+    `listen: 127.0.0.1:${denyPort}\njetstream { store_dir: "${join(storeDir, "deny-js")}" }\n` +
+      `authorization { users = [ { user: "probe", password: "probe", permissions: { publish: { deny: ["$KV.cotal_presence_denied.>"] } } } ] }\nno_auth_user: probe\n`,
+  );
+  denySrv = spawn("nats-server", ["-c", denyConf], { stdio: "ignore" });
+  let dnc;
+  for (let i = 0; !dnc; i++) {
+    try {
+      dnc = await connect({ servers: denyServer });
+    } catch (e) {
+      if (i > 40) throw new Error(`deny nats-server never came up on ${denyServer}: ${(e as Error).message}`);
+      await new Promise((r) => setTimeout(r, 100));
+    }
+  }
+  await (await jetstreamManager(dnc)).streams.add({ name: "KV_cotal_presence_denied", subjects: ["$KV.cotal_presence_denied.>"], max_msgs_per_subject: 1 });
+  await dnc.close();
+  t = Date.now();
+  const denied = await probePresenceWrites("denied", denyServer, undefined);
+  assert(denied.kind === "not-permitted" && /permissions violation/i.test((denied as { message: string }).message), `probe: a refused put reads not-permitted (${JSON.stringify(denied)})`);
+  assert(Date.now() - t < 1000, `probe: a refusal answers at once, never waits out the latch timeout (${Date.now() - t}ms)`);
+  assert(isPermissionViolation(Object.assign(new Error("request failed"), { cause: Object.assign(new Error("x"), { name: "PermissionViolationError" }) })), "probe: a RequestError wrapping a PermissionViolationError is a refusal");
+  assert(!isPermissionViolation(Object.assign(new Error("TIMEOUT"), { name: "TimeoutError" })), "probe: a timeout is not a refusal");
+
+  calls.length = 0;
+  err = "";
+  const deniedGate = new Promise<void>((resolve) => {
+    const ctl = fakeCtl([]) as unknown as { spawn: (a: { name: string }) => Promise<unknown> };
+    ctl.spawn = async (a: { name: string }) => {
+      calls.push(`spawn ${a.name}`);
+      resolve();
+      return new Promise(() => {});
+    };
+    void ensureAgentSpawned(ctl as unknown as Parameters<typeof ensureAgentSpawned>[0], {
+      space: "denied",
+      name: "fresh",
+      cwd: process.env.PAW_HOME!,
+      probePresence: () => probePresenceWrites("denied", denyServer, undefined),
+    }).catch((e: Error) => {
+      err = e.message;
+      resolve();
+    });
+  });
+  await Promise.race([deniedGate, new Promise((r) => setTimeout(r, 5000))]);
+  assert(calls.join() === "spawn fresh" && !err.includes("isn't accepting writes"), `gate (auth refusal, real probe): proceeds — a refusal is not a latch (${calls.join() || err.split("\n")[0] || "no calls"})`);
 } finally {
+  denySrv?.kill();
   await nc.close().catch(() => {});
   srv.kill();
   rmSync(storeDir, { recursive: true, force: true });
