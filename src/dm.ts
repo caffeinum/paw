@@ -24,6 +24,7 @@ import {
   canonicalDir,
   controlCreds,
   ensureAgentSpawned,
+  stuckWarning,
   folderForName,
   registerInstance,
   resolveFolderAgent,
@@ -80,7 +81,13 @@ function parseArgs(argv: string[]): Args {
 export const FRESH_SPAWN_MS = 20_000;
 export const LIVE_AGENT_MS = 8_000;
 
-export async function readyId(ep: CotalEndpoint, name: string, r: { spawned: boolean; id?: string; starting?: true }): Promise<string> {
+export async function readyId(ep: CotalEndpoint, name: string, r: { spawned: boolean; id?: string; starting?: true; stuck?: string }): Promise<string> {
+  if (r.stuck) {
+    // The gate gave up restarting it (it never reached the mesh): queue to its durable inbox, say so loudly.
+    if (!r.id) throw new Error(`paw: ${stuckWarning(name, r.stuck, false)} — and it has no mesh address, so nothing could be queued`);
+    console.error(stuckWarning(name, r.stuck, true));
+    return r.id;
+  }
   if (r.starting) {
     // Its process runs but it isn't on the mesh yet (ensureAgentSpawned said so). Its principal is
     // allocated, so the message goes to its durable inbox and lands when the seat drains it.

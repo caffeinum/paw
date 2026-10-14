@@ -859,16 +859,18 @@ export async function ensureAgentSpawned(
           return { spawned: false, starting: true, ...(row.id ? { id: wirePrincipal(row.id) } : {}) };
         }
         if (verdict.kind === "stuck") {
+          // Stuck: no more restarts, but never a dropped message — the caller queues to its durable inbox
+          // (like `starting`) and shows the loud warning; the evidence for the human goes to stderr here.
           markStuck(opts.space, opts.name, verdict.restarts, verdict.since);
           const watch = startupWatch(opts.space, opts.name, opts.cwd);
           watch.poll();
-          throw new Error(
-            `paw: "${opts.name}" needs a human — paw restarted it ${verdict.restarts.length}× (first ${Math.round((now - verdict.restarts[0]) / 60_000)}m ago) and it never reached the mesh; ` +
-              `automatic restarts stopped ${Math.round((now - verdict.since) / 60_000)}m ago. Now: ps status=${row.status ?? "?"} mesh=${row.mesh ?? "?"}, ` +
-              `transcript last written ${activeMs ? Math.round((now - activeMs) / 1000) + "s ago" : "never/unknown"}${watch.cause()}.\n` +
-              `  \`paw open ${opts.name}\` to see its screen (an MCP server or prompt it hangs on), \`paw log ${opts.name}\` for its last turns; ` +
-              `\`paw restart ${opts.name}\` retries and resets the count.`,
+          const stuck = `⚠ ${opts.name} is stuck — restarted ${verdict.restarts.length}× (first ${Math.round((now - verdict.restarts[0]) / 60_000)}m ago) without reaching the mesh, needs a human`;
+          console.error(
+            `paw: "${opts.name}" NOT restarted (stuck since ${Math.round((now - verdict.since) / 60_000)}m ago): ps status=${row.status ?? "?"} mesh=${row.mesh ?? "?"}, ` +
+              `transcript last written ${activeMs ? Math.round((now - activeMs) / 1000) + "s ago" : "never/unknown"}${watch.cause()} — ` +
+              `\`paw open ${opts.name}\` shows its screen (an MCP server or prompt it hangs on), \`paw log ${opts.name}\` its last turns, \`paw restart ${opts.name}\` retries and resets the count`,
           );
+          return { spawned: false, starting: true, stuck, ...(row.id ? { id: wirePrincipal(row.id) } : {}) };
         }
         recordRestart(opts.space, opts.name, now);
       }
@@ -1044,7 +1046,14 @@ function healSleep(space: string, name: string): { spawned: false } {
 /** What {@link ensureAgentSpawned} did. `unmanaged`: the agent was already running outside the current
  *  manager (a manager restart spares its agents) and paw is talking to it as is. `starting`: its process
  *  runs but it isn't on the mesh yet — not a failure; DMs to `id` wait in its durable inbox. */
-export type SpawnOutcome = { spawned: boolean; id?: string; unmanaged?: true; starting?: true };
+/** `stuck`: the gate gave up restarting this seat (src/restart-history.ts) — the "⚠ … needs a human"
+ *  headline; `starting` is set too, so messages still go to its durable inbox. */
+export type SpawnOutcome = { spawned: boolean; id?: string; unmanaged?: true; starting?: true; stuck?: string };
+
+/** The warning a wake caller prints for a stuck seat; `queued` when its message went to the inbox. */
+export function stuckWarning(name: string, stuck: string, queued: boolean): string {
+  return `${stuck}${queued ? "; message queued in its inbox, it will read it once fixed" : ""}: paw open/log/restart ${name}`;
+}
 
 /** Evidence that `name` is running even though the manager's ps doesn't list it. */
 export type UnmanagedAgent = { id?: string; pids: number[] };

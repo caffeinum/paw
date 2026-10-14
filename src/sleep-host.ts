@@ -23,7 +23,7 @@ import { randomUUID } from "node:crypto";
 import { DEV_OWNER, CotalEndpoint, dmStream, parsePrincipalKey, principalKey, unicastRecvFilter, unicastSubject } from "@cotal-ai/core";
 import { connect, type NatsConnection, type Subscription } from "@nats-io/transport-node";
 import { DeliverPolicy, jetstream, jetstreamManager } from "@nats-io/jetstream";
-import { agentRecord, ensureAgentSpawned, psRowAlive, wirePrincipal, type PsRow } from "./addressing.ts";
+import { agentRecord, ensureAgentSpawned, psRowAlive, stuckWarning, wirePrincipal, type PsRow } from "./addressing.ts";
 import { sharedManagerControl, withManagerControl } from "./control.ts";
 import {
   MAX_WAKE_FAILURES,
@@ -256,7 +256,7 @@ export async function startSleepHost(space: string, server = pawServer()): Promi
         if (r.starting) {
           // Its seat runs but isn't on the mesh yet. Not a failed wake: keep the stand-in and the backlog,
           // and wait for THIS seat — the next tick asks the gate again, which won't restart a booting seat.
-          if (!booting.has(name)) sleepLog(space, `${name} is still starting — waiting for its seat (stand-in kept, ${why})`);
+          if (!booting.has(name)) sleepLog(space, r.stuck ? `${stuckWarning(name, r.stuck, false)} — stand-in + backlog kept (${why})` : `${name} is still starting — waiting for its seat (stand-in kept, ${why})`);
           booting.add(name);
           return;
         }

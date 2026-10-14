@@ -153,10 +153,14 @@ Moved verbatim from CLAUDE.md (2026-10-02 split). Index: [CLAUDE.md](../../CLAUD
   in `$PAW_HOME/spaces/<s>/restarts/<name>.json` (`{restarts:[ms…], stuck?:ms}`). `restartVerdict` (pure):
   first restart immediate; the next waits 5m·2^(n-1) (5/10/20/40m) — a wake inside the backoff returns
   `{starting:true, id}` (the DM goes to the durable inbox) and says so on stderr; after `RESTART_CAP` (4)
-  restarts within `RESTART_WINDOW_MS` (2h) and the last one's backoff, the seat is marked **stuck** (sticky)
-  and every wake THROWS "needs a human" with evidence (ps row, transcript age, `startupWatch` cause — a
-  tmux prompt it's parked on) and the remedy (`paw open`/`paw log`/`paw restart`). `paw status` notes
-  `⚠ stuck … needs a human`. The record is deleted when the gate sees the seat live (reuse, or a spawn
+  restarts within `RESTART_WINDOW_MS` (2h) and the last one's backoff, the seat is marked **stuck** (sticky):
+  no more automatic restarts, but NO message is dropped (operator decision) — the gate returns
+  `{starting:true, stuck:"⚠ <name> is stuck — restarted N× … needs a human", id}` and logs the evidence
+  (ps row, transcript age, `startupWatch` cause — a tmux prompt it's parked on) to stderr. `stuckWarning`
+  is what callers print: dm (`readyId`) and chat queue to the durable inbox and say "message queued in its
+  inbox, it will read it once fixed: paw open/log/restart <name>" (no id → throws, never a silent drop);
+  `paw global` prints the warning (exit 0); the sleep host keeps stand-in + backlog and logs it; `paw start`
+  (nothing to queue) lists the stuck seats and exits non-zero. `paw status` notes `⚠ stuck … needs a human`. The record is deleted when the gate sees the seat live (reuse, or a spawn
   that reached the mesh) or on an operator `restartAgent`. Exited rows (process gone) are not budgeted.
   Corrupt record → throws (delete it). Test: `check:wake-gate` (fix 4).
 

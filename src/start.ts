@@ -12,7 +12,7 @@
  */
 import { existsSync } from "node:fs";
 import { registry, type Command } from "@cotal-ai/core";
-import { ensureAgentSpawned, folderForName, listAgents, psRowAlive, type PsRow } from "./addressing.ts";
+import { ensureAgentSpawned, folderForName, listAgents, psRowAlive, stuckWarning, type PsRow } from "./addressing.ts";
 import { resolveSpace, withEnsuredManager } from "./lifecycle.ts";
 import { awaitSpawnHeadroom } from "./pacing.ts";
 
@@ -44,6 +44,7 @@ async function start(argv: string[]): Promise<void> {
   const started: string[] = [];
   const alive: string[] = [];
   const skipped: string[] = [];
+  const stuck: string[] = [];
 
   await withEnsuredManager(space, async (ctl) => {
     // One ps read up front so we can report "already live" vs "started" without a spawn round-trip each.
@@ -70,6 +71,10 @@ async function start(argv: string[]): Promise<void> {
       if (headroom === "gave-up") console.log(`  still loaded after the wait cap — spawning ${t.name} anyway`);
       try {
         const r = await ensureAgentSpawned(ctl, { space, name: t.name, cwd: t.folder });
+        if (r.stuck) {
+          stuck.push(stuckWarning(t.name, r.stuck, false));
+          continue;
+        }
         started.push(r.starting ? `${t.name} (still starting — messages wait in its inbox)` : t.name);
       } catch (e) {
         skipped.push(`${t.name} (${(e as Error).message.split("\n")[0]})`);
@@ -81,6 +86,8 @@ async function start(argv: string[]): Promise<void> {
   if (started.length) console.log(`  started:      ${started.join(", ")}`);
   if (alive.length) console.log(`  already live: ${alive.join(", ")}`);
   if (skipped.length) console.log(`  skipped:      ${skipped.join(" · ")}`);
+  // Nothing to queue a message into here: a stuck seat is a failed start, said loud with a non-zero exit.
+  if (stuck.length) throw new Error(`paw start — ${stuck.length} stuck:\n  ${stuck.join("\n  ")}`);
 }
 
 const startCommand: Command = {

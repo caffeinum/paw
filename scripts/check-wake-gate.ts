@@ -33,11 +33,13 @@ const {
   SPAWN_LOCK_OPTS,
   STARTING_GRACE_MS,
   SESSION_RELEASE_MS,
+  stuckWarning,
   SPAWN_ACCEPT_MS,
   SPAWN_READY_MS,
 } = await import("../src/addressing.ts");
 const { readResumeId } = await import("../src/session.ts");
 const { withFileLockAsync } = await import("../src/lock.ts");
+const { readyId } = await import("../src/dm.ts");
 
 let failures = 0;
 function assert(cond: boolean, msg: string): void {
@@ -237,13 +239,28 @@ try {
     assert(restarts === RESTART_CAP && R.readRestartHistory(space, name)?.restarts.length === RESTART_CAP, `lone seat: exactly ${RESTART_CAP} restarts recorded`);
     {
       const calls: string[] = [];
-      const { err } = await wake(calls);
-      assert(calls.length === 0 && err.includes("needs a human") && err.includes(`${RESTART_CAP}×`) && err.includes(`paw restart ${name}`), `lone seat: past the cap → loud "needs a human", nothing stopped (${err.split("\n")[0]})`);
+      const { r, err } = await wake(calls);
+      assert(!err && calls.length === 0, `lone seat: past the cap → nothing stopped or started, and no throw (${err || calls.join() || "no calls"})`);
+      assert(
+        r?.starting === true && r.id === "local.ACTORLONE" && !!r.stuck && r.stuck.includes(`${name} is stuck`) && r.stuck.includes(`${RESTART_CAP}×`) && r.stuck.includes("needs a human"),
+        `lone seat: past the cap → stuck outcome with its inbox address (${JSON.stringify(r)})`,
+      );
+      const warn = stuckWarning(name, r!.stuck!, true);
+      assert(warn.startsWith(`⚠ ${name} is stuck`) && warn.includes("message queued in its inbox, it will read it once fixed") && warn.endsWith(`paw open/log/restart ${name}`), `stuck warning (dm/chat): ${warn}`);
+      assert(!stuckWarning(name, r!.stuck!, false).includes("queued"), "stuck warning (global/start): no inbox claim");
+      const errs: string[] = [];
+      const orig = console.error;
+      console.error = (...a: unknown[]) => void errs.push(a.join(" "));
+      const to = await readyId({} as Parameters<typeof readyId>[0], name, r!).finally(() => (console.error = orig));
+      assert(to === "local.ACTORLONE" && errs.some((l) => l === warn), `dm: a stuck seat's message goes to its durable inbox, with the loud warning (${errs.join(" | ")})`);
+      let noId = "";
+      await readyId({} as Parameters<typeof readyId>[0], name, { spawned: false, starting: true, stuck: r!.stuck }).catch((e: Error) => (noId = e.message));
+      assert(noId.includes("is stuck") && noId.includes("nothing could be queued"), "dm: stuck with no mesh address → fails loud, never a silent drop");
       assert(R.readRestartHistory(space, name)?.stuck !== undefined, "lone seat: marked stuck on disk (paw status reads it)");
       age(RESTART_WINDOW_MS * 3);
       const later: string[] = [];
       const w = await wake(later);
-      assert(later.length === 0 && w.err.includes("needs a human"), "lone seat: still stuck hours later — no silent return to the loop");
+      assert(later.length === 0 && !!w.r?.stuck, "lone seat: still stuck hours later — no silent return to the restart loop");
     }
     {
       const { formatStatus } = await import("../src/status.ts");
