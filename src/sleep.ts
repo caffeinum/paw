@@ -277,6 +277,22 @@ export async function dmLastSeq(space: string, server = pawServer()): Promise<nu
   }
 }
 
+/** How long a despawned seat may stay in the manager's ps before `paw sleep` calls the despawn failed. */
+export const SEAT_GONE_MS = 10_000;
+
+/** The despawned seat's ps row if it is STILL listed after `timeoutMs` (same name and, when known, same
+ *  id), else undefined. A ps that won't answer is no proof the seat went — it throws. */
+export async function seatLingers(ctl: ManagerControl, name: string, id: string | undefined, timeoutMs = SEAT_GONE_MS): Promise<PsRow | undefined> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const ps = await ctl.ps();
+    if (!ps.ok) throw new Error(`paw: despawned "${name}" but the manager isn't answering ps (${ps.error ?? "no reply"}) — can't confirm the seat is gone`);
+    const row = ((ps.data as PsRow[]) ?? []).find((r) => r.name === name && (!id || !r.id || r.id === id));
+    if (!row || Date.now() >= deadline) return row;
+    await new Promise((r) => setTimeout(r, 250));
+  }
+}
+
 /**
  * Despawn `name` and record it asleep (the sleep host then raises its stand-in). `cursorSeq` and
  * `snapshotActiveMs` come from BEFORE the decision; the agent is re-checked against them right before the
@@ -306,6 +322,14 @@ export async function sleepAgent(space: string, ctl: ManagerControl, name: strin
   }
   const d = await ctl.despawn(name);
   if (!d.ok) throw new Error(`paw: couldn't despawn "${name}" (${d.error ?? "no reply"})`);
+  // An accepted despawn is not a gone seat. A row left behind would sit beside the stand-in, read
+  // through it by name, and get judged (and restarted) by the next wake — so prove it went first.
+  const lingering = await seatLingers(ctl, name, row.id);
+  if (lingering) {
+    throw new Error(
+      `paw: despawned "${name}" but the manager still lists its seat (status=${lingering.status ?? "?"} mesh=${lingering.mesh ?? "?"}) after ${SEAT_GONE_MS / 1000}s — NOT recording it asleep; check \`paw status\``,
+    );
+  }
   // A record already here (a seat that came up beside it and was never reconciled) still owes its backlog:
   // keep the EARLIER cursor and what was already forwarded, never overwrite them with this sleep's.
   const prior = (() => {

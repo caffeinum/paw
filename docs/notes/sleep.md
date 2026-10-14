@@ -36,3 +36,7 @@ External wakes (`paw dm`/`chat`/`start`) go through `prepareWake` in `ensureAgen
   error on the record (`paw status` shows it). A vanished/moved registry entry is NOT woken — dropped loudly.
 - Every host tick is caught and logged — it runs inside the process that keeps "you" reachable.
 - `paw stop <sleeper>` says it was asleep and is now stopped. Open mesh only (v1).
+- ps matches `mesh` BY NAME, so a sleeping/waking agent's row reads the stand-in's presence (`offline`
+  while it yields the name to a boot). The wake gate gives such a row `STARTING_GRACE_MS` before
+  restarting it (2026-10-11: the host's own wake restarted the seat `paw chat @evals` had just spawned).
+  `paw sleep` polls ps after the despawn and refuses to record a sleep while the seat is still listed.
