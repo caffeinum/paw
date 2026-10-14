@@ -22,34 +22,35 @@ allowBuilds:
 # patchedDependencies — TEMPORARY. The cotal hub (src/hub.ts, PAW_COTAL_HUB=1) needs
 #   `serveClaudeSession` from `@cotal-ai/connector-claude-code/mcp`, upstreamed in
 #   https://github.com/Cotal-AI/Cotal/pull/2401 (still open). The patch is that PR hand-applied to
-#   the published 0.72.1 dist (dist/mcp.cjs + mcp.d.ts + the `./mcp` subpath export); `node
-#   dist/mcp.cjs` behaves as published, incl. 0.72.1's unmanaged `cotal_how_to_join` server and its
-#   stdin-EOF shutdown. Since 0.72.1 it also carries the #2401 review fixes: an `import` condition
-#   on `./mcp`, a realpath entry check beside `require.main`, the control env read BEFORE the agent
-#   joins (no leaked agent on a throw), and close() closing the AG-UI holder (bounded 5s). Re-key it
-#   on every cotal bump. DELETE this entry and patches/ when a cotal release carrying #2401 lands.
+#   the published 0.81.1 dist (dist/mcp.cjs + mcp.d.ts + the `./mcp` subpath export); `node
+#   dist/mcp.cjs` behaves as published, incl. the unmanaged `cotal_how_to_join` server and its
+#   stdin-EOF shutdown. Beyond the PR it keeps paw's extras: a `log` option (the hub prefixes each
+#   session's lines), an `import` condition on `./mcp`, a realpath entry check beside
+#   `require.main`, input EOF closing the session WITHOUT onShutdown (the hub must not tell a shim
+#   to exit when its socket drops), and close() bounding the AG-UI holder at 5s. Re-key it on every
+#   cotal bump. DELETE this entry and patches/ when a cotal release carrying #2401 lands.
 # '@cotal-ai/core' — perf only, no behaviour change: dist/schema-profile.js meta-validates contract
 #   schemas with ONE process-wide Ajv (the 2020-12 meta-schema compiles once, not once per contract)
 #   while every closure still compiles in its own fresh Ajv with the exact profile options. A cold
 #   full manager resolve (66 compiles) went 441ms → 113ms. Re-key on every cotal bump; drop it when
 #   upstream ships the same fix. → docs/notes/cotal-dependency.md#core-meta-validator-patch
 verifyDepsBeforeRun: false
-# minimumReleaseAgeExclude — the operator explicitly asked for cotal 0.72.1 on 2026-10-07, inside
+# minimumReleaseAgeExclude — the operator explicitly approved cotal 0.81.1 on 2026-10-14, inside
 #   the global 7-day minimum-release-age window. Exempted by EXACT version only (every other package
-#   and any other @cotal-ai version still waits out the gate). Safe to delete after 2026-10-14
-#   (0.72.1 published 2026-10-07T21:27Z).
+#   and any other @cotal-ai version still waits out the gate). Safe to delete after 2026-10-20
+#   (0.81.1 published 2026-10-13T17:06Z, + 7d).
 minimumReleaseAgeExclude:
-  - '@cotal-ai/cli@0.72.1'
-  - '@cotal-ai/cmux@0.72.1'
-  - '@cotal-ai/connector-claude-code@0.72.1'
-  - '@cotal-ai/connector-codex@0.72.1'
-  - '@cotal-ai/connector-hermes@0.72.1'
-  - '@cotal-ai/connector-opencode@0.72.1'
-  - '@cotal-ai/core@0.72.1'
-  - '@cotal-ai/manager@0.72.1'
-  - '@cotal-ai/seat@0.72.1'
-  - '@cotal-ai/tmux@0.72.1'
-  - '@cotal-ai/workspace@0.72.1'
+  - '@cotal-ai/cli@0.81.1'
+  - '@cotal-ai/cmux@0.81.1'
+  - '@cotal-ai/connector-claude-code@0.81.1'
+  - '@cotal-ai/connector-codex@0.81.1'
+  - '@cotal-ai/connector-hermes@0.81.1'
+  - '@cotal-ai/connector-opencode@0.81.1'
+  - '@cotal-ai/core@0.81.1'
+  - '@cotal-ai/manager@0.81.1'
+  - '@cotal-ai/seat@0.81.1'
+  - '@cotal-ai/tmux@0.81.1'
+  - '@cotal-ai/workspace@0.81.1'
 patchedDependencies:
-  '@cotal-ai/connector-claude-code@0.72.1': patches/@cotal-ai__connector-claude-code@0.72.1.patch
-  '@cotal-ai/core@0.72.1': patches/@cotal-ai__core@0.72.1.patch
+  '@cotal-ai/connector-claude-code@0.81.1': patches/@cotal-ai__connector-claude-code@0.81.1.patch
+  '@cotal-ai/core@0.81.1': patches/@cotal-ai__core@0.81.1.patch

@@ -1,8 +1,8 @@
 diff --git a/dist/schema-profile.js b/dist/schema-profile.js
-index da7efb06882699eedb8eb7d6e1ecd76eb2341ad1..69db514b62c3319801b3ce64541400db7e9673b1 100644
+index c7f58431c3e4dc30257fc618a9c6a863343a5e3d..49be4cb84fc960c7fc3496747966536e3867c3bc 100644
 --- a/dist/schema-profile.js
 +++ b/dist/schema-profile.js
-@@ -153,6 +153,58 @@ const AJV_PROFILE_OPTIONS = Object.freeze({
+@@ -155,6 +155,58 @@ const AJV_PROFILE_OPTIONS = Object.freeze({
      // worth more than inlining's marginal speed.
      inlineRefs: false,
  });
@@ -61,7 +61,7 @@ index da7efb06882699eedb8eb7d6e1ecd76eb2341ad1..69db514b62c3319801b3ce64541400db
  /** The §13.7 closure of one self-contained document: the manifest naming it with no members, and
   *  that manifest's digest, the closure digest a registration or an `op` digest carries. It needs no
   *  compile, and `compileContract` returns the same digest for a member-free schema. Producers build
-@@ -522,7 +574,7 @@ function compileWithinBudget(bundle) {
+@@ -524,7 +576,7 @@ function compileWithinBudget(bundle) {
      const started = Date.now();
      // Compile with deterministic local resolution only. Members register under their cotal: URI
      // so in-document `$ref: "cotal:sha256:…"` resolves from the bundle, never the network.
