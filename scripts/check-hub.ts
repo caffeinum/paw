@@ -316,5 +316,30 @@ ok("shim builds with the system cc", spawnSync(shim, [], { stdio: "ignore" }).st
   ok("a 6s process freeze (laptop sleep) is not taken for a stall", code === 0 && so.includes("survived"), `exit ${code}`);
 }
 
+// ── clearDeadSocket: a SIGKILLed hub leaves each session's control socket file behind, and cotal
+// ≥0.76 refuses to listen over an existing path — the next hub must clear a DEAD one, never a live one.
+{
+  const { clearDeadSocket } = await import("../src/hub/daemon.mjs");
+  const { existsSync } = await import("node:fs");
+  const dir = mkdtempSync("/tmp/pawcds-");
+  const sock = join(dir, "c.sock");
+  ok("clearDeadSocket: no path / nothing there → absent", (await clearDeadSocket(undefined)) === "absent" && (await clearDeadSocket(sock)) === "absent");
+  const live = createServer(() => {});
+  await new Promise<void>((r) => live.listen(sock, r));
+  ok("clearDeadSocket: a live listener is left alone", (await clearDeadSocket(sock)) === "live" && existsSync(sock));
+  // A dead listener's file: a child binds the path and is SIGKILLed, so nothing unlinks it.
+  live.close();
+  const dead = join(dir, "d.sock");
+  const kid = spawn(process.execPath, ["-e", `require("node:net").createServer().listen(${JSON.stringify(dead)}, () => console.log("up"))`], { stdio: ["ignore", "pipe", "ignore"] });
+  await new Promise<void>((r) => kid.stdout!.once("data", () => r()));
+  kid.kill("SIGKILL");
+  await new Promise((r) => kid.once("exit", r));
+  ok("clearDeadSocket: a SIGKILLed listener's file is still there (the bug's precondition)", existsSync(dead));
+  ok("clearDeadSocket: …and is cleared as dead", (await clearDeadSocket(dead)) === "dead" && !existsSync(dead));
+  const regular = join(dir, "f.sock");
+  writeFileSync(regular, "");
+  ok("clearDeadSocket: a non-socket file is never unlinked (throws)", await clearDeadSocket(regular).then(() => false, () => existsSync(regular)));
+}
+
 console.log(fails ? `\n${fails} FAILED` : "\nall hub checks passed");
 process.exit(fails ? 1 : 0);

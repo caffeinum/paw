@@ -30,6 +30,14 @@ function permissionMode(): string {
   return override;
 }
 
+/** Remove every `flag <value>` pair from args. Mutates args in place. */
+function dropFlag(args: string[], flag: string): void {
+  for (let i = args.indexOf(flag); i !== -1; i = args.indexOf(flag)) {
+    if (i + 1 >= args.length) throw new Error(`paw: cotal's claude launch ends with a bare ${flag}`);
+    args.splice(i, 2);
+  }
+}
+
 /** Agents already warned about running unattended this process, so the notice prints once each. */
 const warnedBypass = new Set<string>();
 
@@ -140,11 +148,13 @@ export const pawConnector: Connector = {
     // directory and passes it straight to the runtime — the connector never sees it. So that safety
     // step moved to paw's spawn site (src/cwd.ts `confineAndTrustCwd`, called by ensureAgentSpawned).
 
+    // cotal ≥0.80 launches every managed claude with `--permission-mode bypassPermissions` unless its
+    // own launch options name one. paw owns the mode (PAW_PERMISSION), so cotal's pair is dropped and
+    // paw's is always explicit — `default` included, or cotal's bypass would silently win it.
     const mode = permissionMode();
-    if (mode !== "default") {
-      warnUnattended(opts.name, mode);
-      args.push("--permission-mode", mode);
-    }
+    dropFlag(args, "--permission-mode");
+    if (mode !== "default") warnUnattended(opts.name, mode);
+    args.push("--permission-mode", mode);
 
     // A warm agent has no human at its pty — the operator is on the MESH. Tools that block the
     // terminal waiting for a keystroke (the AskUserQuestion picker, plan-mode ExitPlanMode) hang the

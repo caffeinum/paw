@@ -37,7 +37,7 @@ import { ensureKitBinary, isKitProvider, KIT_AGENT } from "./kit.ts";
 import { HERMES_AGENT } from "./hermes-profile.ts";
 import { isClaudeHarness, personaTranscriptRoots, personaValue, readAgentType, readCwd, readResumeId, readShareTools, transcriptMtime } from "./session.ts";
 import { defaultTmuxEnv, readRuntimeMarker } from "./lifecycle.ts";
-import { answerStartupPrompt, tmuxSplit, tmuxSplitAdvice, type StartupScreen } from "./native-attach.ts";
+import { readStartupPrompt, tmuxSplit, tmuxSplitAdvice, type StartupScreen } from "./native-attach.ts";
 import { HOST_RE } from "./url.ts";
 import { personalityFor, readPersonality } from "./personality.ts";
 import type { ManagerControl, ManagerReply } from "./control.ts";
@@ -1001,9 +1001,9 @@ export async function ensureAgentSpawned(
     // The reply is the ACCEPTANCE, not the outcome (see ManagerControl.spawn): the agent is allocated,
     // not yet alive. Under the old blocking `start` a claude that never came up surfaced HERE as a
     // failed reply; now it would surface as a caller timing out somewhere later with no idea why. So
-    // paw does the readiness wait itself — which it must anyway, because this is the window where a
-    // tmux trust dialog (an erased ~/.claude.json entry) appears and only paw answers it. The
-    // dev-channels gate is cotal's to answer since 0.71 (answerStartupPrompt).
+    // paw does the readiness wait itself, re-writing an erased ~/.claude.json trust entry while claude
+    // boots and naming what the pane shows if it never comes up. Both startup prompts (trust dialog,
+    // dev-channels gate) are cotal's to answer since 0.80 (readStartupPrompt).
     // kit has no TUI: no trust dialog, no dev-channels gate, nothing on a pane to answer.
     // Nor does hermes: its gateway is a daemon, not a pane to read.
     const watch = kit || hermes ? { poll: () => {}, cause: () => "", stuck: () => false } : startupWatch(opts.space, opts.name, cwd);
@@ -1180,27 +1180,11 @@ export function isNameHeldRefusal(error: string | undefined): boolean {
   return !!error && /hard-pinned/.test(error) && /already held by a live incarnation/.test(error);
 }
 
-/** cotal ≥0.68's claude connector refusal for a seat folder its Claude home does not trust. */
-export function isUntrustedCwdRefusal(error: string | undefined): boolean {
-  return !!error && /Claude home does not trust/.test(error);
-}
-
 /** Spawn with a hard-pinned name, retrying while a just-retired incarnation's presence lingers. */
 async function spawnPinned(ctl: ManagerControl, args: Record<string, unknown>, name: string) {
   const deadline = Date.now() + SESSION_RELEASE_MS;
-  let retrusted = false;
   for (;;) {
-    const reply = await ctl.spawn(args, SPAWN_ACCEPT_MS);
-    // cotal ≥0.68 refuses a claude seat whose folder ~/.claude.json doesn't trust, BEFORE launch. paw
-    // pre-trusted it a moment ago, but a booting claude can rewrite the file from a stale copy and erase
-    // the entry (the 2026-10-03 race). Re-write it once and ask again; a second refusal is real.
-    const folder = typeof args.cwd === "string" ? pawTrustedFolder(args.cwd) : undefined;
-    if (!reply.ok && !retrusted && folder && isUntrustedCwdRefusal(reply.error)) {
-      retrusted = true;
-      console.error(`paw: "${name}": the manager found ${folder} untrusted (~/.claude.json lost paw's entry) — re-wrote it, retrying once`);
-      pretrustFolder(folder);
-      continue;
-    }
+    const reply = await ctl.spawn(args, SPAWN_ACCEPT_MS); // a claude cold-start can take a while
     if (reply.ok || !isNameHeldRefusal(reply.error) || Date.now() >= deadline) {
       if (!reply.ok && isNameHeldRefusal(reply.error)) {
         return { ...reply, error: `"${name}" is still held on the mesh ${Math.round(SESSION_RELEASE_MS / 1000)}s after it should have stopped — \`paw status\` / \`paw cotal ps\` for who holds it (${reply.error})` };
@@ -1321,13 +1305,12 @@ export async function waitForMeshLive(
  *     entry (3 of 5 isolated runs, 2026-10-03): the new claude then met its trust dialog. So the
  *     entry is re-checked every poll and re-written when it's gone — that saves every boot that
  *     hasn't READ the file yet, under pty too, where nothing can type into the terminal.
- * (b) PROMPTS, tmux only. The window is read before anything is typed (answerStartupPrompt): never
- *     at the dev-channels gate (cotal ≥0.71's runtime owns it); at the trust dialog only "Yes, I trust this folder", and only
- *     for a folder paw's own policy trusts (pawTrustedFolder — the confineAndTrustCwd rule), after
- *     re-writing the entry; anything else, nothing. The old blind Enter picked the dialog's default
- *     "No, exit" and the agent quit.
- * (c) `cause()` names what was seen, for the readiness timeout: an erased trust entry, a trust
- *     dialog paw would not answer, or an unrecognised prompt (its last lines).
+ * (b) PROMPTS, tmux only, READ and never typed at (readStartupPrompt): cotal ≥0.80's runtime answers
+ *     the trust dialog ("Yes, I trust this folder") and then the dev-channels gate, each once and in
+ *     order, so a paw key would race it. (paw answered the trust dialog itself until 0.81.1; the
+ *     original blind Enter picked its default "No, exit" and the agent quit.)
+ * (c) `cause()` names what was seen, for the readiness timeout: an erased trust entry, a prompt
+ *     cotal's runtime did not clear, or an unrecognised prompt (its last lines).
  *
  * `deps` exist for check:trust (a private tmux server, a fixed runtime, a captured log).
  */
@@ -1358,17 +1341,12 @@ export function startupWatch(
           once("erased", `paw: "${name}": ~/.claude.json had lost the trust entry for ${folder} (a concurrent claude rewrite) — re-wrote it`);
         }
         if ((deps.runtime ?? readRuntimeMarker(space)) !== "tmux") return;
-        const seen = answerStartupPrompt(space, name, deps.tmuxEnv ?? defaultTmuxEnv(process.env), () => {
-          if (!folder) return false;
-          pretrustFolder(folder);
-          return true;
-        });
+        const seen = readStartupPrompt(space, name, deps.tmuxEnv ?? defaultTmuxEnv(process.env));
         if (!seen) return;
         last = seen.screen;
         lastText = seen.text;
-        if (seen.screen.kind === "trust" && seen.sent) once("trust-yes", `paw: "${name}": claude showed its folder-trust dialog — paw trusts ${folder}, answered "Yes, I trust this folder"`);
-        else if (seen.screen.kind === "trust")
-          once("trust-no", `paw: "${name}": claude is at its folder-trust dialog for a folder paw does NOT pre-trust (${cwd}) — left for a human`);
+        if (seen.screen.kind === "trust")
+          once("trust", `paw: "${name}": claude showed its folder-trust dialog for ${cwd} — cotal's runtime answers it`);
         else if (seen.screen.kind === "other" && seen.screen.prompt) once(`other:${tail(seen.text)}`, `paw: "${name}": unrecognised prompt, sent nothing — «${tail(seen.text)}»`);
       } catch (e) {
         once("err", `paw: "${name}": startup watch failed (${(e as Error).message}) — carrying on`);
@@ -1377,8 +1355,7 @@ export function startupWatch(
     cause: () => {
       const bits: string[] = [];
       if (erased) bits.push(`its ~/.claude.json trust entry was erased ${erased}× during the boot (a concurrent claude rewrite; paw re-wrote it)`);
-      if (last?.kind === "trust" && !folder) bits.push(`it is at claude's folder-trust dialog and paw does not pre-trust ${cwd} (outside PAW_ROOT)`);
-      else if (last?.kind === "trust") bits.push(`it was still at claude's folder-trust dialog`);
+      if (last?.kind === "trust") bits.push(`it was still at claude's folder-trust dialog, which cotal's runtime answers (see the manager log)`);
       else if (last?.kind === "dev-channels") bits.push(`it was still at claude's dev-channels gate, which cotal's runtime answers (and ends the seat if it does not show within 15s — see the manager log)`);
       else if (last?.kind === "other" && last.prompt) bits.push(`it is waiting at an unrecognised prompt: «${tail(lastText)}»`);
       return bits.length ? ` — ${bits.join("; ")}` : "";

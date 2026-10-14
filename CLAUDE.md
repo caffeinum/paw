@@ -30,14 +30,16 @@ This file is the INDEX. The full design notes, incident narratives and rationale
 - **`ensure()` never switches the manager runtime implicitly** — only `paw runtime <r>` / explicit
   `PAW_RUNTIME` (a switch despawns the whole fleet; 802ad0d).
 
-## cotal 0.72.1 (live since 2026-10-09)
-All `@cotal-ai/*` pinned exact at **0.72.1**, with two local patches (`patches/`): the #2401 hub
-`serveClaudeSession` patch on connector-claude-code (re-key on every bump; drop when upstream ships
-#2401) and a core meta-validator perf patch. The presence KV bucket is memory-backed since cotal's
-#1356 fix — a bucket created by an older cotal stays file-backed until deleted (paw's was recreated
-2026-10-14). Since 0.49 a manager SIGTERM spares its agents, so `stopOwnedManager` despawns every agent
-first; `pawConnector` spreads `...claudeConnector`. → [cotal-dependency.md#cotal-0721](docs/notes/cotal-dependency.md#cotal-0721),
-older bumps (0.58, 0.48…) in the same note; [sleep.md](docs/notes/sleep.md)
+## cotal 0.81.1 (2026-10-14)
+Pinned **0.81.1** (all `@cotal-ai/*` exact; age-gate exemption in pnpm-workspace.yaml, delete after
+2026-10-20). Two pnpm patches re-keyed every bump: the #2401 hub patch (`serveClaudeSession`) and the
+core meta-validator perf patch. Since 0.80 cotal's runtimes answer BOTH claude startup prompts (trust
+dialog via `confirmBefore`, then dev-channels) — paw never types at them; paw always passes its own
+`--permission-mode` (cotal now defaults managed seats to bypass). The presence KV bucket is
+memory-backed (#1356); one created by an older cotal stays file-backed until deleted (paw's was
+recreated 2026-10-14). Since 0.49 a manager SIGTERM spares its agents, so `stopOwnedManager` despawns
+every agent first; `pawConnector` spreads `...claudeConnector`. → [cotal-dependency.md#cotal-0811](docs/notes/cotal-dependency.md#cotal-0811),
+older bumps (0.72.1, 0.58, 0.48…) in the same note; [sleep.md](docs/notes/sleep.md)
 
 ## Layout
 Each entry: what it is + the most load-bearing rule. Full notes behind the link.

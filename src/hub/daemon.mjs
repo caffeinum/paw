@@ -74,6 +74,27 @@ const log = (m) => {
   }
 };
 
+/**
+ * A unix socket path nobody listens on is cleared; a live one is left alone. `absent` when there is
+ * no path or nothing at it, `dead` when a refused connect proved it stale (it is unlinked), `live`
+ * when something answered. Any other probe error is thrown — never unlink what we can't judge.
+ * @param {string | undefined} sock @returns {Promise<"absent" | "dead" | "live">}
+ */
+export async function clearDeadSocket(sock) {
+  if (!sock || !existsSync(sock)) return "absent";
+  /** @type {"live" | NodeJS.ErrnoException} */
+  const seen = await new Promise((resolve) => {
+    const probe = createConnection(sock);
+    probe.once("connect", () => (probe.destroy(), resolve("live")));
+    probe.once("error", (e) => resolve(/** @type {NodeJS.ErrnoException} */ (e)));
+  });
+  if (seen === "live") return "live";
+  if (seen.code === "ENOENT") return "absent";
+  if (seen.code !== "ECONNREFUSED") throw new Error(`cannot judge socket ${sock}: ${seen.message}`);
+  unlinkSync(sock);
+  return "dead";
+}
+
 /** Parse + filter one handshake line. Pure; exported for check:hub. */
 /** @param {string} line @returns {{ env: NodeJS.ProcessEnv } | { error: string }} */
 export function parseHandshake(line) {
@@ -230,13 +251,21 @@ export async function runHub({ space, socket: path }) {
     }
     // Everything the session schedules from here (timers, socket and NATS callbacks) runs inside this
     // context, so an error that escapes to the process handlers still names its session.
-    sessionContext.run(`${c.name}#${c.id}`, () => serveClaudeSession({
-      env,
-      input: c.sock,
-      output: c.sock,
-      fatalBind: false,
-      log: (line) => log(`${c.name}#${c.id} ${line}`),
-      onShutdown: () => end(c, "manager shut the agent down", true),
+    // The session's control socket path comes from its LAUNCH env, so it is the same path every time
+    // the shim reconnects. A hub that was SIGKILLed left that socket file behind with nobody on it, and
+    // cotal ≥0.76 refuses to listen over an existing path (it may be live) — so a dead one is cleared
+    // here, a live one is left for cotal's own EADDRINUSE refusal.
+    sessionContext.run(`${c.name}#${c.id}`, () => clearDeadSocket(env.COTAL_CONTROL_SOCKET).then((was) => {
+      if (was === "dead") log(`${c.name}#${c.id} cleared a dead control socket left by an earlier hub`);
+      if (c.closed) throw new Error("connection closed before the session started");
+      return serveClaudeSession({
+        env,
+        input: c.sock,
+        output: c.sock,
+        fatalBind: false,
+        log: (line) => log(`${c.name}#${c.id} ${line}`),
+        onShutdown: () => end(c, "manager shut the agent down", true),
+      });
     }).then(
       (session) => {
         if (c.closed) return void session.close().catch(() => {});
@@ -339,17 +368,9 @@ export async function runHub({ space, socket: path }) {
   process.umask(0o077);
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   // A live hub already answering on this path means we are a duplicate: leave it alone.
-  if (existsSync(path)) {
-    const live = await new Promise((resolve) => {
-      const probe = createConnection(path);
-      probe.once("connect", () => (probe.destroy(), resolve(true)));
-      probe.once("error", () => resolve(false));
-    });
-    if (live) {
-      log(`another hub already serves ${path} — exiting`);
-      process.exit(0);
-    }
-    unlinkSync(path);
+  if ((await clearDeadSocket(path)) === "live") {
+    log(`another hub already serves ${path} — exiting`);
+    process.exit(0);
   }
   const server = createServer(onConnection);
   server.maxConnections = MAX_SESSIONS + MAX_PENDING;

@@ -41,6 +41,7 @@ const tui = {
   args: ["--dangerously-load-development-channels", "server:cotal", "--plugin-dir", "/p", "--resume", "abc", "--model", "haiku"],
   env: { COTAL_NAME: "a" },
   confirm: "WARNING: Loading development channels",
+  confirmBefore: [{ prompt: "❯ No, exit\nYes, I trust this folder", key: "Down" as const }],
   control: { path: "/c", token: "t" },
 };
 const hl = headlessLaunch(tui, "/d/a");
@@ -50,6 +51,8 @@ const cargs = hl.args.slice(5);
 ok("claude gets -p stream-json in/out + --verbose", cargs.join(" ").startsWith("-p --input-format stream-json --output-format stream-json --verbose"));
 ok("keeps the dev-channels flag (named.ts mesh marker) and the resume pin", cargs.includes("--dangerously-load-development-channels") && cargs.join(" ").includes("--resume abc"));
 ok("drops confirm, keeps env + control", hl.confirm === undefined && hl.env?.COTAL_NAME === "a" && hl.control?.token === "t");
+// cotal ≥0.80: every runtime refuses startup choices without a final confirm, so both go together.
+ok("drops confirmBefore with it (cotal's runtimes refuse one without the other)", hl.confirmBefore === undefined);
 ok("refuses an initial prompt", throws(() => headlessLaunch({ ...tui, args: ["hello", ...tui.args] }, "/d"), /initial prompt/));
 ok("refuses a claudeArgs -p", throws(() => headlessLaunch({ ...tui, args: [...tui.args, "-p"] }, "/d"), /sets -p itself/));
 ok("refuses a launch without the mesh marker", throws(() => headlessLaunch({ ...tui, args: ["--model", "x"] }, "/d"), /dev-channels/));
