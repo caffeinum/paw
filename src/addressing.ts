@@ -27,6 +27,7 @@ import { pawCotalRoot } from "./cotal-root.ts";
 import { confineAndTrustCwd, isFolderTrusted, pawTrustedFolder, pretrustFolder } from "./cwd.ts";
 import { readForeground } from "./foreground.ts";
 import { clearSleep, prepareWake, sleepLog, sleepState } from "./sleep-state.ts";
+import { clearRestartHistory, markStuck, readRestartHistory, recordRestart, restartVerdict } from "./restart-history.ts";
 import { presenceLive, readMeshRoster } from "./roster.ts";
 import { authGapWarning, PRESENCE_PROBE_MS, presenceLatchRefusal, probePresenceWrites, type PresenceHealth } from "./presence-health.ts";
 import { pawServer } from "./server.ts";
@@ -772,6 +773,11 @@ export async function ensureAgentSpawned(
     const pin = readResumeId(file);
     return pin ? transcriptMtime(pin, personaTranscriptRoots(file)) : undefined;
   };
+  // Seen live: the automatic-restart history (backoff + "needs a human" cap) starts over.
+  const live = (): { spawned: false } => {
+    clearRestartHistory(opts.space, opts.name);
+    return healSleep(opts.space, opts.name);
+  };
   return withFileLockAsync(spawnLockPath(opts.space, opts.name), async () => {
     const ps = await ctl.ps();
     if (!ps.ok) throw new Error(`paw: manager isn't answering (${ps.error ?? "no reply"})`);
@@ -788,7 +794,7 @@ export async function ensureAgentSpawned(
       // mesh, it isn't booting, it's stuck — treat it as the dead entry it is and restart. Restarting a
       // merely-slow boot is cheap (it resumes its pinned session); leaving an agent unreachable until a
       // human notices is not.
-      if (await waitForMeshLive(ctl, opts.name, graceMs, startupWatch(opts.space, opts.name, opts.cwd).poll)) return healSleep(opts.space, opts.name);
+      if (await waitForMeshLive(ctl, opts.name, graceMs, startupWatch(opts.space, opts.name, opts.cwd).poll)) return live();
       // A seat paw (or another caller) spawned a moment ago and that is still booting reads exactly like
       // this. Restarting it costs the boot it was halfway through — and the next one, on a loaded host.
       const row = rows.find((r) => r.name === opts.name);
@@ -812,9 +818,9 @@ export async function ensureAgentSpawned(
       console.error(
         `paw: "${opts.name}" is ${sleeping} — its ps row reads offline through the sleep stand-in, not its own presence; giving the seat ${Math.round(STARTING_GRACE_MS / 1000)}s to reach the mesh before judging it`,
       );
-      if (await waitForMeshLive(ctl, opts.name, STARTING_GRACE_MS, startupWatch(opts.space, opts.name, opts.cwd).poll)) return healSleep(opts.space, opts.name);
+      if (await waitForMeshLive(ctl, opts.name, STARTING_GRACE_MS, startupWatch(opts.space, opts.name, opts.cwd).poll)) return live();
     }
-    if (action === "reuse") return healSleep(opts.space, opts.name);
+    if (action === "reuse") return live();
     const reuseUnmanaged = action === "start" && opts.reuseUnmanaged !== false;
     if (reuseUnmanaged) {
       const live = await findUnmanagedAgent(opts.space, opts.name);
@@ -852,6 +858,34 @@ export async function ensureAgentSpawned(
             `the presence plane is lagging (a loaded or latched broker), not this agent; NOT restarting (the message waits in its inbox)`,
         );
         return { spawned: false };
+      }
+      // A LONE seat whose process runs but never registers was restarted on every wake once its boot went
+      // quiet (~every 3 min, forever), each restart killing its work. Back off, then give up loudly.
+      if (row && row.status !== "exited") {
+        const now = Date.now();
+        const verdict = restartVerdict(readRestartHistory(opts.space, opts.name), now);
+        if (verdict.kind === "wait") {
+          console.error(
+            `paw: "${opts.name}" reads ${row.mesh ?? "?"} with its process running, and was restarted ${verdict.restarts.length}× in the last ${Math.round((now - verdict.restarts[0]) / 60_000)}m without reaching the mesh — ` +
+              `NOT restarting again for ${Math.ceil((verdict.nextAt - now) / 60_000)}m (backoff); messages wait in its durable inbox`,
+          );
+          return { spawned: false, starting: true, ...(row.id ? { id: wirePrincipal(row.id) } : {}) };
+        }
+        if (verdict.kind === "stuck") {
+          // Stuck: no more restarts, but never a dropped message — the caller queues to its durable inbox
+          // (like `starting`) and shows the loud warning; the evidence for the human goes to stderr here.
+          markStuck(opts.space, opts.name, verdict.restarts, verdict.since);
+          const watch = startupWatch(opts.space, opts.name, opts.cwd);
+          watch.poll();
+          const stuck = `⚠ ${opts.name} is stuck — restarted ${verdict.restarts.length}× (first ${Math.round((now - verdict.restarts[0]) / 60_000)}m ago) without reaching the mesh, needs a human`;
+          console.error(
+            `paw: "${opts.name}" NOT restarted (stuck since ${Math.round((now - verdict.since) / 60_000)}m ago): ps status=${row.status ?? "?"} mesh=${row.mesh ?? "?"}, ` +
+              `transcript last written ${activeMs ? Math.round((now - activeMs) / 1000) + "s ago" : "never/unknown"}${watch.cause()} — ` +
+              `\`paw open ${opts.name}\` shows its screen (an MCP server or prompt it hangs on), \`paw log ${opts.name}\` its last turns, \`paw restart ${opts.name}\` retries and resets the count`,
+          );
+          return { spawned: false, starting: true, stuck, ...(row.id ? { id: wirePrincipal(row.id) } : {}) };
+        }
+        recordRestart(opts.space, opts.name, now);
       }
       console.error(
         `paw: restarting "${opts.name}" — ps row status=${row?.status ?? "?"} mesh=${row?.mesh ?? "?"}, transcript last written ${activeMs ? Math.round((Date.now() - activeMs) / 1000) + "s ago" : "never/unknown"}; its in-flight command (if any) will die`,
@@ -998,6 +1032,7 @@ export async function ensureAgentSpawned(
           `. \`paw status\` to see its row, \`paw log ${opts.name}\` for what it did.`,
       );
     }
+    clearRestartHistory(opts.space, opts.name);
     return { spawned: true, id };
   }, SPAWN_LOCK_OPTS);
 }
@@ -1025,7 +1060,14 @@ function healSleep(space: string, name: string): { spawned: false } {
 /** What {@link ensureAgentSpawned} did. `unmanaged`: the agent was already running outside the current
  *  manager (a manager restart spares its agents) and paw is talking to it as is. `starting`: its process
  *  runs but it isn't on the mesh yet — not a failure; DMs to `id` wait in its durable inbox. */
-export type SpawnOutcome = { spawned: boolean; id?: string; unmanaged?: true; starting?: true };
+/** `stuck`: the gate gave up restarting this seat (src/restart-history.ts) — the "⚠ … needs a human"
+ *  headline; `starting` is set too, so messages still go to its durable inbox. */
+export type SpawnOutcome = { spawned: boolean; id?: string; unmanaged?: true; starting?: true; stuck?: string };
+
+/** The warning a wake caller prints for a stuck seat; `queued` when its message went to the inbox. */
+export function stuckWarning(name: string, stuck: string, queued: boolean): string {
+  return `${stuck}${queued ? "; message queued in its inbox, it will read it once fixed" : ""}: paw open/log/restart ${name}`;
+}
 
 /** Evidence that `name` is running even though the manager's ps doesn't list it. */
 export type UnmanagedAgent = { id?: string; pids: number[] };
@@ -1189,6 +1231,8 @@ export async function restartAgent(
   // the agent and then could not start it (paw optimize, 2026-09-16).
   if (!existsSync(opts.cwd)) throw new Error(`paw: won't restart "${opts.name}" — its folder ${opts.cwd} no longer exists, so it could not come back`);
   await refuseOnPresenceLatch(opts.space, opts.name);
+  // An operator's restart is the human the "needs a human" cap asks for: the automatic budget starts over.
+  clearRestartHistory(opts.space, opts.name);
   const ps = await ctl.ps();
   if (!ps.ok) throw new Error(`paw: manager isn't answering (${ps.error ?? "no reply"})`);
   const live = ((ps.data as Array<{ name: string }>) ?? []).some((a) => a.name === opts.name);

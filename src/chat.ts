@@ -31,6 +31,7 @@ import {
   canonicalDir,
   controlCreds,
   ensureAgentSpawned,
+  stuckWarning,
   folderForName,
   folderToName,
   registeredAgentFor,
@@ -728,7 +729,8 @@ async function chat(argv: string[]): Promise<void> {
         // A fresh spawn is the genuinely slow path (a cold claude, resuming a long session). Naming it
         // turns "it hung" into "it is doing the slow thing", which is the difference between waiting
         // and Ctrl-C — and a Ctrl-C here used to leave the spawn lock behind (see src/lock.ts).
-        if (r.starting) process.stdout.write(c.dim(`  ${name} is still starting — messages will be delivered by its durable inbox\n`));
+        if (r.stuck) process.stdout.write(c.yellow(`  ${stuckWarning(name, r.stuck, true)}\n`));
+        else if (r.starting) process.stdout.write(c.dim(`  ${name} is still starting — messages will be delivered by its durable inbox\n`));
         else if (r.spawned) process.stdout.write(c.dim(`  cold start — this can take up to ${Math.round(FRESH_SPAWN_MS / 1000)}s\n`));
         curId = r.id ?? (await waitForPeerId(ep, name, r.spawned ? FRESH_SPAWN_MS : LIVE_AGENT_MS));
       } else {
@@ -2012,6 +2014,7 @@ async function chat(argv: string[]): Promise<void> {
         if (!to) emit(c.red("usage: @<name> [message]"));
         else {
           let peer = findPeer(to);
+          let stuckId: string | undefined; // a stuck seat's inbox address: queue there instead of stranding
           // Not live? If we know the agent's folder, resurrect it (resumed) — `@name` wakes an agent
           // you exited earlier, with full history, instead of just saying "offline".
           if (!peer || peer.status === "offline") {
@@ -2020,6 +2023,10 @@ async function chat(argv: string[]): Promise<void> {
               emit(c.dim(`↻ ${to} is offline — respawning from ${home}…`));
               try {
                 const r = await withManagerControl(space, server, (ctl) => ensureAgentSpawned(ctl, { space, name: to, cwd: home, model }));
+                if (r.stuck) {
+                  emit(c.yellow(stuckWarning(to, r.stuck, !!body && !!r.id)));
+                  stuckId = r.id;
+                }
                 // A COLD start — a fresh claude resuming a days-old session — takes well over the 8s
                 // this used to allow, so it reported "couldn't be respawned" against an agent that was
                 // simply still booting, while `paw dm` (which waits 20s) woke the SAME agent fine. One
@@ -2032,7 +2039,14 @@ async function chat(argv: string[]): Promise<void> {
               }
             }
           }
-          if (!peer) {
+          if (stuckId) {
+            if (to !== curName) bang = false;
+            curId = stuckId;
+            curName = to;
+            if (filter?.kind === "agent") filter = { kind: "agent", name: to };
+            rl!.setPrompt(promptFor());
+            if (body) await sent(ep.unicast(curId, flush(body, curName)));
+          } else if (!peer) {
             emit(c.red(`no peer named "${to}" present (/who to list)`));
             warnStranded(to, body);
           } else if (peer.status === "offline") {

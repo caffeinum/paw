@@ -7,6 +7,7 @@
  * `paw cotal ps` for the raw view); status now carries the liveness column too, so there's one command.
  */
 import { sleepState } from "./sleep-state.ts";
+import { readRestartHistory } from "./restart-history.ts";
 import { dmDurable, dmStream, parsePrincipalKey, type Command, type Presence, registry } from "@cotal-ai/core";
 import { JetStreamApiCodes, JetStreamApiError, jetstreamManager } from "@nats-io/jetstream";
 import { connect, credsAuthenticator } from "@nats-io/transport-node";
@@ -72,6 +73,8 @@ export interface AgentStatus {
    *  model never ran, so the DM that woke it got no reply and the mesh still shows a healthy idle
    *  agent. Read from the transcript (`lastFailure`), the only place claude writes it. */
   failure?: { text: string; ts: number };
+  /** The wake gate gave up restarting this seat (it kept not reaching the mesh): a human has to look. */
+  stuck?: { since: number; restarts: number };
   /** How full the agent's context window is (see {@link ContextUsage}). Read from the transcript —
    *  cotal carries no token information at all — so it is claude-only and absent for a codex/opencode
    *  harness, an unpinned agent, or a session that hasn't taken a turn yet. */
@@ -328,6 +331,11 @@ export function inboxStuck(r: AgentStatus): boolean {
   return r.live && r.inbox.kind === "lag" && (r.inbox.queued > 0 || r.inbox.unread > 0);
 }
 
+function stuckOf(space: string, name: string): { stuck?: { since: number; restarts: number } } {
+  const h = readRestartHistory(space, name);
+  return h?.stuck !== undefined ? { stuck: { since: h.stuck, restarts: h.restarts.length } } : {};
+}
+
 /** A trailing durability/health note, or "" when the agent is quietly durable. */
 function note(r: AgentStatus, now: number): string {
   if (r.personalityError) return `⚠ ${r.personalityError.replace(/^paw: /, "")}`;
@@ -339,6 +347,7 @@ function note(r: AgentStatus, now: number): string {
   // The cause, not the advice that follows it ("… limit. Run /usage-credits to finish…"). Cutting at
   // the advice leaves a dangling verb ("limit. Run"), which reads like the line was truncated by
   // accident — so the orphan goes too.
+  if (r.stuck && !r.live) return `⚠ stuck — restarted ${r.stuck.restarts}× without reaching the mesh, auto-restart stopped; needs a human (\`paw restart ${r.name}\`)`;
   if (r.failure) return `⚠ ${r.failure.text.split(/\s+\/usage|\n/)[0].slice(0, 80).replace(/\s+(Run|Please run)$/, "")}`;
   if (r.unmanaged) return `not managed by the current manager — \`paw restart ${r.name}\` re-adopts it`;
   if (r.terminalLost) return `⚠ terminal lost — live on the mesh, but the manager can't reach its tmux window (\`paw attach ${r.name}\` explains)`;
@@ -908,6 +917,7 @@ export async function collectStatus(space: string, ctl?: ManagerControl, opts: C
       durable: !!t,
       activeMs: t?.mtimeMs,
       failure: t?.failure(),
+      ...stuckOf(space, name),
       terminalLost: psRow ? terminalLost(psRow) : undefined,
       ...(unmanaged ? { unmanaged: true } : {}),
       context: t?.context(),

@@ -15,7 +15,7 @@ import { mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { registry, type Command } from "@cotal-ai/core";
-import { canonicalDir, ensureAgentSpawned, lookupFolderName, setFolderName } from "./addressing.ts";
+import { canonicalDir, ensureAgentSpawned, lookupFolderName, setFolderName, stuckWarning } from "./addressing.ts";
 import { resolveSpace, withEnsuredManager } from "./lifecycle.ts";
 import { optedIn, sleepSweep } from "./sleep.ts";
 
@@ -60,7 +60,7 @@ async function globalUp(argv: string[]): Promise<void> {
     );
   }
   const name = setFolderName(space, folder, GLOBAL_NAME).name; // pin the folder→name mapping to `global`
-  const { spawned, starting } = await withEnsuredManager(space, async (ctl) => {
+  const { spawned, starting, stuck } = await withEnsuredManager(space, async (ctl) => {
     const r = await ensureAgentSpawned(ctl, { space, name, cwd: folder, brief: GLOBAL_BRIEF });
     // The hibernation sweep rides this 60s keeper tick. It only ever touches agents the operator OPTED IN
     // (`hibernate:` in the persona, via `paw sleep <name> --after 60m`), logs every sleep to sleep.log, and
@@ -77,7 +77,9 @@ async function globalUp(argv: string[]): Promise<void> {
   // prompt (2026-09-16), rejecting the call; the operator's rule is that nothing touches a live agent
   // without their go. `paw unstick <name>` is the manual tool.
   console.log(
-    starting
+    stuck
+      ? stuckWarning(name, stuck, false)
+      : starting
       ? `… global agent @${name} still starting (process running, not on the mesh yet) — messages wait in its inbox`
       : spawned
         ? `✓ global agent up @${name} — full machine access, cwd ${folder}`

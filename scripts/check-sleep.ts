@@ -177,6 +177,7 @@ writeSleepRecord("s", { name: "h", folder: "/x", since: 1, cursorSeq: 3, reason:
 await stopAgent({ space: "s", ps: async () => ({ ok: true, data: [] }) } as unknown as Parameters<typeof stopAgent>[0], "nobody-else"); // unrelated: untouched
 ok("F1 setup: h asleep", isAsleep("s", "h"));
 const { ensureAgentSpawned } = await import("../src/addressing.ts");
+const { clearRestartHistory } = await import("../src/restart-history.ts");
 const liveCtl = { space: "s", ps: async () => ({ ok: true, data: [{ name: "h", status: "running", mesh: "idle" }] }) } as unknown as Parameters<typeof ensureAgentSpawned>[0];
 const reused = await ensureAgentSpawned(liveCtl, { space: "s", name: "h", cwd: "/x" });
 ok("F1 ensureAgentSpawned's reuse path heals: record handed to the host as waking", !reused.spawned && !isAsleep("s", "h") && readWakingRecord("s", "h")?.cursorSeq === 3);
@@ -219,6 +220,7 @@ const t0 = Date.now();
 await ensureAgentSpawned(bootCtl(Infinity), { space: "s", name: "w", cwd: "/x", probePresence: async () => ok1 }).catch((e: Error) => console.log("   (gate threw:", e.message.split("\n")[0], ")"));
 ok("B a seat that never comes up is still restarted after the grace", calls[0] === "despawn w" && Date.now() - t0 >= 14_000, `${calls.join()} after ${Date.now() - t0}ms`);
 clearSleep("s", "w");
+clearRestartHistory("s", "w"); // the case above restarted "w"; its backoff must not leak into this one
 calls.length = 0;
 await ensureAgentSpawned(bootCtl(Infinity), { space: "s", name: "w", cwd: "/x", probePresence: async () => ok1 }).catch((e: Error) => console.log("   (gate threw:", e.message.split("\n")[0], ")"));
 ok("B an agent with no sleep record keeps the immediate zombie restart", calls[0] === "despawn w", calls.join());
