@@ -197,6 +197,8 @@ export async function startSleepHost(space: string, server = pawServer()): Promi
    * live it wins the lookup outright.
    */
   const yielded = new Set<string>();
+  /** Names whose woken seat is running but not yet on the mesh (logged once, not every tick). */
+  const booting = new Set<string>();
   const yieldName = async (name: string) => {
     const s = standIns.get(name);
     if (!s || yielded.has(name)) return;
@@ -250,7 +252,15 @@ export async function startSleepHost(space: string, server = pawServer()): Promi
       await withManagerControl(space, server, async (ctl) => {
         // Returns once the seat is ON the mesh (ensureAgentSpawned waits for that) — only then does the
         // stand-in come down, so a sender never finds the name missing mid-boot.
-        await ensureAgentSpawned(ctl, { space, name, cwd: rec.folder });
+        const r = await ensureAgentSpawned(ctl, { space, name, cwd: rec.folder });
+        if (r.starting) {
+          // Its seat runs but isn't on the mesh yet. Not a failed wake: keep the stand-in and the backlog,
+          // and wait for THIS seat — the next tick asks the gate again, which won't restart a booting seat.
+          if (!booting.has(name)) sleepLog(space, `${name} is still starting — waiting for its seat (stand-in kept, ${why})`);
+          booting.add(name);
+          return;
+        }
+        booting.delete(name);
         await lower(name);
         const ps = await ctl.ps();
         const row = ((ps.data as PsRow[]) ?? []).find((r) => r.name === name);
@@ -264,6 +274,7 @@ export async function startSleepHost(space: string, server = pawServer()): Promi
         sleepLog(space, `woke ${name} — ${why}; re-delivered ${n} DM(s)`);
       });
     } catch (e) {
+      booting.delete(name);
       failedAt.set(name, Date.now());
       const msg = (e as Error).message;
       const { failures, backToSleep } = failWake(space, name, msg);

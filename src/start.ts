@@ -69,8 +69,8 @@ async function start(argv: string[]): Promise<void> {
       });
       if (headroom === "gave-up") console.log(`  still loaded after the wait cap — spawning ${t.name} anyway`);
       try {
-        await ensureAgentSpawned(ctl, { space, name: t.name, cwd: t.folder });
-        started.push(t.name);
+        const r = await ensureAgentSpawned(ctl, { space, name: t.name, cwd: t.folder });
+        started.push(r.starting ? `${t.name} (still starting — messages wait in its inbox)` : t.name);
       } catch (e) {
         skipped.push(`${t.name} (${(e as Error).message.split("\n")[0]})`);
       }

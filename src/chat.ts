@@ -728,7 +728,8 @@ async function chat(argv: string[]): Promise<void> {
         // A fresh spawn is the genuinely slow path (a cold claude, resuming a long session). Naming it
         // turns "it hung" into "it is doing the slow thing", which is the difference between waiting
         // and Ctrl-C — and a Ctrl-C here used to leave the spawn lock behind (see src/lock.ts).
-        if (r.spawned) process.stdout.write(c.dim(`  cold start — this can take up to ${Math.round(FRESH_SPAWN_MS / 1000)}s\n`));
+        if (r.starting) process.stdout.write(c.dim(`  ${name} is still starting — messages will be delivered by its durable inbox\n`));
+        else if (r.spawned) process.stdout.write(c.dim(`  cold start — this can take up to ${Math.round(FRESH_SPAWN_MS / 1000)}s\n`));
         curId = r.id ?? (await waitForPeerId(ep, name, r.spawned ? FRESH_SPAWN_MS : LIVE_AGENT_MS));
       } else {
         curId = await waitForPeerId(ep, name, 5000);

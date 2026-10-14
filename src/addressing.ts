@@ -28,9 +28,9 @@ import { confineAndTrustCwd, isFolderTrusted, pawTrustedFolder, pretrustFolder }
 import { readForeground } from "./foreground.ts";
 import { clearSleep, prepareWake, sleepLog } from "./sleep-state.ts";
 import { presenceLive, readMeshRoster } from "./roster.ts";
-import { presenceLatchRefusal, probePresenceWrites, type PresenceHealth } from "./presence-health.ts";
+import { PRESENCE_PROBE_MS, presenceLatchRefusal, probePresenceWrites, type PresenceHealth } from "./presence-health.ts";
 import { pawServer } from "./server.ts";
-import { withFileLock, withFileLockAsync } from "./lock.ts";
+import { withFileLock, withFileLockAsync, type LockOpts } from "./lock.ts";
 import { liveSessionProcs, meshAgentSession, meshIdentity, type LiveSessionProc } from "./named.ts";
 import { ensureKitBinary, isKitProvider, KIT_AGENT } from "./kit.ts";
 import { HERMES_AGENT } from "./hermes-profile.ts";
@@ -704,6 +704,28 @@ export function restartDespiteOffline(activeMs: number | undefined, now: number,
   return !(age >= 0 && age < windowMs);
 }
 
+/** Is a seat that hasn't reached the mesh still BOOTING (leave it) rather than stuck (restart it)? Its
+ *  process runs (the manager's row isn't `exited`) and it wrote its transcript within the busy window — a
+ *  `--resume` boot appends to the transcript before it registers. The 13-hour stuck boot wrote nothing,
+ *  so it still restarts. Pure; check:addressing. */
+export function seatBooting(row: PsRow | undefined, activeMs: number | undefined, now: number): boolean {
+  if (!row || row.status === "exited") return false;
+  return activeMs !== undefined && !restartDespiteOffline(activeMs, now);
+}
+
+/**
+ * Does an `offline` reading say more about the PRESENCE PLANE than about this agent? When most of the
+ * other running seats read offline too, the heartbeats are what failed (a starved or latched broker), and
+ * a restart can't help: the new seat can't register either. That was the `global` loop — the keeper
+ * restarted it every ~3 min, 562 times, and every time it went offline 14–28 other agents went offline in
+ * the same minute (manager.log). Needs at least two other running seats to judge. Pure; check:addressing.
+ */
+export function presencePlaneSuspect(rows: PsRow[], name: string): boolean {
+  const others = rows.filter((r) => r.name !== name && r.status !== "exited");
+  if (others.length < 2) return false;
+  return others.filter((r) => r.mesh === "offline").length * 2 > others.length;
+}
+
 export function spawnAction(rows: PsRow[], name: string): "start" | "reuse" | "restart" {
   const row = rows.find((r) => r.name === name);
   if (!row) return "start";
@@ -734,13 +756,22 @@ export async function ensureAgentSpawned(
     reuseUnmanaged?: boolean;
     /** Test seam for the presence-plane probe; defaults to a real put on the space's presence KV. */
     probePresence?: () => Promise<PresenceHealth>;
+    /** Test seam: shorter starting-grace / readiness waits (check:wake-gate). */
+    timing?: { graceMs?: number; readyMs?: number };
   },
 ): Promise<SpawnOutcome> {
+  const graceMs = opts.timing?.graceMs ?? STARTING_GRACE_MS;
+  const readyMs = opts.timing?.readyMs ?? SPAWN_READY_MS;
   // A FOREGROUND `paw claude` agent already owns this name in the operator's own terminal (its process
   // isn't in the manager's ps). Never spawn a manager duplicate: dm/chat/open/adopt/rename/revival all
   // funnel through here, so this ONE guard keeps them from racing a second agent onto the same name.
   // The caller addresses the live foreground agent through the roster instead (readyId/waitForPeerId).
   if (readForeground(opts.space, opts.name)) return { spawned: false };
+  const lastWrite = (): number | undefined => {
+    const file = personaFilePath(opts.space, opts.name);
+    const pin = readResumeId(file);
+    return pin ? transcriptMtime(pin, personaTranscriptRoots(file)) : undefined;
+  };
   return withFileLockAsync(spawnLockPath(opts.space, opts.name), async () => {
     const ps = await ctl.ps();
     if (!ps.ok) throw new Error(`paw: manager isn't answering (${ps.error ?? "no reply"})`);
@@ -757,7 +788,17 @@ export async function ensureAgentSpawned(
       // mesh, it isn't booting, it's stuck — treat it as the dead entry it is and restart. Restarting a
       // merely-slow boot is cheap (it resumes its pinned session); leaving an agent unreachable until a
       // human notices is not.
-      if (await waitForMeshLive(ctl, opts.name, STARTING_GRACE_MS, startupWatch(opts.space, opts.name, opts.cwd).poll)) return healSleep(opts.space, opts.name);
+      if (await waitForMeshLive(ctl, opts.name, graceMs, startupWatch(opts.space, opts.name, opts.cwd).poll)) return healSleep(opts.space, opts.name);
+      // A seat paw (or another caller) spawned a moment ago and that is still booting reads exactly like
+      // this. Restarting it costs the boot it was halfway through — and the next one, on a loaded host.
+      const row = rows.find((r) => r.name === opts.name);
+      const activeMs = lastWrite();
+      if (seatBooting(row, activeMs, Date.now())) {
+        console.error(
+          `paw: "${opts.name}" is still starting (process running, transcript written ${Math.round((Date.now() - (activeMs as number)) / 1000)}s ago) — NOT restarting; messages wait in its durable inbox`,
+        );
+        return { spawned: false, starting: true, ...(row?.id ? { id: wirePrincipal(row.id) } : {}) };
+      }
       action = "restart";
     }
     if (action === "reuse") return healSleep(opts.space, opts.name);
@@ -782,11 +823,20 @@ export async function ensureAgentSpawned(
       // its DMs wait in the durable consumer and land when it next drains. And say WHY, either way:
       // this branch used to despawn silently, which is how the kills went unattributed for a week.
       const row = rows.find((r) => r.name === opts.name);
-      const earlyPin = readResumeId(personaFilePath(opts.space, opts.name));
-      const activeMs = earlyPin ? transcriptMtime(earlyPin, personaTranscriptRoots(personaFilePath(opts.space, opts.name))) : undefined;
+      const activeMs = lastWrite();
       if (row?.status !== "exited" && !restartDespiteOffline(activeMs, Date.now())) {
         console.error(
           `paw: "${opts.name}" reads ${row?.mesh ?? "?"} on the mesh but wrote its transcript ${Math.round((Date.now() - (activeMs as number)) / 1000)}s ago — busy, not a zombie; NOT restarting (the message waits in its inbox)`,
+        );
+        return { spawned: false };
+      }
+      // A running process that merely reads offline is a stale-PRESENCE judgement. When most of the fleet
+      // reads offline with it, the presence plane is what's sick, and the new seat couldn't register either.
+      if (row && row.status !== "exited" && presencePlaneSuspect(rows, opts.name)) {
+        const others = rows.filter((r) => r.name !== opts.name && r.status !== "exited");
+        console.error(
+          `paw: "${opts.name}" reads ${row.mesh ?? "?"} but its process runs, and so do ${others.filter((r) => r.mesh === "offline").length}/${others.length} other running agents — ` +
+            `the presence plane is lagging (a loaded or latched broker), not this agent; NOT restarting (the message waits in its inbox)`,
         );
         return { spawned: false };
       }
@@ -909,16 +959,34 @@ export async function ensureAgentSpawned(
     // dev-channels gate is cotal's to answer since 0.71 (answerStartupPrompt).
     // kit has no TUI: no trust dialog, no dev-channels gate, nothing on a pane to answer.
     // Nor does hermes: its gateway is a daemon, not a pane to read.
-    const watch = kit || hermes ? { poll: () => {}, cause: () => "" } : startupWatch(opts.space, opts.name, cwd);
-    if (!(await waitForMeshLive(ctl, opts.name, SPAWN_READY_MS, watch.poll))) {
+    const watch = kit || hermes ? { poll: () => {}, cause: () => "", stuck: () => false } : startupWatch(opts.space, opts.name, cwd);
+    if (!(await waitForMeshLive(ctl, opts.name, readyMs, watch.poll))) {
+      // Not on the mesh YET is not a failed boot. On a starved host a claude can need longer, and throwing
+      // here made every caller treat a booting seat as dead: the next wake restarted it, the sleep host
+      // retried into it. A running process that isn't parked at a prompt is still starting — say so and
+      // let the durable inbox deliver. Throw only when the process is gone or a prompt needs a human.
+      const after = await ctl.ps().catch((e: Error) => ({ ok: false, error: e.message }) as ManagerReply);
+      const row = after.ok ? ((after.data as PsRow[]) ?? []).find((r) => r.name === opts.name) : undefined;
+      const gone = after.ok && (!row || row.status === "exited");
+      if (after.ok && !gone && !watch.stuck()) {
+        const activeMs = lastWrite();
+        console.error(
+          `paw: "${opts.name}" isn't on the mesh after ${Math.round(readyMs / 1000)}s but its process is running` +
+            (activeMs ? ` (transcript written ${Math.round((Date.now() - activeMs) / 1000)}s ago)` : "") +
+            ` — still starting; messages wait in its durable inbox`,
+        );
+        return { spawned: true, id, starting: true };
+      }
       throw new Error(
-        `paw: the manager accepted "${opts.name}" but it never reached the mesh within ${Math.round(SPAWN_READY_MS / 1000)}s` +
-          (watch.cause() || ` — it is probably still booting or stuck at a prompt`) +
+        `paw: the manager accepted "${opts.name}" but it never reached the mesh within ${Math.round(readyMs / 1000)}s` +
+          (gone ? ` — its process is gone (ps row: ${row ? `status=${row.status}` : "missing"})` : "") +
+          (!after.ok ? ` — and the manager didn't answer ps to say whether it still runs (${after.error ?? "no reply"})` : "") +
+          (watch.cause() || (gone || !after.ok ? "" : ` — it is stuck at a prompt`)) +
           `. \`paw status\` to see its row, \`paw log ${opts.name}\` for what it did.`,
       );
     }
     return { spawned: true, id };
-  });
+  }, SPAWN_LOCK_OPTS);
 }
 
 /** Throw (nothing stopped, nothing spawned) when the space's presence store refuses writes. A probe that
@@ -941,8 +1009,9 @@ function healSleep(space: string, name: string): { spawned: false } {
 }
 
 /** What {@link ensureAgentSpawned} did. `unmanaged`: the agent was already running outside the current
- *  manager (a manager restart spares its agents) and paw is talking to it as is. */
-export type SpawnOutcome = { spawned: boolean; id?: string; unmanaged?: true };
+ *  manager (a manager restart spares its agents) and paw is talking to it as is. `starting`: its process
+ *  runs but it isn't on the mesh yet — not a failure; DMs to `id` wait in its durable inbox. */
+export type SpawnOutcome = { spawned: boolean; id?: string; unmanaged?: true; starting?: true };
 
 /** Evidence that `name` is running even though the manager's ps doesn't list it. */
 export type UnmanagedAgent = { id?: string; pids: number[] };
@@ -1032,6 +1101,24 @@ export function twoWriterRefusal(o: {
 /** How long a just-despawned process gets to release its session / name before paw gives up. */
 export const SESSION_RELEASE_MS = 30_000;
 
+/** How long one manager `spawn` call may take to answer (a claude cold-start can take a while). */
+export const SPAWN_ACCEPT_MS = 60_000;
+
+/**
+ * The longest a LEGITIMATE {@link ensureAgentSpawned} can hold `spawn.<name>.lock`, summed from the waits
+ * it actually makes: the starting grace, the session-release wait, spawnPinned's held-name retry window,
+ * up to two spawn calls (the untrusted-cwd retry), the readiness wait and the presence probe, plus slack
+ * for the ps/despawn round-trips between them. Waiters wait this long and a live holder's lock is never
+ * aged out sooner: with the generic 30s wait a wake gave up on a holder that was simply mid-boot ("timed
+ * out acquiring lock spawn.evals.lock", sleep.log 2026-10-14), and with the 60s stale age a second
+ * spawner could break a live holder's lock mid-spawn. A DEAD holder is still broken at once (pid stamp).
+ */
+export const SPAWN_LOCK_HOLD_MS =
+  STARTING_GRACE_MS + SESSION_RELEASE_MS + SESSION_RELEASE_MS + 2 * SPAWN_ACCEPT_MS + SPAWN_READY_MS + PRESENCE_PROBE_MS + 20_000;
+
+/** Lock timeouts for every holder of {@link spawnLockPath}. */
+export const SPAWN_LOCK_OPTS: LockOpts = { maxWaitMs: SPAWN_LOCK_HOLD_MS, staleMs: SPAWN_LOCK_HOLD_MS };
+
 /** The manager's refusal for a hard-pinned name that a live incarnation still holds. */
 export function isNameHeldRefusal(error: string | undefined): boolean {
   return !!error && /hard-pinned/.test(error) && /already held by a live incarnation/.test(error);
@@ -1047,7 +1134,7 @@ async function spawnPinned(ctl: ManagerControl, args: Record<string, unknown>, n
   const deadline = Date.now() + SESSION_RELEASE_MS;
   let retrusted = false;
   for (;;) {
-    const reply = await ctl.spawn(args, 60_000); // a claude cold-start can take a while
+    const reply = await ctl.spawn(args, SPAWN_ACCEPT_MS);
     // cotal ≥0.68 refuses a claude seat whose folder ~/.claude.json doesn't trust, BEFORE launch. paw
     // pre-trusted it a moment ago, but a booting claude can rewrite the file from a stale copy and erase
     // the entry (the 2026-10-03 race). Re-write it once and ask again; a second refusal is real.
@@ -1191,7 +1278,7 @@ export function startupWatch(
   name: string,
   cwd: string,
   deps: { runtime?: string; tmuxEnv?: NodeJS.ProcessEnv; log?: (line: string) => void } = {},
-): { poll: () => void; cause: () => string } {
+): { poll: () => void; cause: () => string; stuck: () => boolean } {
   const log = deps.log ?? ((line: string) => console.error(line));
   const folder = pawTrustedFolder(cwd);
   let erased = 0;
@@ -1238,6 +1325,8 @@ export function startupWatch(
       else if (last?.kind === "other" && last.prompt) bits.push(`it is waiting at an unrecognised prompt: «${tail(lastText)}»`);
       return bits.length ? ` — ${bits.join("; ")}` : "";
     },
+    /** Parked at a prompt the last poll saw — a human (or cotal's runtime) has to act; waiting won't help. */
+    stuck: () => last?.kind === "trust" || last?.kind === "dev-channels" || (last?.kind === "other" && !!last.prompt),
   };
 }
 

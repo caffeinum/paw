@@ -80,7 +80,16 @@ function parseArgs(argv: string[]): Args {
 export const FRESH_SPAWN_MS = 20_000;
 export const LIVE_AGENT_MS = 8_000;
 
-export async function readyId(ep: CotalEndpoint, name: string, r: { spawned: boolean; id?: string }): Promise<string> {
+export async function readyId(ep: CotalEndpoint, name: string, r: { spawned: boolean; id?: string; starting?: true }): Promise<string> {
+  if (r.starting) {
+    // Its process runs but it isn't on the mesh yet (ensureAgentSpawned said so). Its principal is
+    // allocated, so the message goes to its durable inbox and lands when the seat drains it.
+    const live = await waitForPeerId(ep, name, LIVE_AGENT_MS);
+    if (live) return live;
+    if (!r.id) throw new Error(`paw: "${name}" is still starting and has no mesh address yet — retry once \`paw status\` shows it live`);
+    console.error(`paw: "${name}" is still starting — the message will be delivered by its durable inbox`);
+    return r.id;
+  }
   const id = r.spawned ? await waitForPeerId(ep, name, FRESH_SPAWN_MS) : (r.id ?? (await waitForPeerId(ep, name, LIVE_AGENT_MS)));
   if (!id) throw new Error(`paw: agent "${name}" did not come up in time`);
   return id;
