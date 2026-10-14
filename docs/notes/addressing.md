@@ -122,6 +122,14 @@ Moved verbatim from CLAUDE.md (2026-10-02 split). Index: [CLAUDE.md](../../CLAUD
   errors with the latch. Reproduced for real once on a 4 MB ramdisk filled to 100% (nats-server 2.14.7:
   "Critical write error: no space left on device"; still latched after freeing space). Test:
   `check:presence-latch` (private nats-server; a swallowing subscriber stands in for the latch).
+- **KNOWN GAP — latch detection is DISABLED under `PAW_AUTH=1` (grep `AUTH-GAP`).** The probe runs with
+  paw's control creds (`control-caller-privileged`), which hold no `$KV`/`$JS` grant. Measured on a real
+  isolated JWT mesh: the broker refuses the put at once (nats.js `RequestError` ← `PermissionViolationError`,
+  never a timeout), so the probe reads `not-permitted`: never a fabricated latch, never a blocked wake, but
+  also never a real check. The wake gate's stderr and `paw status` print a multi-line ⚠ warning every time
+  (`authGapWarning`). **Follow-up when auth is implemented:** mint probe creds allowed to write AND purge a
+  probe key in `cotal_presence_<space>` (the `agent` profile may write only its own key and can't purge),
+  and probe with those.
 
 ## unmanaged agents
 

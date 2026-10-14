@@ -22,7 +22,7 @@ const storeDir = mkdtempSync(join(tmpdir(), "paw-latch-js-"));
 
 const { connect } = await import("@nats-io/transport-node");
 const { jetstreamManager } = await import("@nats-io/jetstream");
-const { probePresenceWrites, presenceLatchRefusal, isPermissionViolation } = await import("../src/presence-health.ts");
+const { probePresenceWrites, presenceLatchRefusal, isPermissionViolation, authGapWarning } = await import("../src/presence-health.ts");
 const { ensureAgentSpawned, ensurePersonaFile, restartAgent } = await import("../src/addressing.ts");
 
 let failures = 0;
@@ -155,6 +155,8 @@ try {
   assert(denied.kind === "not-permitted" && /permissions violation/i.test((denied as { message: string }).message), `probe: a refused put reads not-permitted (${JSON.stringify(denied)})`);
   assert(Date.now() - t < 1000, `probe: a refusal answers at once, never waits out the latch timeout (${Date.now() - t}ms)`);
   assert(isPermissionViolation(Object.assign(new Error("request failed"), { cause: Object.assign(new Error("x"), { name: "PermissionViolationError" }) })), "probe: a RequestError wrapping a PermissionViolationError is a refusal");
+  const gap = authGapWarning("Permissions Violation for Publish", "ctx");
+  assert(gap.startsWith("⚠ PRESENCE LATCH DETECTION IS DISABLED UNDER PAW_AUTH") && gap.includes("AUTH-GAP") && gap.includes("write") && gap.includes("purge") && gap.split("\n").length > 3, "auth gap: the warning is loud, multi-line, and names the follow-up");
   assert(!isPermissionViolation(Object.assign(new Error("TIMEOUT"), { name: "TimeoutError" })), "probe: a timeout is not a refusal");
 
   calls.length = 0;

@@ -71,6 +71,8 @@ export async function probePresenceWrites(space: string, server: string, creds: 
     } catch (e) {
       if (isNoResponders(e)) return { kind: "no-bucket" };
       // Checked BEFORE the timeout: a refusal is an answer, never evidence of a latch.
+      // AUTH-GAP: under PAW_AUTH this ALWAYS fires (control creds hold no $KV grant), so latch detection is
+      // off on authed meshes. Fix: probe with creds allowed to write+purge a probe key (see authGapWarning).
       if (isPermissionViolation(e)) return { kind: "not-permitted", message: (e as Error).message };
       if (isTimeout(e)) return { kind: "latched", bucket, waitedMs: timeoutMs };
       return { kind: "unknown", message: (e as Error).message };
@@ -81,6 +83,20 @@ export async function probePresenceWrites(space: string, server: string, creds: 
   } finally {
     await nc.close().catch(() => {});
   }
+}
+
+/** The warning for a `not-permitted` probe — shown by the wake gate and `paw status`. Pure.
+ *  AUTH-GAP: loud on purpose, so the gap gets closed when auth is implemented. */
+export function authGapWarning(message: string, context: string): string {
+  return [
+    `⚠ PRESENCE LATCH DETECTION IS DISABLED UNDER PAW_AUTH (${context})`,
+    `  paw's control creds (control-caller-privileged) can't write the presence KV, so the probe was refused:`,
+    `    ${message}`,
+    `  A latched broker (disk full, cotal #1356) will NOT be caught: every agent reads offline and a wake may`,
+    `  restart healthy agents into seats that can never register.`,
+    `  follow-up (AUTH-GAP, docs/notes/addressing.md#presence-latch-guard): mint probe creds allowed to write`,
+    `  AND purge a probe key in the presence bucket, and probe with those.`,
+  ].join("\n");
 }
 
 /** The refusal the wake gate throws on a latched presence store. Pure. */

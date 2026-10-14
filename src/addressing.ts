@@ -28,7 +28,7 @@ import { confineAndTrustCwd, isFolderTrusted, pawTrustedFolder, pretrustFolder }
 import { readForeground } from "./foreground.ts";
 import { clearSleep, prepareWake, sleepLog, sleepState } from "./sleep-state.ts";
 import { presenceLive, readMeshRoster } from "./roster.ts";
-import { presenceLatchRefusal, probePresenceWrites, type PresenceHealth } from "./presence-health.ts";
+import { authGapWarning, presenceLatchRefusal, probePresenceWrites, type PresenceHealth } from "./presence-health.ts";
 import { pawServer } from "./server.ts";
 import { withFileLock, withFileLockAsync } from "./lock.ts";
 import { liveSessionProcs, meshAgentSession, meshIdentity, type LiveSessionProc } from "./named.ts";
@@ -940,8 +940,7 @@ async function refuseOnPresenceLatch(space: string, name: string, probe?: () => 
   const h = probe ? await probe() : await probePresenceWrites(space, pawServer(), await controlCreds(space));
   if (h.kind === "latched") throw new Error(presenceLatchRefusal(name, h, pawServer()));
   if (h.kind === "unknown") console.error(`paw: couldn't probe the presence store before starting "${name}" (${h.message}) — proceeding`);
-  if (h.kind === "not-permitted")
-    console.error(`paw: presence probe NOT PERMITTED with paw's control creds (${h.message}) — a latched broker can't be ruled out before starting "${name}"; proceeding`);
+  if (h.kind === "not-permitted") console.error(authGapWarning(h.message, `starting "${name}" anyway`));
 }
 
 /**
