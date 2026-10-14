@@ -181,6 +181,106 @@ try {
     assert(calls.join() === "despawn global,spawn global" && r.spawned, `lone offline seat in a live fleet: still restarted (${calls.join()})`);
   }
 
+  // --- fix 4: a LONE seat that never registers is restarted on a backoff, then left for a human -----
+  {
+    const R = await import("../src/restart-history.ts");
+    const { RESTART_CAP, RESTART_BACKOFF_MS, RESTART_WINDOW_MS, restartVerdict } = R;
+    const t0 = 7_000_000_000;
+    assert(restartVerdict(undefined, t0).kind === "go", "verdict: no history → restart");
+    assert(restartVerdict({ restarts: [t0] }, t0 + RESTART_BACKOFF_MS - 1).kind === "wait", "verdict: 1 restart → wait the base backoff");
+    assert(restartVerdict({ restarts: [t0] }, t0 + RESTART_BACKOFF_MS).kind === "go", "verdict: 1 restart, backoff elapsed → restart");
+    assert(restartVerdict({ restarts: [t0, t0 + 1] }, t0 + 1 + RESTART_BACKOFF_MS).kind === "wait", "verdict: 2 restarts → the backoff doubles");
+    assert(restartVerdict({ restarts: [t0, t0 + 1] }, t0 + 1 + 2 * RESTART_BACKOFF_MS).kind === "go", "verdict: 2 restarts, doubled backoff elapsed → restart");
+    const capped = Array.from({ length: RESTART_CAP }, (_, i) => t0 + i);
+    assert(restartVerdict({ restarts: capped }, t0 + RESTART_CAP - 1 + RESTART_BACKOFF_MS * 2 ** (RESTART_CAP - 1) - 1).kind === "wait", "verdict: the last allowed restart still gets its backoff");
+    assert(restartVerdict({ restarts: capped }, t0 + RESTART_WINDOW_MS - 1).kind === "stuck", `verdict: ${RESTART_CAP} restarts in the window, backoff over → stuck`);
+    assert(RESTART_WINDOW_MS > RESTART_BACKOFF_MS * (2 ** RESTART_CAP - 1), "verdict: the window outlasts the whole schedule (else the cap is never reached)");
+    assert(restartVerdict({ restarts: capped }, t0 + RESTART_CAP + RESTART_WINDOW_MS).kind === "go", "verdict: restarts older than the window are forgotten");
+    assert(restartVerdict({ restarts: [t0], stuck: t0 }, t0 + 10 * RESTART_WINDOW_MS).kind === "stuck", "verdict: stuck is sticky until live / a human restart");
+
+    // The scenario: `lone` runs but never registers (offline), the rest of the fleet is live, its
+    // transcript is quiet. Wake after wake; time is moved by ageing the history file.
+    const space = "g8";
+    const name = "lone";
+    transcriptAged(space, name, folder, 400_000);
+    let isLive = false;
+    const rows = (): Row[] => [{ name, status: "running", mesh: isLive ? "idle" : "offline", id: "local.ACTORLONE" }, ...fleet(0, 6).slice(1)];
+    const wake = async (calls: string[]) => {
+      let err = "";
+      const r = await ensureAgentSpawned(fakeCtl(rows, calls), { space, name, cwd: folder, probePresence: healthy, timing: fast }).catch((e: Error) => {
+        err = e.message;
+        return undefined;
+      });
+      return { r, err };
+    };
+    const age = (ms: number) => {
+      const h = R.readRestartHistory(space, name);
+      if (!h) throw new Error("no restart history to age");
+      writeFileSync(R.restartHistoryPath(space, name), JSON.stringify({ ...h, restarts: h.restarts.map((t) => t - ms) }));
+    };
+
+    let restarts = 0;
+    for (let i = 1; i <= RESTART_CAP; i++) {
+      const calls: string[] = [];
+      const { r, err } = await wake(calls);
+      if (calls.join() === "despawn lone,spawn lone") restarts++;
+      assert(!err && r?.starting === true && calls.join() === "despawn lone,spawn lone", `lone seat: wake ${i} restarts it (${calls.join() || err})`);
+      const again: string[] = [];
+      const w = await wake(again);
+      assert(again.length === 0 && w.r?.starting === true && w.r.id === "local.ACTORLONE", `lone seat: an immediate re-wake is backed off — no restart, still addressable (${again.join() || "no calls"})`);
+      age(RESTART_BACKOFF_MS * 2 ** (i - 1) - 60_000);
+      const early: string[] = [];
+      await wake(early);
+      assert(early.length === 0, `lone seat: a minute before backoff ${i} ends → still not restarted`);
+      age(60_000);
+    }
+    assert(restarts === RESTART_CAP && R.readRestartHistory(space, name)?.restarts.length === RESTART_CAP, `lone seat: exactly ${RESTART_CAP} restarts recorded`);
+    {
+      const calls: string[] = [];
+      const { err } = await wake(calls);
+      assert(calls.length === 0 && err.includes("needs a human") && err.includes(`${RESTART_CAP}×`) && err.includes(`paw restart ${name}`), `lone seat: past the cap → loud "needs a human", nothing stopped (${err.split("\n")[0]})`);
+      assert(R.readRestartHistory(space, name)?.stuck !== undefined, "lone seat: marked stuck on disk (paw status reads it)");
+      age(RESTART_WINDOW_MS * 3);
+      const later: string[] = [];
+      const w = await wake(later);
+      assert(later.length === 0 && w.err.includes("needs a human"), "lone seat: still stuck hours later — no silent return to the loop");
+    }
+    {
+      const { formatStatus } = await import("../src/status.ts");
+      const h = R.readRestartHistory(space, name)!;
+      const out = formatStatus(
+        [{ name, folder, mesh: "offline", live: false, durable: true, conflictPids: [], inbox: { kind: "none" }, stuck: { since: h.stuck!, restarts: h.restarts.length } }],
+        Date.now(),
+        200,
+      );
+      assert(out.includes("stuck") && out.includes("needs a human"), "paw status: the stuck seat says it needs a human");
+    }
+    {
+      isLive = true;
+      const calls: string[] = [];
+      const { r, err } = await wake(calls);
+      assert(!err && r?.spawned === false && calls.length === 0, `lone seat: once live it is reused (${err || JSON.stringify(r)})`);
+      assert(R.readRestartHistory(space, name) === undefined, "lone seat: a live sighting resets the history");
+      isLive = false;
+      const again: string[] = [];
+      await wake(again);
+      assert(again.join() === "despawn lone,spawn lone", `lone seat: after the reset, the next death gets a prompt restart again (${again.join()})`);
+    }
+  }
+
+  {
+    // The same budget covers a seat parked at `starting…` (absent) that wrote nothing: backed off, not restarted.
+    const R = await import("../src/restart-history.ts");
+    transcriptAged("g9", "mute", folder, undefined);
+    const calls: string[] = [];
+    const rows = () => [{ name: "mute", status: "running", mesh: "absent", id: "local.ACTORMUTE" }, ...fleet(0, 6).slice(1)];
+    await ensureAgentSpawned(fakeCtl(rows, calls), { space: "g9", name: "mute", cwd: folder, probePresence: healthy, timing: fast });
+    assert(calls.join() === "despawn mute,spawn mute" && R.readRestartHistory("g9", "mute")?.restarts.length === 1, `absent lone seat: first restart recorded (${calls.join()})`);
+    const again: string[] = [];
+    const r = await ensureAgentSpawned(fakeCtl(rows, again), { space: "g9", name: "mute", cwd: folder, probePresence: healthy, timing: fast });
+    assert(again.length === 0 && r.starting === true, `absent lone seat: re-wake within the backoff → no restart (${again.join() || "no calls"})`);
+  }
+
   // --- fix 2: spawn-lock waiters outlast a legitimate holder ---------------------------------------
   assert(
     SPAWN_LOCK_HOLD_MS >= STARTING_GRACE_MS + 2 * SESSION_RELEASE_MS + 2 * SPAWN_ACCEPT_MS + SPAWN_READY_MS,
