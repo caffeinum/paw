@@ -26,6 +26,7 @@ import {
   restartAgent,
   psRowAlive,
   resolveModel,
+  SPAWN_LOCK_OPTS,
   spawnLockPath,
   type PsRow,
 } from "./addressing.ts";
@@ -297,7 +298,7 @@ export async function runClaude(argv: string[]): Promise<void> {
       });
     }
     return c;
-  });
+  }, SPAWN_LOCK_OPTS);
 
   child.on("error", (e: Error) => {
     unregisterForeground(space, name);

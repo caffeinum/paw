@@ -60,7 +60,7 @@ async function globalUp(argv: string[]): Promise<void> {
     );
   }
   const name = setFolderName(space, folder, GLOBAL_NAME).name; // pin the folder→name mapping to `global`
-  const { spawned } = await withEnsuredManager(space, async (ctl) => {
+  const { spawned, starting } = await withEnsuredManager(space, async (ctl) => {
     const r = await ensureAgentSpawned(ctl, { space, name, cwd: folder, brief: GLOBAL_BRIEF });
     // The hibernation sweep rides this 60s keeper tick. It only ever touches agents the operator OPTED IN
     // (`hibernate:` in the persona, via `paw sleep <name> --after 60m`), logs every sleep to sleep.log, and
@@ -76,7 +76,13 @@ async function globalUp(argv: string[]): Promise<void> {
   // No automatic unstick sweep here any more. The keeper pressed Esc on canary-env-52 at a permission
   // prompt (2026-09-16), rejecting the call; the operator's rule is that nothing touches a live agent
   // without their go. `paw unstick <name>` is the manual tool.
-  console.log(spawned ? `✓ global agent up @${name} — full machine access, cwd ${folder}` : `✓ global agent already live @${name}`);
+  console.log(
+    starting
+      ? `… global agent @${name} still starting (process running, not on the mesh yet) — messages wait in its inbox`
+      : spawned
+        ? `✓ global agent up @${name} — full machine access, cwd ${folder}`
+        : `✓ global agent already live @${name}`,
+  );
   console.log(`  DM it: \`paw dm ${name} "…"\`  ·  from a bridge it's in /switch and the /help footer`);
   console.log(`  stays warm (resume-pinned), revived by \`paw restart\`; \`paw stop ${name}\` ends it`);
   if (name !== GLOBAL_NAME) {

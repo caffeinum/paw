@@ -123,6 +123,27 @@ Moved verbatim from CLAUDE.md (2026-10-02 split). Index: [CLAUDE.md](../../CLAUD
   "Critical write error: no space left on device"; still latched after freeing space). Test:
   `check:presence-latch` (private nats-server; a swallowing subscriber stands in for the latch).
 
+## booting ≠ failed, plane-wide offline, spawn-lock wait (2026-10-14)
+
+- **`starting` outcome.** On the readiness timeout `ensureAgentSpawned` re-reads ps: a running process
+  not parked at a prompt (`startupWatch().stuck()`) returns `{spawned:true, id, starting:true}` instead of
+  throwing; it throws only when the row is gone/`exited`, ps can't answer, or a prompt needs a human. A
+  row found at `starting…` (`absent`) whose process runs and whose transcript was written within
+  `BUSY_GUARD_MS` (`seatBooting` — a `--resume` boot appends before it registers) is left alone the same
+  way (no restart); one that wrote nothing still restarts after `STARTING_GRACE_MS` (the 13-hour bound).
+  Callers: `paw dm` sends to the allocated principal (durable inbox), chat/start/global say "still
+  starting", the sleep host keeps the stand-in + backlog and re-asks the gate next tick (no failure counted).
+- **`presencePlaneSuspect`.** The `global` loop: launchd's 60s `paw global` tick restarted it 562× (log:
+  `status=running mesh=offline`, transcript 183–187s old — just past the busy guard, because each restart's
+  own `--resume` boot refreshed the mtime). Every time global went offline, 14–28 other agents went
+  offline in the same minute (manager.log "seat offline … process running") — the presence plane, not
+  global; the new seat couldn't register either → 60s timeout → repeat. Now a running-but-offline row is
+  NOT restarted when more than half of the other running seats read offline too (needs ≥2 others).
+- **`SPAWN_LOCK_OPTS`.** `spawn.<name>.lock` waiters (ensureAgentSpawned + `paw claude --fg`) wait
+  `SPAWN_LOCK_HOLD_MS` (~278s, summed from the waits a holder makes) and a LIVE holder's lock isn't aged
+  out sooner (the generic 60s stale age could break a live mid-spawn holder). Dead pid → broken at once.
+  Test: `check:wake-gate`.
+
 ## unmanaged agents
 
 - **An agent alive outside the current manager is REUSED, never duplicated (2026-10-05).** cotal ≥0.49
