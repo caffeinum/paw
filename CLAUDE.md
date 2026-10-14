@@ -30,14 +30,14 @@ This file is the INDEX. The full design notes, incident narratives and rationale
 - **`ensure()` never switches the manager runtime implicitly** — only `paw runtime <r>` / explicit
   `PAW_RUNTIME` (a switch despawns the whole fleet; 802ad0d).
 
-## cotal 0.58 (2026-10-02)
-Bumped 0.48.1 → **0.58.0** (all `@cotal-ai/*` pinned exact). `pawConnector` spreads `...claudeConnector`
-so `eventChannel` (required since 0.5x) and future capabilities are inherited; `buildLaunch` needs a
-`workspaceRoot` (`paw claude --fg` passes `pawCotalRoot(space)`); since 0.49 a manager SIGTERM spares
-its agents, so `stopOwnedManager` despawns every agent first (`despawnManagedAgents`); `ensure()` only
-warns on a runtime mismatch (802ad0d). `paw sleep` exists (src/sleep*.ts, mailbox-hosted stand-in).
-Read the code for details. → [cotal-dependency.md#cotal-058](docs/notes/cotal-dependency.md#cotal-058),
-[sleep.md](docs/notes/sleep.md)
+## cotal 0.72.1 (live since 2026-10-09)
+All `@cotal-ai/*` pinned exact at **0.72.1**, with two local patches (`patches/`): the #2401 hub
+`serveClaudeSession` patch on connector-claude-code (re-key on every bump; drop when upstream ships
+#2401) and a core meta-validator perf patch. The presence KV bucket is memory-backed since cotal's
+#1356 fix — a bucket created by an older cotal stays file-backed until deleted (paw's was recreated
+2026-10-14). Since 0.49 a manager SIGTERM spares its agents, so `stopOwnedManager` despawns every agent
+first; `pawConnector` spreads `...claudeConnector`. → [cotal-dependency.md#cotal-0721](docs/notes/cotal-dependency.md#cotal-0721),
+older bumps (0.58, 0.48…) in the same note; [sleep.md](docs/notes/sleep.md)
 
 ## Layout
 Each entry: what it is + the most load-bearing rule. Full notes behind the link.
