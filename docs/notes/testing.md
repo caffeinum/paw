@@ -50,3 +50,9 @@ Moved verbatim from CLAUDE.md (2026-10-02 split). Index: [CLAUDE.md](../../CLAUD
   exercises a manager holding state). **Isolation is ENFORCED, not documented** — it refuses to run
   without a non-default `PAW_HOME` and a `PAW_SPACE` that isn't `paw`, because it starts a real manager;
   and it `removeMesh(space)`es on teardown (the check:loop landmine).
+  `scripts/check-prune.ts` (`pnpm check:prune`) — `paw spaces prune` against a PRIVATE nats-server
+  (random port, temp store, temp PAW_HOME + COTAL_HOME): seeds real spaces with cotal's
+  `setupSpaceStreams` and proves the plan keeps paw / the current space / --keep / a registered mesh /
+  a space a running process names / a recently active space / a collision space, leaves a foreign
+  stream alone, that executing deletes exactly the dead spaces' streams, that the CLI dry run deletes
+  nothing, and `purgeTestSpace` (refuses paw and a busy space; deletes streams + registry entry).

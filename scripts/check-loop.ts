@@ -11,7 +11,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { CotalEndpoint, type CotalMessage, type Delivery, type MessageMeta } from "@cotal-ai/core";
 import { controlCreds, stableHumanId, waitForPeerId } from "../src/addressing.ts";
-import { removeMesh } from "@cotal-ai/workspace";
+import { purgeTestSpace } from "../src/prune.ts";
 import { ensure, stop } from "../src/lifecycle.ts";
 import { HUMAN_PEER } from "../src/names.ts";
 import { pawServer } from "../src/server.ts";
@@ -75,7 +75,7 @@ rmSync(spaceDir, { recursive: true, force: true });
 // nats://127.0.0.1:4222 in ~/.cotal/meshes, and cotal's `up` preflight matches the FIRST entry holding
 // a port — so months of accumulated test spaces eventually made the real mesh refuse to start with
 // "already in use by mesh <some test space>". A test that litters shared machine state is a landmine.
-removeMesh(space);
+await purgeTestSpace(space, server);
 
 if (!youAddressable) {
   console.error("FAIL: human peer is not addressable (fire-and-forget regression)");

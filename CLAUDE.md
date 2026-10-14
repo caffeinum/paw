@@ -85,6 +85,8 @@ Each entry: what it is + the most load-bearing rule. Full notes behind the link.
 - `stripHarnessMarkers` — drop Claude Code session markers from daemon env (else every agent boots with
   transcripts OFF). → [lifecycle.md#stripharnessmarkers](docs/notes/lifecycle.md#stripharnessmarkers)
 - `sanitizeNodeOptions`/`daemonEnv` — drop NODE_OPTIONS preloads that no longer exist on disk. → [lifecycle.md#sanitizenodeoptions-and-daemonenv](docs/notes/lifecycle.md#sanitizenodeoptions-and-daemonenv)
+- `src/prune.ts` + `src/commands/spaces.ts` — `paw spaces [prune [--yes]]`: dead-space stream pruning (dry
+  run by default); `purgeTestSpace` is the test teardown (removeMesh alone leaked ~20 streams per run). → [lifecycle.md#broker-store-hygiene](docs/notes/lifecycle.md#broker-store-hygiene)
 - `src/lock.ts` — O_EXCL file locks, pid-stamped, broken immediately on a dead holder. → [lifecycle.md#pid-stamped-locks](docs/notes/lifecycle.md#pid-stamped-locks), [lifecycle.md#srclockts](docs/notes/lifecycle.md#srclockts)
 
 ### Control rail → [control-rail.md](docs/notes/control-rail.md)

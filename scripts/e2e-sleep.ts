@@ -13,7 +13,7 @@ import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CotalEndpoint, resolvePeer } from "@cotal-ai/core";
-import { removeMesh } from "@cotal-ai/workspace";
+import { purgeTestSpace } from "../src/prune.ts";
 import { ManagerControl } from "../src/control.ts";
 import { ensureAgentSpawned, personaFilePath, setFolderName, waitForPeerId } from "../src/addressing.ts";
 import { ensure, stop } from "../src/lifecycle.ts";
@@ -175,7 +175,10 @@ try {
   await ctl.despawn("caller").catch(() => {});
   await ctl.close();
   await stop({ space }).catch((e) => console.error("stop:", (e as Error).message));
-  removeMesh(space);
+  await purgeTestSpace(space, pawServer()).catch((e) => {
+    console.error("purge:", (e as Error).message);
+    fails++;
+  });
 }
 console.log(fails ? `${fails} FAILED` : "e2e passed");
 process.exit(fails ? 1 : 0);

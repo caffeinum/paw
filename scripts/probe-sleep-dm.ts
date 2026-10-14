@@ -10,7 +10,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CotalEndpoint, dmStream } from "@cotal-ai/core";
-import { removeMesh } from "@cotal-ai/workspace";
+import { purgeTestSpace } from "../src/prune.ts";
 import { connect } from "@nats-io/transport-node";
 import { jetstreamManager } from "@nats-io/jetstream";
 import { ManagerControl } from "../src/control.ts";
@@ -80,5 +80,5 @@ try {
   await ep?.stop().catch(() => {});
   await ctl.close();
   await stop({ space }).catch((e) => console.error("stop:", e.message));
-  removeMesh(space);
+  await purgeTestSpace(space, pawServer());
 }

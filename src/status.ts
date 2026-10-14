@@ -7,7 +7,7 @@
  * `paw cotal ps` for the raw view); status now carries the liveness column too, so there's one command.
  */
 import { sleepState } from "./sleep-state.ts";
-import { dmDurable, dmStream, parsePrincipalKey, type Command, registry } from "@cotal-ai/core";
+import { dmDurable, dmStream, parsePrincipalKey, type Command, type Presence, registry } from "@cotal-ai/core";
 import { JetStreamApiCodes, JetStreamApiError, jetstreamManager } from "@nats-io/jetstream";
 import { connect, credsAuthenticator } from "@nats-io/transport-node";
 import { closeSync, existsSync, openSync, readSync, statSync } from "node:fs";
@@ -25,7 +25,7 @@ import { lastFailure, lastUsage, type ContextUsage } from "./transcript.ts";
 import { tailRead, turnState, type PendingTool, type TurnState } from "./transcript.ts";
 import { gitInfoMany, type GitInfo } from "./git.ts";
 import { pawServer } from "./server.ts";
-import { presenceLive, readMeshRoster } from "./roster.ts";
+import { pickRoster, presenceLive, readMeshRoster } from "./roster.ts";
 import { probePresenceWrites } from "./presence-health.ts";
 import { personaGlyph } from "./personality.ts";
 
@@ -777,6 +777,11 @@ export interface CollectOpts {
    *  expensive per-row reads then run only for the rows asked for — `paw status <name>` used to read
    *  the whole fleet and throw all but one row away. */
   only?: (names: string[]) => Set<string>;
+  /** A caller that polls (paw web) passes its long-lived endpoint's presence roster. Without it every
+   *  collect opened a throwaway observer whose two KV watch consumers (presence + channels) outlived it
+   *  by nats.js's 5-minute inactive threshold — at web's 10s tick, ~60 dead consumers on the live
+   *  presence stream at all times (beads-eic). */
+  roster?: () => Presence[];
 }
 
 /**
@@ -810,7 +815,9 @@ export async function collectStatus(space: string, ctl?: ManagerControl, opts: C
   // agent's presence + card.id live there, and so does an agent a previous manager spared on its way
   // down (cotal >=0.49) — running and reachable, but invisible to this manager's ps.
   const unlisted = agents.map(({ name }) => name).filter((name) => !psByName.has(name));
-  const roster = controlCreds(space).then((creds) => readMeshRoster(space, server, creds, new Set(unlisted)));
+  const roster = opts.roster
+    ? Promise.resolve(pickRoster(space, opts.roster(), new Set(unlisted), Date.now()))
+    : controlCreds(space).then((creds) => readMeshRoster(space, server, creds, new Set(unlisted)));
   roster.catch(() => {});
   // One CONCURRENT pass over every folder before the rows are built. Serially, 54 agents × 5 git
   // processes was 2.5s of a 3.9s collect — what the Raycast roster sat on showing "Reading the roster…".

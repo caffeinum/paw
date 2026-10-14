@@ -50,7 +50,8 @@
     "check:stale-forward": "node scripts/check-stale-forward.ts",
     "check:hermes": "node scripts/check-hermes.ts",
     "check:presence-latch": "node scripts/check-presence-latch.ts",
-    "check:wake-gate": "node scripts/check-wake-gate.ts"
+    "check:wake-gate": "node scripts/check-wake-gate.ts",
+    "check:prune": "node scripts/check-prune.ts"
   },
   "dependencies": {
     "@cotal-ai/cli": "0.72.1",
