@@ -28,6 +28,7 @@ import { confineAndTrustCwd, isFolderTrusted, pawTrustedFolder, pretrustFolder }
 import { readForeground } from "./foreground.ts";
 import { clearSleep, prepareWake, sleepLog } from "./sleep-state.ts";
 import { presenceLive, readMeshRoster } from "./roster.ts";
+import { presenceLatchRefusal, probePresenceWrites, type PresenceHealth } from "./presence-health.ts";
 import { pawServer } from "./server.ts";
 import { withFileLock, withFileLockAsync } from "./lock.ts";
 import { liveSessionProcs, meshAgentSession, meshIdentity, type LiveSessionProc } from "./named.ts";
@@ -721,6 +722,8 @@ export async function ensureAgentSpawned(
     allowForeignWriter?: boolean;
     /** false right after the caller stopped this agent itself: its exiting process can still look live. */
     reuseUnmanaged?: boolean;
+    /** Test seam for the presence-plane probe; defaults to a real put on the space's presence KV. */
+    probePresence?: () => Promise<PresenceHealth>;
   },
 ): Promise<SpawnOutcome> {
   // A FOREGROUND `paw claude` agent already owns this name in the operator's own terminal (its process
@@ -753,6 +756,10 @@ export async function ensureAgentSpawned(
       const live = await findUnmanagedAgent(opts.space, opts.name);
       if (live) return reuseUnmanagedAgent(opts.space, opts.name, live);
     }
+    // Every "offline" above is only as good as the presence plane. A latched presence store (disk-full
+    // broker, cotal #1356) makes EVERY agent read offline, and a restart then kills a healthy agent into
+    // a seat that can never register (evals, 2026-10-14). Prove presence accepts writes before acting.
+    await refuseOnPresenceLatch(opts.space, opts.name, opts.probePresence);
     if (action === "restart") {
       // The manager still LISTS this agent but it's dead on the mesh (process exited, or mesh offline —
       // a zombie left by a crash/bounce). The old gate reused ANY listed name, so `paw dm`/`paw chat`
@@ -898,6 +905,14 @@ export async function ensureAgentSpawned(
     }
     return { spawned: true, id };
   });
+}
+
+/** Throw (nothing stopped, nothing spawned) when the space's presence store refuses writes. A probe that
+ *  can't tell (auth grants, unreachable) is said out loud and the gate proceeds as before. */
+async function refuseOnPresenceLatch(space: string, name: string, probe?: () => Promise<PresenceHealth>): Promise<void> {
+  const h = probe ? await probe() : await probePresenceWrites(space, pawServer(), await controlCreds(space));
+  if (h.kind === "latched") throw new Error(presenceLatchRefusal(name, h, pawServer()));
+  if (h.kind === "unknown") console.error(`paw: couldn't probe the presence store before starting "${name}" (${h.message}) — proceeding`);
 }
 
 /**
@@ -1058,6 +1073,7 @@ export async function restartAgent(
   // Check what the respawn needs BEFORE stopping anything: a restart into a deleted worktree stopped
   // the agent and then could not start it (paw optimize, 2026-09-16).
   if (!existsSync(opts.cwd)) throw new Error(`paw: won't restart "${opts.name}" — its folder ${opts.cwd} no longer exists, so it could not come back`);
+  await refuseOnPresenceLatch(opts.space, opts.name);
   const ps = await ctl.ps();
   if (!ps.ok) throw new Error(`paw: manager isn't answering (${ps.error ?? "no reply"})`);
   const live = ((ps.data as Array<{ name: string }>) ?? []).some((a) => a.name === opts.name);

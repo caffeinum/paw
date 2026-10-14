@@ -106,6 +106,23 @@ Moved verbatim from CLAUDE.md (2026-10-02 split). Index: [CLAUDE.md](../../CLAUD
   `<repo>@<branch>`). Called by chat/dm/open/log/rm/rename/adopt/sessions right after the space resolves.
   Tested hermetically in `check:addressing`.
 
+## presence latch guard
+
+- **`refuseOnPresenceLatch` (src/addressing.ts) + `probePresenceWrites` (src/presence-health.ts), 2026-10-14.**
+  A disk-full broker latched `cotal_presence_paw` (every put unanswered; streams/consumers fine; only a
+  broker restart clears it, cotal #1356). Every agent read offline, the busy guard passed (idle
+  transcript), and `paw chat @evals` RESTARTED evals into a seat that could never register → spawn
+  timeout, evals dead. Now `ensureAgentSpawned` (before the restart/despawn branch AND before a cold
+  start) and `restartAgent` (before it stops anything) probe the store: one put of a non-JSON value under
+  `$KV.cotal_presence_<space>.paw-probe-<hex>` (watchers drop non-JSON) + a filtered purge. Only a
+  TIMEOUT (3s, `PRESENCE_PROBE_MS`) is a latch → throw "presence store isn't accepting writes … nothing
+  was stopped or started; restart the mesh broker". No-responders = no bucket yet (fine); any other error
+  (e.g. auth grants) is said on stderr and the gate proceeds as before. Healthy cost ~3–4 ms; it runs only
+  on start/restart paths, never on reuse. `paw status` runs the same probe concurrently and leads its
+  errors with the latch. Reproduced for real once on a 4 MB ramdisk filled to 100% (nats-server 2.14.7:
+  "Critical write error: no space left on device"; still latched after freeing space). Test:
+  `check:presence-latch` (private nats-server; a swallowing subscriber stands in for the latch).
+
 ## unmanaged agents
 
 - **An agent alive outside the current manager is REUSED, never duplicated (2026-10-05).** cotal ≥0.49

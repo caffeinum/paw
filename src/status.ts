@@ -25,6 +25,7 @@ import { tailRead, turnState, type PendingTool, type TurnState } from "./transcr
 import { gitInfoMany, type GitInfo } from "./git.ts";
 import { pawServer } from "./server.ts";
 import { presenceLive, readMeshRoster } from "./roster.ts";
+import { probePresenceWrites } from "./presence-health.ts";
 import { personaGlyph } from "./personality.ts";
 
 const tty = process.stdout.isTTY === true;
@@ -976,7 +977,13 @@ async function status(argv: string[]): Promise<void> {
     // A failed probe means ensure() went on to start a manager — read the hub (its manager env) afresh.
     const hub = ps && hubAtProbe ? hubAtProbe : hubState(space);
     hub.catch(() => {});
+    // A latched presence store makes every row read offline — say so first, beside the rows that lie.
+    const presence = controlCreds(space).then((creds) => probePresenceWrites(space, pawServer(), creds));
+    presence.catch(() => {});
     const all = await collectStatus(space, ctl, { ps, git: asJson, only });
+    const h = await presence;
+    if (h.kind === "latched") all.errors.unshift(`paw: presence store "${h.bucket}" isn't accepting writes (latched broker, cotal #1356) — every agent reads offline; restart the mesh broker`);
+    if (h.kind === "unknown") all.errors.push(`paw: couldn't probe the presence store (${h.message})`);
     return { all, hub: await hub };
   }, { only: ["ps"] }); // status sends nothing but ps — resolve just its contract (control.ts resolveCommands)
   const rows = selectRows(all.rows, targets, folderAgents);
