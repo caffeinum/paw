@@ -112,15 +112,12 @@ export function attachTmux(space: string, name: string): void {
 /** What a booting claude's terminal is showing, as far as paw may act on it. */
 export type StartupScreen =
   | { kind: "dev-channels" }
-  /** `keys` moves the cursor onto "Yes, I trust this folder" and confirms; undefined when the
-   *  dialog didn't parse (no cursor, no Yes line) — then paw presses nothing. */
-  | { kind: "trust"; keys?: string[] }
+  | { kind: "trust" }
   /** claude's normal input box with its mode footer — booted and waiting for input, nothing to answer. */
   | { kind: "ready" }
   | { kind: "other"; prompt: boolean };
 
 const TRUST_YES = /Yes, I trust this folder/;
-const CURSOR = /^\s*[❯>]/;
 /** The footer under claude's input box (permission mode / shortcuts hint). */
 const READY_FOOTER = /bypass permissions on|accept edits on|plan mode on|shift\+tab to cycle|\? for shortcuts/i;
 /** The input box's prompt line: `❯ …`/`> …`, bare or inside the box border `│ > │`. */
@@ -136,63 +133,36 @@ export function isIdleInput(text: string): boolean {
 /**
  * Classify a captured pane. Pure; exported for check:trust. The dev-channels gate is claude's
  * "WARNING: Loading development channels" (the connector's own `confirm` text); the trust dialog is
- * the "Yes, I trust this folder" menu, whose DEFAULT is "No, exit" — an Enter there quits claude.
+ * the "Yes, I trust this folder" menu, whose DEFAULT is "No, exit" — a blind Enter there quits claude.
  * `prompt` marks an unrecognised screen that is waiting on a keypress, worth logging.
  */
 export function classifyStartupScreen(text: string): StartupScreen {
   if (/Loading development channels/.test(text)) return { kind: "dev-channels" };
-  const lines = text.split("\n");
-  const yes = lines.findIndex((l) => TRUST_YES.test(l));
-  if (yes >= 0) {
-    // The menu's option lines run from the first option to the last; the cursor is the one marked ❯.
-    const cursor = lines.findIndex((l, i) => CURSOR.test(l) && Math.abs(i - yes) <= 6);
-    if (cursor < 0) return { kind: "trust" };
-    const delta = yes - cursor;
-    const move = Array.from({ length: Math.abs(delta) }, () => (delta > 0 ? "Down" : "Up"));
-    return { kind: "trust", keys: [...move, "Enter"] };
-  }
+  if (text.split("\n").some((l) => TRUST_YES.test(l))) return { kind: "trust" };
   if (isIdleInput(text)) return { kind: "ready" };
   return { kind: "other", prompt: /Enter to confirm|Esc to cancel|\(y\/n\)|\[Y\/n\]/i.test(text) };
 }
 
 /**
- * Answer claude's startup prompts in an agent's tmux window — by READING the window first.
+ * READ (never answer) claude's startup screen in an agent's tmux window.
  *
- * The dev-channels gate is COTAL's (cotal ≥0.71): its tmux/cmux runtimes read the pane and press
- * Enter once when the connector's declared `confirm` text is on screen, and END the seat when it has
- * not appeared within 15s. paw used to answer it too (cotal's old blind 1s…5s Enters missed a cold
- * claude — `cotal-endpoint-telegram` hung ~90s, 2026-08-17), but now a paw Enter that lands first
- * clears the gate before cotal's 250ms read sees it, and cotal then kills a healthy seat at 15s. So paw
- * only NAMES the gate (for `cause()`) and never types at it.
- *
- * This USED to be a blind Enter on every poll, and that was a bug with a body count: when the folder's
- * trust entry had been erased from ~/.claude.json (a concurrent claude rewrite), claude showed its
- * trust dialog, whose default is "No, exit" — the blind Enter chose it and the agent quit before it
- * ever reached MCP (reproduced against a real claude: exit 1). So now:
- *   - the dev-channels gate → nothing (cotal's, above);
- *   - the trust dialog → ONLY when `trust()` says paw itself trusts this folder (it re-writes the
- *     entry first), move the cursor to "Yes, I trust this folder" and confirm; otherwise nothing;
- *   - anything else → nothing.
- * Returns what it saw (and the screen text) so the caller can name it if the boot never completes.
+ * Both startup prompts are COTAL's. Since 0.71 its runtimes press Enter once at the dev-channels gate
+ * (the connector's `confirm` text) and END the seat when it has not shown within 15s; since 0.80 the
+ * same watch first answers the workspace-trust dialog (the connector's `confirmBefore`: Down onto
+ * "Yes, I trust this folder" once the "❯ No, exit" menu is stable on two reads, then Enter). Each step
+ * fires once and in order, so a paw key landing first races it: a second Down past "Yes", or an Enter
+ * that clears a prompt before cotal's 250ms read sees it — after which cotal kills a healthy seat at
+ * 15s. paw used to answer both (the 2026-10-03 trust race, the 2026-08-17 cold gate); it now only
+ * NAMES what is on screen, for `cause()`.
  * Best-effort, never throws: a missing window or tmux is not a spawn failure.
  */
-export function answerStartupPrompt(
+export function readStartupPrompt(
   space: string,
   name: string,
   env: NodeJS.ProcessEnv,
-  trust: () => boolean,
-): { screen: StartupScreen; text: string; sent?: string[] } | undefined {
+): { screen: StartupScreen; text: string } | undefined {
   const target = `${tmuxSession(space)}:${name}`;
   const cap = spawnSync("tmux", ["capture-pane", "-p", "-t", target], { encoding: "utf8", timeout: 2000, env });
   if (cap.status !== 0 || typeof cap.stdout !== "string") return undefined;
-  const text = cap.stdout;
-  const screen = classifyStartupScreen(text);
-  const keys = screen.kind === "trust" && screen.keys && trust() ? screen.keys : undefined;
-  // One key per send-keys, a beat apart: a menu redraws between keystrokes, and a single burst of
-  // "Down Enter" can reach a TUI as one chunk it doesn't split.
-  for (const [i, k] of (keys ?? []).entries()) {
-    if (i) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 150);
-    spawnSync("tmux", ["send-keys", "-t", target, k], { stdio: "ignore", timeout: 2000, env });
-  }
-  return { screen, text, sent: keys };
+  return { screen: classifyStartupScreen(cap.stdout), text: cap.stdout };
 }

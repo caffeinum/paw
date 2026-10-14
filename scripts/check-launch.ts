@@ -109,11 +109,14 @@ process.env.PAW_PERMISSION = "lol";
 assert(throws(() => pawConnector.buildLaunch({ space: "demo", workspaceRoot: work, name: "bad" })), "PAW_PERMISSION with an unknown mode throws");
 process.env.PAW_PERMISSION = "plan";
 const spec2 = pawConnector.buildLaunch({ space: "demo", workspaceRoot: work, name: "t2" });
-assert(spec2.args[spec2.args.indexOf("--permission-mode") + 1] === "plan", "PAW_PERMISSION overrides the permission mode");
+const modes = (a: string[]) => a.flatMap((x, i) => (x === "--permission-mode" ? [a[i + 1]] : []));
+assert(modes(spec2.args).join() === "plan", "PAW_PERMISSION overrides the permission mode (cotal's own bypass pair is dropped)");
 process.env.PAW_PERMISSION = "default";
 const spec3 = pawConnector.buildLaunch({ space: "demo", workspaceRoot: work, name: "t3" });
-assert(spec3.args.indexOf("--permission-mode") === -1, "PAW_PERMISSION=default emits no permission flag");
+assert(modes(spec3.args).join() === "default", "PAW_PERMISSION=default is passed explicitly (cotal >=0.80 would otherwise bypass)");
 delete process.env.PAW_PERMISSION;
+const spec4 = pawConnector.buildLaunch({ space: "demo", workspaceRoot: work, name: "t4" });
+assert(modes(spec4.args).join() === "bypassPermissions", "default posture: exactly one --permission-mode bypassPermissions");
 
 // ---- cwd safety: confineAndTrustCwd (folder pre-trust + PAW_ROOT confinement) ----
 const canon = confineAndTrustCwd(work);

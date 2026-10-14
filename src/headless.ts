@@ -36,7 +36,8 @@ export function headlessLaunch(spec: LaunchSpec, dir: string): LaunchSpec {
   if (!args.includes(DEV_CHANNELS)) throw new Error("paw: headless launch lost the dev-channels flag — named.ts would take it for a hand-run claude");
   for (const f of ["-p", "--print", "--input-format", "--output-format"])
     if (args.includes(f)) throw new Error(`paw: a headless agent sets ${f} itself — remove it from the agent's claudeArgs`);
-  // No TUI ⇒ no dev-channels gate for a runtime to press Enter at.
-  const { confirm: _confirm, ...rest } = spec;
+  // No TUI ⇒ no dev-channels gate and no workspace-trust dialog for a runtime to answer. Both go:
+  // cotal ≥0.80's runtimes refuse `confirmBefore` (the trust replies) without a final `confirm`.
+  const { confirm: _confirm, confirmBefore: _confirmBefore, ...rest } = spec;
   return { ...rest, command: "/bin/sh", args: ["-c", HEADLESS_SH, "paw-headless", dir, spec.command, ...PRINT_FLAGS, ...args] };
 }

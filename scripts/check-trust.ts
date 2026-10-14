@@ -9,9 +9,10 @@
  * Here a fake claude (same dialog text, same default, same keys) runs in a PRIVATE tmux server under a
  * temp HOME, so nothing touches the operator's tmux or ~/.claude.json:
  *   BEFORE  the old behaviour (Enter every poll) → the fake quits at the dialog       (the bug)
- *   AFTER   startupWatch: answers "Yes, I trust this folder", leaves the dev-channels gate to cotal's watch → ready
+ *   AFTER   startupWatch types nothing at either prompt; cotal ≥0.80's own watch, driven by the real
+ *           connector's `confirm` + `confirmBefore`, answers the trust dialog then the gate → ready
  *   PTY     no terminal to type into: the re-written entry alone saves a claude that reads it late
- *   POLICY  a folder paw does NOT pre-trust: nothing is sent, the log and cause() say why
+ *   POLICY  a folder paw does NOT pre-trust: paw writes no entry and sends nothing; cause() names it
  *   OTHER   an unrecognised prompt: nothing is sent, logged with its last lines
  */
 import { spawn, spawnSync } from "node:child_process";
@@ -53,11 +54,8 @@ const REAL_TRUST = `────────────────────
    Yes, I trust this folder
  Enter to confirm · Esc to cancel`;
 const t = classifyStartupScreen(REAL_TRUST);
-ok("real trust dialog: cursor on 'No, exit' → Down, Enter", t.kind === "trust" && t.keys?.join() === "Down,Enter", JSON.stringify(t));
-const t2 = classifyStartupScreen(" ❯ 1. Yes, I trust this folder\n   2. No, exit\n Enter to confirm");
-ok("cursor already on Yes → Enter only", t2.kind === "trust" && t2.keys?.join() === "Enter");
-const t3 = classifyStartupScreen("   No, exit\n   Yes, I trust this folder\n");
-ok("no cursor visible → no keys (send nothing)", t3.kind === "trust" && t3.keys === undefined);
+ok("real trust dialog recognised", t.kind === "trust", JSON.stringify(t));
+ok("trust dialog with the cursor on Yes recognised", classifyStartupScreen(" ❯ 1. Yes, I trust this folder\n   2. No, exit\n Enter to confirm").kind === "trust");
 ok("dev-channels gate recognised", classifyStartupScreen("WARNING: Loading development channels\nEnter to confirm").kind === "dev-channels");
 const idle = classifyStartupScreen("╭───╮\n│ > │\n╰───╯\n ⏵⏵ bypass permissions on");
 ok("an idle claude is 'ready'", idle.kind === "ready");
@@ -146,24 +144,28 @@ async function boot(name: string, opts: { poll: () => void; mode?: string; delay
   // Let claude read the erased file and draw its dialog BEFORE paw's first poll — the tmux half of
   // the fix is what's under test here (the PTY case below covers the re-write winning the race).
   ok("AFTER: claude is at the trust dialog before paw polls", await waitFor(() => state() === "trust", 5000), state());
-  for (let t0 = Date.now(); Date.now() - t0 < 10000 && state() !== "gate" && state() !== "exited"; await sleep(500)) w.poll();
-  ok("AFTER: startupWatch answers the dialog 'Yes' — claude reaches the dev-channels gate", state() === "gate", state());
-  // The gate is cotal's (≥0.71): paw must never type at it, or cotal's runtime misses its prompt and
-  // ends the seat at 15s. Poll on it for a while and prove nothing was pressed.
-  for (let i = 0; i < 4; i++, await sleep(500)) w.poll();
-  ok("AFTER: paw sends nothing at the dev-channels gate", state() === "gate", state());
-  // Then cotal's own watch (what the tmux runtime runs) clears it — with paw still polling beside it.
+  // Both prompts are cotal's (≥0.80): paw must never type at them — each cotal step fires once, so a
+  // paw key landing first races it. Poll on the dialog for a while and prove nothing was pressed.
+  for (let i = 0; i < 6; i++, await sleep(500)) w.poll();
+  ok("AFTER: paw sends nothing at the trust dialog", state() === "trust", state());
+  // Then cotal's own watch — what the tmux runtime runs, with the prompts the REAL claude connector
+  // declares for a managed seat — answers the dialog and the gate, with paw still polling beside it.
   const { confirmWatch } = await import("@cotal-ai/core");
+  const { claudeConnector } = await import("@cotal-ai/connector-claude-code");
+  const spec = claudeConnector.buildLaunch({ space, workspaceRoot: root, name: "after2", cwd: folder });
+  ok("AFTER: the connector declares the trust replies for a managed seat", !!spec.confirm && (spec.confirmBefore?.length ?? 0) > 0, JSON.stringify(spec.confirmBefore));
   let failed: string | undefined;
-  confirmWatch("WARNING: Loading development channels")({
-    read: () => tmux("capture-pane", "-p", "-t", `cotal-${space}:after2`).stdout,
-    enter: () => void tmux("send-keys", "-t", `cotal-${space}:after2`, "Enter"),
+  const target = `cotal-${space}:after2`;
+  confirmWatch(spec.confirm!, spec.confirmBefore)({
+    read: () => tmux("capture-pane", "-p", "-t", target).stdout,
+    enter: () => void tmux("send-keys", "-t", target, "Enter"),
+    down: () => void tmux("send-keys", "-t", target, "Down"),
     fail: (m: string) => void (failed = m),
   });
-  for (let t0 = Date.now(); Date.now() - t0 < 5000 && state() !== "ready" && !failed; await sleep(250)) w.poll();
-  ok("AFTER: cotal's confirm watch clears the gate beside paw's poll — claude boots", state() === "ready" && !failed, failed ?? state());
+  for (let t0 = Date.now(); Date.now() - t0 < 8000 && state() !== "ready" && state() !== "exited" && !failed; await sleep(250)) w.poll();
+  ok("AFTER: cotal's watch answers trust + gate beside paw's poll — claude boots", state() === "ready" && !failed, failed ?? state());
   ok("AFTER: the erased trust entry was re-written", isFolderTrusted(folder));
-  ok("AFTER: the log names the erased entry and the answered dialog", logs.some((l) => /lost the trust entry/.test(l)) && logs.some((l) => /answered "Yes, I trust this folder"/.test(l)), logs.join(" | "));
+  ok("AFTER: the log names the erased entry and the dialog, as cotal's to answer", logs.some((l) => /lost the trust entry/.test(l)) && logs.some((l) => /cotal's runtime answers it/.test(l)), logs.join(" | "));
 }
 
 // PTY: nothing can type, but a claude that reads ~/.claude.json after the re-write never sees the dialog
@@ -194,8 +196,8 @@ async function boot(name: string, opts: { poll: () => void; mode?: string; delay
   const st = existsSync(out) ? readFileSync(out, "utf8") : "";
   ok("POLICY: an untrusted-by-policy folder's dialog gets NO keypress (claude stays at it)", st === "trust", st);
   ok("POLICY: and paw did not write a trust entry for it", !isFolderTrusted(folder));
-  ok("POLICY: the log says it was left for a human", logs.some((l) => /does NOT pre-trust/.test(l)), logs.join(" | "));
-  ok("POLICY: cause() names it for the timeout error", /does not pre-trust/.test(w.cause()), w.cause());
+  ok("POLICY: the log names the dialog", logs.some((l) => /folder-trust dialog/.test(l)), logs.join(" | "));
+  ok("POLICY: cause() names it for the timeout error", /folder-trust dialog/.test(w.cause()), w.cause());
   delete process.env.PAW_ROOT;
 }
 
