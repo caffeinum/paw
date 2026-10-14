@@ -2,6 +2,75 @@
 
 Moved verbatim from CLAUDE.md (2026-10-02 split). Index: [CLAUDE.md](../../CLAUDE.md)
 
+## cotal 0.81.1
+
+**Bumped 0.72.1 → 0.81.1 on 2026-10-14** (operator-approved, inside the 7-day min-release-age window:
+0.81.1 published 2026-10-13T17:06Z). `minimumReleaseAgeExclude` lists the eleven 0.81.1 packages
+(the ten direct ones + transitive `@cotal-ai/seat`) by EXACT version — **delete it after 2026-10-20**.
+Every package has a 0.81.1; no other dependency was blocked by the gate. What broke, and what paw changed:
+- **0.80 managed seats default to `--permission-mode bypassPermissions`** (#3834): the claude connector
+  adds it unless its own launch options name a mode. paw's connector appended its own mode only when
+  not `default`, so `PAW_PERMISSION=default` would silently have run bypass. paw now drops cotal's
+  pair and ALWAYS passes its own `--permission-mode` (`default` included). `check:launch` asserts
+  exactly one flag per mode.
+- **0.80 managed workspace trust** (5417401): the connector no longer refuses an untrusted seat dir;
+  it declares `confirmBefore` (Down onto "Yes, I trust this folder", then Enter) and every runtime
+  (pty, tmux, cmux) answers it before the dev-channels Enter, each step once and in order. Two
+  consequences: (1) every runtime REFUSES `confirmBefore` without `confirm`, and `headlessLaunch`
+  dropped only `confirm` — a headless agent would have been refused at spawn; it now drops both.
+  (2) paw's tmux poll also pressed Down+Enter at the trust dialog, which races cotal's sequence (a
+  double Down, or a key clearing the step cotal waits on → seat ended at 15s). paw's poll is now
+  read-only (`readStartupPrompt`); it still re-writes an erased `~/.claude.json` entry and names the
+  screen in the timeout error. `spawnPinned`'s retry on "Claude home does not trust" went with the
+  refusal. `check:trust` now drives cotal's real `confirmWatch` with the connector's own
+  `confirm` + `confirmBefore` beside paw's poll on a fake claude and proves the pair boots.
+- **Hub patch re-keyed** to `@cotal-ai/connector-claude-code@0.81.1` (#2401 still open; the PR branch
+  was rebased onto d759b79 but 0.81.1 does not ship it). Rebuilt on 0.81.1's main(), which changed a
+  lot: control socket bound and awaited BEFORE `agent.start()` (custody claim, 15d10c9), the
+  `waitForEventConnection` gate (no 20s `whenConnected` timeout), one transcript source per holder,
+  `eventPlaneStopped` no longer stops the seat (the plane re-establishes itself, fded3ab — so
+  `onShutdown(1)` no longer happens), `envFlag`/`eventPlaneArmed(config, env)`. Kept paw's extras
+  over the PR: `log` option, `import` condition on `./mcp`, realpath entry check, input EOF closes
+  the session WITHOUT `onShutdown` (the hub must not send a shim its exit line on a dropped socket),
+  AG-UI holder close bounded at 5s. Startup failure closes what started (the PR's try/catch).
+- **Core meta-validator patch re-keyed unchanged** (applied cleanly with offsets): 0.81.1's
+  `compileWithinBudget` still builds a fresh `Ajv2020` per compile.
+- **0.76 local inbox custody** (15d10c9): `MeshAgent.start()` takes a per-process O_EXCL lock keyed by
+  (servers, space, principal, lifecycleUid) under `~/.cotal-consumers/`. The hub serves many sessions
+  in one process, each with its own lifecycleUid, so they don't collide; a killed hub's locks are
+  reclaimed by pid. Exercised by the hub-kill e2e below.
+- **0.76 control socket no longer unlinked before listen** (15d10c9, "never unlink an existing path:
+  it may belong to a live listener"). The hub serves each session on the socket path from its LAUNCH
+  env — the same path on every shim reconnect — so after a hub SIGKILL every session's restart hit
+  `EADDRINUSE` and the agent stayed OFFLINE (reproduced: the e2e's DM after the kill went unanswered
+  for 180s). `clearDeadSocket` in `src/hub/daemon.mjs` now probes the path before
+  `serveClaudeSession`: a refused connect proves it dead → unlinked; a live listener is left for
+  cotal's own refusal; any other probe error throws. `check:hub` covers absent/live/SIGKILLed/non-socket.
+- Audited, no change needed: 0.74 `Pane.confirm` removal (layout panes only; paw sets none); 0.74
+  strict `COTAL_CHANNEL`/`COTAL_EVENTS` parsing (paw sets neither; the hub forwards cotal's own env);
+  0.77–0.81 spawn-field refusals (`bad-request` on blank `model`/`cwd`/`agent`… — paw sets them only
+  when non-empty); 0.79 strict `spawn`/`spawn.env` config reader (live `~/.config/cotal/config.json`
+  loads under 0.81.1's `loadCotalConfig`: `connectors` only, 3 MCP servers); `takeCodePoints` and
+  auth-plane API changes (paw imports none); `pnpm typecheck` clean with no source change.
+- Verified (isolated, PAW_RELEASE=dev, own nats-server per run, temp PAW_HOME/space/cotal root,
+  haiku): typecheck; all 35 hermetic `check:*` (check:web flakes ~1 in 2 with `fetch failed:
+  ECONNRESET` right after its company-route server is closed and reopened on the same port — a
+  keep-alive race in the test, unrelated to cotal; it passes on rerun); `check:loop`; `check:rail`
+  with `PAW_RAIL_SPAWN=1` (real claude spawned in ~3s and despawned); `e2e-hub` on TMUX (3 real
+  agents on shims, DM + #general wake, DMs during a hub SIGKILL and during a full hub+supervisor
+  outage, mesh ids unchanged, sleep/wake, `paw restart`, `paw down` — all green); and a CLI e2e on
+  pty: `paw hub on`, `paw dm . "reply with just: ok"` in a fresh git folder → agent live in ~6s,
+  replied "ok"; presence stream `KV_cotal_presence_<space>` is `storage: memory`; SIGKILL of the hub
+  daemon only (supervisor kept its pid) → new hub, "cleared a dead control socket", agent rejoined in
+  ~2s and answered a DM; `paw sleep --now --force` → asleep with 0 shims; a DM woke it (new
+  session, answered in ~12s); `paw down` + `removeMesh` → 0 processes left. The live `paw`
+  hub/supervisor/manager/mailbox pids were the same before and after every run.
+- NOT verified / open: the live cutover (`pnpm install` + `paw release` + `paw restart` in the
+  operator's checkout — operator's call); tmux runtime against a REAL claude trust dialog (the e2e
+  folder was pre-trusted, so cotal's trust replies were exercised only against the fake in
+  `check:trust`); `purgeTestSpace`/`paw spaces prune` named in CLAUDE.md do not exist in this tree —
+  teardown was `paw down` + `removeMesh` + killing the private broker (its store was a temp dir).
+
 ## cotal 0.72.1
 
 **Bumped 0.66.1 → 0.72.1 on 2026-10-07** (operator's ask, inside the 7-day min-release-age window:

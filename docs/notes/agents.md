@@ -237,3 +237,13 @@ Live check (read-only, 2026-10-03): 121 of 129 registered folders trusted; the r
 worktrees, opencode1, and one extant worktree agent. So established agents rarely hit it — FIRST
 boots of new folders while another claude writes the file do. Upstream ask for pty: docs/notes/
 upstream-trust-hook.md (drafted, not filed).
+
+**Since cotal 0.81.1 paw types at NEITHER prompt (`readStartupPrompt`).** cotal 0.80's claude connector
+declares the trust replies as `confirmBefore` on every managed launch, and every runtime (pty, tmux,
+cmux) answers them — Down onto "Yes, I trust this folder" once "❯ No, exit" is stable on two reads,
+then Enter — before its dev-channels Enter, each step once and in order. A paw Down/Enter beside it
+races that sequence (a second Down, or a key that clears the step cotal is waiting for, and the seat is
+ended at 15s), so (b) above is now read-only: paw names the screen for `cause()` and still re-writes
+an erased trust entry (a). The 0.68 "Claude home does not trust" refusal is gone upstream, and with it
+`spawnPinned`'s retry. Headless launches drop `confirmBefore` with `confirm` (runtimes refuse one
+without the other). → [cotal-dependency.md#cotal-0811](cotal-dependency.md#cotal-0811)

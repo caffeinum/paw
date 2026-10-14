@@ -30,8 +30,14 @@ This file is the INDEX. The full design notes, incident narratives and rationale
 - **`ensure()` never switches the manager runtime implicitly** — only `paw runtime <r>` / explicit
   `PAW_RUNTIME` (a switch despawns the whole fleet; 802ad0d).
 
-## cotal 0.58 (2026-10-02)
-Bumped 0.48.1 → **0.58.0** (all `@cotal-ai/*` pinned exact). `pawConnector` spreads `...claudeConnector`
+## cotal 0.81.1 (2026-10-14)
+Pinned **0.81.1** (all `@cotal-ai/*` exact; age-gate exemption in pnpm-workspace.yaml, delete after
+2026-10-20). Two pnpm patches re-keyed every bump: the #2401 hub patch (`serveClaudeSession`) and the
+core meta-validator perf patch. Since 0.80 cotal's runtimes answer BOTH claude startup prompts (trust
+dialog via `confirmBefore`, then dev-channels) — paw never types at them; paw always passes its own
+`--permission-mode` (cotal now defaults managed seats to bypass). → [cotal-dependency.md#cotal-0811](docs/notes/cotal-dependency.md#cotal-0811)
+
+Older (0.58): `pawConnector` spreads `...claudeConnector`
 so `eventChannel` (required since 0.5x) and future capabilities are inherited; `buildLaunch` needs a
 `workspaceRoot` (`paw claude --fg` passes `pawCotalRoot(space)`); since 0.49 a manager SIGTERM spares
 its agents, so `stopOwnedManager` despawns every agent first (`despawnManagedAgents`); `ensure()` only
