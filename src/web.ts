@@ -1564,6 +1564,8 @@ async function web(argv: string[]): Promise<void> {
   const ep = await observerEndpoint(space, server, { watchPresence: true });
   ep.on("error", (e: Error) => console.error(c.red("! " + e.message)));
   await ep.start();
+  // The roster tick reads this endpoint's presence view; the first tick must not read it unhydrated.
+  if ((await ep.waitForPresenceSnapshot(5000)) === "timeout") console.error(c.red("! presence snapshot not loaded within 5s — the first roster may be partial"));
 
   const convo = new Conversation(ep);
   const channels = new Channels();
@@ -1601,7 +1603,9 @@ async function web(argv: string[]): Promise<void> {
     // refusals (2026-09-08: epoch 45 → 46, rows frozen at 10:02 AM for nine hours).
     let fresh: Awaited<ReturnType<typeof collectStatus>>;
     try {
-      fresh = await collectStatus(space, await sharedManagerControl(space, server));
+      // The roster comes from THIS long-lived observer: a per-tick throwaway endpoint left its two KV
+      // watch consumers behind for 5 minutes each (see CollectOpts.roster).
+      fresh = await collectStatus(space, await sharedManagerControl(space, server), { roster: () => ep.getRoster() });
     } catch (e) {
       await dropSharedManagerControl(space, server);
       throw e;

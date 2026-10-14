@@ -54,6 +54,7 @@ const COMMAND_MODULES: Array<() => Promise<unknown>> = [
   () => import("../src/start.ts"), // self-registers the "start" command (cold-start the whole registered fleet)
   () => import("../src/commands/optimize.ts"), // self-registers "optimize" (restart long-running idle agents, one at a time, verified)
   () => import("../src/commands/top.ts"), // self-registers "top" (per-agent memory/cpu/subprocesses + cleanup hints; read-only, self-ensures)
+  () => import("../src/commands/spaces.ts"), // self-registers "spaces" (broker streams per space; `prune` deletes dead spaces, dry run unless --yes)
   () => import("../src/web.ts"), // self-registers the "web" command (local http+ws UI over feed/transcript/status)
   () => import("../src/commands/complete.ts"), // self-registers "completion" + the hidden "__complete" dispatcher (shell-completion)
 ];

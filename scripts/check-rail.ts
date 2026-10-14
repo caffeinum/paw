@@ -33,7 +33,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { removeMesh } from "@cotal-ai/workspace";
+import { purgeTestSpace } from "../src/prune.ts";
 import { ManagerControl, withManagerControl } from "../src/control.ts";
 import { ensure, stop } from "../src/lifecycle.ts";
 import { pawServer } from "../src/server.ts";
@@ -214,7 +214,10 @@ try {
   // And the MESH REGISTRY entry. A test that leaves one behind is a landmine: cotal's `up` preflight
   // matches the FIRST entry holding a port, so a stale probe space eventually makes the REAL mesh
   // refuse to start, weeks later, in an unrelated command. (check:loop learned this the hard way.)
-  removeMesh(space);
+  await purgeTestSpace(space, pawServer()).catch((e) => {
+    console.error("teardown purge:", (e as Error).message);
+    process.exitCode = 1;
+  });
   rmSync(join(process.env.PAW_HOME!, "spaces", space), { recursive: true, force: true });
 }
 

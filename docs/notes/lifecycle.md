@@ -254,6 +254,36 @@ Moved verbatim from CLAUDE.md (2026-10-02 split). Index: [CLAUDE.md](../../CLAUD
   earlier. `check:loop` now calls `removeMesh(space)` in its teardown. A test that litters shared
   machine state is a landmine that goes off much later, in an unrelated command.
 
+## broker store hygiene
+
+- **Test spaces leaked STREAMS onto the live broker (beads-eic, 2026-10-14).** `removeMesh` drops the
+  registry entry, `paw down` the daemons — neither deletes the space's ~20 JetStream streams. Every
+  "isolated" run that set only `PAW_HOME`/`PAW_SPACE` (no `PAW_SERVER`) adopted the live :4222, so the
+  live store held 185 spaces / 2273 streams for ONE live space (2239 removable, only 3.9 MB of data —
+  the cost is thousands of stream dirs and per-stream server state, next to a presence KV that latched
+  twice that week). Fixes: `purgeTestSpace(space, server)` (src/prune.ts — cotal `deleteSpace` +
+  `removeMesh`, refuses `paw` and any space a running process names) replaces bare `removeMesh` in
+  check:loop / check:rail / e2e-sleep / probe-sleep-dm; ad-hoc tests should also set `PAW_SERVER` to a
+  private `nats-server -js -p <port> -sd <tmp>`.
+- **`paw spaces` / `paw spaces prune [--yes]`** (src/commands/spaces.ts, src/prune.ts) — lists streams per
+  space; `prune` is a DRY RUN unless `--yes`. Kept: `paw`, the current space, `--keep`, mesh-registry
+  entries, `$PAW_HOME/spaces/*`, any `--space <s>` on a running process's argv, anything active within
+  `--min-idle` (default 1h; activity = newest stream creation or message), and any space whose
+  `deleteSpace` list would hit a kept space's stream (`REQ_x` names `EPT_REQ_x`, which is `x`'s).
+  Streams it cannot attribute are reported, never touched. Deletion re-reads the broker and fails loud
+  on any survivor. Open meshes only. Test: `check:prune` (private broker).
+- **Presence-watch consumer pile-up.** nats.js's KV `watch()` is an ordered PUSH consumer with
+  `inactive_threshold` 5 min, and `iter.stop()` does NOT delete it — so every `CotalEndpoint` with
+  `watchPresence` leaves its presence + channels watch consumers on the broker for 5 minutes after
+  `stop()` (verified on a private broker: 5 start/stop cycles → 5 unbound consumers on each). `paw web`
+  opened a throwaway roster endpoint every 10s (collectStatus → readMeshRoster) — ~60 dead consumers
+  at all times; it now passes its long-lived endpoint's roster (`CollectOpts.roster`). cotal's
+  `rebindStalePresenceWatch` has the same shape at up to one rebind per presence TTL (6s) per observer
+  when the bucket goes silent — the likely source of the ~1185 consumers seen during the latch. Upstream.
+- **The live `KV_cotal_presence_paw` is still FILE-backed** (created 2026-09-11, before cotal made
+  presence memory-backed for #1356); storage class is fixed at creation, so it keeps the latch exposure
+  until the bucket is deleted and recreated (operator action: delete it, then `paw restart`).
+
 ## stripHarnessMarkers
 
 - **`stripHarnessMarkers` / `HARNESS_SESSION_MARKERS` (src/lifecycle.ts, 2026-09-08)** — Claude Code stamps its
