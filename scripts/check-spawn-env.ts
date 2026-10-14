@@ -148,3 +148,21 @@ console.log("\nall spawn-env checks passed 🐾");
   for (const [k, v] of Object.entries(saved)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
   console.log("✓ harness session markers stripped at the daemon boundary");
 }
+
+// ── daemons get a TMPDIR macOS never purges (the launch-material wipe, 2026-10-13) ──
+{
+  const { daemonEnv, daemonTmpDir } = await import("../src/lifecycle.ts");
+  const savedHome = process.env.PAW_HOME;
+  const savedTmp = process.env.TMPDIR;
+  process.env.TMPDIR = "/var/folders/xx/T/";
+  process.env.PAW_HOME = "/tmp/paw-tmpdir-check";
+  assert(daemonEnv().TMPDIR === "/tmp/paw-tmpdir-check/tmp", "daemonEnv points TMPDIR at $PAW_HOME/tmp, over the inherited one");
+  assert(daemonEnv({ TMPDIR: "/x" }).TMPDIR === "/x", "an explicit extra TMPDIR still wins");
+  process.env.PAW_HOME = `/tmp/${"long".repeat(20)}`;
+  const short = daemonTmpDir();
+  assert(short.startsWith("/tmp/paw-") && Buffer.byteLength(short) + 44 < 104, `a PAW_HOME too long for the seat socket falls back to a short dir (${short})`);
+  if (savedHome === undefined) delete process.env.PAW_HOME; else process.env.PAW_HOME = savedHome;
+  if (savedTmp === undefined) delete process.env.TMPDIR; else process.env.TMPDIR = savedTmp;
+  console.log("✓ durable TMPDIR at the daemon boundary");
+}
+if (failures > 0) process.exit(1);

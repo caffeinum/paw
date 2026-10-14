@@ -293,6 +293,16 @@ Moved verbatim from CLAUDE.md (2026-10-02 split). Index: [CLAUDE.md](../../CLAUD
   breaks them, which is how the session that hit this showed `Stop hook error` too). Test:
   `check:commands`.
 
+**Durable TMPDIR (2026-10-13).** `daemonEnv` sets `TMPDIR` to `daemonTmpDir()` = `$PAW_HOME/tmp` for
+every daemon and, through the manager, every agent. cotal keeps live state in `os.tmpdir()`: each seat's
+launch material (`cotal-launch-*/material.json`, the control token the hub re-reads when a seat
+reconnects) and its control socket (`cotal-<id>.sock`). macOS purges `/var/folders/…/T` under disk
+pressure; on 2026-10-13 a full disk wiped them, and after the hub restarted no running agent could
+rejoin until it was restarted. A PAW_HOME too long for the socket's sun_path (a `mktemp -d` test home)
+falls back to `/tmp/paw-<uid>/<hash>`. Agents keep the durable dir too: without the hub, the agent's
+own MCP process reads the material and checks it sits in ITS tmpdir. Cost: nothing purges it, so
+tool temp files from agents accumulate there. `check:spawn-env` covers it.
+
 ## pid-stamped locks
 
 - **Locks are PID-STAMPED and break on a dead holder (`src/lock.ts`, 2026-08-20)** — the lock file used

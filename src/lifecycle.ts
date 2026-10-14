@@ -13,6 +13,7 @@
  * daemons — never the operator's hand-run mesh.
  */
 import { execFile, execFileSync, spawn, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { createConnection } from "node:net";
 import {
   closeSync,
@@ -25,7 +26,7 @@ import {
   writeFileSync,
   readdirSync,
 } from "node:fs";
-import { homedir, loadavg } from "node:os";
+import { homedir, loadavg, userInfo } from "node:os";
 import { basename, dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -704,8 +705,30 @@ export function stripHarnessMarkers(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   return out;
 }
 
+/** connector-claude-code's control socket, `<TMPDIR>/cotal-<32 chars>.sock`, must fit sun_path. */
+const SEAT_SOCKET_BYTES = "/cotal-".length + 32 + ".sock".length;
+const SUN_PATH_MAX = process.platform === "darwin" ? 104 : 108;
+
+/**
+ * A TMPDIR macOS never purges, for paw's daemons and every agent they launch. cotal keeps LIVE state
+ * in os.tmpdir(): each seat's launch material (the control token the hub re-reads whenever a seat
+ * reconnects) and its control socket. macOS purges `/var/folders/…/T` under disk pressure — on
+ * 2026-10-13 a full disk wiped them, and after the hub restarted no running agent could rejoin until
+ * it was restarted. `$PAW_HOME/tmp` survives that. A PAW_HOME too long for the socket path (a
+ * `mktemp -d` test home) falls back to a short per-home dir under /tmp — tests outlive no purge.
+ */
+export function daemonTmpDir(): string {
+  const home = process.env.PAW_HOME?.trim() || join(homedir(), ".paw");
+  let dir = join(home, "tmp");
+  if (Buffer.byteLength(dir) + SEAT_SOCKET_BYTES >= SUN_PATH_MAX) {
+    dir = join(`/tmp/paw-${userInfo().uid}`, createHash("sha256").update(home).digest("hex").slice(0, 8));
+  }
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  return dir;
+}
+
 export function daemonEnv(extra?: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = stripHarnessMarkers({ ...process.env, ...extra });
+  const env: NodeJS.ProcessEnv = stripHarnessMarkers({ ...process.env, TMPDIR: daemonTmpDir(), ...extra });
   // PAW_COTAL_HUB overrides the hub mode for THIS command only. A daemon that inherited it (the
   // manager's connector reads it per spawn) would pin the mode for its whole life and outlive the
   // shell — `paw hub off` could never take effect. The sticky mode file is the daemons' answer.
