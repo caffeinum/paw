@@ -268,3 +268,14 @@ an old server ignores the header and frames land on "default". `rm` the file to 
   stays on console.log: a torn line is visible to a person, silently truncated JSON is not. Test:
   `check:stdout` — which asserts the PROPERTY (a 400 KB payload arrives whole through a pipe, 5×
   under bun) and honestly is NOT a reproduction of the original failure, since that needs a live mesh.
+
+## paw tidy
+`src/commands/tidy.ts` — `paw tidy [--older 1h] [--min-mb 20] [--dry-run] [<name>…]`. Built 2026-10-15 after
+swap hit 23 GB: 8 agents that looked idle held dev servers, emulators, tsc runs and days-old orphans. Cotal's
+`idle` only means the turn ended (hooks: UserPromptSubmit → working, Stop → idle); background bash, background
+subagents and scheduled wakeups are invisible to it (upstream idea 431c9f15: presence "obligations"). Only the
+agent knows whether a `next dev` is a subagent's live test or a leftover, so paw ASKS: one DM per live agent
+listing its `task`/`bg` items plus orphans it detached itself (younger than its live process), above the age
+and size floors. It never kills anything. Orphans of an earlier incarnation have nobody to ask — printed as a
+`kill` hint like `paw top`. First manual run: 6/8 agents replied within minutes, killed 6 leftovers, and evals
+correctly KEPT two dev servers its subagents were mid-test on. `pnpm check:tidy` covers selection + args.

@@ -54,6 +54,7 @@ const COMMAND_MODULES: Array<() => Promise<unknown>> = [
   () => import("../src/start.ts"), // self-registers the "start" command (cold-start the whole registered fleet)
   () => import("../src/commands/optimize.ts"), // self-registers "optimize" (restart long-running idle agents, one at a time, verified)
   () => import("../src/commands/top.ts"), // self-registers "top" (per-agent memory/cpu/subprocesses + cleanup hints; read-only, self-ensures)
+  () => import("../src/commands/tidy.ts"), // self-registers "tidy" (DM agents holding background processes: still using them?)
   () => import("../src/commands/spaces.ts"), // self-registers "spaces" (broker streams per space; `prune` deletes dead spaces, dry run unless --yes)
   () => import("../src/web.ts"), // self-registers the "web" command (local http+ws UI over feed/transcript/status)
   () => import("../src/commands/complete.ts"), // self-registers "completion" + the hidden "__complete" dispatcher (shell-completion)
@@ -69,7 +70,7 @@ const NEEDS_MESH = new Set(["inbox", "msg", "ask", "who", "history", "watch", "f
  *  `open`/`dm` are here too: they spawn the folder's agent through the manager.
  *  (`sessions`/`log` are local reads; `adopt` runs its own ensure once it decides to start;
  *  `mailbox` is the daemon ensure() itself spawns — gating it would recurse into the lock.) */
-const NEEDS_MANAGER = new Set(["open", "attach", "dm"]); // status, chat, rename, rm and stop ensure() themselves — each shares ensure()'s probe rail (lifecycle.ts ensureManagerOn)
+const NEEDS_MANAGER = new Set(["open", "attach", "dm", "tidy"]); // status, chat, rename, rm and stop ensure() themselves — each shares ensure()'s probe rail (lifecycle.ts ensureManagerOn)
 
 /** Raw cotal verbs that drive the control plane — the passthrough must bring the manager up too,
  *  or a cold-machine `paw cotal ps`/`start` dead-ends on a mesh with no manager answering. */
