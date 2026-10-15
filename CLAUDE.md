@@ -66,6 +66,7 @@ Each entry: what it is + the most load-bearing rule. Full notes behind the link.
 - `src/keeper.ts` — the unstick sweep on the global keeper tick (history; see the no-auto-restart rule). → [cli.md#keeper-unstick-sweep](docs/notes/cli.md#keeper-unstick-sweep)
 - `src/start.ts` — `paw start [<name>…]`: cold-start every REGISTERED agent (restart only revives live ones). → [cli.md#paw-start](docs/notes/cli.md#paw-start)
 - `src/commands/tidy.ts` — `paw tidy`: DM each live agent holding background processes (age/size floors) to ask if it still uses them; never kills itself (cotal `idle` ≠ nothing pending). → [cli.md#paw-tidy](docs/notes/cli.md#paw-tidy)
+- `src/commands/nice.ts` — `paw nice`: per-agent CPU priority (persona `nice:` > `PAW_NICE` > 10); launches run under `/usr/bin/nice`, `--apply`/`<name> <n>` renice the live tree (absolute `renice <n>`, NOT `-n` — on macOS that is an increment). → [cli.md#paw-nice](docs/notes/cli.md#paw-nice)
 - `src/pacing.ts` — `awaitSpawnHeadroom`: load-gated revival (bounded 90s), anti-thundering-herd. → [cli.md#spawn-pacing](docs/notes/cli.md#spawn-pacing)
 - `src/commands/launchd.ts` — `paw launchd`: fleet (one-shot, NO KeepAlive), web (KeepAlive), global
   keeper (60s StartInterval); explicit name list baked in. → [cli.md#paw-launchd](docs/notes/cli.md#paw-launchd)

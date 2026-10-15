@@ -283,3 +283,14 @@ correctly KEPT two dev servers its subagents were mid-test on. `pnpm check:tidy`
 **Keeper sweep** (`tidySweep`, same day): the 60s `paw global` tick runs it at most every 6h (stamp in
 `spaces/<s>/tidy.json`), floors 2h + 100 MB, and asks about a pid ONCE — an agent is re-asked only when a NEW
 process appears, so a kept dev server never earns a nag. A DM only, never a kill; failures are logged, never fail the tick.
+
+## paw nice
+`src/commands/nice.ts` + `niced()` in src/connector.ts — built 2026-10-15 when the box sat at load ~48 on 10
+cores from agents' parallel `tsc`/`next build`/`bun test` while the operator's UI lagged. Every claude launch
+is wrapped `/usr/bin/nice -n <n> claude …` (nice execs, so cotal's tracked pid IS claude; every tool, build
+and dev server inherits). Value: persona `nice:` (0–20, 0 = no wrapper) > `PAW_NICE` > `DEFAULT_NICE` 10; a bad
+value throws. `paw nice` shows WANT vs NOW per live agent; `paw nice <name> <n>` writes the persona and
+renices the live tree; `--apply` renices the whole fleet to its configured values with no restart.
+Gotchas: macOS `renice -n X` is an INCREMENT (the first --apply stacked +10 on already-niced builds → 20);
+use the absolute `renice X -p pid`. A non-root user can lower priority but never raise it back — `paw nice
+<name> 0` on a running agent only takes full effect at its next start (or `sudo renice`).

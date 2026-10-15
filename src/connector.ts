@@ -6,7 +6,7 @@ import { HUMAN_PEER } from "./names.ts";
 import { ADDRESSING_BRIEF, BACKGROUND_BASH_BRIEF, CHANNELS_BRIEF, FILES_BRIEF, OPERATOR_REQUESTS_BRIEF, TASKS_BRIEF, UNATTENDED_BRIEF, WAKE_BRIEF } from "./brief.ts";
 import { beadsDir } from "./beads-dir.ts";
 import { voiceLineFor } from "./personality.ts";
-import { readClaudeArgs, readCwd, readHeadless, readResumeId, transcriptExists } from "./session.ts";
+import { readClaudeArgs, readCwd, readHeadless, readNice, readResumeId, transcriptExists } from "./session.ts";
 import { ensureShim, headlessDir, hubEnabled, hubSocketPath } from "./hub/paths.ts";
 import { headlessLaunch } from "./headless.ts";
 import { routeCotalToHub } from "./hub/route.ts";
@@ -110,6 +110,12 @@ function appendSystemPrompt(args: string[], text: string): void {
  * claudeConnector.buildLaunch; never edits cotal source. Self-registers under "paw" on import;
  * bin/paw.ts also aliases it to the manager's default agent type.
  */
+/** Run the launch under `nice -n <n>` (`paw nice`). nice execs, so the pid cotal tracks IS claude, and
+ *  every tool, build and dev server the agent starts inherits the priority. 0 = no wrapper. */
+export function niced(spec: LaunchSpec, nice: number): LaunchSpec {
+  return nice === 0 ? spec : { ...spec, command: "/usr/bin/nice", args: ["-n", String(nice), spec.command, ...spec.args] };
+}
+
 export const pawConnector: Connector = {
   // Inherit EVERY capability the claude connector declares (eventChannel, requires, supportsPrompt,
   // launchHint, …), then override only the name and the launch. cotal ≥0.5x refuses to start a seat
@@ -195,10 +201,10 @@ export const pawConnector: Connector = {
     if (readHeadless(opts.configPath)) {
       if (!hubEnabled(opts.space))
         throw new Error(`paw: "${opts.name}" is headless, which needs the cotal hub to deliver its messages — \`paw hub on --space ${opts.space}\` first`);
-      return headlessLaunch({ ...spec, args, env }, headlessDir(opts.space, opts.name));
+      return niced(headlessLaunch({ ...spec, args, env }, headlessDir(opts.space, opts.name)), readNice(opts.configPath));
     }
 
-    return { ...spec, args, env };
+    return niced({ ...spec, args, env }, readNice(opts.configPath));
   },
 };
 

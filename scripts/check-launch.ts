@@ -19,8 +19,8 @@ writeFileSync(join(home, ".claude.json"), "{}");
 // count as in-root. The dedicated confinement tests at the end override this to exercise the guard.
 process.env.PAW_ROOT = realpathSync(tmpdir());
 
-const { pawConnector } = await import("../src/connector.ts");
-const { readResumeId } = await import("../src/session.ts");
+const { pawConnector, niced } = await import("../src/connector.ts");
+const { readResumeId, readNice } = await import("../src/session.ts");
 const { confineAndTrustCwd } = await import("../src/cwd.ts");
 
 let failures = 0;
@@ -70,7 +70,20 @@ const args = spec.args;
 const joined = args.join(" ");
 const appendIdx = args.indexOf("--append-system-prompt");
 
-assert(spec.command === "claude", "launch command is claude");
+assert(spec.command === "/usr/bin/nice" && spec.args.slice(0, 3).join(" ") === "-n 10 claude", "launch runs claude under nice -n 10 (default)");
+assert(niced({ command: "claude", args: ["-x"] }, 0).command === "claude", "nice 0 → no wrapper");
+{
+  const pf = join(home, "nice-persona.md");
+  writeFileSync(pf, "---\nname: n\nnice: 3\n---\n");
+  assert(readNice(pf) === 3, "persona nice: overrides the default");
+  writeFileSync(pf, "---\nname: n\nnice: low\n---\n");
+  let threw = false;
+  try { readNice(pf); } catch { threw = true; }
+  assert(threw, "bad persona nice: throws");
+  process.env.PAW_NICE = "5";
+  assert(readNice(undefined) === 5, "PAW_NICE overrides the default");
+  delete process.env.PAW_NICE;
+}
 assert(
   args.indexOf("--permission-mode") !== -1 && args[args.indexOf("--permission-mode") + 1] === "bypassPermissions",
   "bypassPermissions injected by default",

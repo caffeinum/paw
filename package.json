@@ -42,6 +42,7 @@
     "check:bash-tty": "node scripts/check-bash-tty.ts",
     "check:top": "node scripts/check-top.ts",
     "check:tidy": "node scripts/check-tidy.ts",
+    "check:nice": "node scripts/check-nice.ts",
     "check:sleep": "node scripts/check-sleep.ts",
     "check:hub": "node scripts/check-hub.ts",
     "check:headless": "node scripts/check-headless.ts",

@@ -55,6 +55,7 @@ const COMMAND_MODULES: Array<() => Promise<unknown>> = [
   () => import("../src/commands/optimize.ts"), // self-registers "optimize" (restart long-running idle agents, one at a time, verified)
   () => import("../src/commands/top.ts"), // self-registers "top" (per-agent memory/cpu/subprocesses + cleanup hints; read-only, self-ensures)
   () => import("../src/commands/tidy.ts"), // self-registers "tidy" (DM agents holding background processes: still using them?)
+  () => import("../src/commands/nice.ts"), // self-registers "nice" (per-agent CPU priority; renice live, never restarts)
   () => import("../src/commands/spaces.ts"), // self-registers "spaces" (broker streams per space; `prune` deletes dead spaces, dry run unless --yes)
   () => import("../src/web.ts"), // self-registers the "web" command (local http+ws UI over feed/transcript/status)
   () => import("../src/commands/complete.ts"), // self-registers "completion" + the hidden "__complete" dispatcher (shell-completion)

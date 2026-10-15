@@ -80,6 +80,24 @@ export function readHeadless(configPath: string | undefined): boolean {
   throw new Error(`paw: headless: in ${configPath} is "${v}" — expected true or false`);
 }
 
+/** Default scheduling priority for agents: low, so their builds, tests and dev servers only get the CPU
+ *  the operator's own apps leave free. `PAW_NICE` overrides the default; persona `nice:` overrides per agent. */
+export const DEFAULT_NICE = 10;
+
+export function parseNice(raw: string, where: string): number {
+  const n = Number(raw);
+  if (!/^-?\d+$/.test(raw) || n < 0 || n > 20) throw new Error(`paw: nice ${JSON.stringify(raw)} in ${where} — expected a whole number 0 (normal) … 20 (lowest)`);
+  return n;
+}
+
+/** The agent's priority: persona `nice:` > PAW_NICE > DEFAULT_NICE. A bad value throws. */
+export function readNice(configPath: string | undefined): number {
+  const v = scalar(configPath, "nice");
+  if (v !== undefined) return parseNice(v, configPath!);
+  const env = process.env.PAW_NICE?.trim();
+  return env ? parseNice(env, "PAW_NICE") : DEFAULT_NICE;
+}
+
 /** True when this agent writes a claude jsonl that `paw log` / the web trace can tail.
  *  Absent `agent:` is paw's default claude connector. `cotal`/`paw` are aliases of the same harness. */
 export function isClaudeHarness(agentType: string | undefined): boolean {
