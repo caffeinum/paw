@@ -18,6 +18,7 @@ import { registry, type Command } from "@cotal-ai/core";
 import { canonicalDir, ensureAgentSpawned, lookupFolderName, setFolderName, stuckWarning } from "./addressing.ts";
 import { resolveSpace, withEnsuredManager } from "./lifecycle.ts";
 import { optedIn, sleepSweep } from "./sleep.ts";
+import { tidySweep } from "./commands/tidy.ts";
 
 /** The always-on agent's fixed mesh name. Exported so other surfaces can reference it without a literal. */
 export const GLOBAL_NAME = "global";
@@ -71,6 +72,12 @@ async function globalUp(argv: string[]): Promise<void> {
         (e: Error) => console.error(`paw keeper: sleep sweep failed: ${e.message}`),
       );
     }
+    // Every 6h: ask agents holding NEW background processes whether they still use them (paw tidy). A DM,
+    // never a kill or restart — the agent decides. A failure is logged, never fails the tick.
+    await tidySweep(space).then(
+      (asked) => asked.length && console.error(`paw keeper: tidy asked: ${asked.join(", ")}`),
+      (e: Error) => console.error(`paw keeper: tidy sweep failed: ${e.message}`),
+    );
     return r;
   });
   // No automatic unstick sweep here any more. The keeper pressed Esc on canary-env-52 at a permission

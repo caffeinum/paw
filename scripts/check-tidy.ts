@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 process.env.PAW_HOME = mkdtempSync(join(tmpdir(), "paw-tidy-home-"));
-const { tidyAsks, parseTidyArgs } = await import("../src/commands/tidy.ts");
+const { tidyAsks, parseTidyArgs, freshAsks } = await import("../src/commands/tidy.ts");
 
 let n = 0;
 const ok = (c: boolean, m: string) => {
@@ -51,5 +51,14 @@ for (const bad of [["--older", "soon"], ["--min-mb", "x"], ["--kill"]])
     threw++;
   }
 ok(threw === 3, "bad duration, bad number, unknown flag all fail loud");
+
+const first = freshAsks(asks, { lastRunMs: 0, asked: {} }, new Set([10, 30]));
+ok(first.asks.length === asks.length && first.asked.evals[0] === 10, "sweep: first run asks everyone, remembers pids");
+const again = freshAsks(asks, { lastRunMs: 0, asked: first.asked }, new Set([10, 30]));
+ok(again.asks.length === 0, "sweep: same pids next time → nobody nagged");
+const grown = tidyAsks({ ...fleet, agents: { ...fleet.agents, evals: { ...fleet.agents.evals, items: [...fleet.agents.evals.items, item(14, "task", 3 * H, 500)] } } } as never, now, { olderMs: H, minMb: 20 });
+const third = freshAsks(grown, { lastRunMs: 0, asked: first.asked }, new Set([10, 14, 30]));
+ok(third.asks.map((a) => a.agent).join() === "evals" && third.asks[0].items.length === 2, "sweep: a new pid re-asks that agent with its whole list");
+ok(!freshAsks([], { lastRunMs: 0, asked: { gone: [99] } }, new Set()).asked.gone, "sweep: dead pids are forgotten");
 
 console.log(`✓ check:tidy — ${n} assertions`);

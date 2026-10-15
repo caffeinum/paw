@@ -6,6 +6,9 @@
  * the outside. paw never kills an agent's process itself — it lists them in a DM and the agent answers.
  * Orphans whose agent is gone are printed as `kill` hints for the operator, same as `paw top`.
  */
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { dirname, join } from "node:path";
 import { registry, type Command } from "@cotal-ai/core";
 import { sendAsYou } from "../dm.ts";
 import { fmtMb, orphanAbandoned, snapshotFleet, type Fleet, type Item } from "../fleet.ts";
@@ -73,6 +76,60 @@ export function tidyAsks(fleet: Fleet, now: number, opts: { olderMs: number; min
         `housekeeping: you have background processes running — ${items.map((it) => describe(it, now)).join("; ")}. ` +
         "are you still using them? stop the ones you don't need. reply in one line: what you killed, what you keep and why.",
     }));
+}
+
+export const SWEEP_EVERY_MS = 6 * 3_600_000;
+const SWEEP_FLOORS = { olderMs: 2 * 3_600_000, minMb: 100 };
+
+interface SweepState {
+  lastRunMs: number;
+  /** agent → pids already asked about (pids are reused eventually; the age floor makes a false skip harmless) */
+  asked: Record<string, number[]>;
+}
+
+function statePath(space: string): string {
+  return join(process.env.PAW_HOME ?? join(homedir(), ".paw"), "spaces", space, "tidy.json");
+}
+
+function readState(space: string): SweepState {
+  let raw: string;
+  try {
+    raw = readFileSync(statePath(space), "utf8");
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return { lastRunMs: 0, asked: {} };
+    throw e;
+  }
+  return JSON.parse(raw) as SweepState;
+}
+
+/** Pure: drop items already asked about; prune remembered pids to the ones still alive in the fleet. */
+export function freshAsks(asks: Ask[], state: SweepState, livePids: Set<number>): { asks: Ask[]; asked: Record<string, number[]> } {
+  const asked: Record<string, number[]> = {};
+  for (const [a, pids] of Object.entries(state.asked)) {
+    const alive = pids.filter((p) => livePids.has(p));
+    if (alive.length) asked[a] = alive;
+  }
+  const out: Ask[] = [];
+  for (const a of asks) {
+    const known = new Set(asked[a.agent] ?? []);
+    if (a.items.some((it) => !known.has(it.pid))) out.push(a); // anything new → ask about the whole current list
+    asked[a.agent] = [...new Set([...known, ...a.items.map((it) => it.pid)])];
+  }
+  return { asks: out, asked };
+}
+
+/** The keeper tick's sweep: at most once per SWEEP_EVERY_MS, DM agents about NEW background processes. */
+export async function tidySweep(space: string, now = Date.now()): Promise<string[]> {
+  const state = readState(space);
+  if (now - state.lastRunMs < SWEEP_EVERY_MS) return [];
+  const fleet = await snapshotFleet(space);
+  const live = new Set([...Object.values(fleet.agents).flatMap((a) => a.items), ...fleet.orphans].map((it) => it.pid));
+  const { asks, asked } = freshAsks(tidyAsks(fleet, now, SWEEP_FLOORS), state, live);
+  const server = pawServer();
+  for (const a of asks) await sendAsYou({ space, server, target: a.agent, text: a.text });
+  mkdirSync(dirname(statePath(space)), { recursive: true });
+  writeFileSync(statePath(space), JSON.stringify({ lastRunMs: now, asked } satisfies SweepState));
+  return asks.map((a) => a.agent);
 }
 
 async function tidy(argv: string[]): Promise<void> {

@@ -279,3 +279,7 @@ listing its `task`/`bg` items plus orphans it detached itself (younger than its 
 and size floors. It never kills anything. Orphans of an earlier incarnation have nobody to ask — printed as a
 `kill` hint like `paw top`. First manual run: 6/8 agents replied within minutes, killed 6 leftovers, and evals
 correctly KEPT two dev servers its subagents were mid-test on. `pnpm check:tidy` covers selection + args.
+
+**Keeper sweep** (`tidySweep`, same day): the 60s `paw global` tick runs it at most every 6h (stamp in
+`spaces/<s>/tidy.json`), floors 2h + 100 MB, and asks about a pid ONCE — an agent is re-asked only when a NEW
+process appears, so a kept dev server never earns a nag. A DM only, never a kill; failures are logged, never fail the tick.
