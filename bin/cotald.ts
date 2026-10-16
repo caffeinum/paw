@@ -31,6 +31,7 @@ import { pawServer } from "../src/server.ts";
 import { pawConnector } from "../src/connector.ts"; // importing this self-registers the VANILLA `claude` connector (0.12) + paw's `paw`
 import { kitConnector } from "../src/kit.ts";
 import { pawHermesConnector } from "../src/hermes.ts";
+import { pawAcpConnector } from "../src/acp.ts"; // importing cotal-connector-acp self-registers the vanilla `acp`, replaced below
 
 // Replace the vanilla `claude` connector (just self-registered by the connector-claude-code import) with
 // paw's opinionated wrapper, so the manager's default agent type "claude" resolves to OURS. `register`
@@ -43,6 +44,9 @@ registry.register(kitConnector);
 // `agent: hermes` personas: cotal's Hermes connector in a durable paw-owned profile (src/hermes.ts).
 registry.unregister("connector", "hermes");
 registry.register(pawHermesConnector);
+// `agent: acp` personas: any ACP agent (fx acp, codex-acp, …) via the cotal-connector-acp plugin (src/acp.ts).
+registry.unregister("connector", "acp");
+registry.register(pawAcpConnector);
 
 /**
  * Minimal DIRECT-Manager `supervise` (installedExtensions:false → registry-only resolution) — the

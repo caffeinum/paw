@@ -35,6 +35,7 @@ import { withFileLock, withFileLockAsync, type LockOpts } from "./lock.ts";
 import { liveSessionProcs, meshAgentSession, meshIdentity, type LiveSessionProc } from "./named.ts";
 import { ensureKitBinary, isKitProvider, KIT_AGENT } from "./kit.ts";
 import { HERMES_AGENT } from "./hermes-profile.ts";
+import { ACP_AGENT } from "./acp-agent.ts";
 import { isClaudeHarness, personaTranscriptRoots, personaValue, readAgentType, readCwd, readResumeId, readShareTools, transcriptMtime } from "./session.ts";
 import { defaultTmuxEnv, readRuntimeMarker } from "./lifecycle.ts";
 import { readStartupPrompt, tmuxSplit, tmuxSplitAdvice, type StartupScreen } from "./native-attach.ts";
@@ -511,7 +512,7 @@ export function ensurePersonaFile(space: string, name: string, opts?: { brief?: 
 }
 
 /** The harnesses `--agent` can name: paw's claude, cotal's codex/opencode connectors, kit, and hermes. */
-export const AGENT_TYPES = ["claude", "codex", "opencode", KIT_AGENT, HERMES_AGENT] as const;
+export const AGENT_TYPES = ["claude", "codex", "opencode", KIT_AGENT, HERMES_AGENT, ACP_AGENT] as const;
 export type AgentTypeSpec = { agent: string; provider?: string; model?: string };
 
 /** Validate an `--agent`/`--provider` pair before anything is registered; returns the harness and the
@@ -572,7 +573,8 @@ export function applyAgentType(space: string, name: string, spec: AgentTypeSpec,
   }
   const model = agent === "claude" ? undefined : spec.model?.trim() || undefined;
   // kit has no MCP client; Hermes' tools come from its own cotal plugin, not shared MCP servers.
-  const noMcp = kit || agent === HERMES_AGENT;
+  // acp: the plugin serves the cotal tools itself and refuses shared servers (v1).
+  const noMcp = kit || agent === HERMES_AGENT || agent === ACP_AGENT;
   setPersonaKeys(space, name, { agent: agent === "claude" ? undefined : agent, provider, model, shareTools: noMcp ? "none" : undefined });
   return ensurePersonaFile(space, name, persona);
 }
@@ -946,9 +948,10 @@ export async function ensureAgentSpawned(
     const agentType = readAgentType(config);
     const kit = agentType === KIT_AGENT;
     const hermes = agentType === HERMES_AGENT;
+    const acp = agentType === ACP_AGENT;
     // explicit --model wins, else PAW_MODEL env default — a CLAUDE model name, so never for a kit or hermes
     // agent (its persona's `model:` names a codex/grok model; an explicit --model still applies).
-    const model = kit || hermes ? opts.model?.trim() || undefined : resolveModel(opts.model);
+    const model = kit || hermes || acp ? opts.model?.trim() || undefined : resolveModel(opts.model);
     if (model) args.model = model;
     // Which of the operator's MCP servers this agent gets (`paw mcp share`). Absent ⇒ not sent ⇒ cotal
     // shares every declared server, which is what `paw mcp add` promises. The persona keeps the flag
@@ -967,6 +970,8 @@ export async function ensureAgentSpawned(
     }
     // Hermes publishes no AG-UI event plane either (cotal's connector has no eventChannel).
     if (hermes) args.events = false;
+    // Nor does acp (cotal-connector-acp has no eventChannel); its model lives in the persona's acpCommand.
+    if (acp) args.events = false;
     const reply = await spawnPinned(ctl, args, opts.name);
     if (!reply.ok) {
       const err = reply.error ?? "no reply";
@@ -1006,7 +1011,7 @@ export async function ensureAgentSpawned(
     // dev-channels gate) are cotal's to answer since 0.80 (readStartupPrompt).
     // kit has no TUI: no trust dialog, no dev-channels gate, nothing on a pane to answer.
     // Nor does hermes: its gateway is a daemon, not a pane to read.
-    const watch = kit || hermes ? { poll: () => {}, cause: () => "", stuck: () => false } : startupWatch(opts.space, opts.name, cwd);
+    const watch = kit || hermes || acp ? { poll: () => {}, cause: () => "", stuck: () => false } : startupWatch(opts.space, opts.name, cwd);
     if (!(await waitForMeshLive(ctl, opts.name, readyMs, watch.poll))) {
       // Not on the mesh YET is not a failed boot. On a starved host a claude can need longer, and throwing
       // here made every caller treat a booting seat as dead: the next wake restarted it, the sleep host
