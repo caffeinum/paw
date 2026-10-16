@@ -11,8 +11,7 @@
  * Opt-in per space (`paw hub on`). Each agent's claude launches the C shim (src/hub/cotal-shim.c) as its
  * cotal MCP server; the shim connects here, sends one handshake line `{"v":1,"pid":…,"env":{COTAL_*…}}`
  * and relays newline-delimited JSON-RPC. Per connection this calls cotal's own
- * `serveClaudeSession` (the export upstreamed in Cotal-AI/Cotal#2401, patched into the pinned release until it
- * ships) — the SAME code `node mcp.cjs` runs, just handed a socket and an env instead of stdio and
+ * `serveClaudeSession` (exported upstream since cotal 0.82, Cotal-AI/Cotal#3921) — the SAME code `node mcp.cjs` runs, just handed a socket and an env instead of stdio and
  * `process.env`. So each session is its own mesh endpoint, hook control socket and wake policy,
  * and its identity comes from the launch env every time it (re)connects: a hub restart is the same
  * peer re-binding the same DM durable, and DMs sent during the gap are delivered.
@@ -65,10 +64,13 @@ const HANDSHAKE_ENV = /^(COTAL_|HOME$|XDG_CONFIG_HOME$|TMPDIR$)/;
 /** @typedef {import("@cotal-ai/connector-claude-code/mcp").ClaudeSessionOptions} ClaudeSessionOptions */
 /** @typedef {{ id: number, name: string, sock: import("node:net").Socket, closed: boolean, session?: ClaudeSession, headless?: ReturnType<typeof createHeadlessDriver> }} Conn */
 
+/** The real stderr writer, captured before {@link attributeSessionStderr} wraps it. */
+const rawStderr = process.stderr.write.bind(process.stderr);
+
 /** @param {string} m */
 const log = (m) => {
   try {
-    process.stderr.write(`[cotal-hub] ${new Date().toISOString()} ${m}\n`);
+    rawStderr(`[cotal-hub] ${new Date().toISOString()} ${m}\n`);
   } catch {
     /* stderr gone — nothing left to tell */
   }
@@ -143,13 +145,28 @@ export function startWatchdog(stallMs = STALL_MS) {
   w.on("error", (e) => log(`watchdog thread failed: ${e.message} — running WITHOUT stall protection`));
 }
 
+/** cotal's `serveClaudeSession` writes its diagnostics straight to process.stderr (it takes no logger),
+ *  so every session's `[cotal-connector] …` lines would interleave unattributed. A write made inside a
+ *  session's context goes out through {@link log}, prefixed with that session's name#id. */
+function attributeSessionStderr() {
+  /** @type {any} */ (process.stderr).write = (/** @type {unknown} */ chunk, /** @type {unknown[]} */ ...rest) => {
+    const who = sessionContext.getStore();
+    if (!who || (typeof chunk !== "string" && !Buffer.isBuffer(chunk))) return /** @type {any} */ (rawStderr)(chunk, ...rest);
+    for (const line of String(chunk).split("\n")) if (line) log(`${who} ${line}`);
+    const cb = rest.find((a) => typeof a === "function");
+    if (cb) /** @type {Function} */ (cb)();
+    return true;
+  };
+}
+
 /** Serve until signalled. @param {{ space: string, socket: string }} opts */
 export async function runHub({ space, socket: path }) {
   // Resolved at RUN time, never at import: check:hub imports this module for its pure parts.
   /** @type {{ serveClaudeSession?: (o: ClaudeSessionOptions) => Promise<ClaudeSession> }} */
   const { serveClaudeSession } = createRequire(import.meta.url)("@cotal-ai/connector-claude-code/mcp");
   if (typeof serveClaudeSession !== "function")
-    throw new Error("paw: @cotal-ai/connector-claude-code has no serveClaudeSession export — the pnpm patch (patches/) is missing; run `pnpm install`");
+    throw new Error("paw: @cotal-ai/connector-claude-code has no serveClaudeSession export (cotal ≥0.82 ships it) — run `pnpm install`");
+  attributeSessionStderr();
 
   /** @type {Map<number, Conn>} */
   const conns = new Map();
@@ -263,8 +280,10 @@ export async function runHub({ space, socket: path }) {
         input: c.sock,
         output: c.sock,
         fatalBind: false,
-        log: (line) => log(`${c.name}#${c.id} ${line}`),
-        onShutdown: () => end(c, "manager shut the agent down", true),
+        // cotal also calls this when the INPUT ends (the shim's socket dropped). Only a shutdown with the
+        // input still open is the manager's: the exit line must never tell a reconnecting shim to quit.
+        onShutdown: () =>
+          c.sock.readableEnded ? end(c, "shim input ended") : end(c, "manager shut the agent down", true),
       });
     }).then(
       (session) => {

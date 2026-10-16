@@ -2,6 +2,52 @@
 
 Moved verbatim from CLAUDE.md (2026-10-02 split). Index: [CLAUDE.md](../../CLAUDE.md)
 
+## cotal 0.84.0
+
+**Bumped 0.81.1 → 0.84.0 on 2026-10-16** (operator-approved, inside the 7-day min-release-age window:
+0.84.0 published 2026-10-16T19:38Z). `minimumReleaseAgeExclude` lists the eleven 0.84.0 packages by
+EXACT version (replacing 0.81.1's) — **delete it after 2026-10-24**. What changed, and what paw did:
+- **0.84 native MCP discovery** (#3943, `feat(claude)!`): the claude connector drops
+  `--strict-mcp-config` unless the launch is exclusive (`LaunchOpts.mcpServersExclusive`, or a carried
+  home); the manager sets it only when the persona names `shareTools:`. So every paw agent WITHOUT
+  `shareTools:` would have booted the operator's user/project/plugin/claude.ai MCP servers too —
+  against paw's contract (cotal + `paw mcp`-shared servers only). `pawConnector` now calls
+  `claudeConnector.buildLaunch({ ...opts, mcpServersExclusive: true })`. `check:launch` already
+  asserted `--strict-mcp-config` and failed without the fix; verified live on a spawned claude's argv.
+- **0.82 `serveClaudeSession` shipped upstream** (#3921 — davidfarah2003's rework of #2401, exported
+  from `@cotal-ai/connector-claude-code/mcp`, `default` → `mcp.cjs`, types `mcp.d.cts`). The
+  connector patch is DROPPED. What paw's patch had beyond upstream, and where it went: `log` option →
+  `attributeSessionStderr` in `src/hub/daemon.mjs` prefixes stderr written inside a session's
+  `sessionContext` (lines cotal writes from MCP transport callbacks stay unprefixed); input EOF →
+  upstream DOES call `onShutdown` on input end/close, so the hub sends the exit line only when
+  `sock.readableEnded` is false; `import` condition → not needed (the hub `createRequire`s);
+  realpath entry check → not needed (upstream's guard is `require.main === module`, false under the
+  ESM hub); AG-UI close bounded at 5s → NOT carried: upstream `close()` awaits `events.close()`
+  unbounded — the hub's existing 5s leak counter (restart past 5 leaked closes) is the backstop.
+- **Core meta-validator patch re-keyed unchanged** (applies cleanly; 0.84.0's `compileWithinBudget`
+  still builds a fresh `Ajv2020`). pnpm did not re-apply a changed `patchedDependencies` over an
+  existing node_modules ("Already up to date", even with `--force`) — `rm -rf node_modules` first.
+- **0.83 connector-store downgrade refusal** (#3941): a cotal executable older than the connector
+  store refuses every backward migration. Only `cotal setup`/seeding touches that store; paw never
+  runs it, so rolling back to a 0.81.1 release is not blocked — but do not run `paw cotal setup`
+  from an older release after 0.84 seeded the store.
+- Audited, no change needed: 0.82 `connectOrThrow` throws `ConnectRefusal` on user-auth meshes (paw
+  imports neither); 0.82 MCP server launched with `--optimize-for-size --max-semi-space-size=1` (#2403,
+  ours — `routeCotalToHub` replaces the whole `cotal` entry in hub mode); 0.82 `cotal_status`
+  activity-only fix; 0.82 opencode `serve.<token>.pid` records; 0.82.1 macOS identity-pin parse fix
+  (0.82.0's pin regression never shipped to paw); 0.84 vanished mesh records read as absent;
+  `pnpm typecheck` clean.
+- Verified (isolated: temp PAW_HOME + cotal root, PAW_RELEASE=dev, own nats-server per run, haiku):
+  typecheck; all 39 hermetic `check:*`; `check:loop`; `check:rail` with `PAW_RAIL_SPAWN=1` (real claude
+  up in ~2.7s, despawned); `e2e-hub` on tmux (3 agents on shims, DMs, #general wake, hub SIGKILL and
+  full hub+supervisor outage with mesh ids unchanged, status, sleep/wake, `paw restart`, `paw down` —
+  all green); CLI e2e on pty: `paw dm . "reply with just: ok"` in a fresh git folder → agent idle in
+  ~7s, replied "ok" by 13s; its claude argv carried `--strict-mcp-config` and `--permission-mode
+  bypassPermissions` under `nice -n 10`; `paw down` → nothing left naming the space. The live `paw`
+  hub/manager/mailbox pids were the same before and after.
+- NOT verified / open: the live cutover (`rm -rf node_modules && pnpm install` + `paw release` +
+  `paw restart` — operator's call); a real claude trust dialog on tmux (pre-trusted folders only).
+
 ## cotal 0.81.1
 
 **Bumped 0.72.1 → 0.81.1 on 2026-10-14** (operator-approved, inside the 7-day min-release-age window:

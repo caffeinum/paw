@@ -126,7 +126,11 @@ export const pawConnector: Connector = {
   kind: "connector",
   name: "paw",
   buildLaunch(opts: LaunchOpts): LaunchSpec {
-    const spec = claudeConnector.buildLaunch(opts);
+    // cotal ≥0.84 loads claude's NATIVE MCP sources (user/project/plugin/claude.ai connectors) unless the
+    // caller marks the selection exclusive — and the manager marks it only when a persona names
+    // `shareTools:`. paw's contract is cotal + the servers `paw mcp` shares and nothing else (a fleet each
+    // booting every ambient helper eats the machine), so every paw launch is exclusive: `--strict-mcp-config`.
+    const spec = claudeConnector.buildLaunch({ ...opts, mcpServersExclusive: true });
     const args = [...spec.args];
 
     // Hub mode (`paw hub on`, read per spawn): the cotal MCP server is the hub's C shim, not a node process per agent

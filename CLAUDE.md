@@ -30,16 +30,18 @@ This file is the INDEX. The full design notes, incident narratives and rationale
 - **`ensure()` never switches the manager runtime implicitly** — only `paw runtime <r>` / explicit
   `PAW_RUNTIME` (a switch despawns the whole fleet; 802ad0d).
 
-## cotal 0.81.1 (2026-10-14)
-Pinned **0.81.1** (all `@cotal-ai/*` exact; age-gate exemption in pnpm-workspace.yaml, delete after
-2026-10-20). Two pnpm patches re-keyed every bump: the #2401 hub patch (`serveClaudeSession`) and the
-core meta-validator perf patch. Since 0.80 cotal's runtimes answer BOTH claude startup prompts (trust
-dialog via `confirmBefore`, then dev-channels) — paw never types at them; paw always passes its own
-`--permission-mode` (cotal now defaults managed seats to bypass). The presence KV bucket is
-memory-backed (#1356); one created by an older cotal stays file-backed until deleted (paw's was
-recreated 2026-10-14). Since 0.49 a manager SIGTERM spares its agents, so `stopOwnedManager` despawns
-every agent first; `pawConnector` spreads `...claudeConnector`. → [cotal-dependency.md#cotal-0811](docs/notes/cotal-dependency.md#cotal-0811),
-older bumps (0.72.1, 0.58, 0.48…) in the same note; [sleep.md](docs/notes/sleep.md)
+## cotal 0.84.0 (2026-10-16)
+Pinned **0.84.0** (all `@cotal-ai/*` exact; age-gate exemption in pnpm-workspace.yaml, delete after
+2026-10-24). ONE pnpm patch re-keyed every bump: the core meta-validator perf patch (the #2401 hub
+patch is gone — `serveClaudeSession` ships upstream since 0.82). Since 0.84 cotal loads claude's
+NATIVE MCP sources unless a launch is exclusive, so `pawConnector` always passes
+`mcpServersExclusive: true` (→ `--strict-mcp-config`; `check:launch` asserts it). Since 0.80 cotal's
+runtimes answer BOTH claude startup prompts (trust dialog via `confirmBefore`, then dev-channels) —
+paw never types at them; paw always passes its own `--permission-mode` (cotal defaults managed seats
+to bypass). The presence KV bucket is memory-backed (#1356). Since 0.49 a manager SIGTERM spares its
+agents, so `stopOwnedManager` despawns every agent first; `pawConnector` spreads `...claudeConnector`.
+→ [cotal-dependency.md#cotal-0840](docs/notes/cotal-dependency.md#cotal-0840), older bumps (0.81.1,
+0.72.1, 0.58…) in the same note; [sleep.md](docs/notes/sleep.md)
 
 ## Layout
 Each entry: what it is + the most load-bearing rule. Full notes behind the link.
