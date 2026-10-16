@@ -21,9 +21,12 @@ for a stdio MCP server claude launched itself, so a shared HTTP MCP server can't
   own `serveClaudeSession` per connection: the same code `node mcp.cjs` runs, handed a socket and the
   handshake env. Each session = its own MeshAgent (own NATS connection), hook control socket, wake
   policy, McpServer.
-- `serveClaudeSession` is upstream PR https://github.com/Cotal-AI/Cotal/pull/2401. Until a release
-  carries it, `patches/@cotal-ai__connector-claude-code@0.72.1.patch` (pnpm `patchedDependencies`)
-  is that PR hand-applied to the published 0.72.1 dist (re-key it on every cotal bump). **Delete the patch when the release lands.**
+- `serveClaudeSession` ships upstream since cotal 0.82.0 (Cotal-AI/Cotal#3921, the reworked #2401);
+  the pnpm patch that carried it was dropped in the 0.84.0 bump. Upstream takes no `log` option — the
+  hub prefixes the session's own stderr writes (`attributeSessionStderr`, keyed on `sessionContext`);
+  lines cotal writes from an MCP transport callback (`client capabilities: …`) stay unprefixed.
+  Upstream also calls `onShutdown` when the INPUT ends; the hub sends the shim its exit line only when
+  the socket's input is still open (a manager shutdown), never on a dropped connection.
 
 ## Why plain node, not tsx (measured)
 
