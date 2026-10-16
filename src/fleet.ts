@@ -202,9 +202,10 @@ export function groupProcs(procs: Proc[], space: string, all = false): Groups {
   };
   for (const p of procs) {
     if (ours(p) && !stampedAncestor(p)) {
-      // `npm exec` rewrites its title and hides its env, so an orphaned npx chain shows its stamp one level down.
+      // `npm exec` rewrites its title and hides its env, so an orphaned npx chain shows its stamp one level down;
+      // so can a Bash-tool `zsh -c` whose claude died (reparented to launchd, env unreadable).
       let head = p;
-      for (let q = byPid.get(head.ppid); q && /^(npm exec|npx) /.test(q.argv); q = byPid.get(q.ppid)) head = q;
+      for (let q = byPid.get(head.ppid); q && !ours(q) && /^((npm exec|npx) |\S*\/(z|ba)?sh -c )/.test(q.argv); q = byPid.get(q.ppid)) head = q;
       if (head.ppid === 1) g.orphans.push({ agent: p.agent!, tree: tree(head) });
       else {
         const a = g.agents.get(p.agent!) ?? { roots: [], children: [] };

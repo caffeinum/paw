@@ -40,6 +40,9 @@ const PS = [
   // an orphaned npx chain: npm exec (no env) under launchd, the stamp one level down
   `  710     1   710 07-00:00:00   0:02.00 npm exec vibeos-mcp@0.2.2 --token t   `,
   `  711   710   710 07-00:00:00   7:54.00 node /u/.npm/_npx/14/node_modules/.bin/vibeos-mcp COTAL_NAME=vibeos-mcp ${S}`,
+  // a Bash-tool shell whose claude died: the zsh's env is unreadable, the stuck child keeps the stamp
+  `  720     1   720 01-13:00:00   0:00.10 /bin/zsh -c source /u/.claude/shell-snapshots/snapshot-zsh-9.sh && eval 'rg x'`,
+  `  721   720   720 01-13:00:00   0:00.10 ugrep -G x COTAL_NAME=queue ${S}`,
   // two roots for one name, another space, and a claude outside the mesh
   `  800   500   800    02:00:00   1:00.00 claude --resume a COTAL_NAME=dup ${S}`,
   `  801   500   801    01:00:00   1:00.00 claude --resume a COTAL_NAME=dup ${S}`,
@@ -48,7 +51,7 @@ const PS = [
 ].join("\n");
 
 const procs = f.parsePs(PS);
-ok(procs.length === 19, "ps fixture parses every row");
+ok(procs.length === 21, "ps fixture parses every row");
 ok(f.parseClock("01-16:26:38") === (86400 + 16 * 3600 + 26 * 60 + 38) * 1000 && f.parseClock("135:53.21") === 8153210, "etime (dd-hh:mm:ss) and cumulative time (mmm:ss.cc)");
 ok(procs[2].agent === "queue" && procs[2].space === "paw" && procs[2].argv.startsWith("claude --dangerously") && !procs[2].argv.includes("HOME="), "env stamp read; argv cut before the env");
 
@@ -56,10 +59,10 @@ const g = f.groupProcs(procs, "paw", true);
 ok([...g.agents.keys()].sort().join() === "dup,queue", "roots: queue + dup, not the other space");
 ok(g.agents.get("queue")!.roots.length === 1, "a title-rewritten npm exec child is NOT a second root");
 ok(g.agents.get("dup")!.roots.length === 2, "two live roots for one name are both kept (a duplicate, never a pick)");
-ok(g.orphans.map((o) => o.tree[0].pid).sort().join() === "700,701,710", "ppid-1 stamped processes are orphans; an orphaned npx chain is headed by npm exec");
+ok(g.orphans.map((o) => o.tree[0].pid).sort().join() === "700,701,710,720", "ppid-1 stamped processes are orphans; an orphaned npx chain / dead Bash-tool shell is headed by its unstamped parent");
 ok(g.orphans.find((o) => o.tree[0].pid === 710)!.agent === "vibeos-mcp", "orphan attributed to the stamped descendant's agent");
 ok(g.other.length === 1 && g.other[0][0].pid === 950, "--all: a claude with no stamp is 'not paw'");
-ok(f.groupPids(f.groupProcs(procs, "paw")).length === 15, "measured pids = agent trees + orphans (no 'other' without --all)");
+ok(f.groupPids(f.groupProcs(procs, "paw")).length === 17, "measured pids = agent trees + orphans (no 'other' without --all)");
 
 const mem = f.parseFootprint(
   [600, 601, 602, 603, 610, 611, 620, 621, 630, 700, 701, 710, 711, 800, 801, 950]
