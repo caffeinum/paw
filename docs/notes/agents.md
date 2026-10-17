@@ -155,7 +155,7 @@ registers `pawAcpConnector` (`src/acp.ts`), which spreads it and adds only:
   that same commit — the two share an env/launch contract (native/WIRE.md) with no handshake, so paw never
   pairs them across commits. `paw acp-host install` `git archive`s `native/rust` at that rev out of
   `$COTAL_ACP_REPO` (default ~/Github/caffeinum/cotal-connector-acp — its working tree, dirty or not, is never
-  built) and runs `cargo build --release --locked` on it (a rev whose Cargo.lock is stale fails there, loud),
+  built) and runs `cargo build --release --locked` on it (`CARGO_NET_GIT_FETCH_WITH_CLI=true`: cotal-rs is a private git dep) (a rev whose Cargo.lock is stale fails there, loud),
   then installs atomically; live seats keep their binary until they restart. The rev is in the file name: a
   re-vendor fails loud until its host is installed, and a release rollback still finds its own older host.
   `ACP_PLUGIN_INTEGRITY` is the tgz's pnpm-lock integrity — check:acp fails a re-pack that didn't bump the

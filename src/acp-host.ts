@@ -87,7 +87,9 @@ export function installAcpHost(): string {
     const crate = join(work, "native", "rust");
     console.error(`paw: building cotal-acp-host at cotal-connector-acp ${ACP_HOST_REV.slice(0, 12)} (from ${repo})`);
     try {
-      execFileSync("cargo", ["build", "--release", "--locked"], { cwd: crate, stdio: ["ignore", "inherit", "inherit"] });
+      // cotal-rs is a private git dependency: fetch it with the git CLI so the operator's git credentials apply.
+      const env = { ...process.env, CARGO_NET_GIT_FETCH_WITH_CLI: "true" };
+      execFileSync("cargo", ["build", "--release", "--locked"], { cwd: crate, env, stdio: ["ignore", "inherit", "inherit"] });
     } catch (e) {
       throw new Error(`paw: building cotal-acp-host at ${ACP_HOST_REV.slice(0, 12)} failed (${(e as Error).message})`);
     }
