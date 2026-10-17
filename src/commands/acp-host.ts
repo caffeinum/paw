@@ -1,13 +1,12 @@
 /**
  * `paw acp-host [install]` — the Rust seat host `agent: acp` agents run on by default (src/acp-host.ts).
  *  - no args: where paw expects it and whether it is installed.
- *  - `install`: cargo-build it from the cotal-connector-acp checkout and install it into $PAW_HOME/bin
- *    (also the upgrade). Running seats keep their old binary until they restart.
+ *  - `install`: cargo-build it from the pinned cotal-connector-acp commit (ACP_HOST_REV, a `git archive`
+ *    of it — never the working tree) into $PAW_HOME/bin. Running seats keep their binary until they restart.
  * LOCAL — files only, no mesh.
  */
-import { existsSync } from "node:fs";
 import { registry, type Command } from "@cotal-ai/core";
-import { ACP_HOST_INSTALL, acpHostBinPath, acpHostSrc, installAcpHost } from "../acp-host.ts";
+import { ACP_HOST_INSTALL, ACP_HOST_REV, acpHostBinPath, acpHostRepo, installAcpHost, isExecutable } from "../acp-host.ts";
 
 const USAGE = "acp-host [install]";
 
@@ -16,7 +15,12 @@ async function acpHost(raw: string[]): Promise<void> {
   const argv = raw.filter((a, i) => a !== "--space" && raw[i - 1] !== "--space");
   if (argv.length === 0) {
     const bin = acpHostBinPath();
-    console.log(existsSync(bin) ? `✓ ${bin}` : `✗ ${bin} missing — \`${ACP_HOST_INSTALL}\` builds it from ${acpHostSrc()}`);
+    // The same test the spawn gate applies (resolveAcpHost): an executable regular file, not mere existence.
+    console.log(
+      isExecutable(bin)
+        ? `✓ ${bin} (cotal-connector-acp ${ACP_HOST_REV.slice(0, 12)})`
+        : `✗ ${bin} missing or not executable — \`${ACP_HOST_INSTALL}\` builds cotal-connector-acp ${ACP_HOST_REV.slice(0, 12)} from ${acpHostRepo()}`,
+    );
     return;
   }
   if (argv.length === 1 && argv[0] === "install") {
@@ -30,7 +34,7 @@ const acpHostCommand: Command = {
   kind: "command",
   name: "acp-host",
   group: "Lifecycle",
-  summary: "the Rust seat host acp agents run on: show, or install (cargo build) into $PAW_HOME/bin",
+  summary: "the Rust seat host acp agents run on: show, or install (cargo build of the pinned plugin commit) into $PAW_HOME/bin",
   usage: USAGE,
   run: (a) => acpHost([...a.raw]),
 };

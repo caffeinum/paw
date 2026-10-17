@@ -8,7 +8,7 @@
  *
  * Persona keys (all quoted strings): `agent: acp`, `acpCommand: '["/abs/fx","acp"]'`,
  * `acpEnv: '{"FX_PERMISSION_MODE":"full-access"}'` (optional), `acpPermission: allow|reject` (optional),
- * `acpHost: /abs/host|ts` (optional; default the Rust host at $PAW_HOME/bin/cotal-acp-host, src/acp-host.ts).
+ * `acpHost: /abs/host|ts` (optional; default the pinned Rust host at $PAW_HOME/bin/cotal-acp-host-<rev>, src/acp-host.ts).
  * No AG-UI event plane → spawned with `events: false`; no shared MCP servers → `shareTools: none`.
  */
 import { existsSync } from "node:fs";

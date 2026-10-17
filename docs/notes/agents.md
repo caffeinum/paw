@@ -149,11 +149,17 @@ registers `pawAcpConnector` (`src/acp.ts`), which spreads it and adds only:
 - the paw brief as `COTAL_ACP_INSTRUCTIONS` (it rides the first prompt; ACP has no system prompt);
 - `BEADS_DIR`/`BEADS_ACTOR`, and `niced()` from the persona's `nice:`;
 - `acpPermission: allow` unless the persona or the spawn names one (the plugin has no default; paw is bypass).
-- the seat host (`src/acp-host.ts`): **the Rust host by default**, at `$PAW_HOME/bin/cotal-acp-host`
+- the seat host (`src/acp-host.ts`): **the Rust host by default**, at `$PAW_HOME/bin/cotal-acp-host-<rev12>`
   (cotal-connector-acp `native/rust`, built on cotal-rs; ~6 MB RSS live vs 57–145 MB for the node host).
-  `paw acp-host install` cargo-builds it from `$COTAL_ACP_HOST_SRC` (default
-  ~/Github/caffeinum/cotal-connector-acp/native/rust) and installs it atomically (also the upgrade; live
-  seats keep the old binary until they restart); `paw acp-host` shows it. A missing binary **fails loud at
+  **Pinned:** `ACP_HOST_REV` is the plugin commit the vendored tgz was packed from, and the host is built from
+  that same commit — the two share an env/launch contract (native/WIRE.md) with no handshake, so paw never
+  pairs them across commits. `paw acp-host install` `git archive`s `native/rust` at that rev out of
+  `$COTAL_ACP_REPO` (default ~/Github/caffeinum/cotal-connector-acp — its working tree, dirty or not, is never
+  built) and runs `cargo build --release --locked` on it (a rev whose Cargo.lock is stale fails there, loud),
+  then installs atomically; live seats keep their binary until they restart. The rev is in the file name: a
+  re-vendor fails loud until its host is installed, and a release rollback still finds its own older host.
+  `ACP_PLUGIN_INTEGRITY` is the tgz's pnpm-lock integrity — check:acp fails a re-pack that didn't bump the
+  pair. `paw acp-host` shows it (same executable-file test as the spawn gate). A missing binary **fails loud at
   spawn** with that command (CLI side in `ensureAgentSpawned`, and again in the manager's `buildLaunch`) —
   never a silent node fallback. Persona `acpHost: /abs/host` names another native host; `acpHost: ts` is
   the explicit node host (paw shadows it with launch option `host = node`, then adds the plugin's
@@ -164,7 +170,8 @@ seat's TMPDIR never mattered, and an override also stopped the seat from removin
 Persona: `agent: acp`, `acpCommand: '["/abs/fx","acp"]'` (quoted JSON), optional `acpEnv:` /
 `acpPermission:` / `acpHost:`. Spawned `events: false`, `shareTools: none`; `paw status` reads presence alone.
 `--agent acp` refuses `--model` (the model goes in `acpCommand`) and refuses to birth a persona that has no
-`acpCommand:` yet. Only claude harnesses get the `~/.claude.json` folder pre-trust (`confineCwdOnly` otherwise).
+`acpCommand:` yet. Only claude harnesses get the `~/.claude.json` folder pre-trust (`confineCwdOnly` otherwise),
+both at the spawn site and in `startupWatch`'s boot-time re-write (codex/opencode get neither; check:trust).
 
 **An isolated space does not isolate the ACP agent's own home.** fx writes `~/.fx/sessions`, history and
 usage, and bills the operator's account, whatever PAW_HOME says. In a test, pass `HOME` through `acpEnv`

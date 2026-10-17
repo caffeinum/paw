@@ -117,8 +117,10 @@ Each entry: what it is + the most load-bearing rule. Full notes behind the link.
 - `src/hermes.ts` — `agent: hermes`: cotal's hermes connector in a durable paw-owned profile
   (`$PAW_HOME/hermes/profiles/<space>-<name>`), one OAuth login per profile, `hermesHome:` adopts one. → [agents.md#hermes](docs/notes/agents.md#hermes)
 - `src/acp.ts` — `agent: acp`: any ACP agent via the vendored `cotal-connector-acp` plugin; paw adds brief,
-  beads, nice, `acpPermission: allow` default; seat host = Rust `$PAW_HOME/bin/cotal-acp-host` (`paw acp-host
-  install`; missing → fail loud, `acpHost: ts` = node host); `check:acp`. → [agents.md#acp](docs/notes/agents.md#acp)
+  beads, nice, `acpPermission: allow` default; seat host = Rust `$PAW_HOME/bin/cotal-acp-host-<rev>` built
+  from the SAME plugin commit as the vendored tgz (`ACP_HOST_REV`; `paw acp-host install` = git archive +
+  cargo --locked, never the working tree; missing → fail loud, `acpHost: ts` = node host); re-vendor = bump
+  `ACP_HOST_REV` + `ACP_PLUGIN_INTEGRITY` together; `check:acp`. → [agents.md#acp](docs/notes/agents.md#acp)
 - `src/session.ts` — `readResumeId`, `transcriptExists`; leaf module. → [agents.md#srcsessionts](docs/notes/agents.md#srcsessionts)
 - **Two-writer guard** — never start an agent whose pinned session a standalone claude holds. → [agents.md#two-writer-guard](docs/notes/agents.md#two-writer-guard)
 - `src/open.ts` — `paw open`/`paw attach`: runtime-aware; tmux → real window, cmux → names the tab, pty
