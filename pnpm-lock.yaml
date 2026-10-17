@@ -448,7 +448,7 @@ packages:
     engines: {node: ^12.20.0 || ^14.13.1 || >=16.0.0}
 
   cotal-connector-acp@file:vendor/cotal-connector-acp-0.1.0.tgz:
-    resolution: {integrity: sha512-7z8snkLZi8Xi5fSKlwARTi6Nnbwa2Rii4iAezkBC+hAQkG2yVYdNAOXapgRu5mU0TG6uVp0T4ITpatdo+4p5QA==, tarball: file:vendor/cotal-connector-acp-0.1.0.tgz}
+    resolution: {integrity: sha512-FGxiZr91BAFq45CwB7jyYcWUsmVfMOoYYsdho6eXW6Z6CMKlpcbLthtl888w6lq1r9Ik3NoAQ+UVV9OV2tjDTg==, tarball: file:vendor/cotal-connector-acp-0.1.0.tgz}
     version: 0.1.0
     engines: {node: '>=22'}
     peerDependencies:

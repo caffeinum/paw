@@ -36,6 +36,7 @@ import { liveSessionProcs, meshAgentSession, meshIdentity, type LiveSessionProc 
 import { ensureKitBinary, isKitProvider, KIT_AGENT } from "./kit.ts";
 import { HERMES_AGENT } from "./hermes-profile.ts";
 import { ACP_AGENT } from "./acp-agent.ts";
+import { resolveAcpHost } from "./acp-host.ts";
 import { isClaudeHarness, personaTranscriptRoots, personaValue, readAgentType, readCwd, readResumeId, readShareTools, transcriptMtime } from "./session.ts";
 import { defaultTmuxEnv, readRuntimeMarker } from "./lifecycle.ts";
 import { readStartupPrompt, tmuxSplit, tmuxSplitAdvice, type StartupScreen } from "./native-attach.ts";
@@ -980,7 +981,11 @@ export async function ensureAgentSpawned(
     // Hermes publishes no AG-UI event plane either (cotal's connector has no eventChannel).
     if (hermes) args.events = false;
     // Nor does acp (cotal-connector-acp has no eventChannel); its model lives in the persona's acpCommand.
-    if (acp) args.events = false;
+    // Its default seat host is paw's Rust binary: a missing one fails here, with the install command.
+    if (acp) {
+      args.events = false;
+      resolveAcpHost(config);
+    }
     const reply = await spawnPinned(ctl, args, opts.name);
     if (!reply.ok) {
       const err = reply.error ?? "no reply";
