@@ -226,3 +226,5 @@ Each entry: what it is + the most load-bearing rule. Full notes behind the link.
 | [docs/notes/tasks.md](docs/notes/tasks.md) | beads task list, pad, board |
 | [docs/notes/raycast.md](docs/notes/raycast.md) | Raycast extension |
 | [docs/notes/testing.md](docs/notes/testing.md) | check scripts |
+
+kit image guidance: `src/kit.ts` must describe marked screenshot attachments as actual image bytes and `view_image` for other local images, not claim kit is image-blind. failed attachments remain explicitly unseen. regression checks live in `scripts/check-kit.ts`.

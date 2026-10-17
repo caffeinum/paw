@@ -110,6 +110,8 @@ const b = kitBrief("evals-reviewer");
 ok("brief names the agent, the human peer and kit's tools", b.includes('"evals-reviewer"') && b.includes(`cotal_dm("${HUMAN_PEER}"`) && b.includes("cotal_send") && b.includes("cotal_roster"));
 ok("brief carries the shared sections (channels, wake, tasks)", b.includes("CHANNELS ARE DIFFERENT") && b.includes('cotal_dm("global", "wake <name>")') && b.includes("bd create"));
 ok("brief has none of claude's tools", !/cotal_inbox|cotal_anycast|Monitor tool|run_in_background|cotal_join/.test(b));
+ok("brief explains actual image attachments and local image viewing", b.includes("kit attaches its image bytes") && b.includes("view_image") && !b.includes("attachment you cannot view"));
+ok("brief does not claim failed attachments were seen", b.includes("If kit reports an attachment error, you have not seen that image"));
 
 // ── connector ─────────────────────────────────────────────────────────────────────────────────
 ok("connector: name kit, kind connector", kitConnector.name === "kit" && KIT_AGENT === "kit" && kitConnector.kind === "connector");
