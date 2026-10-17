@@ -784,6 +784,7 @@ export async function ensureAgentSpawned(
     const pin = readResumeId(file);
     return pin ? transcriptMtime(pin, personaTranscriptRoots(file)) : undefined;
   };
+  const watchStartup = () => startupWatch(opts.space, opts.name, opts.cwd, readAgentType(personaFilePath(opts.space, opts.name)));
   // Seen live: the automatic-restart history (backoff + "needs a human" cap) starts over.
   const live = (): { spawned: false } => {
     clearRestartHistory(opts.space, opts.name);
@@ -805,7 +806,7 @@ export async function ensureAgentSpawned(
       // mesh, it isn't booting, it's stuck — treat it as the dead entry it is and restart. Restarting a
       // merely-slow boot is cheap (it resumes its pinned session); leaving an agent unreachable until a
       // human notices is not.
-      if (await waitForMeshLive(ctl, opts.name, graceMs, startupWatch(opts.space, opts.name, opts.cwd).poll)) return live();
+      if (await waitForMeshLive(ctl, opts.name, graceMs, watchStartup().poll)) return live();
       // A seat paw (or another caller) spawned a moment ago and that is still booting reads exactly like
       // this. Restarting it costs the boot it was halfway through — and the next one, on a loaded host.
       const row = rows.find((r) => r.name === opts.name);
@@ -829,7 +830,7 @@ export async function ensureAgentSpawned(
       console.error(
         `paw: "${opts.name}" is ${sleeping} — its ps row reads offline through the sleep stand-in, not its own presence; giving the seat ${Math.round(STARTING_GRACE_MS / 1000)}s to reach the mesh before judging it`,
       );
-      if (await waitForMeshLive(ctl, opts.name, STARTING_GRACE_MS, startupWatch(opts.space, opts.name, opts.cwd).poll)) return live();
+      if (await waitForMeshLive(ctl, opts.name, STARTING_GRACE_MS, watchStartup().poll)) return live();
     }
     if (action === "reuse") return live();
     const reuseUnmanaged = action === "start" && opts.reuseUnmanaged !== false;
@@ -886,7 +887,7 @@ export async function ensureAgentSpawned(
           // Stuck: no more restarts, but never a dropped message — the caller queues to its durable inbox
           // (like `starting`) and shows the loud warning; the evidence for the human goes to stderr here.
           markStuck(opts.space, opts.name, verdict.restarts, verdict.since);
-          const watch = startupWatch(opts.space, opts.name, opts.cwd);
+          const watch = watchStartup();
           watch.poll();
           const stuck = `⚠ ${opts.name} is stuck — restarted ${verdict.restarts.length}× (first ${Math.round((now - verdict.restarts[0]) / 60_000)}m ago) without reaching the mesh, needs a human`;
           console.error(
@@ -1025,7 +1026,7 @@ export async function ensureAgentSpawned(
     // dev-channels gate) are cotal's to answer since 0.80 (readStartupPrompt).
     // kit has no TUI: no trust dialog, no dev-channels gate, nothing on a pane to answer.
     // Nor does hermes: its gateway is a daemon, not a pane to read.
-    const watch = kit || hermes || acp ? { poll: () => {}, cause: () => "", stuck: () => false } : startupWatch(opts.space, opts.name, cwd);
+    const watch = kit || hermes || acp ? { poll: () => {}, cause: () => "", stuck: () => false } : startupWatch(opts.space, opts.name, cwd, agentType);
     if (!(await waitForMeshLive(ctl, opts.name, readyMs, watch.poll))) {
       // Not on the mesh YET is not a failed boot. On a starved host a claude can need longer, and throwing
       // here made every caller treat a booting seat as dead: the next wake restarted it, the sleep host
@@ -1337,10 +1338,12 @@ export function startupWatch(
   space: string,
   name: string,
   cwd: string,
+  agentType: string | undefined,
   deps: { runtime?: string; tmuxEnv?: NodeJS.ProcessEnv; log?: (line: string) => void } = {},
 ): { poll: () => void; cause: () => string; stuck: () => boolean } {
   const log = deps.log ?? ((line: string) => console.error(line));
-  const folder = pawTrustedFolder(cwd);
+  // Only Claude Code reads ~/.claude.json's folder trust: codex/opencode seats get no entry written.
+  const folder = isClaudeHarness(agentType) ? pawTrustedFolder(cwd) : undefined;
   let erased = 0;
   let last: StartupScreen | undefined;
   let lastText = "";

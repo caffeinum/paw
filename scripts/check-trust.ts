@@ -138,7 +138,7 @@ async function boot(name: string, opts: { poll: () => void; mode?: string; delay
   pretrustFolder(folder);
   writeFileSync(join(process.env.HOME!, ".claude.json"), JSON.stringify({ projects: {} }));
   const out = join(root, "after2.state");
-  const w = startupWatch(space, "after2", folder, { runtime: "tmux", tmuxEnv, log: (l) => logs.push(l) });
+  const w = startupWatch(space, "after2", folder, undefined, { runtime: "tmux", tmuxEnv, log: (l) => logs.push(l) });
   tmux("new-window", "-d", "-t", `cotal-${space}`, "-n", "after2", "-c", folder, `FAKE_OUT='${out}' HOME='${process.env.HOME}' '${process.execPath}' '${fake}'; sleep 30`);
   const state = () => (existsSync(out) ? readFileSync(out, "utf8") : "");
   // Let claude read the erased file and draw its dialog BEFORE paw's first poll — the tmux half of
@@ -174,7 +174,7 @@ async function boot(name: string, opts: { poll: () => void; mode?: string; delay
   pretrustFolder(folder);
   writeFileSync(join(process.env.HOME!, ".claude.json"), JSON.stringify({ projects: {} }));
   const out = join(root, "pty.state");
-  const w = startupWatch(space, "pty", folder, { runtime: "pty", tmuxEnv, log: () => {} });
+  const w = startupWatch(space, "pty", folder, undefined, { runtime: "pty", tmuxEnv, log: () => {} });
   tmux("new-window", "-d", "-t", `cotal-${space}`, "-n", "pty", "-c", folder, `FAKE_OUT='${out}' FAKE_DELAY=1500 HOME='${process.env.HOME}' '${process.execPath}' '${fake}'; sleep 30`);
   const state = () => (existsSync(out) ? readFileSync(out, "utf8") : "");
   for (let t0 = Date.now(); Date.now() - t0 < 5000 && !state(); await sleep(500)) w.poll();
@@ -190,7 +190,7 @@ async function boot(name: string, opts: { poll: () => void; mode?: string; delay
   writeFileSync(join(process.env.HOME!, ".claude.json"), JSON.stringify({ projects: {} }));
   const out = join(root, "policy.state");
   const logs: string[] = [];
-  const w = startupWatch(space, "policy", folder, { runtime: "tmux", tmuxEnv, log: (l) => logs.push(l) });
+  const w = startupWatch(space, "policy", folder, undefined, { runtime: "tmux", tmuxEnv, log: (l) => logs.push(l) });
   tmux("new-window", "-d", "-t", `cotal-${space}`, "-n", "policy", "-c", folder, `FAKE_OUT='${out}' HOME='${process.env.HOME}' '${process.execPath}' '${fake}'; sleep 30`);
   for (let t0 = Date.now(); Date.now() - t0 < 4000; await sleep(500)) w.poll();
   const st = existsSync(out) ? readFileSync(out, "utf8") : "";
@@ -206,13 +206,32 @@ async function boot(name: string, opts: { poll: () => void; mode?: string; delay
   const folder = realpathSync(mkdtempSync(join(root, "other-")));
   const out = join(root, "other.state");
   const logs: string[] = [];
-  const w = startupWatch(space, "other", folder, { runtime: "tmux", tmuxEnv, log: (l) => logs.push(l) });
+  const w = startupWatch(space, "other", folder, undefined, { runtime: "tmux", tmuxEnv, log: (l) => logs.push(l) });
   tmux("new-window", "-d", "-t", `cotal-${space}`, "-n", "other", "-c", folder, `FAKE_OUT='${out}' FAKE_MODE=other HOME='${process.env.HOME}' '${process.execPath}' '${fake}'; sleep 30`);
   for (let t0 = Date.now(); Date.now() - t0 < 3000; await sleep(500)) w.poll();
   const pane = tmux("capture-pane", "-p", "-t", `cotal-${space}:other`).stdout;
   ok("OTHER: an unrecognised prompt gets no keypress", /Telemetry opt-in/.test(pane) && readFileSync(out, "utf8") === "other");
   ok("OTHER: logged with what was on screen", logs.some((l) => /unrecognised prompt.*Telemetry opt-in/.test(l)), logs.join(" | "));
   ok("OTHER: cause() quotes it", /unrecognised prompt/.test(w.cause()), w.cause());
+}
+
+// CODEX: a non-claude harness never reads ~/.claude.json — the watch must not write a trust entry or
+// log a "lost the trust entry" incident for it (only claude seats are pre-trusted at the spawn site).
+{
+  const folder = realpathSync(mkdtempSync(join(root, "codex-")));
+  writeFileSync(join(process.env.HOME!, ".claude.json"), JSON.stringify({ projects: {} }));
+  for (const agent of ["codex", "opencode"]) {
+    const logs: string[] = [];
+    const w = startupWatch(space, agent, folder, agent, { runtime: "pty", tmuxEnv, log: (l) => logs.push(l) });
+    w.poll();
+    w.poll();
+    ok(`${agent.toUpperCase()}: no ~/.claude.json trust entry written`, !isFolderTrusted(folder));
+    ok(`${agent.toUpperCase()}: no "lost the trust entry" incident logged`, !logs.some((l) => /lost the trust entry/.test(l)), logs.join(" | "));
+    ok(`${agent.toUpperCase()}: cause() names no erased entry`, w.cause() === "", w.cause());
+  }
+  const claude = startupWatch(space, "claude", folder, "claude", { runtime: "pty", tmuxEnv, log: () => {} });
+  claude.poll();
+  ok("CLAUDE (explicit agent: claude): the watch still re-writes the entry", isFolderTrusted(folder));
 }
 
 tmux("kill-server");
