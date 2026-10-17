@@ -24,7 +24,7 @@ import {
 // auth-path helpers moved to @cotal-ai/workspace in cotal v0.8 (#120).
 import { authDir, loadSpaceAuth } from "@cotal-ai/workspace";
 import { pawCotalRoot } from "./cotal-root.ts";
-import { confineAndTrustCwd, isFolderTrusted, pawTrustedFolder, pretrustFolder } from "./cwd.ts";
+import { confineAndTrustCwd, confineCwdOnly, isFolderTrusted, pawTrustedFolder, pretrustFolder } from "./cwd.ts";
 import { readForeground } from "./foreground.ts";
 import { clearSleep, prepareWake, sleepLog, sleepState } from "./sleep-state.ts";
 import { clearRestartHistory, markStuck, readRestartHistory, recordRestart, restartVerdict } from "./restart-history.ts";
@@ -529,6 +529,8 @@ export function checkAgentSpec(spec: AgentTypeSpec): { agent: string; provider?:
     if (!provider) throw new Error("paw: --agent hermes needs --provider <Hermes provider id> (e.g. xai-oauth) and --model");
     return { agent, provider };
   }
+  if (agent === ACP_AGENT && spec.model !== undefined)
+    throw new Error(`paw: --agent acp takes no --model — put the model in the persona's acpCommand (e.g. '["fx","acp","--model","grok-4.7"]')`);
   if (spec.provider !== undefined && !kit) throw new Error(`paw: --provider is kit's (codex|grok) or hermes' — it can't apply to --agent ${agent}`);
   const provider = kit ? spec.provider?.trim() || "codex" : undefined;
   if (provider !== undefined && !isKitProvider(provider)) throw new Error(`paw: --provider "${provider}" — kit drives codex or grok`);
@@ -571,7 +573,13 @@ export function applyAgentType(space: string, name: string, spec: AgentTypeSpec,
     }
     return file;
   }
-  const model = agent === "claude" ? undefined : spec.model?.trim() || undefined;
+  // An acp agent is nothing without its command, and a born persona missing it fails on every spawn.
+  if (agent === ACP_AGENT && (!existsSync(file) || personaValue(file, "acpCommand") === undefined))
+    throw new Error(
+      `paw: an acp agent needs its command first — write ${file} with \`agent: acp\` and ` +
+        `\`acpCommand: '["/abs/path/fx","acp"]'\` (quoted JSON), then \`paw dm ${name} …\``,
+    );
+  const model = agent === "claude" || agent === ACP_AGENT ? undefined : spec.model?.trim() || undefined;
   // kit has no MCP client; Hermes' tools come from its own cotal plugin, not shared MCP servers.
   // acp: the plugin serves the cotal tools itself and refuses shared servers (v1).
   const noMcp = kit || agent === HERMES_AGENT || agent === ACP_AGENT;
@@ -940,12 +948,13 @@ export async function ensureAgentSpawned(
         );
       }
     }
-    const cwd = confineAndTrustCwd(opts.cwd);
+    const agentType = readAgentType(config);
+    // Only Claude Code reads ~/.claude.json's folder trust; other harnesses get confinement alone.
+    const cwd = isClaudeHarness(agentType) ? confineAndTrustCwd(opts.cwd) : confineCwdOnly(opts.cwd);
     // `identity` HARD-PINS the name: on a collision the manager refuses instead of minting `<name>_2`.
     // Without it a restart whose old presence hadn't expired yet came back as `queue-ea_2` — alive,
     // resumed, and unreachable under its own name (2026-09-16: eight restarts, eight `_2` agents).
     const args: Record<string, unknown> = { name: opts.name, config, cwd, identity: opts.name };
-    const agentType = readAgentType(config);
     const kit = agentType === KIT_AGENT;
     const hermes = agentType === HERMES_AGENT;
     const acp = agentType === ACP_AGENT;

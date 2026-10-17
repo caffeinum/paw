@@ -138,6 +138,12 @@ export function pawTrustedFolder(cwd: string): string | undefined {
   }
 }
 
+/** {@link confineAndTrustCwd} without the trust write — for harnesses that never read Claude's trust store. */
+export function confineCwdOnly(cwd: string): string {
+  if (!isAbsolute(cwd)) throw new Error(`paw: agent cwd must be absolute, got "${cwd}"`);
+  return confineCwd(realpathSync(cwd)).canonical;
+}
+
 /**
  * Confine + pre-trust a folder before paw asks the manager to spawn an agent there, returning the
  * CANONICAL cwd to hand the manager (so the dir claude runs in matches the trust key). An in-root cwd
