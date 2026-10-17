@@ -180,6 +180,10 @@ pointing into the throwaway root, with only the auth file copied in (fx: `~/.fx/
 /tmp/pw.XXXX`): a scratchpad-deep one pushes `hub.sock` past the 103-byte unix-socket limit and `paw status`
 refuses. Live-verified 2026-10-16 on a private nats-server (`PAW_SERVER`): fx acp (grok) answered a `paw dm`,
 `paw status`/`paw who` showed it idle, host = the Rust binary at ~6 MB RSS under nice 10.
+2026-10-17, after the host pin: `paw acp-host install` built 1b8048a from a git archive (2.6 MB binary, ~1.5 min
+cold); a scripted ACP agent (the plugin's test/fake-acp-agent.mjs) came up idle on it (7 MB RSS, nice 10) and
+received a `paw dm` as its session/prompt. fx was not re-run: the grok access token had expired, and refreshing
+a throwaway copy could rotate the operator's refresh token.
 
 ## src/session.ts
 

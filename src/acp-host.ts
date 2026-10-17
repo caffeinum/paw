@@ -1,6 +1,6 @@
 /**
  * Which seat host runs an `agent: acp` agent. The default is the native Rust host (cotal-connector-acp
- * native/rust, ~6 MB RSS live vs the node host's 57–145 MB), installed by `paw acp-host install` at
+ * native/rust, a ~2.6 MB binary at ~6–7 MB RSS live vs the node host's 57–145 MB), installed by `paw acp-host install` at
  * `$PAW_HOME/bin/cotal-acp-host-<rev>`. The binary is PINNED to {@link ACP_HOST_REV}, the same commit the
  * vendored plugin tgz comes from: the host and the plugin share an env/launch contract (native/WIRE.md),
  * so paw only ever runs a host built from the plugin commit it ships. The rev is in the binary's name, so a
