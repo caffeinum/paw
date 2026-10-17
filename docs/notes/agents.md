@@ -139,6 +139,41 @@ Moved verbatim from CLAUDE.md (2026-10-02 split). Index: [CLAUDE.md](../../CLAUD
 - Tests: `check:hermes` (hermetic), `scripts/e2e-hermes.ts` (isolated mesh, fake OpenAI-compatible model:
   start → status → DM reply → stop → start → DM reply → log refusal).
 
+## acp
+
+`agent: acp` runs any Agent Client Protocol agent (fx acp, codex-acp, gemini, goose) through the standalone
+plugin `cotal-connector-acp` (~/Github/caffeinum/cotal-connector-acp), vendored as
+`vendor/cotal-connector-acp-<v>.tgz` (a file: dep keeps releases immutable; re-pack + `pnpm update
+cotal-connector-acp` after a plugin change). `bin/cotald.ts` unregisters the plugin's vanilla `acp` and
+registers `pawAcpConnector` (`src/acp.ts`), which spreads it and adds only:
+- the paw brief as `COTAL_ACP_INSTRUCTIONS` (it rides the first prompt; ACP has no system prompt);
+- `BEADS_DIR`/`BEADS_ACTOR`, and `niced()` from the persona's `nice:`;
+- `acpPermission: allow` unless the persona or the spawn names one (the plugin has no default; paw is bypass).
+- the seat host (`src/acp-host.ts`): **the Rust host by default**, at `$PAW_HOME/bin/cotal-acp-host`
+  (cotal-connector-acp `native/rust`, built on cotal-rs; ~6 MB RSS live vs 57–145 MB for the node host).
+  `paw acp-host install` cargo-builds it from `$COTAL_ACP_HOST_SRC` (default
+  ~/Github/caffeinum/cotal-connector-acp/native/rust) and installs it atomically (also the upgrade; live
+  seats keep the old binary until they restart); `paw acp-host` shows it. A missing binary **fails loud at
+  spawn** with that command (CLI side in `ensureAgentSpawned`, and again in the manager's `buildLaunch`) —
+  never a silent node fallback. Persona `acpHost: /abs/host` names another native host; `acpHost: ts` is
+  the explicit node host (paw shadows it with launch option `host = node`, then adds the plugin's
+  `dist/host.js` — the plugin itself accepts only an absolute executable). A spawn `--opt host=` wins.
+No TMPDIR override: the control socket and launch material are made in the manager's `buildLaunch`, so the
+seat's TMPDIR never mattered, and an override also stopped the seat from removing its launch-material dir.
+
+Persona: `agent: acp`, `acpCommand: '["/abs/fx","acp"]'` (quoted JSON), optional `acpEnv:` /
+`acpPermission:` / `acpHost:`. Spawned `events: false`, `shareTools: none`; `paw status` reads presence alone.
+`--agent acp` refuses `--model` (the model goes in `acpCommand`) and refuses to birth a persona that has no
+`acpCommand:` yet. Only claude harnesses get the `~/.claude.json` folder pre-trust (`confineCwdOnly` otherwise).
+
+**An isolated space does not isolate the ACP agent's own home.** fx writes `~/.fx/sessions`, history and
+usage, and bills the operator's account, whatever PAW_HOME says. In a test, pass `HOME` through `acpEnv`
+pointing into the throwaway root, with only the auth file copied in (fx: `~/.fx/grok-auth.json`; check its
+`expires_at_ms` is well ahead so fx does not refresh the copy). Keep the test PAW_HOME SHORT (`mktemp -d
+/tmp/pw.XXXX`): a scratchpad-deep one pushes `hub.sock` past the 103-byte unix-socket limit and `paw status`
+refuses. Live-verified 2026-10-16 on a private nats-server (`PAW_SERVER`): fx acp (grok) answered a `paw dm`,
+`paw status`/`paw who` showed it idle, host = the Rust binary at ~6 MB RSS under nice 10.
+
 ## src/session.ts
 
 - `src/session.ts` — leaf module shared by connector (launch), spawn site (guard), and status:

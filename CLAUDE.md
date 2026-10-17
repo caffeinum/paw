@@ -18,6 +18,8 @@ This file is the INDEX. The full design notes, incident narratives and rationale
   later mesh starts). → [lifecycle.md#mesh-registry-hygiene](docs/notes/lifecycle.md#mesh-registry-hygiene)
 - **An isolated space does NOT isolate `~/.claude`.** Never run `/model`, `/config` or any
   settings-writing command in a test agent — it changes the operator's global default.
+- **Nor does it isolate an ACP agent's own home** (`~/.fx`, `~/.codex`, `~/.gemini`): a test `agent: acp` seat
+  passes `HOME` via `acpEnv` into the throwaway root (auth file copied in). → [agents.md#acp](docs/notes/agents.md#acp)
 - **Never restart/stop/interrupt a live agent without the operator's explicit go** — no automation may
   touch a live agent (the keeper's auto-unstick was removed for this). `paw sleep` is opt-in per agent.
 - **Fail loud.** Never fabricate a fallback value (`?? ""`, `"unknown"`, a guessed name or a 0 count).
@@ -114,6 +116,9 @@ Each entry: what it is + the most load-bearing rule. Full notes behind the link.
 - persona `agent:` pin — which connector (claude/codex/opencode) respawns the agent. → [agents.md#agent-persona-pin](docs/notes/agents.md#agent-persona-pin)
 - `src/hermes.ts` — `agent: hermes`: cotal's hermes connector in a durable paw-owned profile
   (`$PAW_HOME/hermes/profiles/<space>-<name>`), one OAuth login per profile, `hermesHome:` adopts one. → [agents.md#hermes](docs/notes/agents.md#hermes)
+- `src/acp.ts` — `agent: acp`: any ACP agent via the vendored `cotal-connector-acp` plugin; paw adds brief,
+  beads, nice, `acpPermission: allow` default; seat host = Rust `$PAW_HOME/bin/cotal-acp-host` (`paw acp-host
+  install`; missing → fail loud, `acpHost: ts` = node host); `check:acp`. → [agents.md#acp](docs/notes/agents.md#acp)
 - `src/session.ts` — `readResumeId`, `transcriptExists`; leaf module. → [agents.md#srcsessionts](docs/notes/agents.md#srcsessionts)
 - **Two-writer guard** — never start an agent whose pinned session a standalone claude holds. → [agents.md#two-writer-guard](docs/notes/agents.md#two-writer-guard)
 - `src/open.ts` — `paw open`/`paw attach`: runtime-aware; tmux → real window, cmux → names the tab, pty

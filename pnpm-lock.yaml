@@ -47,6 +47,9 @@ importers:
       '@nats-io/transport-node':
         specifier: ^3.4.0
         version: 3.4.0
+      cotal-connector-acp:
+        specifier: file:vendor/cotal-connector-acp-0.1.0.tgz
+        version: file:vendor/cotal-connector-acp-0.1.0.tgz(@cotal-ai/core@0.84.0(patch_hash=350a63194deb88ab7c476043b7467af013b867c91e6b121f1ca4e5a149425087))
     devDependencies:
       '@lydell/node-pty':
         specifier: 1.2.0-beta.12
@@ -443,6 +446,13 @@ packages:
   convert-to-spaces@2.0.1:
     resolution: {integrity: sha512-rcQ1bsQO9799wq24uE5AM2tAILy4gXGIK/njFWcVQkGNZ96edlpY+A7bjwvzjYvLDyzmG1MmMLZhpcsb+klNMQ==}
     engines: {node: ^12.20.0 || ^14.13.1 || >=16.0.0}
+
+  cotal-connector-acp@file:vendor/cotal-connector-acp-0.1.0.tgz:
+    resolution: {integrity: sha512-FGxiZr91BAFq45CwB7jyYcWUsmVfMOoYYsdho6eXW6Z6CMKlpcbLthtl888w6lq1r9Ik3NoAQ+UVV9OV2tjDTg==, tarball: file:vendor/cotal-connector-acp-0.1.0.tgz}
+    version: 0.1.0
+    engines: {node: '>=22'}
+    peerDependencies:
+      '@cotal-ai/core': 0.84.0
 
   emoji-regex@10.6.0:
     resolution: {integrity: sha512-toUI84YS5YmxW219erniWD0CIVOo46xGKColeNQRgOzDorgBi1v4D71/OFzgD9GO2UGKIv1C3Sp8DAn0+j5w7A==}
@@ -974,6 +984,10 @@ snapshots:
       convert-to-spaces: 2.0.1
 
   convert-to-spaces@2.0.1: {}
+
+  cotal-connector-acp@file:vendor/cotal-connector-acp-0.1.0.tgz(@cotal-ai/core@0.84.0(patch_hash=350a63194deb88ab7c476043b7467af013b867c91e6b121f1ca4e5a149425087)):
+    dependencies:
+      '@cotal-ai/core': 0.84.0(patch_hash=350a63194deb88ab7c476043b7467af013b867c91e6b121f1ca4e5a149425087)
 
   emoji-regex@10.6.0: {}
 
