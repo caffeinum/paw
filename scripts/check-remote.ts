@@ -102,6 +102,21 @@ assert(remoteTlsEnv(ro).envAllow?.includes("NODE_EXTRA_CA_CERTS") === true, "a r
 rm.removeRemoteMesh("remotetest-r");
 delete process.env.NODE_EXTRA_CA_CERTS;
 
+console.log("an agent belongs to one space");
+const { assertOneSpace, personaFilePath } = await import("../src/addressing.ts");
+const sid = "11111111-2222-3333-4444-555555555555";
+writeFileSync(personaFilePath("remotetest-local", "a"), `---\nname: a\nresume: ${sid}\n---\n`);
+writeFileSync(personaFilePath("remotetest-local2", "b"), `---\nname: b\nresume: ${sid}\n---\n`);
+assertOneSpace("remotetest-local2", sid);
+assert(true, "two LOCAL spaces sharing a pin: unchanged (no new refusal)");
+rm.writeRemoteMesh({ space: "remotetest-r", server: "tls://127.0.0.1:14322", root, ts: new Date().toISOString() });
+writeFileSync(personaFilePath("remotetest-r", "c"), `---\nname: c\nresume: ${sid}\n---\n`);
+throws(() => assertOneSpace("remotetest-r", sid), /already belongs to "a" in space "remotetest-local"/, "a remote agent on a session another space pins is refused");
+throws(() => assertOneSpace("remotetest-local", sid), /in space "remotetest-r"/, "and the local side refuses the remote's session too");
+assertOneSpace("remotetest-r", "99999999-0000-0000-0000-000000000000");
+assert(true, "an unshared session passes");
+rm.removeRemoteMesh("remotetest-r");
+
 console.log("signer root");
 const full = await createSpaceAuth("remotetest-s");
 const sroot = mkdtempSync(join(tmpdir(), "paw-remote-signer-"));

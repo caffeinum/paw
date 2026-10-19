@@ -614,6 +614,38 @@ export async function controlCreds(space: string): Promise<string | undefined> {
   return auth ? await mintCreds(auth, newIdentity(), "control-caller-privileged", { lifecycleUid: mintLifecycleUid() }) : undefined;
 }
 
+/** Agents in OTHER spaces (under this PAW_HOME) whose persona pins `sessionId`. */
+export function sessionPinnedInOtherSpaces(space: string, sessionId: string): Array<{ space: string; name: string }> {
+  const spaces = dirname(spaceDir(space));
+  const out: Array<{ space: string; name: string }> = [];
+  for (const other of readdirSync(spaces)) {
+    if (other === space) continue;
+    const dir = join(spaces, other, "personas");
+    if (!existsSync(dir)) continue;
+    for (const f of readdirSync(dir)) {
+      if (f.endsWith(".md") && readResumeId(join(dir, f)) === sessionId) out.push({ space: other, name: f.slice(0, -".md".length) });
+    }
+  }
+  return out;
+}
+
+/**
+ * An agent belongs to ONE space. A claude session pinned by agents in two spaces would get two
+ * managers — on two brokers, when one is remote — each resuming it: two writers on one transcript.
+ * Checked only when either side is a REMOTE space, so local-only installs behave as before.
+ */
+export function assertOneSpace(space: string, sessionId: string | undefined): void {
+  if (!sessionId) return;
+  const clash = sessionPinnedInOtherSpaces(space, sessionId).filter((o) => readRemoteMesh(space) || readRemoteMesh(o.space));
+  if (!clash.length) return;
+  const { space: s, name: n } = clash[0]!;
+  throw new Error(
+    `paw: session ${sessionId} already belongs to "${n}" in space "${s}" — an agent lives in one space (two would resume one transcript from two managers).\n` +
+      `  use it there:  paw chat ${n} --space ${s}\n` +
+      `  or forget it:  paw rm ${n} --space ${s}`,
+  );
+}
+
 /** Which broker rows a "you" endpoint on a REMOTE (authed) space is minted with — cotal's own split:
  *  `operator` sends and watches presence (what `cotal send` mints), `admin` reads every DM/channel
  *  stream (what `cotal console` mints), `agent` holds a presence ("you" reachable for replies). */
@@ -821,6 +853,7 @@ export async function ensureAgentSpawned(
   // funnel through here, so this ONE guard keeps them from racing a second agent onto the same name.
   // The caller addresses the live foreground agent through the roster instead (readyId/waitForPeerId).
   if (readForeground(opts.space, opts.name)) return { spawned: false };
+  assertOneSpace(opts.space, readResumeId(personaFilePath(opts.space, opts.name)));
   const lastWrite = (): number | undefined => {
     const file = personaFilePath(opts.space, opts.name);
     const pin = readResumeId(file);
