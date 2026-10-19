@@ -126,19 +126,52 @@ export async function readConversation(ep: CotalEndpoint, opts: { withSent?: boo
  * that means reading the same pre-advance cursor and printing the same messages twice.
  */
 export function pollLoop(tick: () => Promise<void>, ms: number, onError: (e: Error) => void): () => void {
-  let running = false;
-  const run = async (): Promise<void> => {
-    if (running) return;
-    running = true;
-    try {
-      await tick();
-    } catch (e) {
-      onError(e as Error);
-    } finally {
-      running = false;
-    }
+  const loop = pausableLoop(tick, ms, onError);
+  loop.resume(); // drain immediately, then settle into the interval
+  return () => loop.pause();
+}
+
+/** A {@link pollLoop} that can be parked and woken — `paw web` runs its roster and conversation loops
+ *  only while a browser is connected (an idle daemon re-collecting for nobody was ~200ms CPU per tick). */
+export interface PausableLoop {
+  /** Start ticking: one tick NOW, then every `ms`. A no-op while already ticking. */
+  resume(): void;
+  /** Stop ticking. A tick already in flight finishes. */
+  pause(): void;
+  active(): boolean;
+  /** One tick now, sharing the re-entrancy guard: resolves when the tick in flight (this one or an
+   *  earlier one) settles. For an on-demand read while paused. */
+  runNow(): Promise<void>;
+}
+
+/** Created PAUSED. Same never-twice-at-once guard as {@link pollLoop}. */
+export function pausableLoop(tick: () => Promise<void>, ms: number, onError: (e: Error) => void): PausableLoop {
+  let inflight: Promise<void> | undefined;
+  let timer: ReturnType<typeof setInterval> | undefined;
+  const runNow = (): Promise<void> => {
+    if (inflight) return inflight;
+    inflight = (async () => {
+      try {
+        await tick();
+      } catch (e) {
+        onError(e as Error);
+      } finally {
+        inflight = undefined;
+      }
+    })();
+    return inflight;
   };
-  void run(); // drain immediately, then settle into the interval
-  const timer = setInterval(() => void run(), ms);
-  return () => clearInterval(timer);
+  return {
+    resume() {
+      if (timer) return;
+      void runNow();
+      timer = setInterval(() => void runNow(), ms);
+    },
+    pause() {
+      if (timer) clearInterval(timer);
+      timer = undefined;
+    },
+    active: () => timer !== undefined,
+    runNow,
+  };
 }

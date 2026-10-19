@@ -1560,6 +1560,79 @@ const stillAligned = async (ws: RawWs, label: string, ...setup: Buffer[]): Promi
   console.log("✓ company routes");
 }
 
+/* ── idle parking: loops run only while a browser is connected (src/feed.ts pausableLoop) ────────── */
+{
+  const { pausableLoop } = await import("../src/feed.ts");
+  let ticks = 0;
+  let release: () => void = () => {};
+  const loop = pausableLoop(
+    () => {
+      ticks++;
+      return new Promise<void>((r) => (release = r));
+    },
+    40,
+    () => {},
+  );
+  await settle(100);
+  assert(ticks === 0 && !loop.active(), "a pausable loop is created PARKED — nothing ticks until resume()");
+  loop.resume();
+  assert(ticks === 1 && loop.active(), "resume() ticks IMMEDIATELY (the first client gets a fresh read, not one up to a tick old)");
+  await settle(100);
+  assert(ticks === 1, "a tick still in flight is never started twice (the re-entrancy guard holds)");
+  const joined = loop.runNow();
+  release();
+  await joined;
+  assert(ticks === 1, "runNow() during a tick joins it rather than starting a second");
+  loop.pause();
+  const before = ticks;
+  await settle(150);
+  assert(ticks === before && !loop.active(), "pause() stops the interval");
+  const now = loop.runNow();
+  release();
+  await now;
+  assert(ticks === before + 1 && !loop.active(), "runNow() while parked runs one tick and stays parked");
+  loop.resume();
+  loop.resume();
+  release();
+  await settle(10);
+  loop.pause();
+  release();
+  assert(ticks === before + 2, "a second resume() while active is a no-op (no extra immediate tick)");
+
+  // The server reports the socket count on every change — that is what parks/wakes `paw web`'s loops.
+  const counts: number[] = [];
+  let freshened = 0;
+  const gport = await freePort();
+  const gserver = await startWebServer({ ...deps, port: gport, clientRoot: root, onClients: (n) => counts.push(n), freshen: async () => void freshened++ });
+  const open = async (): Promise<Socket> => {
+    const s = connect(gport, "127.0.0.1");
+    await new Promise<void>((r, j) => {
+      s.once("connect", () => r());
+      s.once("error", j);
+    });
+    s.write(
+      `GET /ws HTTP/1.1\r\nHost: 127.0.0.1:${gport}\r\nOrigin: http://127.0.0.1:${gport}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n` +
+        `Sec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n`,
+    );
+    await settle(80);
+    return s;
+  };
+  assert(gserver.clientCount() === 0 && counts.length === 0, "no socket → count 0, and nothing reported yet");
+  const a = await open();
+  const b = await open();
+  assert(gserver.clientCount() === 2 && counts.join() === "1,2", "each connect is reported (1, then 2)");
+  a.destroy();
+  await settle();
+  assert(counts.join() === "1,2,1", `a disconnect is reported (${counts.join()})`);
+  b.end();
+  await settle();
+  assert(gserver.clientCount() === 0 && counts.at(-1) === 0, "the LAST socket leaving reports 0 — the daemon parks its loops");
+  await fetch(`http://127.0.0.1:${gport}/api/inbox`, { headers: { Origin: `http://127.0.0.1:${gport}` } });
+  assert(freshened === 1, "/api/inbox awaits freshen() first (a parked daemon re-reads a stale conversation for a poll-only reader)");
+  await gserver.close();
+  console.log("✓ idle parking");
+}
+
 await server.close();
 assert((await fetch(`${base}/api/status`, { headers: ORIGIN }).then(() => false).catch(() => true)) === true, "close() actually stops answering");
 
