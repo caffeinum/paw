@@ -41,6 +41,14 @@ export function meshTls(space: string): { tls?: true } {
   return isRemoteSpace(space) ? { tls: true } : {};
 }
 
+/** The same requirement for a RAW `@nats-io/transport-node` connect(): `tls: {}` makes nats.js refuse
+ *  a broker that does not advertise TLS BEFORE it sends CONNECT (and the creds riding it). Without it
+ *  a dial upgrades only when the broker asks, so a plaintext listener at that address would be handed
+ *  the creds. Local spaces get `{}`. */
+export function natsTls(space: string): { tls?: Record<string, never> } {
+  return isRemoteSpace(space) ? { tls: {} } : {};
+}
+
 /** True when the operator pointed the LOCAL broker somewhere of their own (it is theirs to run). */
 export function customServer(): boolean {
   return localServer() !== DEFAULT_SERVER;

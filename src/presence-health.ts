@@ -22,6 +22,7 @@ import { randomBytes } from "node:crypto";
 import { idFromCreds, presenceBucket } from "@cotal-ai/core";
 import { jetstream, jetstreamManager } from "@nats-io/jetstream";
 import { connect, credsAuthenticator } from "@nats-io/transport-node";
+import { natsTls } from "./server.ts";
 
 /** How long a probe put may go unanswered before the store counts as latched. A healthy local put
  *  takes milliseconds; cotal's own refused write surfaces as its ~5s request timeout. */
@@ -59,6 +60,8 @@ export async function probePresenceWrites(space: string, server: string, creds: 
     nc = await connect({
       servers: server,
       timeout: timeoutMs,
+      // A remote space's control creds never cross a link that isn't TLS (src/server.ts natsTls).
+      ...natsTls(space),
       ...(creds ? { authenticator: credsAuthenticator(new TextEncoder().encode(creds)), inboxPrefix: `_INBOX_${idFromCreds(creds)}` } : {}),
     });
   } catch (e) {

@@ -122,6 +122,12 @@ try {
   ok("paw started no broker", procs("nats-server").length === natsBefore);
   const mgr = procs(`supervise --space ${R} --server ${server}`);
   ok("the manager dials the remote broker", mgr.length > 0);
+  // The seat's cotal MCP takes its transport from COTAL_TLS alone; without it the seat dialled tls://
+  // with `tls: false` (upgrading only because this broker asks). `ps -E` shows a process's env (macOS).
+  const seatMcp = execFileSync("ps", ["-A", "-E", "-ww", "-o", "command="], { encoding: "utf8" })
+    .split("\n")
+    .filter((l) => l.includes("mcp.cjs") && l.includes(`COTAL_SPACE=${R}`));
+  ok("the seat's cotal MCP requires TLS (COTAL_TLS=1)", seatMcp.length > 0 && seatMcp.every((l) => /\sCOTAL_TLS=1(\s|$)/.test(l)), `${seatMcp.length} seat MCP process(es)`);
   ok("nothing ran for the decoy space", procs(DECOY).length === 0 && !existsSync(join(home, "spaces", DECOY, "manager.log")));
 
   // ── 4. who / status / restart ───────────────────────────────────────────────────────────────────
@@ -130,12 +136,19 @@ try {
   ok("who --space R lists the agent and you", who.status === 0 && out(who).includes(name) && out(who).includes("you"), out(who).trim().split("\n")[0]);
   const st = paw(["status", "--space", R, "--json"]);
   let row: { name?: string; live?: boolean; mesh?: string } | undefined;
+  let errors: string[] | undefined;
   try {
-    row = (JSON.parse(st.stdout) as { rows: Array<{ name?: string; live?: boolean; mesh?: string }> }).rows.find((r) => r.name === name);
+    const parsed = JSON.parse(st.stdout) as { rows: Array<{ name?: string; live?: boolean; mesh?: string }>; errors: string[] };
+    row = parsed.rows.find((r) => r.name === name);
+    errors = parsed.errors;
   } catch {
     /* reported below */
   }
   ok("status --space R shows it live", st.status === 0 && row?.live === true, `${row ? `mesh=${row.mesh}` : out(st).slice(0, 200)}`);
+  // The presence probe dials with TLS required: it must still reach the broker (a refusal answer),
+  // never "couldn't probe" (a dial that failed).
+  const unreached = (errors ?? []).filter((e) => /couldn't probe the presence store/.test(e));
+  ok("status's TLS-required presence probe reaches the broker", errors !== undefined && unreached.length === 0, unreached.join(" | "));
   const rs = paw(["restart", "--space", R]);
   ok("restart --space R bounces the manager", rs.status === 0, out(rs).trim().split("\n").pop());
   const dm2 = paw(["dm", "--space", R, name, "reply with just the word: again"]);

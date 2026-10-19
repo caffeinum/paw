@@ -17,7 +17,11 @@ untouched: a space with no record resolves exactly as before.
 - **Routing** (`src/server.ts`): `pawServer(space = resolveSpace())` = the record's server, else the
   local broker (`localServer()` = `PAW_SERVER` or `nats://127.0.0.1:4222`). `PAW_SERVER` names the LOCAL
   broker only. `pawCotalRoot(space)` = record root (a disagreeing `PAW_COTAL_ROOT` fails loud).
-  `meshTls(space)` → `{tls: true}` for remote spaces, `{}` locally.
+  `meshTls(space)` → `{tls: true}` for remote spaces, `{}` locally (CotalEndpoint / probeConnect);
+  `natsTls(space)` → `{tls: {}}` / `{}` for a RAW nats.js `connect()` (the presence probe, the status
+  INBOX listing). Every paw dial of a remote space with creds REQUIRES TLS: without the option nats.js
+  only upgrades when the broker asks, so a plaintext listener at that address got CONNECT + the creds
+  (the presence probe did exactly that until 2026-10-19; `check:remote` holds a fake plaintext broker).
 - **ensure()** (`src/lifecycle.ts`): for a remote space it never starts a broker
   (`ensureRemoteMesh`: one credentialed, TLS-required `probeConnect` minted from the signer, with a
   named reason for each failure), skips open-mesh stream bootstrap, then starts the usual
@@ -32,6 +36,10 @@ untouched: a space with no record resolves exactly as before.
   keep `controlCreds`.
 - **Seats** (`remoteTlsEnv`, src/connector.ts): cotal's launch env is an allowlist without the CA knobs;
   a remote space's seats get `NODE_EXTRA_CA_CERTS` / `SSL_CERT_FILE` through `envAllow` when set.
+  `remoteSeatTls` adds `COTAL_TLS=1` to the seat env: the seat's cotal MCP reads its transport from that
+  env var alone (the launch material carries servers + creds, no TLS flag) and nothing in cotal's
+  launch sets it, so seats dialled `tls://` with `tls: false`. pawConnector (claude) only — kit /
+  hermes / acp seats on a remote space get neither knob yet. The hub passes `COTAL_*` through.
 - **CLI**: `pawServer(space)` is threaded through every command. The bin gate and the self-ensuring
   commands (status, chat, stop, rm) ensure `ensureSpaceFor(space)` = the `--space` when it is remote,
   else the current space as before.
@@ -51,7 +59,9 @@ The sleep host and stale-id forwarder (both dial bare), presence-latch detection
   the daemon-credential renewal owner"), so on a broker-only box nothing renews them.
 - Many manager-internal dials pass `tls: false` ("not yet wired to a recorded transport"): the
   connection still upgrades because the broker requires TLS, but nothing REQUIRES it.
-- Seat launch env drops `NODE_EXTRA_CA_CERTS`.
+  The Manager takes no transport option at all (paw's `cotald supervise` cannot pass one), so this
+  stays cotal's to fix; paw's own dials and the seats require TLS.
+- Seat launch env drops `NODE_EXTRA_CA_CERTS` and never sets `COTAL_TLS` (paw adds both, above).
 - `cotal meshes add --mode auth` wants a fully composing trust root, so a signer-only root can't be
   registered in cotal's own registry — paw keeps its own record.
 
@@ -60,7 +70,8 @@ The sleep host and stale-id forwarder (both dial bare), presence-latch detection
 `scripts/check-remote.ts` (`pnpm check:remote`, hermetic unit checks) and `scripts/e2e-remote.ts`
 (`COTAL_BIN=<cotal-ai@0.84.0>/dist/cotal.js node scripts/e2e-remote.ts`): a private `cotal up
 --no-manager` JWT + TLS broker with a self-signed cert, `mint --signer`, `paw mesh add`, no-CA
-refusal, a real haiku claude spawned by `paw dm --space`, reply read by `paw inbox`, who/status,
+refusal, a real haiku claude spawned by `paw dm --space` (its cotal MCP carries `COTAL_TLS=1`, read
+with `ps -E`), reply read by `paw inbox`, who/status (the TLS-required presence probe reaches the broker),
 `paw restart`, second DM, teardown. PAW_SPACE is a decoy local space and PAW_SERVER a dead port, so
 any path that ignores `--space` fails instead of touching the live mesh. The cotal-ai package must
 be installed OUTSIDE the repo; run with `COTAL_SKIP_CONNECTOR_SEED=1` (the script sets it) or cotal
