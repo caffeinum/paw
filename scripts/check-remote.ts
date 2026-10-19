@@ -102,6 +102,38 @@ assert(remoteTlsEnv(ro).envAllow?.includes("NODE_EXTRA_CA_CERTS") === true, "a r
 rm.removeRemoteMesh("remotetest-r");
 delete process.env.NODE_EXTRA_CA_CERTS;
 
+console.log("TLS is REQUIRED on every remote dial");
+const { pawConnector } = await import("../src/connector.ts");
+const { natsTls } = await import("../src/server.ts");
+const { probePresenceWrites } = await import("../src/presence-health.ts");
+const { createServer } = await import("node:net");
+const seatRoot = mkdtempSync(join(tmpdir(), "paw-remote-seat-"));
+rm.writeRemoteMesh({ space: "remotetest-r", server: "tls://127.0.0.1:14322", root, ts: new Date().toISOString() });
+const seatEnv = (space: string) => {
+  const persona = join(seatRoot, `${space}.md`);
+  writeFileSync(persona, "---\nname: seat\n---\n");
+  return pawConnector.buildLaunch({ space, name: "seat", configPath: persona, workspaceRoot: seatRoot, servers: pawServer(space) }).env ?? {};
+};
+assert(seatEnv("remotetest-r").COTAL_TLS === "1", "a remote seat's cotal MCP gets COTAL_TLS=1 (its only TLS knob)");
+assert(seatEnv("remotetest-local").COTAL_TLS === undefined, "a local seat gets no COTAL_TLS");
+assert(JSON.stringify(natsTls("remotetest-r")) === '{"tls":{}}' && Object.keys(natsTls("remotetest-local")).length === 0, "natsTls: {tls:{}} remote, {} local");
+// A PLAINTEXT NATS listener (INFO without tls_required) at the remote address: a TLS-required probe must
+// refuse it before CONNECT — the line that would carry the creds.
+const heard: string[] = [];
+const plain = createServer((s) => {
+  s.on("data", (b) => heard.push(b.toString()));
+  s.on("error", () => {});
+  s.write(`INFO {"server_id":"plain","version":"2.10.0","proto":1,"max_payload":1048576,"headers":true,"auth_required":true}\r\n`);
+});
+const plainPort = await new Promise<number>((r) => plain.listen(0, "127.0.0.1", () => r((plain.address() as { port: number }).port)));
+const h = await probePresenceWrites("remotetest-r", `tls://127.0.0.1:${plainPort}`, undefined, 2000);
+await new Promise((r) => setTimeout(r, 100));
+plain.close();
+assert(h.kind === "unknown" && /tls/i.test(h.message), `the presence probe refuses a plaintext broker for a remote space — ${h.kind === "unknown" ? h.message : h.kind}`);
+assert(!heard.join("").includes("CONNECT"), "…and never sent CONNECT to it");
+rm.removeRemoteMesh("remotetest-r");
+rmSync(seatRoot, { recursive: true, force: true });
+
 console.log("an agent belongs to one space");
 const { assertOneSpace, personaFilePath } = await import("../src/addressing.ts");
 const sid = "11111111-2222-3333-4444-555555555555";
