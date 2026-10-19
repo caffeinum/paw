@@ -1560,6 +1560,80 @@ const stillAligned = async (ws: RawWs, label: string, ...setup: Buffer[]): Promi
   console.log("✓ company routes");
 }
 
+/* ── incremental DM reconcile (src/feed.ts DmWindow) ──────────────────────────────────────────────── */
+{
+  const { DmWindow, conversationEntries, dmRow } = await import("../src/feed.ts");
+  const stream: Array<Record<string, unknown>> = [];
+  let n = 0;
+  const push = (k: number): void => {
+    for (let i = 0; i < k; i++, n++) {
+      const mine = n % 3 === 0;
+      stream.push(
+        mine
+          ? { id: `d${n}`, from: { id: n % 2 ? ME : "local.devweb", name: n % 2 ? "you" : "dev-web" }, to: n % 2 ? "local.devweb" : ME, ts: 1000 + n, parts: parts(`m${n}`) }
+          : { id: `d${n}`, from: { id: "local.voice", name: "voice" }, to: "local.via", ts: 1000 + n, parts: parts(`x${n}`) },
+      );
+    }
+  };
+  const asked: number[] = [];
+  // cotal's contract: the NEWEST `limit` rows, oldest-first.
+  const read = async (limit: number) => {
+    asked.push(limit);
+    return stream.slice(-limit) as never[];
+  };
+  const CAP = 200;
+  const win = new DmWindow(read, ME, CAP, 8);
+  const full = () => conversationEntries((stream.slice(-CAP) as never[]).map((m) => dmRow(m, ME)), ME, "webcheck", { withSent: true });
+  const same = (label: string): void => {
+    const got = conversationEntries(win.all(), ME, "webcheck", { withSent: true });
+    assert(JSON.stringify(got) === JSON.stringify(full()) && win.all().map((r) => r.id).join() === stream.slice(-CAP).map((m) => m.id).join(), `DmWindow: ${label} — identical to a full read`);
+  };
+  push(150);
+  await win.refresh();
+  assert(asked.join() === "200", "DmWindow: the first refresh is the full read (cap)");
+  same("first load");
+  asked.length = 0;
+  push(3);
+  assert((await win.refresh()) === 3 && asked.join() === "8", "DmWindow: a few new DMs cost ONE small page, not the whole history");
+  same("3 new");
+  asked.length = 0;
+  assert((await win.refresh()) === 0 && asked.join() === "8", "DmWindow: nothing new → one small page, zero rows");
+  asked.length = 0;
+  push(50);
+  await win.refresh();
+  assert(asked.join() === "8,32,128", "DmWindow: a burst bigger than the page widens ×4 until it overlaps what is held");
+  same("a 50-DM burst, trimmed to the cap");
+  asked.length = 0;
+  push(400);
+  await win.refresh();
+  assert(asked.at(-1) === CAP, "DmWindow: a gap wider than the cap falls back to the full read");
+  same("a gap wider than the cap");
+  stream.length = 0;
+  push(5);
+  await win.refresh();
+  same("a stream that was reset (short page = its whole content)");
+  stream.push({ from: { id: "local.devweb", name: "dev-web" }, to: ME, ts: 9e9, parts: parts("no id") });
+  let threw = "";
+  try {
+    await win.refresh();
+  } catch (e) {
+    threw = (e as Error).message;
+  }
+  assert(/has no id/.test(threw), "DmWindow: a row without an id fails loud — never guessed into place");
+
+  // And through Conversation: the second reconcile asks for a small page, not FETCH_CAP.
+  const limits: number[] = [];
+  const hist = [{ id: "h1", from: { id: "local.devweb", name: "dev-web" }, to: ME, ts: 100, parts: parts("on it") }];
+  const inc = new Conversation({ ...(fakeEp() as object), dmHistory: async (o: { limit: number }) => (limits.push(o.limit), hist.slice(-o.limit)) } as never);
+  await inc.reconcile();
+  hist.push({ id: "h2", from: { id: ME, name: "you" }, to: "local.devweb", ts: 200, parts: parts("thanks") });
+  await inc.reconcile();
+  const es = inc.entries();
+  assert(limits[0] === 10_000 && limits[1] === 64, `Conversation.reconcile reads the backlog once, then incrementally (limits ${limits.join()})`);
+  assert(es.length === 2 && es[1].dir === "out" && es[1].to === "dev-web", "Conversation: the incremental reconcile picks up the new DM, recipient named");
+  console.log("✓ incremental DM reconcile");
+}
+
 /* ── idle parking: loops run only while a browser is connected (src/feed.ts pausableLoop) ────────── */
 {
   const { pausableLoop } = await import("../src/feed.ts");

@@ -82,7 +82,7 @@ function webCursor(space: string): number {
   return shared;
 }
 import { sendAsYou } from "./dm.ts";
-import { FETCH_CAP, messageText, observerEndpoint, pausableLoop, readConversation, type Entry, type PausableLoop } from "./feed.ts";
+import { DmWindow, FETCH_CAP, conversationEntries, messageText, observerEndpoint, pausableLoop, type Entry, type PausableLoop } from "./feed.ts";
 import { ensure, resolveSpace, reexecUnderNode } from "./lifecycle.ts";
 import { agentTranscriptFile, blocksForAgent, chooseTranscriptId } from "./log.ts";
 import { meshAgentSession } from "./named.ts";
@@ -110,7 +110,7 @@ const DEFAULT_PORT = 7788;
  *  a human timescale, and each collect costs a control round-trip plus a JetStream query per agent. */
 const STATUS_MS = 10_000;
 /**
- * How often the conversation is re-read from `dmHistory`.
+ * How often the conversation is brought up to date from `dmHistory` (incrementally — see DmWindow).
  *
  * The tap is an OPTIMISATION for latency; THIS is the correctness backstop. `ep.tap` is ephemeral — it
  * has no durable behind it, so anything published while the connection is down is not replayed, and
@@ -278,6 +278,9 @@ export class Conversation {
   private unnamed = new Map<Entry, string>();
 
   private readonly ep: CotalEndpoint;
+  /** The DM stream read incrementally (src/feed.ts DmWindow): the first reconcile reads it whole, each
+   *  later one only what arrived since. Built on first use — the endpoint's id exists once started. */
+  private window?: DmWindow;
   constructor(ep: CotalEndpoint) {
     this.ep = ep;
   }
@@ -292,9 +295,12 @@ export class Conversation {
     return [...this.history, ...this.live];
   }
 
-  /** Re-read the whole conversation and drop the live entries it now covers. */
+  /** Bring the conversation up to date with the stream and drop the live entries it now covers. */
   async reconcile(): Promise<void> {
-    const fresh = await readConversation(this.ep, { withSent: true });
+    const me = this.ep.card.id;
+    this.window ??= new DmWindow((limit) => this.ep.dmHistory({ limit }), me);
+    await this.window.refresh();
+    const fresh = conversationEntries(this.window.all(), me, this.ep.space, { withSent: true });
     const covered = new Set(fresh.map(keyOf));
     this.history = fresh;
     for (const e of this.live) this.unnamed.delete(e);
