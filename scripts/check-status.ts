@@ -330,7 +330,7 @@ assert(!inferBusy("idle", true, BUSY_NOW + 5_000, BUSY_NOW), "an mtime in the FU
   assert(threw, "personaValue: a deleted persona still throws the read error (no stale cached answer)");
 
   // liveSessionProcsMany: same procs as liveSessionProcs for each session (the index written above).
-  const many = liveSessionProcsMany([SID, "no-such-session"]);
+  const many = await liveSessionProcsMany([SID, "no-such-session"]);
   const strip = (ps: { pid: number; mesh: boolean }[]) => JSON.stringify(ps.map((p) => [p.pid, p.mesh]).sort());
   assert(strip(many.get(SID)!) === strip(liveSessionProcs(SID)), "liveSessionProcsMany = liveSessionProcs (live holder, non-mesh, dead pid excluded)");
   assert(many.get("no-such-session")!.length === 0, "liveSessionProcsMany: an unknown session has no procs");

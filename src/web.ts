@@ -119,6 +119,38 @@ const STATUS_MS = 10_000;
  * interval, never lost.
  */
 const RECONCILE_MS = 30_000;
+/** The longest a roster refresh waits after repeated failures (a manager that is down). */
+const RECONNECT_MAX_MS = 5 * 60_000;
+
+/**
+ * Exponential backoff for the roster refresh: `base` after the first failure, doubling to `max`, back
+ * to every tick on the first success. A manager that stays down used to be re-resolved every 10s —
+ * 11k failed reconnects in one log, each a fresh control handle and contract compile.
+ */
+export class Backoff {
+  private failures = 0;
+  private nextAt = 0;
+  private readonly base: number;
+  private readonly max: number;
+  constructor(base: number, max: number) {
+    this.base = base;
+    this.max = max;
+  }
+  ready(now: number): boolean {
+    return now >= this.nextAt;
+  }
+  /** Record a failure; returns how long until the next attempt. */
+  failed(now: number): number {
+    this.failures++;
+    const wait = Math.min(this.max, this.base * 2 ** (this.failures - 1));
+    this.nextAt = now + wait;
+    return wait;
+  }
+  succeeded(): void {
+    this.failures = 0;
+    this.nextAt = 0;
+  }
+}
 /** Matches `paw log` — transcripts reach hundreds of MB, so a trace read only touches the end. */
 const TRACE_TAIL_BYTES = 512 * 1024;
 /**
@@ -1627,7 +1659,12 @@ async function web(argv: string[]): Promise<void> {
    *  order — the payload is a bare `string[]`, so the client cannot re-derive one. */
   let channelNames: string[] = [];
   const authorsScanned = new Set<string>();
-  const refreshStatus = async (): Promise<void> => {
+  const reconnect = new Backoff(STATUS_MS, RECONNECT_MAX_MS);
+  /** Why the rows are stale, while they are — served with them until a refresh succeeds. */
+  let staleNote: string | undefined;
+  /** False when skipped: the last failure's backoff hasn't elapsed (the rows and staleNote stand). */
+  const refreshStatus = async (): Promise<boolean> => {
+    if (!reconnect.ready(Date.now())) return false;
     // One resolved control handle for the daemon's lifetime (see sharedManagerControl): re-resolving
     // per poll recompiled every contract validator each tick and spammed cotal's schema advisory.
     // A failed refresh drops the handle too: `stale` covers what the handle can classify, this
@@ -1640,8 +1677,11 @@ async function web(argv: string[]): Promise<void> {
       fresh = await collectStatus(space, await sharedManagerControl(space, server), { roster: () => ep.getRoster() });
     } catch (e) {
       await dropSharedManagerControl(space, server);
-      throw e;
+      const wait = reconnect.failed(Date.now());
+      throw new Error(`${(e as Error).message}; next attempt in ${Math.round(wait / 1000)}s`);
     }
+    reconnect.succeeded();
+    staleNote = undefined;
     rows = fresh.rows;
     errors = fresh.errors;
     collectedAt = Date.now();
@@ -1668,6 +1708,7 @@ async function web(argv: string[]): Promise<void> {
       // A channel list paw could not read is reported, not silently emptied — the previous list stands.
       errors = [...errors, `paw: couldn't list channels (${(e as Error).message})`];
     }
+    return true;
   };
 
   /** The roster + reconcile loops, parked while no browser is connected (built below, once the server
@@ -1693,7 +1734,7 @@ async function web(argv: string[]): Promise<void> {
       status: async () => {
         if (!collectedAt) await refreshStatus();
         else if (loops && !loops.status.active() && Date.now() - collectedAt >= STATUS_MS) await loops.status.runNow();
-        return { rows, errors };
+        return { rows, errors: staleNote ? [...errors, staleNote] : errors };
       },
       onClients: parkOrWake,
       freshen: async () => {
@@ -1851,12 +1892,13 @@ async function web(argv: string[]): Promise<void> {
    */
   const statusLoop = pausableLoop(
     async () => {
-      await refreshStatus();
+      if (!(await refreshStatus())) return; // backing off — the last frame (with its note) still stands
       push.broadcast({ type: "status", rows, errors });
     },
     STATUS_MS,
     (e) => {
       const note = `paw: roster refresh failed (${e.message})${collectedAt ? ` — rows are from ${new Date(collectedAt).toLocaleTimeString()}` : ""}`;
+      staleNote = note;
       console.error(c.red("! " + note));
       push.broadcast({ type: "status", rows, errors: [...errors, note] });
     },

@@ -1560,6 +1560,19 @@ const stillAligned = async (ws: RawWs, label: string, ...setup: Buffer[]): Promi
   console.log("✓ company routes");
 }
 
+/* ── manager reconnect backoff (src/web.ts Backoff) ───────────────────────────────────────────────── */
+{
+  const { Backoff } = await import("../src/web.ts");
+  const b = new Backoff(10_000, 300_000);
+  assert(b.ready(0), "backoff: ready before any failure");
+  const waits = [1, 2, 3, 4, 5, 6, 7].map(() => b.failed(0));
+  assert(waits.join() === "10000,20000,40000,80000,160000,300000,300000", `backoff: 10s doubling, capped at 5min (${waits.join()})`);
+  assert(!b.ready(299_999) && b.ready(300_000), "backoff: not ready until the wait has elapsed");
+  b.succeeded();
+  assert(b.ready(0) && b.failed(0) === 10_000, "backoff: a success resets it to the base interval");
+  console.log("✓ reconnect backoff");
+}
+
 /* ── incremental DM reconcile (src/feed.ts DmWindow) ──────────────────────────────────────────────── */
 {
   const { DmWindow, conversationEntries, dmRow } = await import("../src/feed.ts");
