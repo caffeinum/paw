@@ -180,15 +180,35 @@ export interface TranscriptRead {
   turn(): TurnState | undefined;
 }
 
+/**
+ * Each transcript's derived readings, valid while its (mtime ns, size) is unchanged. A transcript is
+ * append-only and an idle agent's does not move, so `paw web`'s 10s roster tick re-read ~150 × 128KB
+ * tails to reach the same answers. Only the ANSWERS are kept (not the tails), and each is computed the
+ * first time it is asked, from the file as it is then — the same read the uncached path did.
+ */
+const transcriptMemo = new Map<string, { stamp: string; failure?: { v: ReturnType<TranscriptRead["failure"]> }; context?: { v: ReturnType<TranscriptRead["context"]> }; turn?: { v: ReturnType<TranscriptRead["turn"]> } }>();
+
 function readTranscript(file: string | undefined): TranscriptRead | undefined {
   if (!file) return undefined;
-  const mtimeMs = statSync(file).mtimeMs;
-  let tails: { small: string; context: string } | undefined;
-  try {
-    tails = transcriptTails(file);
-  } catch {
-    tails = undefined; // unreadable → every reading below is "no claim", as each was on its own
+  const st = statSync(file);
+  const mtimeMs = st.mtimeMs;
+  const stamp = `${st.mtimeMs}:${st.size}`;
+  let memo = transcriptMemo.get(file);
+  if (memo?.stamp !== stamp) {
+    memo = { stamp };
+    transcriptMemo.set(file, memo);
   }
+  const m = memo;
+  let tails: { small: string; context: string } | undefined | null = null; // null = not read yet
+  const readTails = (): { small: string; context: string } | undefined => {
+    if (tails !== null) return tails;
+    try {
+      tails = transcriptTails(file);
+    } catch {
+      tails = undefined; // unreadable → every reading below is "no claim", as each was on its own
+    }
+    return tails;
+  };
   const lines = (s: string) => s.split("\n").filter(Boolean);
   const attempt = <T>(fn: () => T): T | undefined => {
     try {
@@ -199,9 +219,9 @@ function readTranscript(file: string | undefined): TranscriptRead | undefined {
   };
   return {
     mtimeMs,
-    failure: () => (tails ? attempt(() => lastFailure(lines(tails!.small))) : undefined),
-    context: () => (tails ? attempt(() => lastUsage(lines(tails!.context))) : undefined),
-    turn: () => (tails ? attempt(() => turnStateFrom(file, tails!.small)) : undefined),
+    failure: () => (m.failure ??= { v: ((t) => (t ? attempt(() => lastFailure(lines(t.small))) : undefined))(readTails()) }).v,
+    context: () => (m.context ??= { v: ((t) => (t ? attempt(() => lastUsage(lines(t.context))) : undefined))(readTails()) }).v,
+    turn: () => (m.turn ??= { v: ((t) => (t ? attempt(() => turnStateFrom(file, t.small)) : undefined))(readTails()) }).v,
   };
 }
 
