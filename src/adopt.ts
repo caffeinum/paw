@@ -31,6 +31,7 @@ import {
   setPersonaKeys,
   stopAgent,
   waitForMeshLive,
+  assertOneSpace,
 } from "./addressing.ts";
 import { readResumeId } from "./session.ts";
 import { adoptInFlight, adoptLogPath, finishDetachedAdopt, resolveSpace, spawnDetachedAdopt, withEnsuredManager } from "./lifecycle.ts";
@@ -359,6 +360,7 @@ async function adopt(argv: string[]): Promise<void> {
     const pinnedElsewhere = agentsPinnedTo(space, sessionId, desiredName ?? "").filter(
       (n) => !(nameFlag === undefined && folderForName(space, n) === folder),
     );
+    assertOneSpace(space, sessionId);
     assertSafeRepin({
       sessionId,
       explicitResume: false,
@@ -396,6 +398,7 @@ async function adopt(argv: string[]): Promise<void> {
   // Checked BEFORE the name is registered, so a refusal leaves no half-made agent behind.
   const prospective = plan.kind === "folder-default" ? oldName : plan.name;
   const prospectiveFile = prospective !== undefined ? personaFilePath(space, prospective) : undefined;
+  assertOneSpace(space, sessionId);
   assertSafeRepin({
     sessionId,
     explicitResume: session !== undefined && !inFlightChild,

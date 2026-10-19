@@ -11,7 +11,7 @@
  * roster, just reads the channel backlog and exits.
  */
 import { CotalEndpoint, assertValidChannel, registry, type Command, type CotalMessage } from "@cotal-ai/core";
-import { controlCreds, stableHumanId } from "../addressing.ts";
+import { humanEndpointAuth, stableHumanId } from "../addressing.ts";
 import { resolveSpace } from "../lifecycle.ts";
 import { HUMAN_PEER } from "../names.ts";
 import { formatWhen } from "./history.ts";
@@ -117,7 +117,7 @@ function parseArgs(argv: string[]): Args {
 async function files(argv: string[]): Promise<void> {
   const { channel: channelArg, limit, space: spaceArg, server: serverArg, pathOnly, json } = parseArgs(argv);
   const space = spaceArg ?? resolveSpace();
-  const server = serverArg ?? pawServer();
+  const server = serverArg ?? pawServer(space);
   const channel = channelArg ?? DEFAULT_FILES_CHANNEL;
   assertValidChannel(channel);
 
@@ -125,11 +125,12 @@ async function files(argv: string[]): Promise<void> {
 
   // Observer endpoint, mirrored from src/commands/history.ts: connect as the stable "you", but a pure
   // reader — no presence, no durable consumer bind, no roster watch.
-  const creds = await controlCreds(space);
+  const humanAuth = await humanEndpointAuth(space, "admin");
+  const creds = humanAuth.creds;
   const card = creds
     ? { name: HUMAN_PEER, kind: "endpoint" as const }
     : { name: HUMAN_PEER, kind: "endpoint" as const, id: stableHumanId(space) };
-  const ep = new CotalEndpoint({ space, servers: server, creds, card, registerPresence: false, consume: false, watchPresence: false });
+  const ep = new CotalEndpoint({ space, servers: server, ...humanAuth, card, registerPresence: false, consume: false, watchPresence: false });
   ep.on("error", (e: Error) => console.error(c.red("! " + e.message)));
   await ep.start();
   try {

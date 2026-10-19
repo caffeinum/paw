@@ -13,10 +13,10 @@ import { JetStreamApiCodes, JetStreamApiError, jetstreamManager } from "@nats-io
 import { connect, credsAuthenticator } from "@nats-io/transport-node";
 import { closeSync, existsSync, openSync, readSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { agentNamesForFolder, canonicalDir, controlCreds, listAgents, personaFilePath, psRowAlive, terminalLost, type PsRow, wirePrincipal } from "./addressing.ts";
+import { agentNamesForFolder, canonicalDir, controlCreds, humanEndpointAuth, listAgents, personaFilePath, psRowAlive, terminalLost, type PsRow, wirePrincipal } from "./addressing.ts";
 import { withManagerControl, type ManagerControl } from "./control.ts";
 import { listForeground } from "./foreground.ts";
-import { ensure, formatHubLine, hubState, READY_PROBE_MS, readRuntimeMarker, resolveSpace, type HubState, type Runtime } from "./lifecycle.ts";
+import { ensure, ensureSpaceFor, formatHubLine, hubState, READY_PROBE_MS, readRuntimeMarker, resolveSpace, type HubState, type Runtime } from "./lifecycle.ts";
 import { writeJson } from "./stdout.ts";
 import { liveSessionProcsMany, nameForSession, readIndex as readSessionIndex, type LiveSessionProc } from "./named.ts";
 import { KIT_AGENT } from "./kit.ts";
@@ -26,7 +26,7 @@ import { claudeProjectsRoot, isClaudeHarness, personaTranscriptRoots, readAgentT
 import { lastFailure, lastUsage, type ContextUsage } from "./transcript.ts";
 import { tailRead, turnState, type PendingTool, type TurnState } from "./transcript.ts";
 import { gitInfoMany, type GitInfo } from "./git.ts";
-import { pawServer } from "./server.ts";
+import { isRemoteSpace, pawServer } from "./server.ts";
 import { pickRoster, presenceLive, readMeshRoster } from "./roster.ts";
 import { authGapWarning, probePresenceWrites } from "./presence-health.ts";
 import { personaGlyph } from "./personality.ts";
@@ -718,17 +718,20 @@ export type DmConsumerListing =
 async function listDmConsumers(space: string, server: string): Promise<DmConsumerListing> {
   let nc;
   try {
-    const creds = await controlCreds(space);
+    // Remote (authed) spaces read with the human's `admin` view — the privileged control instrument
+    // holds no JetStream API rows there. Local spaces: the same control creds as always.
+    const { creds } = await humanEndpointAuth(space, "admin");
     nc = await connect({
       servers: server,
       ...(creds ? { authenticator: credsAuthenticator(new TextEncoder().encode(creds)) } : {}),
+      ...(isRemoteSpace(space) ? { tls: {} } : {}),
     });
   } catch (e) {
     return { kind: "unreachable", message: (e as Error).message };
   }
   try {
-    const jsm = await jetstreamManager(nc);
     try {
+      const jsm = await jetstreamManager(nc);
       const consumers: Array<{ name: string; num_pending: number; num_ack_pending: number }> = [];
       for await (const ci of jsm.consumers.list(dmStream(space))) consumers.push({ name: ci.name, num_pending: ci.num_pending, num_ack_pending: ci.num_ack_pending });
       return { kind: "ok", consumers };
@@ -826,7 +829,7 @@ export interface CollectOpts {
  * read per transcript, one DM-consumer listing — and the network reads run concurrently.
  */
 export async function collectStatus(space: string, ctl?: ManagerControl, opts: CollectOpts = {}): Promise<{ rows: AgentStatus[]; errors: string[] }> {
-  const server = pawServer();
+  const server = pawServer(space);
   const consumers = listDmConsumers(space, server); // independent of everything below — start it now
   consumers.catch(() => {}); // awaited later; never an unhandled rejection meanwhile
   let agents = listAgents(space);
@@ -847,7 +850,7 @@ export async function collectStatus(space: string, ctl?: ManagerControl, opts: C
   const unlisted = agents.map(({ name }) => name).filter((name) => !psByName.has(name));
   const roster = opts.roster
     ? Promise.resolve(pickRoster(space, opts.roster(), new Set(unlisted), Date.now()))
-    : controlCreds(space).then((creds) => readMeshRoster(space, server, creds, new Set(unlisted)));
+    : humanEndpointAuth(space, "operator").then((a) => readMeshRoster(space, server, a.creds, new Set(unlisted)));
   roster.catch(() => {});
   // One CONCURRENT pass over every folder before the rows are built. Serially, 54 agents × 5 git
   // processes was 2.5s of a 3.9s collect — what the Raycast roster sat on showing "Reading the roster…".
@@ -1002,7 +1005,7 @@ async function status(argv: string[]): Promise<void> {
   // STATE word (`busy`, `live`…) is judged on collected rows, so it still reads the whole fleet.
   const byState = targets.some((t) => !isPathTarget(t) && STATE_WORDS[t]);
   const only = targets.length && !byState ? (names: string[]) => new Set(selectRows(names.map((name) => ({ name })), targets, folderAgents).map((r) => r.name)) : undefined;
-  const { all, hub } = await withManagerControl(space, pawServer(), async (ctl) => {
+  const { all, hub } = await withManagerControl(space, pawServer(space), async (ctl) => {
     // ONE control rail for both ensure()'s "is the manager up?" probe and the status read: the probe
     // IS the ps this command needs. (`bin/paw.ts` used to ensure() first and status then resolved the
     // service a second time — ~0.65s of Ajv compile and a round trip, twice.) ensure() still runs in
@@ -1018,12 +1021,13 @@ async function status(argv: string[]): Promise<void> {
       ps = await readManagerPs(ctl, { timeoutMs: 2000, resolveMs: READY_PROBE_MS });
       return true;
     };
-    await ensure({ needMesh: true, needManager: true, ...(space === resolveSpace() ? { managerProbe } : {}) });
+    const ensureSpace = ensureSpaceFor(space);
+    await ensure({ needMesh: true, needManager: true, space: ensureSpace, ...(space === ensureSpace ? { managerProbe } : {}) });
     // A failed probe means ensure() went on to start a manager — read the hub (its manager env) afresh.
     const hub = ps && hubAtProbe ? hubAtProbe : hubState(space);
     hub.catch(() => {});
     // A latched presence store makes every row read offline — say so first, beside the rows that lie.
-    const presence = controlCreds(space).then((creds) => probePresenceWrites(space, pawServer(), creds));
+    const presence = controlCreds(space).then((creds) => probePresenceWrites(space, pawServer(space), creds));
     presence.catch(() => {});
     const all = await collectStatus(space, ctl, { ps, git: asJson, only });
     const h = await presence;

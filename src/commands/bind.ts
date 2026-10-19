@@ -22,7 +22,7 @@
  */
 import { randomUUID } from "node:crypto";
 import { CotalEndpoint, registry, type Command, type CotalMessage, type Delivery, type MessageMeta } from "@cotal-ai/core";
-import { controlCreds, startResilient } from "../addressing.ts";
+import { humanEndpointAuth, startResilient } from "../addressing.ts";
 import { resolveSpace } from "../lifecycle.ts";
 import { pawServer } from "../server.ts";
 
@@ -105,18 +105,19 @@ const REPLY_MS = 10_000; // how long to wait for the minted code to come back
 async function bind(argv: string[]): Promise<void> {
   const { peer, space: spaceArg, server: serverArg } = parseArgs(argv);
   const space = spaceArg ?? resolveSpace();
-  const server = serverArg ?? pawServer();
+  const server = serverArg ?? pawServer(space);
 
   // A DISTINCT, EPHEMERAL consuming peer — never HUMAN_PEER. Its own random name + minted id means
   // consume:true binds ITS OWN short-lived DM durable, so the reply-receipt never contends with the
   // single "you" inbox consumer (`paw inbox`/`paw chat`). registerPresence:true only so the endpoint
   // can resolve + unicast the code back; watchPresence:true to find the telegram peer on the roster.
-  const creds = await controlCreds(space);
+  const humanAuth = await humanEndpointAuth(space, "agent");
+  const creds = humanAuth.creds;
   const ephemeralId = randomUUID().replace(/-/g, ""); // NATS-safe (cotal 0.11 principal token), distinct per run
   const card = creds
     ? { name: "paw-bind", kind: "endpoint" as const }
     : { name: "paw-bind", kind: "endpoint" as const, id: ephemeralId };
-  const ep = new CotalEndpoint({ space, servers: server, creds, card, channels: [], registerPresence: true, consume: true, watchPresence: true });
+  const ep = new CotalEndpoint({ space, servers: server, ...humanAuth, card, channels: [], registerPresence: true, consume: true, watchPresence: true });
   ep.on("error", (e: Error) => console.error(c.red("! " + e.message)));
 
   // Latch the first bind-code reply from the target peer (set up BEFORE we send, so a fast reply isn't missed).

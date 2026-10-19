@@ -5,7 +5,7 @@
  * answering agent's reply is addressed to your durable inbox — read it with `paw inbox`.
  */
 import { CotalEndpoint, registry, type Command } from "@cotal-ai/core";
-import { controlCreds, stableHumanId } from "../addressing.ts";
+import { humanEndpointAuth, stableHumanId } from "../addressing.ts";
 import { resolveSpace } from "../lifecycle.ts";
 import { HUMAN_PEER } from "../names.ts";
 import { pawServer } from "../server.ts";
@@ -40,18 +40,19 @@ async function ask(argv: string[]): Promise<void> {
   const { role, text, space: spaceArg, server: serverArg } = parseArgs(argv);
   if (!role || !text) throw new Error('paw: usage — ask <role> "<text>"');
   const space = spaceArg ?? resolveSpace();
-  const server = serverArg ?? pawServer();
+  const server = serverArg ?? pawServer(space);
 
   // One-shot sender as the stable "you" (mirrors src/dm.ts's endpoint shape): no presence, no
   // durable consumer, no roster watch — connect, anycast to the role, disconnect.
-  const creds = await controlCreds(space);
+  const humanAuth = await humanEndpointAuth(space, "operator");
+  const creds = humanAuth.creds;
   const card = creds
     ? { name: HUMAN_PEER, kind: "endpoint" as const }
     : { name: HUMAN_PEER, kind: "endpoint" as const, id: stableHumanId(space) };
   const ep = new CotalEndpoint({
     space,
     servers: server,
-    creds,
+    ...humanAuth,
     card,
     channels: [],
     registerPresence: false,

@@ -10,7 +10,17 @@ import { readClaudeArgs, readCwd, readHeadless, readNice, readResumeId, transcri
 import { ensureShim, headlessDir, hubEnabled, hubSocketPath } from "./hub/paths.ts";
 import { headlessLaunch } from "./headless.ts";
 import { routeCotalToHub } from "./hub/route.ts";
+import { isRemoteSpace } from "./server.ts";
 import { readTracepaperUrl, routeTracepaperDirect } from "./tracepaper-direct.ts";
+
+/** TLS trust a REMOTE space's seats need. cotal's launch env is an allowlist without the CA knobs, so a
+ *  broker on a private CA (NODE_EXTRA_CA_CERTS on the manager) left every seat's cotal MCP unable to
+ *  finish the handshake — the agent ran and never reached the mesh. Local spaces: nothing added. */
+export function remoteTlsEnv(opts: LaunchOpts): { envAllow?: string[] } {
+  if (!isRemoteSpace(opts.space)) return {};
+  const keys = ["NODE_EXTRA_CA_CERTS", "SSL_CERT_FILE"].filter((k) => process.env[k]);
+  return keys.length ? { envAllow: [...(opts.envAllow ?? []), ...keys] } : {};
+}
 
 /** Claude Code's permission modes — PAW_PERMISSION must be one of these (fail loud otherwise). */
 const PERMISSION_MODES = ["default", "acceptEdits", "bypassPermissions", "plan"] as const;
@@ -130,7 +140,7 @@ export const pawConnector: Connector = {
     // caller marks the selection exclusive — and the manager marks it only when a persona names
     // `shareTools:`. paw's contract is cotal + the servers `paw mcp` shares and nothing else (a fleet each
     // booting every ambient helper eats the machine), so every paw launch is exclusive: `--strict-mcp-config`.
-    const spec = claudeConnector.buildLaunch({ ...opts, mcpServersExclusive: true });
+    const spec = claudeConnector.buildLaunch({ ...opts, mcpServersExclusive: true, ...remoteTlsEnv(opts) });
     const args = [...spec.args];
 
     // Hub mode (`paw hub on`, read per spawn): the cotal MCP server is the hub's C shim, not a node process per agent

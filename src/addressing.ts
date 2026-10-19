@@ -20,6 +20,7 @@ import {
   newIdentity,
   parseShareSelection,
   principalKey,
+  type Identity,
 } from "@cotal-ai/core";
 // auth-path helpers moved to @cotal-ai/workspace in cotal v0.8 (#120).
 import { authDir, loadSpaceAuth } from "@cotal-ai/workspace";
@@ -31,6 +32,7 @@ import { clearRestartHistory, markStuck, readRestartHistory, recordRestart, rest
 import { presenceLive, readMeshRoster } from "./roster.ts";
 import { authGapWarning, PRESENCE_PROBE_MS, presenceLatchRefusal, probePresenceWrites, type PresenceHealth } from "./presence-health.ts";
 import { pawServer } from "./server.ts";
+import { readRemoteMesh } from "./remote-mesh.ts";
 import { withFileLock, withFileLockAsync, type LockOpts } from "./lock.ts";
 import { liveSessionProcs, meshAgentSession, meshIdentity, type LiveSessionProc } from "./named.ts";
 import { ensureKitBinary, isKitProvider, KIT_AGENT } from "./kit.ts";
@@ -612,6 +614,78 @@ export async function controlCreds(space: string): Promise<string | undefined> {
   return auth ? await mintCreds(auth, newIdentity(), "control-caller-privileged", { lifecycleUid: mintLifecycleUid() }) : undefined;
 }
 
+/** Agents in OTHER spaces (under this PAW_HOME) whose persona pins `sessionId`. */
+export function sessionPinnedInOtherSpaces(space: string, sessionId: string): Array<{ space: string; name: string }> {
+  const spaces = dirname(spaceDir(space));
+  const out: Array<{ space: string; name: string }> = [];
+  for (const other of readdirSync(spaces)) {
+    if (other === space) continue;
+    const dir = join(spaces, other, "personas");
+    if (!existsSync(dir)) continue;
+    for (const f of readdirSync(dir)) {
+      if (f.endsWith(".md") && readResumeId(join(dir, f)) === sessionId) out.push({ space: other, name: f.slice(0, -".md".length) });
+    }
+  }
+  return out;
+}
+
+/**
+ * An agent belongs to ONE space. A claude session pinned by agents in two spaces would get two
+ * managers — on two brokers, when one is remote — each resuming it: two writers on one transcript.
+ * Checked only when either side is a REMOTE space, so local-only installs behave as before.
+ */
+export function assertOneSpace(space: string, sessionId: string | undefined): void {
+  if (!sessionId) return;
+  const clash = sessionPinnedInOtherSpaces(space, sessionId).filter((o) => readRemoteMesh(space) || readRemoteMesh(o.space));
+  if (!clash.length) return;
+  const { space: s, name: n } = clash[0]!;
+  throw new Error(
+    `paw: session ${sessionId} already belongs to "${n}" in space "${s}" — an agent lives in one space (two would resume one transcript from two managers).\n` +
+      `  use it there:  paw chat ${n} --space ${s}\n` +
+      `  or forget it:  paw rm ${n} --space ${s}`,
+  );
+}
+
+/** Which broker rows a "you" endpoint on a REMOTE (authed) space is minted with — cotal's own split:
+ *  `operator` sends and watches presence (what `cotal send` mints), `admin` reads every DM/channel
+ *  stream (what `cotal console` mints), `agent` holds a presence ("you" reachable for replies). */
+export type HumanRole = "agent" | "operator" | "admin";
+
+/** The persisted nkey "you" is on a remote space, 0600 under the space's paw state. Under auth an
+ *  endpoint's id IS its cred's nkey, so a fresh identity per command would make every `paw dm` a
+ *  different sender and every reply land for somebody `paw inbox` never reads. A bearer secret: it
+ *  is read, never printed. */
+export function remoteHumanIdentity(space: string): Identity {
+  const file = join(spaceDir(space), "human.nkey.json");
+  if (existsSync(file)) {
+    const v = JSON.parse(readFileSync(file, "utf8")) as Partial<Identity>;
+    if (typeof v.id !== "string" || typeof v.seed !== "string") throw new Error(`paw: ${file} is not a {id, seed} identity — delete it to mint a new "you"`);
+    return { id: v.id, seed: v.seed };
+  }
+  const id = newIdentity();
+  writeFileSync(file, JSON.stringify(id), { mode: 0o600, flag: "wx" });
+  return id;
+}
+
+/**
+ * Connect options for a "you" endpoint (mailbox, dm, inbox, chat, who, …).
+ *
+ * LOCAL space: `{ creds }` from {@link controlCreds} — exactly what every caller passed before remote
+ * spaces existed. REMOTE space: the ONE persisted human identity, minted for `role`, TLS required;
+ * an `agent` mint also carries the fresh lifecycle uid an authed presence-registering endpoint needs.
+ */
+export async function humanEndpointAuth(space: string, role: HumanRole): Promise<{ creds?: string; tls?: true; lifecycleUid?: string }> {
+  if (!readRemoteMesh(space)) return { creds: await controlCreds(space) };
+  const auth = loadSpaceAuth(authDir(pawCotalRoot(space)), space);
+  if (!auth) throw new Error(`paw: space "${space}" is remote but no signer loads under ${authDir(pawCotalRoot(space))} — see \`paw mesh add\``);
+  const identity = remoteHumanIdentity(space);
+  if (role === "agent") {
+    const lifecycleUid = mintLifecycleUid();
+    return { creds: await mintCreds(auth, identity, "agent", { lifecycleUid }), tls: true, lifecycleUid };
+  }
+  return { creds: await mintCreds(auth, identity, role), tls: true };
+}
+
 /**
  * A stable identity for the human peer on an OPEN mesh, persisted per space so replies an agent
  * sends while you're briefly away queue to the same DM inbox and redeliver when you reconnect.
@@ -779,6 +853,8 @@ export async function ensureAgentSpawned(
   // funnel through here, so this ONE guard keeps them from racing a second agent onto the same name.
   // The caller addresses the live foreground agent through the roster instead (readyId/waitForPeerId).
   if (readForeground(opts.space, opts.name)) return { spawned: false };
+  const ownPersona = personaFilePath(opts.space, opts.name);
+  if (existsSync(ownPersona)) assertOneSpace(opts.space, readResumeId(ownPersona));
   const lastWrite = (): number | undefined => {
     const file = personaFilePath(opts.space, opts.name);
     const pin = readResumeId(file);
@@ -1060,8 +1136,8 @@ export async function ensureAgentSpawned(
 /** Throw (nothing stopped, nothing spawned) when the space's presence store refuses writes. A probe that
  *  can't tell (auth grants, unreachable) is said out loud and the gate proceeds as before. */
 async function refuseOnPresenceLatch(space: string, name: string, probe?: () => Promise<PresenceHealth>): Promise<void> {
-  const h = probe ? await probe() : await probePresenceWrites(space, pawServer(), await controlCreds(space));
-  if (h.kind === "latched") throw new Error(presenceLatchRefusal(name, h, pawServer()));
+  const h = probe ? await probe() : await probePresenceWrites(space, pawServer(space), await controlCreds(space));
+  if (h.kind === "latched") throw new Error(presenceLatchRefusal(name, h, pawServer(space)));
   if (h.kind === "unknown") console.error(`paw: couldn't probe the presence store before starting "${name}" (${h.message}) — proceeding`);
   if (h.kind === "not-permitted") console.error(authGapWarning(h.message, `starting "${name}" anyway`));
 }
@@ -1113,7 +1189,7 @@ function ownMeshHolders(space: string, name: string, pin: string | undefined): L
 export async function findUnmanagedAgent(space: string, name: string): Promise<UnmanagedAgent | undefined> {
   const file = personaFilePath(space, name);
   const pids = ownMeshHolders(space, name, existsSync(file) ? readResumeId(file) : undefined).map((p) => p.pid);
-  const roster = (await readMeshRoster(space, pawServer(), await controlCreds(space), new Set([name]))).get(name);
+  const roster = (await readMeshRoster(space, pawServer(space), (await humanEndpointAuth(space, "operator")).creds, new Set([name]))).get(name);
   const id = roster && presenceLive(roster, Date.now()) ? roster.id : undefined;
   return id || pids.length ? { id, pids } : undefined;
 }

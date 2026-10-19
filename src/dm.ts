@@ -22,7 +22,7 @@ import { CotalEndpoint, registry, type Command } from "@cotal-ai/core";
 import {
   assertUnambiguousTarget,
   canonicalDir,
-  controlCreds,
+  humanEndpointAuth,
   ensureAgentSpawned,
   stuckWarning,
   folderForName,
@@ -208,11 +208,12 @@ export async function sendAsYou(opts: {
 
   // Pure sender: watch the roster to resolve/spawn the target, but don't register presence (the mailbox
   // beacon holds "you") and don't consume (never touch the durable inbox slot — that's `paw inbox`'s).
-  const creds = await controlCreds(space);
+  const humanAuth = await humanEndpointAuth(space, "operator");
+  const creds = humanAuth.creds;
   const card = creds
     ? { name: HUMAN_PEER, kind: "endpoint" as const }
     : { name: HUMAN_PEER, kind: "endpoint" as const, id: stableHumanId(space) };
-  const ep = new CotalEndpoint({ space, servers: server, creds, card, registerPresence: false, consume: false, watchPresence: true });
+  const ep = new CotalEndpoint({ space, servers: server, ...humanAuth, card, registerPresence: false, consume: false, watchPresence: true });
   ep.on("error", (e: Error) => console.error(c.red("! " + e.message)));
   await ep.start();
   try {
@@ -234,7 +235,7 @@ async function readStdin(): Promise<string> {
 async function dm(argv: string[]): Promise<void> {
   const { target, words, space: spaceArg, server: serverArg, model, name: nameFlag } = parseArgs(argv);
   const space = spaceArg ?? resolveSpace();
-  const server = serverArg ?? pawServer();
+  const server = serverArg ?? pawServer(space);
 
   // `paw dm <target> -` takes the message on STDIN. It exists for producers that hand text to a command
   // rather than building an argv — voice dictation being the one that prompted it. Two reasons it isn't

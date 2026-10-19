@@ -19,7 +19,7 @@ import {
   stopAgent,
 } from "../addressing.ts";
 import { readForeground, unregisterForeground } from "../foreground.ts";
-import { resolveSpace, withEnsuredManager } from "../lifecycle.ts";
+import { ensureSpaceFor, resolveSpace, withEnsuredManager } from "../lifecycle.ts";
 import { sleepState } from "../sleep-state.ts";
 
 /** The success line for `paw stop`, or undefined when nothing was stopped. A sleeping agent has no seat
@@ -109,7 +109,7 @@ async function stop(argv: string[]): Promise<void> {
 
   const wasAsleep = sleepState(space, name) !== undefined; // read BEFORE stopAgent clears it
   // Ensured here, not by the bin/paw.ts gate: ensure()'s manager probe and the stop share one rail.
-  const stopped = await withEnsuredManager(space, (ctl) => stopAgent(ctl, name), { ensureSpace: resolveSpace() });
+  const stopped = await withEnsuredManager(space, (ctl) => stopAgent(ctl, name), { ensureSpace: ensureSpaceFor(space) });
   const done = stopMessage(name, stopped, wasAsleep);
   if (done) console.log(done);
   else if (rawName === undefined && !agentRecord(space, name)) {

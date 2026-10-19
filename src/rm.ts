@@ -14,7 +14,7 @@ import { registry, type Command } from "@cotal-ai/core";
 import { agentNamesForFolder, assertUnambiguousTarget, canonicalDir, folderForName, listAgents, lookupFolderName, personaFilePath, stopAgent } from "./addressing.ts";
 import { readForeground, unregisterForeground } from "./foreground.ts";
 import { parseGithubHandle, repoDir } from "./github.ts";
-import { resolveSpace, withEnsuredManager } from "./lifecycle.ts";
+import { ensureSpaceFor, resolveSpace, withEnsuredManager } from "./lifecycle.ts";
 import { readResumeId } from "./session.ts";
 import { parseWorktreeRef, resolveWorktreeFolder } from "./worktree.ts";
 
@@ -95,7 +95,7 @@ async function rm(argv: string[]): Promise<void> {
     unregisterForeground(space, name);
     stopped = true;
   } else {
-    stopped = await withEnsuredManager(space, (ctl) => stopAgent(ctl, name), { ensureSpace: resolveSpace() }); // no-op if offline
+    stopped = await withEnsuredManager(space, (ctl) => stopAgent(ctl, name), { ensureSpace: ensureSpaceFor(space) }); // no-op if offline
   }
   rmSync(persona, { force: true }); // the persona IS the registration — deleting it forgets the agent
 

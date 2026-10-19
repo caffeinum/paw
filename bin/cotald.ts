@@ -62,7 +62,7 @@ async function supervise(argv: string[]): Promise<void> {
   };
   const space = flag("--space");
   if (!space) throw new Error("cotald: supervise needs --space <s>");
-  const server = flag("--server") ?? pawServer();
+  const server = flag("--server") ?? pawServer(space);
   const runtime = flag("--runtime") ?? "pty"; // paw's default; tmux/cmux resolve from the imported runtime exts
   if (!(await isReachable(server))) throw new Error(`cotald: can't reach NATS at ${server} — run \`cotal up\` first`);
 

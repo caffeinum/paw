@@ -15,7 +15,7 @@
  * the space-wide subscribe would be denied and kill the feed.
  */
 import { CotalEndpoint, chatWildcard, registry, type Command, type CotalMessage } from "@cotal-ai/core";
-import { controlCreds, stableHumanId } from "../addressing.ts";
+import { humanEndpointAuth, stableHumanId } from "../addressing.ts";
 import { resolveSpace } from "../lifecycle.ts";
 import { HUMAN_PEER } from "../names.ts";
 import { messageText as textOf } from "../feed.ts";
@@ -56,15 +56,16 @@ function parseArgs(argv: string[]): Args {
 async function watch(argv: string[]): Promise<void> {
   const { space: spaceArg, server: serverArg } = parseArgs(argv);
   const space = spaceArg ?? resolveSpace();
-  const server = serverArg ?? pawServer();
+  const server = serverArg ?? pawServer(space);
 
   // Pure observer (mirrors src/inbox.ts's endpoint shape); watchPresence:true only to name DM
   // recipients — a unicast carries the sender's name but just the recipient's instance id.
-  const creds = await controlCreds(space);
+  const humanAuth = await humanEndpointAuth(space, "admin");
+  const creds = humanAuth.creds;
   const card = creds
     ? { name: HUMAN_PEER, kind: "endpoint" as const }
     : { name: HUMAN_PEER, kind: "endpoint" as const, id: stableHumanId(space) };
-  const ep = new CotalEndpoint({ space, servers: server, creds, card, registerPresence: false, consume: false, watchPresence: true });
+  const ep = new CotalEndpoint({ space, servers: server, ...humanAuth, card, registerPresence: false, consume: false, watchPresence: true });
   ep.on("error", (e: Error) => console.error(c.red("! " + e.message)));
   await ep.start();
 

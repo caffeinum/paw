@@ -54,6 +54,7 @@ import {
 } from "@cotal-ai/core";
 import { authDir, loadSpaceAuth } from "@cotal-ai/workspace";
 import { pawCotalRoot } from "./cotal-root.ts";
+import { isRemoteSpace } from "./server.ts";
 
 /** A manager reply in paw's shape: `{ok, data, error}`, the same three fields every call site read
  *  off the old `ControlReply`, so the rail swap didn't also become a rewrite of what reads it.
@@ -288,7 +289,8 @@ export class ManagerControl {
     const { creds, caller } = await callerFor(this.space, tier);
     const nc = await connect({
       servers: this.server,
-      ...standaloneConnectOpts(creds ? { creds, tls: false } : { tls: false }),
+      // A remote space REQUIRES TLS (its record is tls:// only); a local one stays exactly as it was.
+      ...standaloneConnectOpts(creds ? { creds, tls: isRemoteSpace(this.space) } : { tls: false }),
       maxReconnectAttempts: 0,
     });
     try {
@@ -464,6 +466,9 @@ async function callerFor(space: string, tier: Tier): Promise<{ creds?: string; c
   const auth = loadSpaceAuth(authDir(pawCotalRoot(space)), space);
   const identity = newIdentity();
   const uid = mintLifecycleUid();
+  // A remote space without its signer would otherwise dial bare as if the mesh were open.
+  if (!auth && isRemoteSpace(space))
+    throw new Error(`paw: space "${space}" is remote but no signer loads under ${authDir(pawCotalRoot(space))} — see \`paw mesh add\``);
   if (!auth) return { caller: { owner: DEV_OWNER, actor: identity.id, uid } };
   const profile = tier === "admin" ? "control-caller-admin" : "control-caller-privileged";
   const creds = await mintCreds(auth, identity, profile, { lifecycleUid: uid });

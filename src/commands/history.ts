@@ -9,7 +9,7 @@
  * never binds a durable consumer, never appears in the roster, just reads the stream and exits.
  */
 import { CotalEndpoint, assertValidChannel, registry, type Command, type CotalMessage } from "@cotal-ai/core";
-import { controlCreds, stableHumanId } from "../addressing.ts";
+import { humanEndpointAuth, stableHumanId } from "../addressing.ts";
 import { resolveSpace } from "../lifecycle.ts";
 import { HUMAN_PEER } from "../names.ts";
 import { messageText as textOf } from "../feed.ts";
@@ -96,16 +96,17 @@ function parseArgs(argv: string[]): Args {
 async function history(argv: string[]): Promise<void> {
   const { channel, limit, space: spaceArg, server: serverArg } = parseArgs(argv);
   const space = spaceArg ?? resolveSpace();
-  const server = serverArg ?? pawServer();
+  const server = serverArg ?? pawServer(space);
   if (channel) assertValidChannel(channel);
 
   // Observer endpoint, mirrored from src/inbox.ts: connect as the stable "you" (so a DM addressed
   // to you renders under your name), but pure reader — no presence, no durable consumer bind.
-  const creds = await controlCreds(space);
+  const humanAuth = await humanEndpointAuth(space, "admin");
+  const creds = humanAuth.creds;
   const card = creds
     ? { name: HUMAN_PEER, kind: "endpoint" as const }
     : { name: HUMAN_PEER, kind: "endpoint" as const, id: stableHumanId(space) };
-  const ep = new CotalEndpoint({ space, servers: server, creds, card, registerPresence: false, consume: false, watchPresence: false });
+  const ep = new CotalEndpoint({ space, servers: server, ...humanAuth, card, registerPresence: false, consume: false, watchPresence: false });
   ep.on("error", (e: Error) => console.error(c.red("! " + e.message)));
   await ep.start();
   try {

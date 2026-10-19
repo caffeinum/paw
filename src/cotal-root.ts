@@ -19,19 +19,25 @@
  * So: the root is a property of the SPACE, not of the shell. The machine mesh registry already
  * records it (`recordMesh` persists `root` when the mesh comes up), so read it back.
  *
- * Precedence: `PAW_COTAL_ROOT` (explicit escape hatch, must be absolute) > the space's registry entry
+ * Precedence: `PAW_COTAL_ROOT` (explicit escape hatch, must be absolute) > the space's paw REMOTE
+ * record root (src/remote-mesh.ts — where its account signer lives) > the space's registry entry
  * > `homedir()`. The homedir fallback is not a guess — it's where `~/.cotal` lives and exactly what
  * the registry holds for every paw space, so a first run (no entry yet) and steady state agree.
  */
 import { homedir } from "node:os";
 import { isAbsolute } from "node:path";
 import { findMesh } from "@cotal-ai/workspace";
+import { readRemoteMesh } from "./remote-mesh.ts";
 
 export function pawCotalRoot(space: string): string {
   const override = process.env.PAW_COTAL_ROOT?.trim();
+  const remote = readRemoteMesh(space);
   if (override) {
     if (!isAbsolute(override)) throw new Error(`paw: PAW_COTAL_ROOT="${override}" must be an absolute path`);
+    // Two answers for where a remote space's signer lives: refuse rather than mint from the wrong one.
+    if (remote && remote.root !== override)
+      throw new Error(`paw: space "${space}" is remote with root ${remote.root} but PAW_COTAL_ROOT=${override} — unset PAW_COTAL_ROOT for remote spaces`);
     return override;
   }
-  return findMesh(space)?.root ?? homedir();
+  return remote?.root ?? findMesh(space)?.root ?? homedir();
 }

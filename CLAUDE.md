@@ -97,6 +97,11 @@ Each entry: what it is + the most load-bearing rule. Full notes behind the link.
   run by default); `purgeTestSpace` is the test teardown (removeMesh alone leaked ~20 streams per run). → [lifecycle.md#broker-store-hygiene](docs/notes/lifecycle.md#broker-store-hygiene)
 - `src/lock.ts` — O_EXCL file locks, pid-stamped, broken immediately on a dead holder. → [lifecycle.md#pid-stamped-locks](docs/notes/lifecycle.md#pid-stamped-locks), [lifecycle.md#srclockts](docs/notes/lifecycle.md#srclockts)
 
+### Remote meshes → [remote-mesh.md](docs/notes/remote-mesh.md)
+- `src/remote-mesh.ts` + `src/commands/mesh.ts` — `paw mesh add <space> --server tls://… --root <dir>`: a
+  space on a broker paw never starts; `root/.cotal/auth/auth.json` = the `cotal mint --signer` file
+  (bearer secret, 0600, never printed). `pawServer(space)` routes; no record ⇒ local, unchanged.
+
 ### Control rail → [control-rail.md](docs/notes/control-rail.md)
 - `src/control.ts` — the ONE door to the manager: v0.4 service endpoint (`resolveService` once, invoke
   many); ops `ps`/`spawn`/`inspect`/`despawn`/`attach` (despawn/attach targeted by principal triple);
@@ -220,6 +225,7 @@ Each entry: what it is + the most load-bearing rule. Full notes behind the link.
 |---|---|
 | [docs/notes/cli.md](docs/notes/cli.md) | composition roots, commands, mcp, files, bind, global, keeper, start, pacing, launchd, stdout |
 | [docs/notes/lifecycle.md](docs/notes/lifecycle.md) | lifecycle.ts, releases, cotal root, node/tsx, manager failures, env hygiene, locks, full Env knobs (cmux socket gate), full Dev |
+| [docs/notes/remote-mesh.md](docs/notes/remote-mesh.md) | remote spaces: records, routing, ensure(), human identity, cotal gaps, e2e |
 | [docs/notes/control-rail.md](docs/notes/control-rail.md) | the manager control rail (src/control.ts) |
 | [docs/notes/cotal-dependency.md](docs/notes/cotal-dependency.md) | cotal 0.58, 0.48 bump, version history back to 0.9 |
 | [docs/notes/agents.md](docs/notes/agents.md) | connector, cwd, paw claude, foreground, open/attach, waking |

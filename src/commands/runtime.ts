@@ -74,7 +74,7 @@ function parseArgs(argv: string[], verb: string): { space?: string; runtime?: Ru
  *  revive" — so `paw restart` from a cold state STARTS a manager rather than aborting here. */
 async function liveAgentNames(space: string): Promise<string[]> {
   try {
-    return await withManagerControl(space, pawServer(), async (ctl) => {
+    return await withManagerControl(space, pawServer(space), async (ctl) => {
       const ps = await ctl.ps();
       if (!ps.ok) return [];
       // A live agent paw never spawned (`cotal_spawn`) is registered from its ps row NOW, while its
@@ -97,7 +97,7 @@ async function reviveAgents(space: string, names: string[]): Promise<{ revived: 
   const revived: string[] = [];
   const skipped: string[] = [];
   if (!names.length) return { revived, skipped };
-  await withManagerControl(space, pawServer(), async (ctl) => {
+  await withManagerControl(space, pawServer(space), async (ctl) => {
     for (const name of names) {
       const folder = folderForName(space, name);
       if (!folder || !existsSync(folder)) {
@@ -179,7 +179,7 @@ async function restart(argv: string[]): Promise<void> {
       throw new Error(`paw: "${agent}" is neither a runtime (${RUNTIMES.join(", ")}) nor a known agent — \`paw status\` lists the agents`);
     }
     await ensure({ needMesh: true, needManager: true, space });
-    await withManagerControl(space, pawServer(), async (ctl) => {
+    await withManagerControl(space, pawServer(space), async (ctl) => {
       const folder = await resolveAgentFolder(ctl, space, agent); // a live cotal_spawn peer counts too
       if (!folder)
         throw new Error(
