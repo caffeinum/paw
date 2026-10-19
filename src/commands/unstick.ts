@@ -43,7 +43,7 @@ export async function requireTmuxPane(space: string, name: string, verb: string,
   if (readForeground(space, name)) {
     throw new Error(`paw: "${name}" runs as a foreground claude in another terminal — use that window; paw has no pane to ${action}`);
   }
-  const row = await withManagerControl(space, pawServer(), async (ctl) => {
+  const row = await withManagerControl(space, pawServer(space), async (ctl) => {
     const ps = await ctl.ps();
     if (!ps.ok) throw new Error(`paw: manager isn't answering (${ps.error ?? "no reply"})`);
     return ((ps.data as PsRow[]) ?? []).find((r) => r.name === name);

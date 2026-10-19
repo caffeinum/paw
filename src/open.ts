@@ -125,7 +125,7 @@ export async function attachResolved(
   const windowOpen = runtime === "tmux" && tmuxWindowExists(space, name);
   // One control round-trip: spawn if we resolved a folder. Attaching is per-runtime below.
   if (folder && !windowOpen) {
-    await withManagerControl(space, pawServer(), (ctl) => ensureAgentSpawned(ctl, { space, name, cwd: folder, model, brief, kind }));
+    await withManagerControl(space, pawServer(space), (ctl) => ensureAgentSpawned(ctl, { space, name, cwd: folder, model, brief, kind }));
   }
 
   // A HEADLESS agent (`claude -p`, docs/notes/headless.md) or a KIT agent (src/kit.ts) has no TUI
@@ -204,7 +204,7 @@ function kitView(space: string, name: string): boolean {
   if (help.error || !/kit <name> \| kit @<name>/.test(help.stdout ?? "")) return false;
   const target = KIT_SUBCOMMANDS.has(name) ? `@${name}` : name;
   const dm = [process.execPath, ...process.execArgv, process.argv[1]!, "dm", name, "--space", space, "-"];
-  const r = spawnSync(bin, [target, "--space", space, "--server", pawServer(), ...kitViewSession(personaFilePath(space, name)), "--", ...dm], { stdio: "inherit" });
+  const r = spawnSync(bin, [target, "--space", space, "--server", pawServer(space), ...kitViewSession(personaFilePath(space, name)), "--", ...dm], { stdio: "inherit" });
   if (r.error) throw new Error(`paw: couldn't open ${name}'s kit view: ${r.error.message}`);
   if (r.status !== 0) throw new Error(`paw: kit's view of ${name} exited with ${r.status ?? r.signal}`);
   return true;

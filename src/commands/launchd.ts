@@ -318,7 +318,7 @@ function unloadJob(label: string): boolean {
 /** Who's live right now — the default install list. Empty when the manager's down. */
 async function liveNames(space: string): Promise<string[]> {
   try {
-    return await withManagerControl(space, pawServer(), async (ctl) => {
+    return await withManagerControl(space, pawServer(space), async (ctl) => {
       const ps = await ctl.ps();
       return ps.ok ? ((ps.data as PsRow[]) ?? []).filter(psRowAlive).map((r) => r.name) : [];
     });

@@ -98,7 +98,7 @@ async function withNc<T>(server: string, fn: (nc: NatsConnection) => Promise<T>)
 }
 
 /** How many DMs are stored on `filters` after `cursorSeq` (an ordered consumer's pending count). */
-export async function dmsSince(space: string, filters: string[], cursorSeq: number, server = pawServer()): Promise<number> {
+export async function dmsSince(space: string, filters: string[], cursorSeq: number, server = pawServer(space)): Promise<number> {
   return withNc(server, async (nc) => {
     const c = await jetstream(nc).consumers.get(dmStream(space), { filter_subjects: filters, deliver_policy: DeliverPolicy.StartSequence, opt_start_seq: cursorSeq + 1 });
     try {
@@ -137,7 +137,7 @@ async function readBacklog(nc: NatsConnection, space: string, filters: string[],
   return out;
 }
 
-export async function startSleepHost(space: string, server = pawServer()): Promise<() => Promise<void>> {
+export async function startSleepHost(space: string, server = pawServer(space)): Promise<() => Promise<void>> {
   const nc = await connect({ servers: server });
   const standIns = new Map<string, { ep: CotalEndpoint; subs: Subscription[] }>();
   const inflight = new Set<string>();

@@ -141,7 +141,7 @@ async function readInbox(space: string, server: string, withSent = false): Promi
 async function inbox(argv: string[]): Promise<void> {
   const { space: spaceArg, server: serverArg, history, limit, watch, json, markRead, sent, agents } = parseArgs(argv);
   const space = spaceArg ?? resolveSpace();
-  const server = serverArg ?? pawServer();
+  const server = serverArg ?? pawServer(space);
 
   // --watch is a live tail; --history is a one-shot backlog dump. They contradict each other — fail loud.
   if (watch && history) {

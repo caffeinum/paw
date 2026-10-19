@@ -6,7 +6,7 @@
  */
 import { registry, type Command } from "@cotal-ai/core";
 import { attributeStreams, executePrune, fmtAge, gatherProtected, parseDuration, planPrune, readBroker, type SpaceRow } from "../prune.ts";
-import { pawServer } from "../server.ts";
+import { localServer } from "../server.ts";
 import { writeJson } from "../stdout.ts";
 
 const USAGE = "spaces [prune [--yes] [--keep <space>]… [--min-idle <dur, default 1h>]] [--json]";
@@ -49,7 +49,7 @@ const HEADER = `${"SPACE".padEnd(28)} ${"STRM".padStart(4)} ${"BYTES".padStart(9
 
 async function spaces(argv: string[]): Promise<void> {
   const args = parseSpacesArgs(argv);
-  const server = pawServer();
+  const server = localServer();
   const now = Date.now();
   const { spaces: bySpace, unowned } = attributeStreams(await readBroker(server));
   if (!args.prune) {

@@ -13,7 +13,7 @@
  * them into one "connection factory" would hide the distinction that matters most.
  */
 import { CotalEndpoint, type CotalMessage } from "@cotal-ai/core";
-import { controlCreds, stableHumanId } from "./addressing.ts";
+import { humanEndpointAuth, stableHumanId } from "./addressing.ts";
 import { HUMAN_PEER } from "./names.ts";
 import { cachedLedger } from "./peer-ledger.ts";
 
@@ -54,14 +54,15 @@ export function messageText(m: CotalMessage): string {
  * for one.
  */
 export async function observerEndpoint(space: string, server: string, opts: { watchPresence?: boolean } = {}): Promise<CotalEndpoint> {
-  const creds = await controlCreds(space);
+  const humanAuth = await humanEndpointAuth(space, "admin");
+  const creds = humanAuth.creds;
   const card = creds
     ? { name: HUMAN_PEER, kind: "endpoint" as const }
     : { name: HUMAN_PEER, kind: "endpoint" as const, id: stableHumanId(space) };
   const ep = new CotalEndpoint({
     space,
     servers: server,
-    creds,
+    ...humanAuth,
     card,
     registerPresence: false,
     consume: false,

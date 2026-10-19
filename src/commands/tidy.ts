@@ -125,7 +125,7 @@ export async function tidySweep(space: string, now = Date.now()): Promise<string
   const fleet = await snapshotFleet(space);
   const live = new Set([...Object.values(fleet.agents).flatMap((a) => a.items), ...fleet.orphans].map((it) => it.pid));
   const { asks, asked } = freshAsks(tidyAsks(fleet, now, SWEEP_FLOORS), state, live);
-  const server = pawServer();
+  const server = pawServer(space);
   for (const a of asks) await sendAsYou({ space, server, target: a.agent, text: a.text });
   mkdirSync(dirname(statePath(space)), { recursive: true });
   writeFileSync(statePath(space), JSON.stringify({ lastRunMs: now, asked } satisfies SweepState));
@@ -142,7 +142,7 @@ async function tidy(argv: string[]): Promise<void> {
   const abandoned = fleet.orphans.filter((o) => orphanAbandoned(o, fleet) && (!args.names.length || args.names.includes(o.agent)));
 
   if (!asks.length) console.log(`nothing to ask — no live agent holds background work older than ${ago(now - args.olderMs, now)} and ≥${args.minMb} MB`);
-  const server = pawServer();
+  const server = pawServer(space);
   for (const a of asks) {
     const list = a.items.map((it) => describe(it, now)).join(", ");
     if (args.dryRun) {

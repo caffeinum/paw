@@ -5,7 +5,7 @@
  * beats to settle (presence rides a heartbeat, so an instant read would race an empty roster).
  */
 import { CotalEndpoint, registry, type Command, type Presence, type PresenceStatus } from "@cotal-ai/core";
-import { controlCreds, stableHumanId } from "../addressing.ts";
+import { humanEndpointAuth, stableHumanId } from "../addressing.ts";
 import { resolveSpace } from "../lifecycle.ts";
 import { HUMAN_PEER } from "../names.ts";
 import { pawServer } from "../server.ts";
@@ -75,16 +75,17 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 async function who(argv: string[]): Promise<void> {
   const { space: spaceArg, server: serverArg } = parseArgs(argv);
   const space = spaceArg ?? resolveSpace();
-  const server = serverArg ?? pawServer();
+  const server = serverArg ?? pawServer(space);
 
   // Observer endpoint (mirrors src/dm.ts's creds/card shape): watchPresence:true is the point —
   // the roster is built from presence beats; we never register our own presence (the mailbox
   // beacon holds "you", and it shows up in the roster like any peer).
-  const creds = await controlCreds(space);
+  const humanAuth = await humanEndpointAuth(space, "operator");
+  const creds = humanAuth.creds;
   const card = creds
     ? { name: HUMAN_PEER, kind: "endpoint" as const }
     : { name: HUMAN_PEER, kind: "endpoint" as const, id: stableHumanId(space) };
-  const ep = new CotalEndpoint({ space, servers: server, creds, card, channels: [], registerPresence: false, consume: false, watchPresence: true });
+  const ep = new CotalEndpoint({ space, servers: server, ...humanAuth, card, channels: [], registerPresence: false, consume: false, watchPresence: true });
   ep.on("error", (e: Error) => console.error(c.red("! " + e.message)));
   await ep.start();
   try {

@@ -62,7 +62,7 @@ async function top(argv: string[]): Promise<void> {
   const space = args.space ?? resolveSpace();
   // Read-only: it never boots daemons (a dead manager fails loud below), which also skips ensure's own ps round-trip.
   const [status, fleet] = await Promise.all([
-    withManagerControl(space, pawServer(), (ctl) => collectStatus(space, ctl, { git: false })),
+    withManagerControl(space, pawServer(space), (ctl) => collectStatus(space, ctl, { git: false })),
     snapshotFleet(space, { all: args.all }),
   ]);
   const now = Date.now();

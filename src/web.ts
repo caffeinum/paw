@@ -1557,7 +1557,7 @@ async function web(argv: string[]): Promise<void> {
   // Self-ensuring (like `paw start`/`paw global`) rather than sitting in bin's NEEDS_* gating: this is
   // a long-lived server and it needs BOTH — the mesh for the observer, the manager for the roster.
   const { server: ensured } = await ensure({ needMesh: true, needManager: true, space });
-  const server = serverArg ?? ensured ?? pawServer();
+  const server = serverArg ?? ensured ?? pawServer(space);
 
   // watchPresence:true only to name DM RECIPIENTS: a unicast carries the sender's name but the
   // recipient's bare id. Still never registers presence and never consumes — see src/feed.ts.

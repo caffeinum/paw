@@ -14,8 +14,9 @@
  */
 import { registry, type Command } from "@cotal-ai/core";
 import { spawnSync } from "node:child_process";
-import { downSpace, expandEqFlags, expandShortForm, SHORT_FORMS, stripCotalNamespace, withDefaultSpace } from "../src/dispatch.ts";
+import { downSpace, explicitSpace, expandEqFlags, expandShortForm, SHORT_FORMS, stripCotalNamespace, withDefaultSpace } from "../src/dispatch.ts";
 import { cotaldViaNode, ensure, resolveSpace, stop } from "../src/lifecycle.ts";
+import { isRemoteSpace } from "../src/server.ts";
 
 /** Every command module, in the order they always registered — each self-registers into the registry
  *  on import. Loaded on demand rather than as static imports so a command can skip the ones it doesn't
@@ -184,8 +185,12 @@ try {
     throw new Error(`paw: unknown command "${cmd}" — run \`paw\` for the list, or \`paw cotal ${cmd} …\` for a raw cotal verb.`);
   }
 
-  if (NEEDS_MANAGER.has(cmd)) await ensure({ needMesh: true, needManager: true });
-  else if (NEEDS_MESH.has(cmd)) await ensure({ needMesh: true });
+  // The gate ensures the CURRENT space (PAW_SPACE or the default), as it always has — except when the
+  // command names a REMOTE space with --space: then that space's broker/manager is the one it needs.
+  const named = explicitSpace(raw.slice(1));
+  const gate = named && isRemoteSpace(named) ? { space: named } : {};
+  if (NEEDS_MANAGER.has(cmd)) await ensure({ needMesh: true, needManager: true, ...gate });
+  else if (NEEDS_MESH.has(cmd)) await ensure({ needMesh: true, ...gate });
 
   const argv = expandEqFlags(withDefaultSpace(raw.slice(1), resolveSpace()));
   await command.run({ values: {}, positionals: [], raw: argv });

@@ -268,7 +268,7 @@ export function mergeSleepRecord(prior: SleepRecord | undefined, next: SleepReco
 }
 
 /** The DM stream's last sequence — the backlog cursor. */
-export async function dmLastSeq(space: string, server = pawServer()): Promise<number> {
+export async function dmLastSeq(space: string, server = pawServer(space)): Promise<number> {
   const nc = await connect({ servers: server });
   try {
     return (await (await jetstreamManager(nc)).streams.info(dmStream(space))).state.last_seq;

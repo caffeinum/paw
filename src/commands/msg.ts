@@ -6,7 +6,7 @@
  * beacon holds "you" present) and consume:false (never touches "you"'s durable inbox slot).
  */
 import { CotalEndpoint, assertValidChannel, registry, type Command } from "@cotal-ai/core";
-import { controlCreds, stableHumanId } from "../addressing.ts";
+import { humanEndpointAuth, stableHumanId } from "../addressing.ts";
 import { resolveSpace } from "../lifecycle.ts";
 import { HUMAN_PEER } from "../names.ts";
 import { stripChannel } from "./history.ts";
@@ -43,19 +43,20 @@ async function msg(argv: string[]): Promise<void> {
   const { channel, text, space: spaceArg, server: serverArg } = parseArgs(argv);
   if (!channel || !text) throw new Error('paw: usage — msg <#channel> "<text>"');
   const space = spaceArg ?? resolveSpace();
-  const server = serverArg ?? pawServer();
+  const server = serverArg ?? pawServer(space);
   assertValidChannel(channel);
 
   // One-shot sender as the stable "you" (mirrors src/dm.ts's endpoint shape): no presence, no
   // durable consumer, no roster watch — connect, multicast to the one channel, disconnect.
-  const creds = await controlCreds(space);
+  const humanAuth = await humanEndpointAuth(space, "operator");
+  const creds = humanAuth.creds;
   const card = creds
     ? { name: HUMAN_PEER, kind: "endpoint" as const }
     : { name: HUMAN_PEER, kind: "endpoint" as const, id: stableHumanId(space) };
   const ep = new CotalEndpoint({
     space,
     servers: server,
-    creds,
+    ...humanAuth,
     card,
     channels: [channel],
     registerPresence: false,

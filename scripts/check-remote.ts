@@ -88,6 +88,20 @@ assert(parseMeshArgs(["--space", "paw"]).verb === "ls", "bare `paw mesh` lists")
 throws(() => parseMeshArgs(["rm", "x", "--server", "tls://h:1"]), /belong to/, "--server on rm refused");
 throws(() => parseMeshArgs(["frob"]), /unknown/, "unknown verb refused");
 
+console.log("CLI routing");
+const { explicitSpace } = await import("../src/dispatch.ts");
+assert(explicitSpace(["x", "--space", "team"]) === "team" && explicitSpace(["--space=team"]) === "team", "explicitSpace reads --space / --space=");
+assert(explicitSpace(["x", "--", "--space", "team"]) === undefined && explicitSpace(["x"]) === undefined, "explicitSpace ignores args after -- and absence");
+const { remoteTlsEnv } = await import("../src/connector.ts");
+process.env.NODE_EXTRA_CA_CERTS = "/ca.pem";
+rm.writeRemoteMesh({ space: "remotetest-r", server: "tls://127.0.0.1:14322", root, ts: new Date().toISOString() });
+const lo = { space: "remotetest-local" } as Parameters<typeof remoteTlsEnv>[0];
+const ro = { space: "remotetest-r" } as Parameters<typeof remoteTlsEnv>[0];
+assert(remoteTlsEnv(lo).envAllow === undefined, "a local seat's launch env is untouched");
+assert(remoteTlsEnv(ro).envAllow?.includes("NODE_EXTRA_CA_CERTS") === true, "a remote seat inherits NODE_EXTRA_CA_CERTS");
+rm.removeRemoteMesh("remotetest-r");
+delete process.env.NODE_EXTRA_CA_CERTS;
+
 console.log("signer root");
 const full = await createSpaceAuth("remotetest-s");
 const sroot = mkdtempSync(join(tmpdir(), "paw-remote-signer-"));

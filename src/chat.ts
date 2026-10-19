@@ -29,7 +29,7 @@ import {
   checkAgentSpec,
   assertUnambiguousTarget,
   canonicalDir,
-  controlCreds,
+  humanEndpointAuth,
   ensureAgentSpawned,
   stuckWarning,
   folderForName,
@@ -375,7 +375,7 @@ async function chat(argv: string[]): Promise<void> {
   /** Where a plain line broadcasts when there's no sticky target — the channel you opened, else #general. */
   const room = addressed.mode === "channel" ? addressed.target! : ROOM;
   const space = spaceArg ?? resolveSpace();
-  const server = serverArg ?? pawServer();
+  const server = serverArg ?? pawServer(space);
   // ONE resolved control handle for startup: ensure()'s "is the manager up?" probe and the target's
   // spawn/reuse below. bin/paw.ts used to ensure() first and the spawn then resolved the manager's
   // service again — a describe, a contract fetch and an Ajv compile of every validator, twice per
@@ -505,14 +505,15 @@ async function chat(argv: string[]): Promise<void> {
 
   // Persistent human peer. Open mesh => bare connection with a stable id (so replies sent while we
   // step away queue and redeliver). Auth mesh => the minted creds carry the identity.
-  const creds = await controlCreds(space);
+  const humanAuth = await humanEndpointAuth(space, "agent");
+  const creds = humanAuth.creds;
   const card = creds
     ? { name: HUMAN_PEER, kind: "endpoint" as const }
     : { name: HUMAN_PEER, kind: "endpoint" as const, id: stableHumanId(space) };
   const ep = new CotalEndpoint({
     space,
     servers: server,
-    creds,
+    ...humanAuth,
     card,
     registerPresence: true,
     consume: true,

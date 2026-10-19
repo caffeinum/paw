@@ -9,6 +9,7 @@
  */
 import { CotalEndpoint, type Presence } from "@cotal-ai/core";
 import { standInActor } from "./sleep-state.ts";
+import { meshTls } from "./server.ts";
 
 /** How recent a presence heartbeat must be to count as a running agent. cotal heartbeats every 2s; a
  *  record older than this is a process that stopped without publishing `offline`. */
@@ -63,6 +64,7 @@ export async function readMeshRoster(
     space,
     servers: server,
     creds,
+    ...meshTls(space),
     channels: [],
     consume: false,
     registerPresence: false,
