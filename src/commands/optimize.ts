@@ -103,7 +103,7 @@ async function optimize(argv: string[]): Promise<void> {
     const now = Date.now();
     console.log(machineLine(fleet.machine, pawMb(fleet)));
     console.log(`paw optimize — inactive for over ${hours(args.sinceMs)}: ${todo.length - stops} to restart, ${stops} to stop (folder gone), ${shown.length - todo.length} skipped\n`);
-    const rows = topRows(first, fleet, now, (row) => verdictText(plan.get(row.name)!)).filter((r) => shown.some((s) => s.name === r.name));
+    const rows = topRows(first, fleet, now, (row) => { const v = plan.get(row.name); return v && verdictText(v); }).filter((r) => shown.some((s) => s.name === r.name));
     console.log(renderTable(sortRows(rows, "mem"), { width: process.stdout.columns ?? 160, now, noteHeader: "VERDICT" }));
     if (args.dryRun || !todo.length) return;
 
