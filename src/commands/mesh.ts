@@ -118,7 +118,7 @@ async function mesh(argv: string[]): Promise<void> {
   const path = writeRemoteMesh({ space, server, root, ts: new Date().toISOString() });
   console.log(`✓ space "${space}" → ${server} (signer under ${root})`);
   console.log(`  record: ${path}`);
-  console.log(`  next: paw start --space ${space}   (paw runs a manager + mailbox here; it never starts that broker)`);
+  console.log(`  next: paw dm --space ${space} <folder> "hi"   (paw runs a manager + mailbox here; it never starts that broker)`);
 }
 
 const meshCommand: Command = {

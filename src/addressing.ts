@@ -853,7 +853,8 @@ export async function ensureAgentSpawned(
   // funnel through here, so this ONE guard keeps them from racing a second agent onto the same name.
   // The caller addresses the live foreground agent through the roster instead (readyId/waitForPeerId).
   if (readForeground(opts.space, opts.name)) return { spawned: false };
-  assertOneSpace(opts.space, readResumeId(personaFilePath(opts.space, opts.name)));
+  const ownPersona = personaFilePath(opts.space, opts.name);
+  if (existsSync(ownPersona)) assertOneSpace(opts.space, readResumeId(ownPersona));
   const lastWrite = (): number | undefined => {
     const file = personaFilePath(opts.space, opts.name);
     const pin = readResumeId(file);

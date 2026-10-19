@@ -1752,6 +1752,13 @@ export async function ensureManagerOn(ctl: ManagerControl, ensureSpace: string =
   if (!answered) await ctl.close();
 }
 
+/** The space a command that acts on `space` must ensure. Historically the CURRENT space (PAW_SPACE or
+ *  the default) whatever `--space` said — kept for local spaces; a REMOTE `space` needs its own broker
+ *  and manager, so it is ensured itself. */
+export function ensureSpaceFor(space: string): string {
+  return isRemoteSpace(space) ? space : resolveSpace();
+}
+
 /** {@link ensureManagerOn} scoped like `withManagerControl`: one resolved handle for the whole command,
  *  always closed. For the commands that used to `ensure()` and then `withManagerControl` back to back. */
 export async function withEnsuredManager<T>(

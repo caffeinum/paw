@@ -76,7 +76,7 @@ import { FRESH_SPAWN_MS, LIVE_AGENT_MS } from "./dm.ts";
 import { messageText as textOf, readConversation, type Entry as FeedEntry } from "./feed.ts";
 import { dedupeRoster } from "./commands/who.ts";
 import { isContinueKey, joinLines, peelContinuation } from "./multiline.ts";
-import { ensureManagerOn, resolveSpace } from "./lifecycle.ts";
+import { ensureManagerOn, ensureSpaceFor, resolveSpace } from "./lifecycle.ts";
 import { chatAgentInfo } from "./agent-summary.ts";
 import { renderMarkdown } from "./markdown.ts";
 import { HUMAN_PEER } from "./names.ts";
@@ -383,7 +383,7 @@ async function chat(argv: string[]): Promise<void> {
   // before anything is registered. Closed once the target is resolved; the REPL's later calls open
   // their own (a throw before then exits the process — bin/paw.ts — so it never strands a socket).
   const startup = new ManagerControl(space, server);
-  await ensureManagerOn(startup, resolveSpace());
+  await ensureManagerOn(startup, ensureSpaceFor(space));
   if (!fresh) assertUnambiguousTarget(space, target); // a bare token that's BOTH a known name and a folder → fail loud (skipped under --fresh: the only interpretation there is a folder)
 
   // No target (only `--all` gets here) => start in broadcast mode: plain lines go to #general, and @name latches a sticky DM

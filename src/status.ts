@@ -16,7 +16,7 @@ import { homedir } from "node:os";
 import { agentNamesForFolder, canonicalDir, controlCreds, humanEndpointAuth, listAgents, personaFilePath, psRowAlive, terminalLost, type PsRow, wirePrincipal } from "./addressing.ts";
 import { withManagerControl, type ManagerControl } from "./control.ts";
 import { listForeground } from "./foreground.ts";
-import { ensure, formatHubLine, hubState, READY_PROBE_MS, readRuntimeMarker, resolveSpace, type HubState, type Runtime } from "./lifecycle.ts";
+import { ensure, ensureSpaceFor, formatHubLine, hubState, READY_PROBE_MS, readRuntimeMarker, resolveSpace, type HubState, type Runtime } from "./lifecycle.ts";
 import { writeJson } from "./stdout.ts";
 import { liveSessionProcsMany, nameForSession, readIndex as readSessionIndex, type LiveSessionProc } from "./named.ts";
 import { KIT_AGENT } from "./kit.ts";
@@ -999,7 +999,8 @@ async function status(argv: string[]): Promise<void> {
       ps = await readManagerPs(ctl, { timeoutMs: 2000, resolveMs: READY_PROBE_MS });
       return true;
     };
-    await ensure({ needMesh: true, needManager: true, ...(space === resolveSpace() ? { managerProbe } : {}) });
+    const ensureSpace = ensureSpaceFor(space);
+    await ensure({ needMesh: true, needManager: true, space: ensureSpace, ...(space === ensureSpace ? { managerProbe } : {}) });
     // A failed probe means ensure() went on to start a manager — read the hub (its manager env) afresh.
     const hub = ps && hubAtProbe ? hubAtProbe : hubState(space);
     hub.catch(() => {});
