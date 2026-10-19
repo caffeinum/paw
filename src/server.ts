@@ -3,7 +3,7 @@
  *
  * A space with a REMOTE record (src/remote-mesh.ts, `paw mesh add`) lives on that record's broker —
  * `tls://host:port`, TLS required. Every other space lives on the LOCAL broker: `PAW_SERVER`, else
- * cotal's `DEFAULT_SERVER` (nats://127.0.0.1:4222).
+ * cotal's `DEFAULT_SERVER` (nats://127.0.0.1:4222). PAW_SERVER never redirects a remote space.
  *
  * Every paw command used `DEFAULT_SERVER` directly, so an "isolated" test space still shared the
  * operator's LIVE broker: separate streams, same nats process, same disk (the 2026-09-08 outage was
@@ -23,15 +23,11 @@ export function localServer(): string {
   return v;
 }
 
-/** The broker for `space` (default: the current space). A remote record wins; PAW_SERVER pointing
- *  somewhere else at the same time is two answers to one question, so it fails loud. */
+/** The broker for `space` (default: the current space): its remote record's, else the local one.
+ *  PAW_SERVER names the LOCAL broker only — a test that pins it to a private nats-server keeps every
+ *  local dial off the live :4222 while its remote space still reaches the remote broker. */
 export function pawServer(space: string = resolveSpace()): string {
-  const remote = readRemoteMesh(space);
-  if (!remote) return localServer();
-  const env = process.env.PAW_SERVER?.trim();
-  if (env && env !== remote.server)
-    throw new Error(`paw: space "${space}" is remote (${remote.server}) but PAW_SERVER=${env} — unset PAW_SERVER for remote spaces`);
-  return remote.server;
+  return readRemoteMesh(space)?.server ?? localServer();
 }
 
 /** True when `space` lives on a remote broker (paw never starts or stops that broker). */

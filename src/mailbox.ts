@@ -14,12 +14,12 @@
  * (chat) binds the durable inbox; the beacon never does.
  */
 import { CotalEndpoint, registry, type Command } from "@cotal-ai/core";
-import { controlCreds, stableHumanId } from "./addressing.ts";
+import { humanEndpointAuth, stableHumanId } from "./addressing.ts";
 import { resolveSpace } from "./lifecycle.ts";
 import { HUMAN_PEER } from "./names.ts";
 import { startSleepHost } from "./sleep-host.ts";
 import { startStaleForwarder } from "./stale-forward.ts";
-import { pawServer } from "./server.ts";
+import { isRemoteSpace, pawServer } from "./server.ts";
 
 function parseArgs(argv: string[]): { space?: string; server?: string } {
   const out: { space?: string; server?: string } = {};
@@ -35,16 +35,17 @@ function parseArgs(argv: string[]): { space?: string; server?: string } {
 async function mailbox(argv: string[]): Promise<void> {
   const { space: spaceArg, server: serverArg } = parseArgs(argv);
   const space = spaceArg ?? resolveSpace();
-  const server = serverArg ?? pawServer();
+  const server = serverArg ?? pawServer(space);
 
-  const creds = await controlCreds(space);
+  const humanAuth = await humanEndpointAuth(space, "agent");
+  const creds = humanAuth.creds;
   const card = creds
     ? { name: HUMAN_PEER, kind: "endpoint" as const }
     : { name: HUMAN_PEER, kind: "endpoint" as const, id: stableHumanId(space) };
   const ep = new CotalEndpoint({
     space,
     servers: server,
-    creds,
+    ...humanAuth,
     card,
     registerPresence: true, // the whole point: keep "you" online so agents can resolve + reply to you
     consume: false, // beacon only — never drain/ack your inbox (that's `paw inbox`)
@@ -58,10 +59,16 @@ async function mailbox(argv: string[]): Promise<void> {
 
   // The sleep host (src/sleep-host.ts): stand-in presences for hibernated agents + wake on DM. Its own
   // failure must not take the "you" beacon down with it — log loudly and keep beaconing.
-  const stopSleepHost = await startSleepHost(space, server).catch((e: Error) => {
-    console.error(`[mailbox] sleep host failed to start — sleeping agents are NOT addressable: ${e.message}`);
-    return async () => {};
-  });
+  // Like the forwarder below, the sleep host dials the broker bare — a remote (authed) mesh refuses it.
+  let stopSleepHost = async () => {};
+  if (isRemoteSpace(space)) {
+    console.error(`[mailbox] remote mesh: the sleep host is OFF — \`paw sleep\` agents are not addressable here (open mesh only)`);
+  } else {
+    stopSleepHost = await startSleepHost(space, server).catch((e: Error) => {
+      console.error(`[mailbox] sleep host failed to start — sleeping agents are NOT addressable: ${e.message}`);
+      return async () => {};
+    });
+  }
   // The stale-id forwarder (src/stale-forward.ts) + the peer ledger it keeps. Re-publishing under the
   // original sender needs an open mesh (like the sleep host); under auth the broker forbids it.
   let stopForwarder = async () => {};

@@ -39,6 +39,7 @@ import {
   inboxStream,
   isReachable,
   mintCreds,
+  probeConnect,
   mintLifecycleUid,
   newIdentity,
   taskStream,
@@ -52,7 +53,8 @@ import { daemonRoot } from "./release.ts";
 import { pawCotalRoot } from "./cotal-root.ts";
 import { withManagerControl, type ManagerControl } from "./control.ts";
 import { withFileLock } from "./lock.ts";
-import { customServer, pawServer } from "./server.ts";
+import { customServer, isRemoteSpace, pawServer } from "./server.ts";
+import { readRemoteMesh } from "./remote-mesh.ts";
 import { ensureShim, hubEnabled, hubModeFile, hubSocketPath } from "./hub/paths.ts";
 
 export interface EnsureOpts {
@@ -887,6 +889,41 @@ async function ensureMesh(space: string, server: string): Promise<void> {
 }
 
 /**
+ * The REMOTE counterpart of {@link ensureMesh}: a space with a record (src/remote-mesh.ts) lives on a
+ * broker paw does not run, so there is nothing to start — only to prove. One credentialed connect with
+ * TLS REQUIRED, minted from the record root's signer, tells the four failures apart so each names its
+ * own fix instead of surfacing later as a manager that "didn't answer".
+ */
+async function ensureRemoteMesh(space: string, server: string): Promise<void> {
+  const rec = readRemoteMesh(space);
+  if (!rec) throw new Error(`paw: ensureRemoteMesh called for local space "${space}"`);
+  const creds = await probeCreds(space);
+  if (!creds)
+    throw new Error(`paw: space "${space}" is remote but no signer loads under ${authDir(rec.root)} — \`paw mesh add ${space} --force …\` with the right --root`);
+  const r = await probeConnect(server, { creds, tls: true, timeoutMs: 10_000 });
+  if (r.ok) return;
+  const why: Record<typeof r.reason, string> = {
+    "auth-required": `the broker rejected creds minted from the signer under ${rec.root} — it is not this mesh's account signer (re-run \`cotal mint --signer\` on the box and copy it again)`,
+    "stale-auth": `the minted creds read as expired — check this machine's clock`,
+    unreachable: `nothing usable answered — the broker is down, the address is wrong, or its TLS certificate is not trusted here (a private CA needs NODE_EXTRA_CA_CERTS=<ca.pem> in the environment of every paw command)`,
+    timeout: `the connect ran out of time — the link is slow or the broker is overloaded; retry`,
+  };
+  throw new Error(`paw: remote mesh "${space}" at ${server}: ${why[r.reason]}. paw never starts a remote broker.`);
+}
+
+/** The mesh step of ensure()/restartManager: prove a remote broker, or start/adopt the local one. */
+async function ensureMeshFor(space: string, server: string): Promise<void> {
+  if (isRemoteSpace(space)) await ensureRemoteMesh(space, server);
+  else await ensureMesh(space, server);
+}
+
+/** Open-mesh stream bootstrap applies to LOCAL spaces only: an auth broker's streams are provisioned
+ *  by `cotal up` where it runs, and an agent cred cannot create them. */
+function wantsSpaceStreams(space: string): boolean {
+  return process.env.PAW_AUTH !== "1" && !isRemoteSpace(space);
+}
+
+/**
  * Make sure an OPEN mesh has the space's message streams (CHAT_/DM_/TASK_/… — core's
  * createSpaceStreams, the one definition every TS endpoint uses), creating them when any is missing.
  *
@@ -1329,7 +1366,7 @@ async function stopOwnedManager(space: string): Promise<void> {
     // can't see it in ps, and its two-writer guard then REFUSES to revive it (its session is held).
     // So despawn every managed agent explicitly first. A manager that won't answer falls through to
     // the signal (and the runtime UI reap) — the old behaviour.
-    await withManagerControl(space, pawServer(), (ctl) => despawnManagedAgents(ctl)).catch((e: Error) =>
+    await withManagerControl(space, pawServer(space), (ctl) => despawnManagedAgents(ctl)).catch((e: Error) =>
       console.error(`paw: couldn't despawn agents before stopping the manager (${e.message}) — signalling it anyway`),
     );
     signalProcs(pids, "SIGTERM");
@@ -1678,12 +1715,12 @@ export async function stopHub(space: string): Promise<void> {
  */
 export async function ensure(opts: EnsureOpts = {}): Promise<{ space: string; server: string }> {
   const space = opts.space ?? resolveSpace();
-  const server = pawServer();
+  const server = pawServer(space);
   if (opts.needManager) resolveRuntime(space); // fail loud on a bad PAW_RUNTIME before booting; the cmux-surface gate is in ensureManagerUp (adopt needs no surface)
   await withLock(space, async () => {
-    if (opts.needMesh || opts.needManager) await ensureMesh(space, server);
+    if (opts.needMesh || opts.needManager) await ensureMeshFor(space, server);
     // Before anything can spawn: a kit agent can't be the space's first peer without them.
-    if (opts.needManager && process.env.PAW_AUTH !== "1") await ensureSpaceStreams(space, server);
+    if (opts.needManager && wantsSpaceStreams(space)) await ensureSpaceStreams(space, server);
     // The hub before the manager: the connector points every agent the manager spawns at it.
     if (opts.needMesh || opts.needManager) await ensureHub(space);
     if (opts.needManager) await ensureManagerUp(space, server, opts.switchRuntime, opts.managerProbe);
@@ -1710,7 +1747,7 @@ export async function ensure(opts: EnsureOpts = {}): Promise<{ space: string; se
 export async function ensureManagerOn(ctl: ManagerControl, ensureSpace: string = ctl.space): Promise<void> {
   let answered = false;
   const managerProbe = async () => (answered = (await ctl.ps(2000, READY_PROBE_MS)).ok);
-  const shared = ensureSpace === ctl.space && ctl.server === pawServer();
+  const shared = ensureSpace === ctl.space && ctl.server === pawServer(ensureSpace);
   await ensure({ needMesh: true, needManager: true, space: ensureSpace, ...(shared ? { managerProbe } : {}) });
   if (!answered) await ctl.close();
 }
@@ -1722,7 +1759,7 @@ export async function withEnsuredManager<T>(
   fn: (ctl: ManagerControl, server: string) => Promise<T>,
   opts: { ensureSpace?: string } = {},
 ): Promise<T> {
-  const server = pawServer();
+  const server = pawServer(space);
   return withManagerControl(space, server, async (ctl) => {
     await ensureManagerOn(ctl, opts.ensureSpace ?? space);
     return fn(ctl, server);
@@ -1740,11 +1777,11 @@ export async function withEnsuredManager<T>(
  */
 export async function restartManager(opts: { space?: string } = {}): Promise<void> {
   const space = opts.space ?? resolveSpace();
-  const server = pawServer();
+  const server = pawServer(space);
   assertRuntimeUsable(resolveRuntime(space)); // fail loud BEFORE stopping the manager (else a cmux-no-surface restart strands us)
   await withLock(space, async () => {
-    await ensureMesh(space, server);
-    if (process.env.PAW_AUTH !== "1") await ensureSpaceStreams(space, server); // the revival below may start a kit agent first
+    await ensureMeshFor(space, server);
+    if (wantsSpaceStreams(space)) await ensureSpaceStreams(space, server); // the revival below may start a kit agent first
     const creds = await probeCreds(space);
     // OWNERSHIP BY SIGNATURE: paw owns the manager iff a `cotald supervise` for this space is running
     // (only paw starts one). No running manager isn't an error — `paw restart` with nothing up should

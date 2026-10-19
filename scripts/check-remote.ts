@@ -67,7 +67,7 @@ process.env.PAW_SPACE = "remotetest-local";
 assert(isRemoteSpace("remotetest-r") && meshTls("remotetest-r").tls === true, "remote space requires TLS");
 assert(pawCotalRoot("remotetest-r") === root, "cotal root = the record's root");
 process.env.PAW_SERVER = "nats://127.0.0.1:14999";
-throws(() => pawServer("remotetest-r"), /PAW_SERVER/, "PAW_SERVER + a remote record = two answers, fails loud");
+assert(pawServer("remotetest-r") === "tls://127.0.0.1:14322" && pawServer("remotetest-local") === "nats://127.0.0.1:14999", "PAW_SERVER moves the local broker only, never a remote space");
 delete process.env.PAW_SERVER;
 process.env.PAW_COTAL_ROOT = "/elsewhere";
 throws(() => pawCotalRoot("remotetest-r"), /PAW_COTAL_ROOT/, "PAW_COTAL_ROOT disagreeing with a remote root fails loud");
