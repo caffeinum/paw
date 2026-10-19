@@ -131,3 +131,8 @@ Moved verbatim from CLAUDE.md (2026-10-02 split). Index: [CLAUDE.md](../../CLAUD
 - Verified identical: `paw status --json` (all rows, every field but `activeMs`), the table (every
   line but ACTIVE), `status <name>`, `status live`, `status <folder>`, and the unknown-name error,
   against the previous build on the live fleet.
+- **2026-10-19: mtime caches.** Persona frontmatter is cached per path by (mtime ns, size)
+  (`frontmatterLines`, src/session.ts); a transcript's derived failure/context/turn answers — not its tails —
+  by (mtime, size) (`transcriptMemo`); `transcriptPaths`' directory listings by dir mtime (`listDir`). The
+  `ps -A` behind `liveSessionProcsMany` is async now (it ran on paw web's event loop). Warm collect on a
+  148-agent copy: ~200ms → ~110ms CPU, rows identical. `check:status` covers invalidation.
