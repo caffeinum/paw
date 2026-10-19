@@ -12,9 +12,30 @@ import { join, resolve } from "node:path";
  * harness, flags — so every reader goes through this one parse. Throws if the file is unreadable.
  */
 export function personaValue(configPath: string, key: string): string | undefined {
-  const frontmatter = readFileSync(resolve(configPath), "utf8").match(/^---\n([\s\S]*?)\n---/);
-  const line = frontmatter?.[1].split("\n").find((l) => l.trimStart().startsWith(`${key}:`));
+  const line = frontmatterLines(resolve(configPath))?.find((l) => l.trimStart().startsWith(`${key}:`));
   return line?.slice(line.indexOf(`${key}:`) + key.length + 1).trim();
+}
+
+/** Parsed frontmatter per persona path, valid while the file's (mtime ns, size) is unchanged. A roster
+ *  read asks ~5 keys of every persona (~150 files) and `paw web` asks every 10s; the files almost never
+ *  change. Any write moves the nanosecond mtime, so a cached answer is never one the file no longer gives. */
+const frontmatterCache = new Map<string, { stamp: string; lines: string[] | undefined }>();
+
+function frontmatterLines(path: string): string[] | undefined {
+  let stamp: string;
+  try {
+    const st = statSync(path, { bigint: true });
+    stamp = `${st.mtimeNs}:${st.size}`;
+  } catch {
+    frontmatterCache.delete(path);
+    readFileSync(path, "utf8"); // throws the same error an uncached read did
+    throw new Error(`paw: ${path} could not be stat'd but could be read`);
+  }
+  const hit = frontmatterCache.get(path);
+  if (hit?.stamp === stamp) return hit.lines;
+  const lines = readFileSync(path, "utf8").match(/^---\n([\s\S]*?)\n---/)?.[1].split("\n");
+  frontmatterCache.set(path, { stamp, lines });
+  return lines;
 }
 
 /** A scalar frontmatter value with quotes stripped. A missing file is "no value", not an error: listings
@@ -219,10 +240,10 @@ export function transcriptPaths(sessionIds: Iterable<string>, roots: string[] = 
   }
   for (const root of roots) {
     if (!existsSync(root)) continue;
-    for (const dir of readdirSync(root)) {
+    for (const dir of listDir(root)) {
       let names: string[];
       try {
-        names = readdirSync(join(root, dir));
+        names = listDir(join(root, dir));
       } catch {
         continue; // not a directory (or vanished) — transcriptPath's existsSync finds nothing there either
       }
@@ -236,6 +257,20 @@ export function transcriptPaths(sessionIds: Iterable<string>, roots: string[] = 
     }
   }
   return out;
+}
+
+/** A directory's entry names, re-read only when its mtime moves (adding, removing or renaming an entry
+ *  always does). `transcriptPaths` lists ~400 project dirs per roster read, and `paw web` reads the
+ *  roster every 10s; the listing is the same unless a session file was created or removed. */
+const dirCache = new Map<string, { mtimeMs: number; names: string[] }>();
+
+function listDir(dir: string): string[] {
+  const mtimeMs = statSync(dir).mtimeMs;
+  const hit = dirCache.get(dir);
+  if (hit?.mtimeMs === mtimeMs) return hit.names;
+  const names = readdirSync(dir);
+  dirCache.set(dir, { mtimeMs, names });
+  return names;
 }
 
 /** The last-modified time (ms) of `sessionId`'s transcript — a proxy for the agent's "last active"

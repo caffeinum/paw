@@ -1560,6 +1560,166 @@ const stillAligned = async (ws: RawWs, label: string, ...setup: Buffer[]): Promi
   console.log("✓ company routes");
 }
 
+/* ── manager reconnect backoff (src/web.ts Backoff) ───────────────────────────────────────────────── */
+{
+  const { Backoff } = await import("../src/web.ts");
+  const b = new Backoff(10_000, 300_000);
+  assert(b.ready(0), "backoff: ready before any failure");
+  const waits = [1, 2, 3, 4, 5, 6, 7].map(() => b.failed(0));
+  assert(waits.join() === "10000,20000,40000,80000,160000,300000,300000", `backoff: 10s doubling, capped at 5min (${waits.join()})`);
+  assert(!b.ready(299_999) && b.ready(300_000), "backoff: not ready until the wait has elapsed");
+  b.succeeded();
+  assert(b.ready(0) && b.failed(0) === 10_000, "backoff: a success resets it to the base interval");
+  console.log("✓ reconnect backoff");
+}
+
+/* ── incremental DM reconcile (src/feed.ts DmWindow) ──────────────────────────────────────────────── */
+{
+  const { DmWindow, conversationEntries, dmRow } = await import("../src/feed.ts");
+  const stream: Array<Record<string, unknown>> = [];
+  let n = 0;
+  const push = (k: number): void => {
+    for (let i = 0; i < k; i++, n++) {
+      const mine = n % 3 === 0;
+      stream.push(
+        mine
+          ? { id: `d${n}`, from: { id: n % 2 ? ME : "local.devweb", name: n % 2 ? "you" : "dev-web" }, to: n % 2 ? "local.devweb" : ME, ts: 1000 + n, parts: parts(`m${n}`) }
+          : { id: `d${n}`, from: { id: "local.voice", name: "voice" }, to: "local.via", ts: 1000 + n, parts: parts(`x${n}`) },
+      );
+    }
+  };
+  const asked: number[] = [];
+  // cotal's contract: the NEWEST `limit` rows, oldest-first.
+  const read = async (limit: number) => {
+    asked.push(limit);
+    return stream.slice(-limit) as never[];
+  };
+  const CAP = 200;
+  const win = new DmWindow(read, ME, CAP, 8);
+  const full = () => conversationEntries((stream.slice(-CAP) as never[]).map((m) => dmRow(m, ME)), ME, "webcheck", { withSent: true });
+  const same = (label: string): void => {
+    const got = conversationEntries(win.all(), ME, "webcheck", { withSent: true });
+    assert(JSON.stringify(got) === JSON.stringify(full()) && win.all().map((r) => r.id).join() === stream.slice(-CAP).map((m) => m.id).join(), `DmWindow: ${label} — identical to a full read`);
+  };
+  push(150);
+  await win.refresh();
+  assert(asked.join() === "200", "DmWindow: the first refresh is the full read (cap)");
+  same("first load");
+  asked.length = 0;
+  push(3);
+  assert((await win.refresh()) === 3 && asked.join() === "8", "DmWindow: a few new DMs cost ONE small page, not the whole history");
+  same("3 new");
+  asked.length = 0;
+  assert((await win.refresh()) === 0 && asked.join() === "8", "DmWindow: nothing new → one small page, zero rows");
+  asked.length = 0;
+  push(50);
+  await win.refresh();
+  assert(asked.join() === "8,32,128", "DmWindow: a burst bigger than the page widens ×4 until it overlaps what is held");
+  same("a 50-DM burst, trimmed to the cap");
+  asked.length = 0;
+  push(400);
+  await win.refresh();
+  assert(asked.at(-1) === CAP, "DmWindow: a gap wider than the cap falls back to the full read");
+  same("a gap wider than the cap");
+  stream.length = 0;
+  push(5);
+  await win.refresh();
+  same("a stream that was reset (short page = its whole content)");
+  stream.push({ from: { id: "local.devweb", name: "dev-web" }, to: ME, ts: 9e9, parts: parts("no id") });
+  let threw = "";
+  try {
+    await win.refresh();
+  } catch (e) {
+    threw = (e as Error).message;
+  }
+  assert(/has no id/.test(threw), "DmWindow: a row without an id fails loud — never guessed into place");
+
+  // And through Conversation: the second reconcile asks for a small page, not FETCH_CAP.
+  const limits: number[] = [];
+  const hist = [{ id: "h1", from: { id: "local.devweb", name: "dev-web" }, to: ME, ts: 100, parts: parts("on it") }];
+  const inc = new Conversation({ ...(fakeEp() as object), dmHistory: async (o: { limit: number }) => (limits.push(o.limit), hist.slice(-o.limit)) } as never);
+  await inc.reconcile();
+  hist.push({ id: "h2", from: { id: ME, name: "you" }, to: "local.devweb", ts: 200, parts: parts("thanks") });
+  await inc.reconcile();
+  const es = inc.entries();
+  assert(limits[0] === 10_000 && limits[1] === 64, `Conversation.reconcile reads the backlog once, then incrementally (limits ${limits.join()})`);
+  assert(es.length === 2 && es[1].dir === "out" && es[1].to === "dev-web", "Conversation: the incremental reconcile picks up the new DM, recipient named");
+  console.log("✓ incremental DM reconcile");
+}
+
+/* ── idle parking: loops run only while a browser is connected (src/feed.ts pausableLoop) ────────── */
+{
+  const { pausableLoop } = await import("../src/feed.ts");
+  let ticks = 0;
+  let release: () => void = () => {};
+  const loop = pausableLoop(
+    () => {
+      ticks++;
+      return new Promise<void>((r) => (release = r));
+    },
+    40,
+    () => {},
+  );
+  await settle(100);
+  assert(ticks === 0 && !loop.active(), "a pausable loop is created PARKED — nothing ticks until resume()");
+  loop.resume();
+  assert(ticks === 1 && loop.active(), "resume() ticks IMMEDIATELY (the first client gets a fresh read, not one up to a tick old)");
+  await settle(100);
+  assert(ticks === 1, "a tick still in flight is never started twice (the re-entrancy guard holds)");
+  const joined = loop.runNow();
+  release();
+  await joined;
+  assert(ticks === 1, "runNow() during a tick joins it rather than starting a second");
+  loop.pause();
+  const before = ticks;
+  await settle(150);
+  assert(ticks === before && !loop.active(), "pause() stops the interval");
+  const now = loop.runNow();
+  release();
+  await now;
+  assert(ticks === before + 1 && !loop.active(), "runNow() while parked runs one tick and stays parked");
+  loop.resume();
+  loop.resume();
+  release();
+  await settle(10);
+  loop.pause();
+  release();
+  assert(ticks === before + 2, "a second resume() while active is a no-op (no extra immediate tick)");
+
+  // The server reports the socket count on every change — that is what parks/wakes `paw web`'s loops.
+  const counts: number[] = [];
+  let freshened = 0;
+  const gport = await freePort();
+  const gserver = await startWebServer({ ...deps, port: gport, clientRoot: root, onClients: (n) => counts.push(n), freshen: async () => void freshened++ });
+  const open = async (): Promise<Socket> => {
+    const s = connect(gport, "127.0.0.1");
+    await new Promise<void>((r, j) => {
+      s.once("connect", () => r());
+      s.once("error", j);
+    });
+    s.write(
+      `GET /ws HTTP/1.1\r\nHost: 127.0.0.1:${gport}\r\nOrigin: http://127.0.0.1:${gport}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n` +
+        `Sec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n`,
+    );
+    await settle(80);
+    return s;
+  };
+  assert(gserver.clientCount() === 0 && counts.length === 0, "no socket → count 0, and nothing reported yet");
+  const a = await open();
+  const b = await open();
+  assert(gserver.clientCount() === 2 && counts.join() === "1,2", "each connect is reported (1, then 2)");
+  a.destroy();
+  await settle();
+  assert(counts.join() === "1,2,1", `a disconnect is reported (${counts.join()})`);
+  b.end();
+  await settle();
+  assert(gserver.clientCount() === 0 && counts.at(-1) === 0, "the LAST socket leaving reports 0 — the daemon parks its loops");
+  await fetch(`http://127.0.0.1:${gport}/api/inbox`, { headers: { Origin: `http://127.0.0.1:${gport}` } });
+  assert(freshened === 1, "/api/inbox awaits freshen() first (a parked daemon re-reads a stale conversation for a poll-only reader)");
+  await gserver.close();
+  console.log("✓ idle parking");
+}
+
 await server.close();
 assert((await fetch(`${base}/api/status`, { headers: ORIGIN }).then(() => false).catch(() => true)) === true, "close() actually stops answering");
 

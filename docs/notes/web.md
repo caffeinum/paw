@@ -347,3 +347,20 @@ Moved verbatim from CLAUDE.md (2026-10-02 split). Index: [CLAUDE.md](../../CLAUD
   `channel="chrome"` — playwright 1.29 has no bundled browser here), which asserts computed style.
 - Gotcha hit: `#company button { color:inherit }` beat `.co-btn`'s colour and the Comment button
   rendered black-on-black; the browser check now asserts the label colour differs from its fill.
+
+## idle cost (2026-10-19)
+
+- **The loops park at 0 clients.** The roster collect (10s) and the DM reconcile (30s) are `pausableLoop`s
+  (src/feed.ts): the first websocket wakes both (one immediate tick each), the last one leaving parks them.
+  The tap stays live while parked; the wake-up reconcile closes any gap. A poll-only reader still gets fresh
+  data: `/api/status` and `/api/inbox` (`WebDeps.freshen`) refresh on demand when the parked data is older
+  than one tick. Sockets end on the client's FIN — node's http server is allowHalfOpen, so a closed tab
+  otherwise stayed counted until a later write failed.
+- **The reconcile is incremental** (`DmWindow`, src/feed.ts): the first read is the full `dmHistory(FETCH_CAP)`,
+  later ones read 64 rows and widen ×4 until the page's oldest id is one already held. A short page is the
+  stream's whole content; reaching the cap is the old full read. cotal exposes no stream sequence publicly,
+  so message ids are the cursor. `readConversation` and the window share `conversationEntries`.
+- **Manager reconnects back off** (`Backoff`): 10s → 20s → … → 5min, reset on success; the failure note
+  rides the stale rows meanwhile (was: a re-resolve every 10s, 11k failures in one log).
+- Not done: `collectStatus` still runs `gitInfoMany` for every folder on each web tick (git subprocesses,
+  not counted in the web process's own CPU).

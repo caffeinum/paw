@@ -94,17 +94,38 @@ export interface Entry {
  */
 export async function readConversation(ep: CotalEndpoint, opts: { withSent?: boolean } = {}): Promise<Entry[]> {
   const me = ep.card.id;
-  const all = await ep.dmHistory({ limit: FETCH_CAP });
+  const all = (await ep.dmHistory({ limit: FETCH_CAP })).map((m) => dmRow(m, me));
+  return conversationEntries(all, me, ep.space, opts);
+}
+
+/** One DM-stream row reduced to what a conversation reads. `text` is flattened only for the human's
+ *  own mail — an agent↔agent row is kept for its sender name, never rendered. */
+export interface DmRow {
+  id: string;
+  ts: number;
+  to?: string;
+  from: { id?: string; name: string };
+  text: string;
+}
+
+export function dmRow(m: CotalMessage, me: string): DmRow {
+  const mine = m.to === me || m.from.id === me;
+  return { id: m.id, ts: m.ts, to: m.to, from: { id: m.from.id, name: m.from.name }, text: mine ? messageText(m) : "" };
+}
+
+/** The human's conversation from DM rows — THE mapping {@link readConversation} and {@link DmWindow}
+ *  share, so an incremental read cannot drift from a full one. */
+export function conversationEntries(all: DmRow[], me: string, space: string, opts: { withSent?: boolean } = {}): Entry[] {
   if (!opts.withSent) {
     return all
       .filter((m) => m.to === me)
       .sort((a, b) => a.ts - b.ts)
-      .map((m): Entry => ({ from: m.from.name, text: messageText(m), ts: m.ts }));
+      .map((m): Entry => ({ from: m.from.name, text: m.text, ts: m.ts }));
   }
   // The stream's own senders first, then paw's peer ledger (src/peer-ledger.ts), which also knows ids
   // that only ever RECEIVED — a restarted agent's previous incarnation, say. The plain name, no
   // "(old instance)": `to` is the conversation key every surface groups and filters on.
-  const ledger = cachedLedger(ep.space);
+  const ledger = cachedLedger(space);
   const nameById = new Map<string, string>();
   for (const [id, e] of Object.entries(ledger)) nameById.set(id, e.name);
   for (const m of all) if (m.from.id && m.from.name) nameById.set(m.from.id, m.from.name);
@@ -113,9 +134,77 @@ export async function readConversation(ep: CotalEndpoint, opts: { withSent?: boo
     .sort((a, b) => a.ts - b.ts)
     .map((m): Entry =>
       m.from.id === me
-        ? { from: HUMAN_PEER, text: messageText(m), ts: m.ts, dir: "out", to: (m.to && nameById.get(m.to)) ?? m.to }
-        : { from: m.from.name, text: messageText(m), ts: m.ts, dir: "in" },
+        ? { from: HUMAN_PEER, text: m.text, ts: m.ts, dir: "out", to: (m.to && nameById.get(m.to)) ?? m.to }
+        : { from: m.from.name, text: m.text, ts: m.ts, dir: "in" },
     );
+}
+
+/** First page an incremental read asks for. A reconcile tick sees a handful of new DMs, not 64. */
+const DM_WINDOW_FIRST_PAGE = 64;
+
+/**
+ * The newest {@link FETCH_CAP} rows of the DM stream, kept current by reading only what is NEW.
+ *
+ * A full `dmHistory(FETCH_CAP)` moved the whole backlog (~7.5k messages, RSS swinging 82–258MB) every
+ * 30s to find the one or two that arrived. cotal returns the NEWEST `limit` rows, oldest-first, as one
+ * contiguous window, and exposes no stream sequence publicly — so the cursor is message ids: read a
+ * small page; if its OLDEST row is one already held, every unknown row in it is everything new. If not,
+ * widen (×4) until it overlaps. Two answers are taken whole: a page SHORTER than asked is the stream's
+ * entire content (cotal widens to the subject's first match before returning short), and reaching
+ * FETCH_CAP is exactly the old full read. The first refresh is always that full read. A row without an
+ * id cannot be placed and throws — never guessed into position.
+ */
+export class DmWindow {
+  private rows: DmRow[] = [];
+  private ids = new Set<string>();
+  private loaded = false;
+  private readonly read: (limit: number) => Promise<CotalMessage[]>;
+  private readonly me: string;
+  private readonly cap: number;
+  private readonly firstPage: number;
+  constructor(read: (limit: number) => Promise<CotalMessage[]>, me: string, cap = FETCH_CAP, firstPage = DM_WINDOW_FIRST_PAGE) {
+    this.read = read;
+    this.me = me;
+    this.cap = cap;
+    this.firstPage = firstPage;
+  }
+
+  all(): DmRow[] {
+    return this.rows;
+  }
+
+  /** Bring the window up to date. Returns how many rows were read in (a full reload counts them all). */
+  async refresh(): Promise<number> {
+    if (!this.loaded) return this.replace(await this.page(this.cap));
+    for (let limit = this.firstPage; limit < this.cap; limit *= 4) {
+      const page = await this.page(limit);
+      if (page.length < limit) return this.replace(page);
+      if (!this.ids.has(page[0].id)) continue; // more arrived than this page holds — widen
+      const fresh = page.filter((m) => !this.ids.has(m.id));
+      this.rows = this.rows.concat(fresh);
+      for (const m of fresh) this.ids.add(m.id);
+      if (this.rows.length > this.cap) {
+        for (const m of this.rows.slice(0, this.rows.length - this.cap)) this.ids.delete(m.id);
+        this.rows = this.rows.slice(-this.cap);
+      }
+      return fresh.length;
+    }
+    return this.replace(await this.page(this.cap));
+  }
+
+  private async page(limit: number): Promise<DmRow[]> {
+    return (await this.read(limit)).map((m) => {
+      if (typeof m.id !== "string" || !m.id) throw new Error(`paw: a DM history row from ${m.from?.name ?? "?"} at ${m.ts} has no id — cannot place it in the conversation`);
+      return dmRow(m, this.me);
+    });
+  }
+
+  private replace(rows: DmRow[]): number {
+    this.rows = rows;
+    this.ids = new Set(rows.map((m) => m.id));
+    this.loaded = true;
+    return rows.length;
+  }
 }
 
 /**
@@ -126,19 +215,52 @@ export async function readConversation(ep: CotalEndpoint, opts: { withSent?: boo
  * that means reading the same pre-advance cursor and printing the same messages twice.
  */
 export function pollLoop(tick: () => Promise<void>, ms: number, onError: (e: Error) => void): () => void {
-  let running = false;
-  const run = async (): Promise<void> => {
-    if (running) return;
-    running = true;
-    try {
-      await tick();
-    } catch (e) {
-      onError(e as Error);
-    } finally {
-      running = false;
-    }
+  const loop = pausableLoop(tick, ms, onError);
+  loop.resume(); // drain immediately, then settle into the interval
+  return () => loop.pause();
+}
+
+/** A {@link pollLoop} that can be parked and woken — `paw web` runs its roster and conversation loops
+ *  only while a browser is connected (an idle daemon re-collecting for nobody was ~200ms CPU per tick). */
+export interface PausableLoop {
+  /** Start ticking: one tick NOW, then every `ms`. A no-op while already ticking. */
+  resume(): void;
+  /** Stop ticking. A tick already in flight finishes. */
+  pause(): void;
+  active(): boolean;
+  /** One tick now, sharing the re-entrancy guard: resolves when the tick in flight (this one or an
+   *  earlier one) settles. For an on-demand read while paused. */
+  runNow(): Promise<void>;
+}
+
+/** Created PAUSED. Same never-twice-at-once guard as {@link pollLoop}. */
+export function pausableLoop(tick: () => Promise<void>, ms: number, onError: (e: Error) => void): PausableLoop {
+  let inflight: Promise<void> | undefined;
+  let timer: ReturnType<typeof setInterval> | undefined;
+  const runNow = (): Promise<void> => {
+    if (inflight) return inflight;
+    inflight = (async () => {
+      try {
+        await tick();
+      } catch (e) {
+        onError(e as Error);
+      } finally {
+        inflight = undefined;
+      }
+    })();
+    return inflight;
   };
-  void run(); // drain immediately, then settle into the interval
-  const timer = setInterval(() => void run(), ms);
-  return () => clearInterval(timer);
+  return {
+    resume() {
+      if (timer) return;
+      void runNow();
+      timer = setInterval(() => void runNow(), ms);
+    },
+    pause() {
+      if (timer) clearInterval(timer);
+      timer = undefined;
+    },
+    active: () => timer !== undefined,
+    runNow,
+  };
 }

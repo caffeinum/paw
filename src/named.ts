@@ -5,7 +5,7 @@
  * scanning that index for an entry whose `name` matches AND whose `cwd` is the folder being adopted.
  * Read-only; tolerates partial/stale index files.
  */
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { existsSync, readFileSync, readdirSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -118,19 +118,16 @@ export function liveSessionProcs(sessionId: string): LiveSessionProc[] {
  *  exited in between) or a failed `ps` is simply absent — the caller treats absent as unreadable.
  *  Several pids read the WHOLE table (`-A`, ~50ms): macOS ps handed a pid list walks every process
  *  anyway and costs ~130ms, while a single `-p <pid>` is ~15ms. */
-function commandLines(pids: number[]): Map<number, string> {
+async function commandLines(pids: number[]): Promise<Map<number, string>> {
   const out = new Map<number, string>();
   if (pids.length === 0) return out;
   const want = new Set(pids);
-  let text: string;
-  try {
-    text = execFileSync("ps", pids.length === 1 ? ["-o", "pid=,command=", "-p", String(pids[0])] : ["-A", "-o", "pid=,command="], {
-      encoding: "utf8",
-      maxBuffer: 64 * 1024 * 1024,
+  // ASYNC: `paw web` collects on its event loop, and a blocking ps (~50ms) stalls every socket with it.
+  const text = await new Promise<string>((done) => {
+    execFile("ps", pids.length === 1 ? ["-o", "pid=,command=", "-p", String(pids[0])] : ["-A", "-o", "pid=,command="], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 }, (_err, stdout) => {
+      done(String(stdout ?? "")); // a failed ps: keep whatever it printed
     });
-  } catch (e) {
-    text = String((e as { stdout?: unknown }).stdout ?? ""); // a failed ps: keep whatever it printed
-  }
+  });
   for (const line of text.split("\n")) {
     const m = /^\s*(\d+)\s(.*)$/.exec(line);
     if (m && want.has(Number(m[1]))) out.set(Number(m[1]), m[2]);
@@ -140,11 +137,11 @@ function commandLines(pids: number[]): Map<number, string> {
 
 /** {@link liveSessionProcs} for many sessions at once: one index snapshot, one `ps` for every live
  *  pid. Same answer per session, including the fail-safe (an unreadable process counts as non-mesh). */
-export function liveSessionProcsMany(sessionIds: Iterable<string>, index: SessionIndexEntry[] = readIndex()): Map<string, LiveSessionProc[]> {
+export async function liveSessionProcsMany(sessionIds: Iterable<string>, index: SessionIndexEntry[] = readIndex()): Promise<Map<string, LiveSessionProc[]>> {
   const want = new Set(sessionIds);
   const out = new Map<string, LiveSessionProc[]>([...want].map((id) => [id, []]));
   const hits = index.filter((e) => want.has(e.sessionId) && e.pid !== undefined && isAlive(e.pid));
-  const cmds = commandLines([...new Set(hits.map((e) => e.pid!))]);
+  const cmds = await commandLines([...new Set(hits.map((e) => e.pid!))]);
   for (const e of hits) {
     const cmd = cmds.get(e.pid!);
     out.get(e.sessionId)!.push({ pid: e.pid!, name: e.name, mesh: cmd !== undefined && cmd.includes("--dangerously-load-development-channels"), startedAt: e.startedAt });

@@ -4,7 +4,7 @@
  * `foreignWriters` detector that backs both status and the spawn/adopt two-writer guard. Isolated temp
  * HOME for the index scan; pure/no daemons. Run: pnpm check:status
  */
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -302,9 +302,35 @@ assert(!inferBusy("idle", true, BUSY_NOW + 5_000, BUSY_NOW), "an mtime in the FU
   const same = (a: Map<string, string>, b: Map<string, string>) => a.size === b.size && [...a].every(([k, v]) => b.get(k) === v);
   assert(same(transcriptPaths(ids), one(ids)), "transcriptPaths (one listing) = transcriptPath per id — first dir wins, missing ids absent");
   assert(same(transcriptPaths(["dup", "s9"]), one(["dup", "s9"])), "transcriptPaths (few ids) = transcriptPath per id");
+  // The listing cache must see a session file created or removed after the first listing.
+  writeFileSync(join(projects, "-b", "s4.jsonl"), "");
+  mkdirSync(join(projects, "-d"));
+  writeFileSync(join(projects, "-d", "s5.jsonl"), "");
+  assert(same(transcriptPaths(ids), one(ids)) && transcriptPaths(ids).has("s4") && transcriptPaths(ids).has("s5"), "transcriptPaths (cached listings) sees a NEW session file and a NEW project dir");
+  rmSync(join(projects, "-a", "dup.jsonl"));
+  assert(transcriptPaths(ids).get("dup") === join(projects, "-c", "dup.jsonl"), "transcriptPaths (cached listings) sees a REMOVED session file");
+
+  // personaValue's frontmatter cache: a rewrite — even to the same size — is read, never the old answer.
+  const { personaValue } = await import("../src/session.ts");
+  const persona = join(tdir, "p.md");
+  writeFileSync(persona, "---\nname: a\nresume: 1111\n---\nbody\n");
+  assert(personaValue(persona, "resume") === "1111", "personaValue reads a key");
+  assert(personaValue(persona, "resume") === "1111", "personaValue: a second read (cached) gives the same answer");
+  writeFileSync(persona, "---\nname: a\nresume: 2222\n---\nbody\n");
+  assert(personaValue(persona, "resume") === "2222", "personaValue: a same-size rewrite is seen (the mtime moved)");
+  writeFileSync(persona, "---\nname: a\n---\n");
+  assert(personaValue(persona, "resume") === undefined, "personaValue: a removed key is gone");
+  rmSync(persona);
+  let threw = false;
+  try {
+    personaValue(persona, "resume");
+  } catch (e) {
+    threw = /ENOENT/.test((e as Error).message);
+  }
+  assert(threw, "personaValue: a deleted persona still throws the read error (no stale cached answer)");
 
   // liveSessionProcsMany: same procs as liveSessionProcs for each session (the index written above).
-  const many = liveSessionProcsMany([SID, "no-such-session"]);
+  const many = await liveSessionProcsMany([SID, "no-such-session"]);
   const strip = (ps: { pid: number; mesh: boolean }[]) => JSON.stringify(ps.map((p) => [p.pid, p.mesh]).sort());
   assert(strip(many.get(SID)!) === strip(liveSessionProcs(SID)), "liveSessionProcsMany = liveSessionProcs (live holder, non-mesh, dead pid excluded)");
   assert(many.get("no-such-session")!.length === 0, "liveSessionProcsMany: an unknown session has no procs");

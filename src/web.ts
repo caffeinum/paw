@@ -82,7 +82,7 @@ function webCursor(space: string): number {
   return shared;
 }
 import { sendAsYou } from "./dm.ts";
-import { FETCH_CAP, messageText, observerEndpoint, pollLoop, readConversation, type Entry } from "./feed.ts";
+import { DmWindow, FETCH_CAP, conversationEntries, messageText, observerEndpoint, pausableLoop, type Entry, type PausableLoop } from "./feed.ts";
 import { ensure, resolveSpace, reexecUnderNode } from "./lifecycle.ts";
 import { agentTranscriptFile, blocksForAgent, chooseTranscriptId } from "./log.ts";
 import { meshAgentSession } from "./named.ts";
@@ -110,7 +110,7 @@ const DEFAULT_PORT = 7788;
  *  a human timescale, and each collect costs a control round-trip plus a JetStream query per agent. */
 const STATUS_MS = 10_000;
 /**
- * How often the conversation is re-read from `dmHistory`.
+ * How often the conversation is brought up to date from `dmHistory` (incrementally — see DmWindow).
  *
  * The tap is an OPTIMISATION for latency; THIS is the correctness backstop. `ep.tap` is ephemeral — it
  * has no durable behind it, so anything published while the connection is down is not replayed, and
@@ -119,6 +119,38 @@ const STATUS_MS = 10_000;
  * interval, never lost.
  */
 const RECONCILE_MS = 30_000;
+/** The longest a roster refresh waits after repeated failures (a manager that is down). */
+const RECONNECT_MAX_MS = 5 * 60_000;
+
+/**
+ * Exponential backoff for the roster refresh: `base` after the first failure, doubling to `max`, back
+ * to every tick on the first success. A manager that stays down used to be re-resolved every 10s —
+ * 11k failed reconnects in one log, each a fresh control handle and contract compile.
+ */
+export class Backoff {
+  private failures = 0;
+  private nextAt = 0;
+  private readonly base: number;
+  private readonly max: number;
+  constructor(base: number, max: number) {
+    this.base = base;
+    this.max = max;
+  }
+  ready(now: number): boolean {
+    return now >= this.nextAt;
+  }
+  /** Record a failure; returns how long until the next attempt. */
+  failed(now: number): number {
+    this.failures++;
+    const wait = Math.min(this.max, this.base * 2 ** (this.failures - 1));
+    this.nextAt = now + wait;
+    return wait;
+  }
+  succeeded(): void {
+    this.failures = 0;
+    this.nextAt = 0;
+  }
+}
 /** Matches `paw log` — transcripts reach hundreds of MB, so a trace read only touches the end. */
 const TRACE_TAIL_BYTES = 512 * 1024;
 /**
@@ -278,6 +310,9 @@ export class Conversation {
   private unnamed = new Map<Entry, string>();
 
   private readonly ep: CotalEndpoint;
+  /** The DM stream read incrementally (src/feed.ts DmWindow): the first reconcile reads it whole, each
+   *  later one only what arrived since. Built on first use — the endpoint's id exists once started. */
+  private window?: DmWindow;
   constructor(ep: CotalEndpoint) {
     this.ep = ep;
   }
@@ -292,9 +327,12 @@ export class Conversation {
     return [...this.history, ...this.live];
   }
 
-  /** Re-read the whole conversation and drop the live entries it now covers. */
+  /** Bring the conversation up to date with the stream and drop the live entries it now covers. */
   async reconcile(): Promise<void> {
-    const fresh = await readConversation(this.ep, { withSent: true });
+    const me = this.ep.card.id;
+    this.window ??= new DmWindow((limit) => this.ep.dmHistory({ limit }), me);
+    await this.window.refresh();
+    const fresh = conversationEntries(this.window.all(), me, this.ep.space, { withSent: true });
     const covered = new Set(fresh.map(keyOf));
     this.history = fresh;
     for (const e of this.live) this.unnamed.delete(e);
@@ -945,6 +983,11 @@ export interface WebDeps {
   /** An agent's dialog (src/dialog.ts): its DMs both ways incl. agent↔agent, + a channel's posts by/
    *  mentioning it. `error` = the history read was refused (said verbatim, never an empty dialog). */
   dialog?: (agent: string, limit: number, channel?: string) => Promise<{ agent: string; messages: DialogEntry[]; error?: string }>;
+  /** Told the open-socket count whenever it changes — `paw web` parks its poll loops at 0. */
+  onClients?: (count: number) => void;
+  /** Awaited before `/api/inbox` answers: lets a daemon whose reconcile loop is parked (no socket)
+   *  re-read a stale conversation for a poll-only reader. Optional — without it the route reads as-is. */
+  freshen?: () => Promise<void>;
   clientRoot?: string;
 }
 
@@ -953,6 +996,8 @@ export interface WebServer {
   /** Push one frame to every open socket. The caller decides what is worth pushing; this half only
    *  knows how to deliver it. */
   broadcast(payload: unknown): void;
+  /** Open websocket clients right now. */
+  clientCount(): number;
   close(): Promise<void>;
 }
 
@@ -967,6 +1012,12 @@ export async function startWebServer(deps: WebDeps): Promise<WebServer> {
   const { port, space, convo, status, trace, dm, post, bash } = deps;
   const clientRoot = deps.clientRoot ?? findClientRoot();
   const sockets = new Set<Socket>();
+  let reported = 0;
+  const clientsChanged = (): void => {
+    if (sockets.size === reported) return;
+    reported = sockets.size;
+    deps.onClients?.(reported);
+  };
   /** Paths this daemon wrote for the operator (see /api/upload) — servable without waiting for the
    *  mesh echo that would otherwise be the only evidence. */
   const uploaded = new Set<string>();
@@ -1010,6 +1061,7 @@ export async function startWebServer(deps: WebDeps): Promise<WebServer> {
           const limitParam = url.searchParams.get("limit");
           const limit = limitParam === null ? INBOX_DEFAULT_LIMIT : Number(limitParam);
           if (!Number.isInteger(limit) || limit < 1) return sendJson(res, 400, { error: "paw: limit needs a positive integer" });
+          await deps.freshen?.();
           const all = convo.entries();
           // The default is your INBOX; `sent=1` widens to both directions, which is what a chat needs —
           // a transcript of only the other side is half a conversation.
@@ -1472,10 +1524,20 @@ export async function startWebServer(deps: WebDeps): Promise<WebServer> {
     socket.on("data", (chunk: Buffer) => {
       pending = readClientFrames(Buffer.concat([pending, chunk]), socket);
     });
-    const drop = (): void => void sockets.delete(socket);
+    const drop = (): void => {
+      sockets.delete(socket);
+      clientsChanged();
+    };
     socket.on("close", drop);
     socket.on("error", drop);
+    // node's http server is allowHalfOpen, so a browser's FIN alone never fires "close": the socket sat
+    // counted until a later broadcast's write failed. The client count parks the poll loops, so end it here.
+    socket.on("end", () => {
+      drop();
+      socket.end();
+    });
     sockets.add(socket);
+    clientsChanged();
     if (lastStatus !== undefined) socket.write(textFrame(JSON.stringify(lastStatus)));
   });
 
@@ -1536,7 +1598,9 @@ export async function startWebServer(deps: WebDeps): Promise<WebServer> {
         }
         s.write(frame);
       }
+      clientsChanged();
     },
+    clientCount: () => sockets.size,
     async close(): Promise<void> {
       for (const s of sockets) s.destroy();
       sockets.clear();
@@ -1595,7 +1659,12 @@ async function web(argv: string[]): Promise<void> {
    *  order — the payload is a bare `string[]`, so the client cannot re-derive one. */
   let channelNames: string[] = [];
   const authorsScanned = new Set<string>();
-  const refreshStatus = async (): Promise<void> => {
+  const reconnect = new Backoff(STATUS_MS, RECONNECT_MAX_MS);
+  /** Why the rows are stale, while they are — served with them until a refresh succeeds. */
+  let staleNote: string | undefined;
+  /** False when skipped: the last failure's backoff hasn't elapsed (the rows and staleNote stand). */
+  const refreshStatus = async (): Promise<boolean> => {
+    if (!reconnect.ready(Date.now())) return false;
     // One resolved control handle for the daemon's lifetime (see sharedManagerControl): re-resolving
     // per poll recompiled every contract validator each tick and spammed cotal's schema advisory.
     // A failed refresh drops the handle too: `stale` covers what the handle can classify, this
@@ -1608,8 +1677,11 @@ async function web(argv: string[]): Promise<void> {
       fresh = await collectStatus(space, await sharedManagerControl(space, server), { roster: () => ep.getRoster() });
     } catch (e) {
       await dropSharedManagerControl(space, server);
-      throw e;
+      const wait = reconnect.failed(Date.now());
+      throw new Error(`${(e as Error).message}; next attempt in ${Math.round(wait / 1000)}s`);
     }
+    reconnect.succeeded();
+    staleNote = undefined;
     rows = fresh.rows;
     errors = fresh.errors;
     collectedAt = Date.now();
@@ -1636,20 +1708,37 @@ async function web(argv: string[]): Promise<void> {
       // A channel list paw could not read is reported, not silently emptied — the previous list stands.
       errors = [...errors, `paw: couldn't list channels (${(e as Error).message})`];
     }
+    return true;
+  };
+
+  /** The roster + reconcile loops, parked while no browser is connected (built below, once the server
+   *  they push through exists — a socket arriving first is caught up by the check after they are). */
+  let loops: { status: PausableLoop; reconcile: PausableLoop } | undefined;
+  let reconciledAt = 0;
+  const parkOrWake = (clients: number): void => {
+    if (!loops) return;
+    for (const l of [loops.status, loops.reconcile]) clients > 0 ? l.resume() : l.pause();
   };
 
   let served: WebServer | undefined;
   try {
     await convo.reconcile(); // the backlog, before the first client can ask for it
+    reconciledAt = Date.now();
     served = await startWebServer({
       port,
       space,
       convo,
       // The poller's snapshot, not a fresh collect: a page refresh must not cost a control round-trip
       // per tab. Before the first tick lands, collect once so the first client sees real rows.
+      // While parked (no socket) a poll-only reader still gets rows no older than one tick.
       status: async () => {
         if (!collectedAt) await refreshStatus();
-        return { rows, errors };
+        else if (loops && !loops.status.active() && Date.now() - collectedAt >= STATUS_MS) await loops.status.runNow();
+        return { rows, errors: staleNote ? [...errors, staleNote] : errors };
+      },
+      onClients: parkOrWake,
+      freshen: async () => {
+        if (loops && !loops.reconcile.active() && Date.now() - reconciledAt >= RECONCILE_MS) await loops.reconcile.runNow();
       },
       trace: (name, tail, bytes) => traceBlocks(space, name, tail, bytes),
       dm: (to, text) => sendAsYou({ space, server, target: to, text }),
@@ -1780,9 +1869,10 @@ async function web(argv: string[]): Promise<void> {
     }
   });
 
-  const stopReconcile = pollLoop(
+  const reconcileLoop = pausableLoop(
     async () => {
       await convo.reconcile();
+      reconciledAt = Date.now();
       // Seed the hover line for any agent that has DM'd you (edges stay live-tap-only so a re-read
       // can't inflate a count; `last` is idempotent — newer stamp wins).
       for (const e of convo.entries()) if (e.dir === "in" && e.from) village.seedLast(e.from, e.text, e.ts);
@@ -1800,18 +1890,23 @@ async function web(argv: string[]): Promise<void> {
    * own) because tab A marking mail read must reach tab B, and a THIRD frame type would break every
    * client and check that reasonably assumes there are two.
    */
-  const stopStatus = pollLoop(
+  const statusLoop = pausableLoop(
     async () => {
-      await refreshStatus();
+      if (!(await refreshStatus())) return; // backing off — the last frame (with its note) still stands
       push.broadcast({ type: "status", rows, errors });
     },
     STATUS_MS,
     (e) => {
       const note = `paw: roster refresh failed (${e.message})${collectedAt ? ` — rows are from ${new Date(collectedAt).toLocaleTimeString()}` : ""}`;
+      staleNote = note;
       console.error(c.red("! " + note));
       push.broadcast({ type: "status", rows, errors: [...errors, note] });
     },
   );
+  // Parked until a browser connects: the first socket wakes both (one tick each immediately), the last
+  // one leaving parks them. The tap stays live meanwhile, and the wake-up reconcile closes any gap.
+  loops = { status: statusLoop, reconcile: reconcileLoop };
+  parkOrWake(push.clientCount());
 
   const url = `http://127.0.0.1:${port}`;
   console.log(`${c.bold("paw web")} ${c.dim("·")} ${c.cyan(url)} ${c.dim(`· space "${space}" · Ctrl-C to stop`)}`);
@@ -1828,8 +1923,8 @@ async function web(argv: string[]): Promise<void> {
   try {
     await new Promise<void>(() => {}); // park; Ctrl-C exits the process
   } finally {
-    stopReconcile();
-    stopStatus();
+    reconcileLoop.pause();
+    statusLoop.pause();
     await push.close();
     await ep.stop().catch(() => {});
   }
