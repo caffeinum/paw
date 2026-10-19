@@ -27,8 +27,33 @@ rm -f /data/cotal/.cotal/*.pid /data/cotal/.cotal/*.pid.identity
       || echo "start: daemon creds renewal failed" >&2
   done ) &
 
+# The $SYS creds (membership-observer, connection-evictor) live 30 days and only a STOPPED broker can
+# re-mint them (`cotal up --rotate-sys`; agents, creds and data survive). So: rotate at boot when they
+# are close, and restart the machine daily-checked when they get close while running.
+ROTATE_DAYS=10
+ROTATE_FLAG=/data/cotal/.rotate-sys-now   # touch it + restart the machine to force a rotation
+sys_days_left() {
+  exp=$(cd /data/cotal && cotal doctor auth --space "$COTAL_SPACE" 2>&1 \
+    | sed -n 's/.*\(membership-observer\|connection-evictor\)\.creds.* expires \([0-9T:.Z-]*\).*/\2/p' | sort | head -1)
+  [ -n "$exp" ] || { echo "start: can't read the \$SYS creds expiry from cotal doctor auth" >&2; return 1; }
+  echo $(( ($(date -d "$exp" +%s) - $(date +%s)) / 86400 ))
+}
+ROTATE=""
+if [ -e "$ROTATE_FLAG" ]; then
+  ROTATE="--rotate-sys"; rm -f "$ROTATE_FLAG"; echo "start: rotating \$SYS creds (forced by $ROTATE_FLAG)" >&2
+elif left=$(sys_days_left) && [ "$left" -lt "$ROTATE_DAYS" ]; then
+  ROTATE="--rotate-sys"; echo "start: rotating \$SYS creds ($left days left)" >&2
+fi
+MAIN=$$   # exec below keeps this pid: it becomes cotal up
+( while sleep 86400; do
+    if left=$(sys_days_left) && [ "$left" -lt "$ROTATE_DAYS" ]; then
+      echo "start: \$SYS creds expire in $left days - restarting to rotate them" >&2
+      kill -TERM "$MAIN"; exit 0
+    fi
+  done ) &
+
 cd /data/cotal
-exec cotal up --no-manager --space "$COTAL_SPACE" \
+exec cotal up $ROTATE --no-manager --space "$COTAL_SPACE" \
   --server "tls://$PUBLIC_HOST:4222" --host 0.0.0.0 \
   --store-dir /data/cotal/.cotal/nats \
   --tls-cert "$CERT" --tls-key "$KEY"

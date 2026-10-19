@@ -34,3 +34,7 @@ kill_timeout = "30s"
 [[vm]]
   size = "shared-cpu-1x"
   memory = "512mb"
+
+# start.sh stops the broker on purpose to rotate the $SYS creds; the machine must always come back.
+[[restart]]
+  policy = "always"
