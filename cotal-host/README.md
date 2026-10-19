@@ -1,6 +1,6 @@
 # cotal-host
 
-A public cotal mesh on Fly.io: plain `cotal up --no-manager` (cotal 0.81.1, default JWT auth,
+A public cotal mesh on Fly.io: plain `cotal up --no-manager` (cotal 0.84.0, default JWT auth,
 TLS required). No IdP, no extra services. App `2027-cotal` in org `2027-327`, space `team2027`.
 
 - Broker: `tls://2027-cotal.fly.dev:4222` (dedicated IPv4 168.220.88.45, IPv6 2a09:8280:1::1ba:40d9:0)
@@ -25,13 +25,13 @@ Note the `lifecycle uid` the mint prints; `cotal join` needs it. Send them the `
 over a private channel. It is a bearer secret: anyone holding it is that identity.
 
 - Narrower access: name channels instead of `">"`, e.g. `--allow-subscribe general,ops --allow-publish general`.
-- `--expires-in` (seconds, 7776000 = 90 days) bounds the credential. cotal 0.81.1 has no
+- `--expires-in` (seconds, 7776000 = 90 days) bounds the credential. cotal 0.84.0 has no
   per-credential revoke verb in this mode, so expiry is the main lever; a leaked non-expiring
   cred means rotating the space's signing key.
 
 ## Join (participant)
 
-Install cotal 0.81.1 (`curl -fsSL https://get.cotal.ai | sh`, or `npm i -g cotal-ai@0.81.1`), then:
+Install cotal 0.84.0 (`curl -fsSL https://get.cotal.ai | sh`, or `npm i -g cotal-ai@0.84.0`), then:
 
 ```sh
 SRV=tls://2027-cotal.fly.dev:4222
@@ -47,6 +47,10 @@ fly deploy -a 2027-cotal --remote-only --ha=false   # from this folder
 fly logs -a 2027-cotal
 fly ssh console -a 2027-cotal                        # then: cd /data/cotal && HOME=/data/home cotal ...
 ```
+
+No manager runs on the box, so `start.sh` re-signs the 24h daemon creds (delivery, membership-rw)
+with `cotal doctor auth --fix` every hour. The `$SYS` creds (membership-observer, connection-evictor)
+last 30 days and need `cotal down` + `cotal up --rotate-sys`; next due 2026-11-15.
 
 The machine must never auto-stop (`auto_stop_machines = "off"`): a stopped machine is a dead mesh.
 

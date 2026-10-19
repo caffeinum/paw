@@ -20,6 +20,13 @@ rm -f /data/cotal/.cotal/*.pid /data/cotal/.cotal/*.pid.identity
       --deploy-hook "kill -HUP \$(cat /data/cotal/.cotal/nats.pid)" || echo "start: cert renewal failed" >&2
   done ) &
 
+# No manager runs here, so nothing else renews the daemon creds (delivery, membership-rw: 24h TTL).
+# doctor --fix re-signs them past 75% of their life; the daemons re-read them from disk.
+( while sleep 3600; do
+    ( cd /data/cotal && cotal doctor auth --space "$COTAL_SPACE" --fix ) >/dev/null 2>&1 \
+      || echo "start: daemon creds renewal failed" >&2
+  done ) &
+
 cd /data/cotal
 exec cotal up --no-manager --space "$COTAL_SPACE" \
   --server "tls://$PUBLIC_HOST:4222" --host 0.0.0.0 \
