@@ -11,6 +11,8 @@
  *   2. without the CA, ensure() fails loud naming TLS trust — and starts no broker;
  *   3. paw dm --space R <folder> spawns a real claude (haiku) there; it replies; paw inbox reads it;
  *   4. paw chat @agent --space R (piped stdin) binds "you"'s durable inbox, sends, and shows the reply;
+ *      a second `paw chat --all` mirrors its DM and #general post; /who, /ps, #channel, @name work; no
+ *      permission error is printed; the tasks + logs views work under a pty; paw web serves cleanly;
  *   4b. paw attach agent --space R under a real pty: cotal's grant is issued + redeemed with a
  *       session-caller cred minted from the signer, the TUI streams, a typed key reaches it, Ctrl-]
  *       detaches and the agent stays live — also `paw cotal attach --space R --creds <junk>` (the
@@ -68,6 +70,24 @@ if (process.argv[2] === "--send-raw") {
   await ep.unicast(to, text!);
   await ep.stop();
   console.log(JSON.stringify({ to }));
+  process.exit(0);
+}
+
+// Helper mode: chat's tasks-view seed (src/chat-own.ts) — "you"'s own conversation through paw's narrow
+// `chat-history` cred. Prints {"n": <entries>, "texts": [...]}.
+if (process.argv[2] === "--read-own") {
+  const [, , , space] = process.argv;
+  const { CotalEndpoint } = await import("@cotal-ai/core");
+  const { humanEndpointAuth } = await import("../src/addressing.ts");
+  const { pawServer } = await import("../src/server.ts");
+  const { humanPeer } = await import("../src/names.ts");
+  const { readOwnConversation } = await import("../src/chat-own.ts");
+  const ep = new CotalEndpoint({ space: space!, servers: pawServer(space), ...(await humanEndpointAuth(space!, "operator")), card: { name: humanPeer(space!), kind: "endpoint" }, registerPresence: false, consume: false, watchPresence: false });
+  ep.on("error", () => {});
+  await ep.start();
+  const conv = await readOwnConversation(ep, space!, pawServer(space));
+  await ep.stop();
+  console.log(JSON.stringify({ n: conv.length, texts: conv.map((e) => e.text) }));
   process.exit(0);
 }
 
@@ -277,26 +297,43 @@ function humanDurables(): string[] {
   return found;
 }
 
-/** Drive `paw chat @<agent> --space R` over piped stdin: send one line, wait for `want` in its output. */
-async function chatRoundTrip(agent: string, line: string, want: string, ms: number): Promise<{ ok: boolean; clean: boolean; live: string[]; output: string }> {
-  const child = spawn(process.execPath, [join(REPO, "bin/paw.ts"), "chat", `@${agent}`, "--space", R], { env: withCa, cwd: REPO, stdio: ["pipe", "pipe", "pipe"] });
-  let output = "";
-  let exited = false;
-  child.stdout.on("data", (d: Buffer) => (output += d.toString()));
-  child.stderr.on("data", (d: Buffer) => (output += d.toString()));
-  child.on("exit", () => (exited = true));
-  await sleep(8000); // connect + bind before typing
-  if (!exited) child.stdin.write(`${line}\n`);
-  const deadline = Date.now() + ms;
-  while (!exited && Date.now() < deadline && !output.toLowerCase().includes(want)) await sleep(1000);
-  const found = output.toLowerCase().includes(want);
-  const live = exited ? [] : humanDurables();
-  child.stdin.end(); // EOF = quit: chat retires the inbox footprint it provisioned
-  for (let i = 0; i < 20 && !exited; i++) await sleep(500);
-  const clean = exited;
-  if (!exited) child.kill("SIGKILL");
-  return { ok: found, clean, live, output };
+const plain = (s: string) => s.replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, "").replace(/\x1b[()][0-9A-Za-z]/g, "");
+/** Lines that mean a subscription or publish was refused by the broker's ACLs. */
+const DENIED = /Permissions Violation|permission denied/i;
+
+/** A `paw chat <args…> --space R` over piped stdin: type lines, wait for output, quit on EOF. */
+function startChat(args: string[]) {
+  const child = spawn(process.execPath, [join(REPO, "bin/paw.ts"), "chat", ...args, "--space", R], { env: withCa, cwd: REPO, stdio: ["pipe", "pipe", "pipe"] });
+  const s = { output: "", exited: false };
+  child.stdout.on("data", (d: Buffer) => (s.output += d.toString()));
+  child.stderr.on("data", (d: Buffer) => (s.output += d.toString()));
+  child.on("exit", () => (s.exited = true));
+  const until = async (want: RegExp, ms: number, from = 0): Promise<{ ok: boolean; after: string }> => {
+    const deadline = Date.now() + ms;
+    while (!s.exited && Date.now() < deadline && !want.test(plain(s.output.slice(from)))) await sleep(500);
+    const after = plain(s.output.slice(from));
+    return { ok: want.test(after), after };
+  };
+  return {
+    output: () => plain(s.output),
+    until,
+    /** Type `line`; resolve with the output that followed it once `want` shows up there (or time runs out). */
+    say: (line: string, want: RegExp, ms: number) => {
+      const from = s.output.length;
+      if (!s.exited) child.stdin.write(`${line}\n`);
+      return until(want, ms, from);
+    },
+    /** EOF = quit: chat retires the inbox footprint it provisioned. True when it exited by itself. */
+    quit: async (): Promise<boolean> => {
+      child.stdin.end();
+      for (let i = 0; i < 20 && !s.exited; i++) await sleep(500);
+      const clean = s.exited;
+      if (!s.exited) child.kill("SIGKILL");
+      return clean;
+    },
+  };
 }
+const tail = (s: string, n = 6) => s.trim().split("\n").slice(-n).join(" | ");
 
 try {
   // ── the "remote": cotal 0.84, JWT auth + TLS, broker only ────────────────────────────────────────
@@ -341,7 +378,6 @@ try {
   const name = "agent";
   // ── 4a. paw attach: cotal's grant-based pty attach on the authed remote mesh ────────────────────
   const att = await ptyAttach(["attach", name, "--space", R], withCa, 60_000);
-  const tail = (o: string) => o.trim().split("\n").slice(-4).join(" | ").slice(0, 400);
   ok("paw attach --space R: grant issued + redeemed (cotal says attached)", att.attached, att.attached ? "" : tail(att.output));
   ok("…the agent's terminal (claude's TUI) streams through", att.tui && att.streamed > 0, `${att.streamed} bytes after attach`);
   ok("…Ctrl-] detaches cleanly (exit 0)", att.detached, `exit ${att.code}${att.detached ? "" : ` — ${tail(att.output)}`}`);
@@ -394,15 +430,115 @@ try {
   ok("…and the agent is still live", out(paw(["who", "--space", R])).includes(name));
 
   // ── 4. paw chat: a CONSUMING "you" (binds its own durable inbox) on the authed mesh ──────────────
+  // Two sessions: the second (`--all`) only watches, so the cross-session echo is proven on both of
+  // its narrowed taps (own DMs via the chat-echo cred, own channel posts via the agent cred).
   const durablesBefore = humanDurables();
-  const chat = await chatRoundTrip(name, "reply with only the word pong spelled backwards, nothing else", "gnop", 150_000);
-  ok("paw chat --space R binds its inbox and shows the agent's reply", chat.ok, chat.ok ? "" : chat.output.trim().split("\n").slice(-6).join(" | "));
+  const watcher = startChat(["--all"]);
+  await sleep(8000); // connect + bind
+  const chat = startChat([`@${name}`]);
+  await sleep(8000);
+  const live = humanDurables();
+  const reply = await chat.say("reply with only the word pong spelled backwards, nothing else", /gnop/i, 150_000);
+  ok("paw chat --space R binds its inbox and shows the agent's reply", reply.ok, reply.ok ? "" : tail(chat.output()));
+  const dmEcho = await watcher.until(/↗ you → .*\(other session\):[\s\S]*pong spelled backwards/, 20_000);
+  ok("…another paw chat session mirrors that DM (↗ other session) — the chat-echo tap", dmEcho.ok, dmEcho.ok ? "" : tail(watcher.output()));
+  const whoOut = await chat.say("/who", new RegExp(`Roster:[\\s\\S]*${name}`), 15_000);
+  ok("chat /who lists the agent", whoOut.ok, whoOut.ok ? "" : tail(whoOut.after));
+  const psOut = await chat.say("/ps", new RegExp(`\\b${name}\\s+\\S+ · \\S+`), 30_000);
+  ok("chat /ps lists the agent from the manager", psOut.ok && !/\/ps failed/.test(psOut.after), tail(psOut.after, 3));
+  const chanTag = `chan${process.pid}x${Date.now() % 100000}`;
+  // A post prints no receipt of its own; give an error the time to surface, then require none.
+  const chanOut = await chat.say(`#general ${chanTag}`, /^\s*!|failed/m, 5_000);
+  ok("chat #general <msg> broadcasts without error", !chanOut.ok, tail(chanOut.after, 3));
+  const chanEcho = await watcher.until(new RegExp(`#general.*\\(other session\\):[\\s\\S]*${chanTag}`), 20_000);
+  ok("…the other session mirrors the channel post (own-post tap on the agent cred)", chanEcho.ok, chanEcho.ok ? "" : tail(watcher.output()));
+  let inHistory = false;
+  for (let i = 0; i < 10 && !inHistory; i++) {
+    inHistory = out(paw(["history", "general", "--space", R])).includes(chanTag);
+    if (!inHistory) await sleep(1500);
+  }
+  ok("…and it is on the broker's #general (paw history general --space R)", inHistory);
+  const sw = await chat.say(`@${name} reply with only the word ping spelled backwards, nothing else`, /gnip/i, 150_000);
+  ok("chat @name <msg> (re)targets the agent and its reply appears", sw.ok, sw.ok ? "" : tail(sw.after));
+  const chatClean = await chat.quit();
+  const watcherClean = await watcher.quit();
   const durablesAfter = humanDurables();
+  const both = `${chat.output()}\n${watcher.output()}`;
   ok(
-    "…and quits on EOF, retiring the inbox durables it provisioned",
-    chat.clean && !/left its inbox footprint/.test(chat.output) && chat.live.length >= 2 && durablesAfter.length === durablesBefore.length,
-    `"you" durables before ${durablesBefore.length}, during ${chat.live.length}, after ${durablesAfter.length}${chat.output.match(/.*footprint.*/)?.[0] ?? ""}`,
+    "…both quit on EOF, retiring the inbox durables they provisioned",
+    chatClean && watcherClean && !/left its inbox footprint/.test(both) && live.length >= 4 && durablesAfter.length === durablesBefore.length,
+    `"you" durables before ${durablesBefore.length}, during ${live.length}, after ${durablesAfter.length}${both.match(/.*footprint.*/)?.[0] ?? ""}`,
   );
+  const denied = both.split("\n").filter((l) => DENIED.test(l));
+  ok("no permission error printed by either chat session", denied.length === 0, denied.slice(0, 3).join(" | "));
+
+  // The tasks view's last-exchange seed reads "you"'s own conversation with the one-shot history cred.
+  const own = run(process.execPath, [fileURLToPath(import.meta.url), "--read-own", R], withCa);
+  let ownConv: { n: number; texts: string[] } | undefined;
+  try {
+    ownConv = JSON.parse(own.stdout.trim().split("\n").pop() ?? "") as { n: number; texts: string[] };
+  } catch {
+    /* reported below */
+  }
+  ok(
+    'chat\'s tasks-view seed reads "you"\'s conversation (both directions) on the remote space',
+    !!ownConv && ownConv.texts.some((t) => /gnop/i.test(t)) && ownConv.texts.some((t) => /pong spelled backwards/.test(t)),
+    ownConv ? `${ownConv.n} entries` : out(own).slice(0, 300),
+  );
+
+  // The tasks + logs views under a real pty (←/→ only work on a tty).
+  {
+    const { spawn: ptySpawn } = await import("@lydell/node-pty");
+    const p = ptySpawn(process.execPath, [join(REPO, "bin/paw.ts"), "chat", `@${name}`, "--space", R], { name: "xterm-256color", cols: 120, rows: 40, cwd: REPO, env: withCa as Record<string, string> });
+    let buf = "";
+    let exited = false;
+    p.onData((d) => (buf += d));
+    p.onExit(() => (exited = true));
+    await sleep(10_000);
+    const before = buf.length;
+    p.write("\x1b[C"); // → tasks
+    await sleep(8000);
+    const tasksView = plain(buf.slice(before));
+    p.write("\x1b[D"); // ← chat
+    await sleep(1000);
+    const logsAt = buf.length;
+    p.write("\x1b[D"); // ← logs
+    await sleep(6000);
+    const logsView = plain(buf.slice(logsAt));
+    p.write("\x1b[C");
+    await sleep(500);
+    p.write("/quit\r");
+    for (let i = 0; i < 20 && !exited; i++) await sleep(500);
+    if (!exited) p.kill();
+    ok("chat tasks view (pty) seeds the last exchange with no error", !DENIED.test(tasksView) && !/couldn't read the conversation history/.test(tasksView) && /gnip|gnop/i.test(tasksView), tail(tasksView, 4));
+    ok("chat logs view (pty) shows the agent's transcript with no error", !DENIED.test(logsView) && !/no logs for/.test(logsView) && /gnip|gnop|pong|ping/i.test(logsView), tail(logsView, 4));
+    ok("…and the pty session quits cleanly", exited);
+  }
+
+  // paw web: its live tap must not ask for the space wildcard either.
+  {
+    const webPort = await new Promise<number>((r) => {
+      const srv = createServer().listen(0, "127.0.0.1", () => {
+        const pt = (srv.address() as { port: number }).port;
+        srv.close(() => r(pt));
+      });
+    });
+    const web = spawn(process.execPath, [join(REPO, "bin/paw.ts"), "web", "--space", R, "--port", String(webPort), "--no-open"], { env: withCa, cwd: REPO, stdio: ["ignore", "pipe", "pipe"] });
+    let webOut = "";
+    web.stdout.on("data", (d: Buffer) => (webOut += d.toString()));
+    web.stderr.on("data", (d: Buffer) => (webOut += d.toString()));
+    let served = false;
+    for (let i = 0; i < 60 && !served; i++) {
+      await sleep(500);
+      served = await fetch(`http://127.0.0.1:${webPort}/`).then((r) => r.ok, () => false);
+    }
+    const dm3 = paw(["dm", "--space", R, name, "reply with just the word: webcheck"]);
+    await sleep(15_000);
+    web.kill("SIGTERM");
+    await sleep(1000);
+    const webDenied = plain(webOut).split("\n").filter((l) => DENIED.test(l));
+    ok("paw web --space R serves with no permission error from its live tap", served && dm3.status === 0 && webDenied.length === 0, webDenied.slice(0, 3).join(" | ") || (served ? "" : tail(plain(webOut))));
+  }
 
   // ── 5. who / status / restart ───────────────────────────────────────────────────────────────────
   const who = paw(["who", "--space", R]);

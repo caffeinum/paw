@@ -72,7 +72,8 @@ import {
   type Attachment,
 } from "./images.ts";
 import { FRESH_SPAWN_MS, LIVE_AGENT_MS } from "./dm.ts";
-import { messageText as textOf, readConversation, type Entry as FeedEntry } from "./feed.ts";
+import { messageText as textOf, type Entry as FeedEntry } from "./feed.ts";
+import { readOwnConversation, tapOwnSends } from "./chat-own.ts";
 import { dedupeRoster } from "./commands/who.ts";
 import { isContinueKey, joinLines, peelContinuation } from "./multiline.ts";
 import { ensureManagerOn, ensureSpaceFor, resolveSpace } from "./lifecycle.ts";
@@ -1013,8 +1014,11 @@ async function chat(argv: string[]): Promise<void> {
    *
    * `ownIds` makes that exact rather than heuristic: unicast/multicast mint a uuid per message and
    * hand it back, so "mine" is an id lookup, not a text-and-timestamp guess.
+   *
+   * On a remote space the tap is narrowed to "you"'s own send subjects (src/chat-own.ts) — the agent
+   * cred chat holds may not subscribe to the whole space.
    */
-  ep.tap((_subject, m: unknown) => {
+  const onOwnSend = (_subject: string, m: unknown): void => {
     // A space-wide tap also sees non-message frames (control replies are bare {ok,data} with no
     // `from`), and core does not try/catch this handler — an unguarded deref kills the feed for good.
     const msg = m as CotalMessage & { to?: string; channel?: string };
@@ -1051,7 +1055,15 @@ async function chat(argv: string[]): Promise<void> {
       }
     };
     decide(0);
-  });
+  };
+  let stopOwnTap: () => Promise<void>;
+  try {
+    stopOwnTap = await tapOwnSends(ep, space, server, onOwnSend, (e) => emit(c.red("! " + e.message)));
+  } catch (e) {
+    await ep.stop().catch(() => {});
+    await releaseInbox();
+    throw e;
+  }
 
   ep.on("presence", (ev) => {
     const card = ev.presence.card;
@@ -1470,7 +1482,7 @@ async function chat(argv: string[]): Promise<void> {
   /** Seed the last message each way from the DM stream (once per session), then paint. */
   function seedConversation(): void {
     if (convRead) return;
-    convRead = readConversation(ep, { withSent: true });
+    convRead = readOwnConversation(ep, space, server);
     convRead.then(
       (conv) => {
         const names = new Set<string>();
@@ -1819,6 +1831,7 @@ async function chat(argv: string[]): Promise<void> {
     if (process.stdin.isTTY) process.stdout.write(DISABLE_BRACKETED_PASTE + MOUSE_OFF);
     clickMode = false;
     rl?.close();
+    await stopOwnTap();
     await ep.stop().catch(() => {});
     await releaseInbox();
     process.exit(0);

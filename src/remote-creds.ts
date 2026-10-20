@@ -15,6 +15,10 @@
  *  - `sleep-forward` (sleep host, on wake): one-shot, 5 minutes. Publish ONLY to the woken seat's DM
  *    subjects from the exact senders found in the backlog — the re-delivery under the original sender
  *    an open mesh allows implicitly, and nothing wider.
+ *  - `chat-echo` (`paw chat`): subscribe to "you"'s OWN outbound DM subject (`inst.*.*.<o>.<you>`), so
+ *    one chat session mirrors what another sent. Nobody else's mail. 24h, re-signed in place.
+ *  - `chat-history` (`paw chat` tasks view): one-shot, 5 minutes. Read "you"'s own conversation (DMs
+ *    to and from "you") through named, filter-pinned consumers — the same shape as `sleep-watch`.
  *
  * Every cred is a bearer secret: written 0600, never printed or logged.
  */
@@ -31,6 +35,7 @@ import { pawCotalRoot } from "./cotal-root.ts";
 export const LAG_TTL_SEC = 24 * 3600;
 export const WATCH_TTL_SEC = 24 * 3600;
 export const FORWARD_TTL_SEC = 5 * 60;
+export const ECHO_TTL_SEC = 24 * 3600;
 /** Re-sign a cached / held cred once less than this is left of it. */
 export const RENEW_BEFORE_SEC = 3600;
 
@@ -108,14 +113,24 @@ export function watchConsumerName(space: string, name: string, purpose: "host" |
 
 /** Pure: a sleep watcher's grants — live subscribe + pinned named-consumer reads on exactly `filters`. */
 export function watchGrants(space: string, filters: string[], names: string[]): Grants {
-  if (filters.length !== names.length) throw new Error("paw: watchGrants needs one consumer name per filter");
+  return { pub: filteredReadGrants(space, filters, names).pub, sub: [...filters] };
+}
+
+/** Pure: pinned named-consumer reads on exactly `filters` of the DM stream, no live subscribe. */
+export function filteredReadGrants(space: string, filters: string[], names: string[]): Grants {
+  if (filters.length !== names.length) throw new Error("paw: a filtered read needs one consumer name per filter");
   const DM = dmStream(space);
   const pub = [`$JS.API.INFO`, `$JS.API.STREAM.INFO.${DM}`];
   filters.forEach((f, i) => {
     const n = names[i]!;
     pub.push(`$JS.API.CONSUMER.CREATE.${DM}.${n}.${f}`, `$JS.API.CONSUMER.INFO.${DM}.${n}`, `$JS.API.CONSUMER.MSG.NEXT.${DM}.${n}`, `$JS.API.CONSUMER.DELETE.${DM}.${n}`);
   });
-  return { pub, sub: [...filters] };
+  return { pub, sub: [] };
+}
+
+/** Pure: the chat echo's grants — subscribe to `subject` ("you"'s own outbound DMs), publish nothing. */
+export function echoGrants(subject: string): Grants {
+  return { pub: [], sub: [subject] };
 }
 
 /** Pure: the forwarder's grants — publish to exactly these DM subjects (the woken seat, each sender). */

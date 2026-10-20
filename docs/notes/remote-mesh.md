@@ -79,6 +79,10 @@ untouched: a space with no record resolves exactly as before.
     AND their filter (a stream-wide MSG.NEXT could drain an agent's durable); `STREAM.INFO DM_<s>`.
   - `sleep-forward` (per wake, 5 min) — pub ONLY `inst.<woken seat>.<sender>` for the backlog's senders.
   - `dm-cursor` (per `paw sleep`, 5 min) — `STREAM.INFO DM_<s>` only.
+  - `chat-echo` (per `paw chat`, memory only, 24h, re-signed + reconnected in place) — sub ONLY "you"'s
+    own outbound DM subject `inst.*.*.<o>.<you>`; publishes nothing.
+  - `chat-history` (per tasks-view seed, 5 min) — DMs to and from "you" through two name- and
+    filter-pinned consumers (`pawch_<hash>_<i>`), the `sleep-watch` read shape without the live sub.
   - the stand-in presence — cotal's own `agent` mint for a persisted stand-in nkey
     (`sleep/<name>.standin.nkey`, 0600), never the agent's seat identity.
 - **INBOX lag**: per hosted seat, `consumers.info(DM_<s>, dm_<owner>-<actor>-<lifecycleUid>)` (all three
@@ -121,6 +125,21 @@ keeps running. Details + per-space-type table: [agents.md#pty-attach-cotal-084](
 The gate still ensures THIS machine's manager on the space first (as for every NEEDS_MANAGER verb), and
 the runtime branch reads THIS machine's runtime marker — an agent in another machine's tmux/cmux can't
 be attached from here (no grant-based attach for those runtimes).
+
+## paw chat / paw web taps
+
+`paw chat` tapped the whole space (`cotal.<s>.>`) to mirror what another chat session sent; chat's
+`agent` cred allows no such subscription, so on team2027 every chat printed
+`Permissions Violation for Subscription to "cotal.team2027.>"` (2026-10-19). Neither job needs the
+space (src/chat-own.ts): the channel half taps `chat.<o>.<you>.>` on chat's own connection (inside the
+agent cred's `chat.*.*.>`), the DM half `inst.*.*.<o>.<you>` with the `chat-echo` cred; the tasks
+view's last-exchange seed (`dmHistory`, a DM consumer the agent cred may not create) reads "you"'s
+own conversation with `chat-history`. Never another agent's mail. `paw web` holds cotal's `admin`
+observer cred (its village/dialog views read every DM by design), whose `sub.allow` enumerates
+`chat.>`/`inst.>`/`svc.>` and excludes the space wildcard, so on a remote space it taps those three
+(`webTapSubjects`). Local spaces keep the space-wide tap. e2e-remote drives two chat sessions (DM +
+#general echo, /who, /ps, `@name`), the tasks + logs views under a pty, and `paw web`, and fails on
+any permission line.
 
 ## Off on a remote space
 
