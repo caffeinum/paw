@@ -14,8 +14,9 @@
  */
 import { registry, type Command } from "@cotal-ai/core";
 import { spawnSync } from "node:child_process";
-import { downSpace, explicitSpace, expandEqFlags, expandShortForm, hoistAddressSpace, SHORT_FORMS, stripCotalNamespace, withDefaultSpace } from "../src/dispatch.ts";
+import { downSpace, explicitSpace, expandEqFlags, expandShortForm, hoistAddressSpace, remoteCotalArgv, SHORT_FORMS, stripCotalNamespace, withDefaultSpace } from "../src/dispatch.ts";
 import { cotaldViaNode, ensure, resolveSpace, stop } from "../src/lifecycle.ts";
+import { readRemoteMesh } from "../src/remote-mesh.ts";
 import { isRemoteSpace } from "../src/server.ts";
 
 /** Every command module, in the order they always registered — each self-registers into the registry
@@ -126,7 +127,24 @@ try {
       process.exit(0);
     }
     const spaceless = COTAL_SPACELESS.has(rest[0]);
-    const space = spaceless ? undefined : (await ensure({ needMesh: true, needManager: COTAL_NEEDS_MANAGER.has(rest[0]) })).space;
+    // A `--space` naming a REMOTE space is the space this verb needs up (as the command gate does);
+    // with no --space, the current space may itself be remote (PAW_SPACE=team2027).
+    const remote = spaceless ? undefined : readRemoteMesh(explicitSpace(rest) ?? resolveSpace());
+    const space = spaceless
+      ? undefined
+      : (await ensure({ needMesh: true, needManager: COTAL_NEEDS_MANAGER.has(rest[0]), ...(remote ? { space: remote.space } : {}) })).space;
+    if (remote) {
+      // cotal can't resolve a remote paw space by name: run it from the record root (its signer) with
+      // the record's server and no --space — see remoteCotalArgv.
+      const { argv: remoteArgv, droppedCreds } = remoteCotalArgv(rest, remote.server);
+      if (droppedCreds)
+        process.stderr.write(
+          `paw: --creds dropped — a raw creds file can't make control calls; cotal mints the one-shot instrument from ${remote.root}/.cotal/auth\n`,
+        );
+      const [exec, args] = cotaldViaNode(remoteArgv);
+      const res = spawnSync(exec, args, { stdio: "inherit", cwd: remote.root });
+      process.exit(res.status ?? 1);
+    }
     const [exec, args] = cotaldViaNode(space ? withDefaultSpace(rest, space) : rest);
     const res = spawnSync(exec, args, { stdio: "inherit" });
     process.exit(res.status ?? 1);
