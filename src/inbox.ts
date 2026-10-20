@@ -18,7 +18,7 @@ import { registry, type Command } from "@cotal-ai/core";
 import { advanceCursor, readCursor } from "./cursor.ts";
 import { observerEndpoint, pollLoop, readConversation, type Entry } from "./feed.ts";
 import { resolveSpace } from "./lifecycle.ts";
-import { HUMAN_PEER } from "./names.ts";
+import { humanPeer } from "./names.ts";
 import { writeJson } from "./stdout.ts";
 import { pawServer } from "./server.ts";
 
@@ -94,7 +94,7 @@ async function watchInbox(space: string, server: string, agents: string[]): Prom
   const ep = await observerEndpoint(space, server);
   ep.on("error", (e: Error) => console.error(c.red("! " + e.message)));
   await ep.start();
-  console.log(c.dim(`# ${HUMAN_PEER} · watching for new DMs (Ctrl-C to stop)`));
+  console.log(c.dim(`# ${humanPeer(space)} · watching for new DMs (Ctrl-C to stop)`));
 
   // Undefined until the first tick: the catch-up pass is cursor-gated, everything after is self-gated.
   let shown: number | undefined;
@@ -181,10 +181,10 @@ async function inbox(argv: string[]): Promise<void> {
 
   if (history) {
     const shown = all.slice(-limit);
-    if (!shown.length) console.log(c.dim(`inbox empty — no DMs to "${HUMAN_PEER}"${who} on record`));
+    if (!shown.length) console.log(c.dim(`inbox empty — no DMs to "${humanPeer(space)}"${who} on record`));
     else {
       const more = all.length > shown.length ? c.dim(` (of ${all.length})`) : "";
-      console.log(c.dim(`# ${HUMAN_PEER}${who} · last ${shown.length} message${shown.length === 1 ? "" : "s"}${more} · history (read-only)`));
+      console.log(c.dim(`# ${humanPeer(space)}${who} · last ${shown.length} message${shown.length === 1 ? "" : "s"}${more} · history (read-only)`));
       for (const e of shown) console.log(render(e));
     }
     return;
@@ -198,10 +198,10 @@ async function inbox(argv: string[]): Promise<void> {
   // DMs read, and advancing it would silently mark everyone else's too — so a filtered read never moves it.
   if (all.length && !agents.length) advanceCursor(space, all[all.length - 1].ts); // mark everything we just saw as read
   if (!fresh.length) {
-    console.log(c.dim(`inbox empty — nothing new for "${HUMAN_PEER}"${who} (try \`paw inbox ${agents.length ? agents.join(" ") + " " : ""}--history\`)`));
+    console.log(c.dim(`inbox empty — nothing new for "${humanPeer(space)}"${who} (try \`paw inbox ${agents.length ? agents.join(" ") + " " : ""}--history\`)`));
     return;
   }
-  console.log(c.dim(`# ${HUMAN_PEER}${who} · ${fresh.length} new message${fresh.length === 1 ? "" : "s"}${agents.length ? " (left unread elsewhere)" : ""}`));
+  console.log(c.dim(`# ${humanPeer(space)}${who} · ${fresh.length} new message${fresh.length === 1 ? "" : "s"}${agents.length ? " (left unread elsewhere)" : ""}`));
   for (const e of fresh) console.log(render(e));
 }
 

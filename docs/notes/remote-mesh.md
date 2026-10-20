@@ -11,7 +11,8 @@ untouched: a space with no record resolves exactly as before.
 - **Record** (`src/remote-mesh.ts`, `paw mesh add|rm|ls`): `$PAW_HOME/spaces/<space>/remote-mesh.json`
   = `{space, server: "tls://host:port", root, ts}`. `root` is a dir whose `.cotal/auth/auth.json` is the
   space's account **signer** (`cotal mint --signer` on the box: `space` + `account.pub` +
-  `account.signingSeed`). The record holds the path, never the signer. `mesh add` refuses non-`tls://`
+  `account.signingSeed`). Optional `human` = your mesh name there (below). The record holds the path,
+  never the signer. `mesh add` refuses non-`tls://`
   servers, the default space, a signer for another space, and a signer readable by other users.
   Offline: it dials nothing; the first ensure() proves the link.
 - **Routing** (`src/server.ts`): `pawServer(space = resolveSpace())` = the record's server, else the
@@ -29,7 +30,7 @@ untouched: a space with no record resolves exactly as before.
   its cred's nkey, so paw persists ONE human nkey (`spaces/<s>/human.nkey.json`, 0600) and mints it per
   role, mirroring cotal: `agent` (+ a fresh lifecycle uid) for the mailbox presence, `operator` to send
   and read the roster (`cotal send`), `admin` to read DM/channel history (`cotal console`). Local spaces
-  keep `controlCreds`.
+  keep `controlCreds`. Its NAME is per space — see [human name](#human-name).
 - **Seats** (`remoteTlsEnv`, src/connector.ts): cotal's launch env is an allowlist without the CA knobs;
   a remote space's seats get `NODE_EXTRA_CA_CERTS` / `SSL_CERT_FILE` through `envAllow` when set.
 - **CLI**: `pawServer(space)` is threaded through every command. The bin gate and the self-ensuring
@@ -37,6 +38,28 @@ untouched: a space with no record resolves exactly as before.
   else the current space as before.
 - **One space per agent**: `assertOneSpace` (ensureAgentSpawned, adopt) refuses a session another
   space's persona pins, when either side is remote.
+
+## Human name
+
+A shared broker sees every operator's mailbox, and they were all `you` (team2027 showed two; a DM to
+`you` was ambiguous). The record's optional `human` names you on that space:
+
+    paw mesh add team2027 --server tls://2027-cotal.fly.dev:4222 --root <dir> --as aleks-mac-mini
+    paw mesh set team2027 --as aleks-mac-mini     # existing record; `--as you` resets
+    paw restart --space team2027                  # running mailbox + agents pick it up (operator's call)
+
+- **Resolution:** `humanPeer(space)` (src/names.ts) = record `human`, else `"you"`. No record ⇒ `"you"`,
+  so local spaces and old records are unchanged. **No env override** on purpose: the detached mailbox,
+  the manager that writes briefs and every CLI call must agree; a per-shell `PAW_HUMAN` would split them.
+- **Validation:** `checkHumanName` — `[A-Za-z0-9][A-Za-z0-9._-]{0,63}` (a strict subset of cotal's
+  `assertValidName`). Bad `--as` refused; a bad `human` in a record fails loud on read, never falls back.
+- **Uses:** the card name of every human endpoint (mailbox beacon, dm, msg, ask, chat, inbox/history/
+  watch/files observers, who) and the human named in the claude/kit/hermes/acp briefs (resolved at
+  spawn). PR/website persona briefs no longer name the human (they defer to the mesh brief).
+- **Identity is the nkey, not the name:** the DM inbox durable (`dlv_<id>`), unread cursor and
+  `human.nkey.json` are untouched by a rename, so nothing is orphaned. UI labels for your own messages
+  (web village/pending, dialog, feed `from`) stay `"you"` — perspective, not identity.
+- `paw mesh ls` prints `as <name>`; `--force` re-add keeps an earlier `human` unless `--as` replaces it.
 
 ## Off on a remote space (open-mesh only today)
 
@@ -61,7 +84,8 @@ The sleep host and stale-id forwarder (both dial bare), presence-latch detection
 (`COTAL_BIN=<cotal-ai@0.84.0>/dist/cotal.js node scripts/e2e-remote.ts`): a private `cotal up
 --no-manager` JWT + TLS broker with a self-signed cert, `mint --signer`, `paw mesh add`, no-CA
 refusal, a real haiku claude spawned by `paw dm --space`, reply read by `paw inbox`, who/status,
-`paw restart`, second DM, teardown. PAW_SPACE is a decoy local space and PAW_SERVER a dead port, so
+`paw restart`, second DM, teardown. `E2E_HUMAN=<name>` runs it with `mesh add --as <name>` and asserts
+the mailbox appears under that name, nobody is `you`, and the replies still reach the inbox. PAW_SPACE is a decoy local space and PAW_SERVER a dead port, so
 any path that ignores `--space` fails instead of touching the live mesh. The cotal-ai package must
 be installed OUTSIDE the repo; run with `COTAL_SKIP_CONNECTOR_SEED=1` (the script sets it) or cotal
 touches the operator's `~/.config/cotal` seed store.
