@@ -225,8 +225,9 @@ Each entry: what it is + the most load-bearing rule. Full notes behind the link.
 ## Dev
 - ESM, tsx, no build step: `pnpm paw <cmd>`. `pnpm typecheck`, `pnpm check:launch` (+ the other `check:*`).
 - Launcher `~/.local/bin/paw` may exec bun; verify the manager process is `node …/tsx/…`, never bun.
-- **GitHub:** local `private-main` = full history, no upstream, never pushed. `main` is an orphan
-  snapshot pushed to `origin`; `scripts/githooks/pre-push` refuses `private-main`. Visibility is the operator's call.
+- **GitHub:** `main` tracks `origin/main` (caffeinum/paw); work lands as branches → PRs → merged on GitHub
+  (since 2026-10-19). Local `private-main` is a frozen archive of the pre-2026-09-10 history, never pushed —
+  `scripts/githooks/pre-push` refuses it. Visibility is the operator's call.
 - pnpm 11 reads settings from `pnpm-workspace.yaml` (`allowBuilds.esbuild: false`, `verifyDepsBeforeRun: false`).
 - Full Dev notes: [lifecycle.md#dev](docs/notes/lifecycle.md#dev).
 

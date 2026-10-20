@@ -474,6 +474,7 @@ tool temp files from agents accumulate there. `check:spawn-env` covers it.
   manager process is `node …/tsx/…` (NOT bun) and a `paw chat --fresh <folder>` boots a real claude (RSS > 100MB).
 - `pnpm typecheck`, `pnpm check:launch`.
 - **History vs github (2026-09-10):** github visibility is the whole repo, not per-branch. Full history lives on local `private-main` (**no upstream**, never pushed). `main` is an orphan snapshot of that tree and is what `origin` has; future commits on `main` are the public git log. `remote.origin.push` is `main:main` only. `scripts/githooks/pre-push` refuses `private-main`. `scripts/push-public-snapshot.sh` is leftover from a second remote and should not be used to rewrite origin. Visibility flip of `caffeinum/paw` is the operator's.
+- **Normal PR flow (2026-10-19):** `main` now simply tracks `origin/main` and has grown past the snapshot; features land as branches pushed to `origin` and merged through GitHub PRs (#2–#12 that day). `private-main` stays a frozen local archive.
 - pnpm 11 reads settings from `pnpm-workspace.yaml`, NOT the package.json `pnpm` field or `.npmrc`.
   Ours declines esbuild's build (`allowBuilds.esbuild: false` — same as the global ignore-scripts
   policy; esbuild runs from its prebuilt platform binary) and disables the pre-run deps check
