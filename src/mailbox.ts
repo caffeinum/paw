@@ -19,7 +19,7 @@ import { resolveSpace } from "./lifecycle.ts";
 import { HUMAN_PEER } from "./names.ts";
 import { startSleepHost } from "./sleep-host.ts";
 import { startStaleForwarder } from "./stale-forward.ts";
-import { isRemoteSpace, pawServer } from "./server.ts";
+import { pawServer } from "./server.ts";
 
 function parseArgs(argv: string[]): { space?: string; server?: string } {
   const out: { space?: string; server?: string } = {};
@@ -59,16 +59,12 @@ async function mailbox(argv: string[]): Promise<void> {
 
   // The sleep host (src/sleep-host.ts): stand-in presences for hibernated agents + wake on DM. Its own
   // failure must not take the "you" beacon down with it — log loudly and keep beaconing.
-  // Like the forwarder below, the sleep host dials the broker bare — a remote (authed) mesh refuses it.
-  let stopSleepHost = async () => {};
-  if (isRemoteSpace(space)) {
-    console.error(`[mailbox] remote mesh: the sleep host is OFF — \`paw sleep\` agents are not addressable here (open mesh only)`);
-  } else {
-    stopSleepHost = await startSleepHost(space, server).catch((e: Error) => {
-      console.error(`[mailbox] sleep host failed to start — sleeping agents are NOT addressable: ${e.message}`);
-      return async () => {};
-    });
-  }
+  // On a remote (authed) space it dials with paw's narrow per-agent creds and stands in only for agents
+  // this machine hosts (src/sleep-dial.ts, src/hosted.ts).
+  const stopSleepHost = await startSleepHost(space, server).catch((e: Error) => {
+    console.error(`[mailbox] sleep host failed to start — sleeping agents are NOT addressable: ${e.message}`);
+    return async () => {};
+  });
   // The stale-id forwarder (src/stale-forward.ts) + the peer ledger it keeps. Re-publishing under the
   // original sender needs an open mesh (like the sleep host); under auth the broker forbids it.
   let stopForwarder = async () => {};

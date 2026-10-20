@@ -730,7 +730,9 @@ export function wirePrincipal(id: string): string {
  *  agent's mesh card.id — a `<owner>.<actor>` PRINCIPAL dot-form as of cotal 0.11 (was a bare nkey). Its
  *  durable DM consumer is `dm_<owner>-<actor>` (`dmDurable(owner, actor)`), which `paw status` re-derives
  *  by re-splitting the id with `parsePrincipalKey` to find each agent's inbox lag. */
-export type PsRow = { name: string; status?: string; mesh?: string; id?: string; agent?: string; cwd?: string; model?: string };
+/** `instanceId` = the manager instance that spawned the seat, `lifecycleUid` = its incarnation (both on
+ *  every cotal ≥0.84 ps row; read by the remote-space "hosted here" check and the inbox-lag query). */
+export type PsRow = { name: string; status?: string; mesh?: string; id?: string; agent?: string; cwd?: string; model?: string; instanceId?: string; lifecycleUid?: string };
 
 /** Presence an agent publishes only while its process runs: it answers, it is alive. */
 const LIVE_PRESENCE = new Set(["idle", "working", "waiting"]);

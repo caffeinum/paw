@@ -18,13 +18,22 @@
  * caught and logged (a corrupt record is reported and skipped, never thrown), a wake that keeps failing
  * goes back to sleep after MAX_WAKE_FAILURES with its error on the record (`paw status` shows it), and an
  * agent whose registry entry vanished or moved is NOT woken — its record is dropped, loudly.
+ *
+ * REMOTE (JWT-authed) space: the same host, dialling with paw's narrow per-job creds (src/sleep-dial.ts)
+ * — a watch connection per sleeping agent, a one-shot forward connection per wake, the stand-in under its
+ * own persisted nkey. It stands in ONLY for an agent this machine hosts: a record whose manager instance
+ * is not this machine's, or whose persona is not here, is dropped loudly and never stood in for.
  */
 import { randomUUID } from "node:crypto";
-import { DEV_OWNER, CotalEndpoint, dmStream, parsePrincipalKey, principalKey, unicastRecvFilter, unicastSubject } from "@cotal-ai/core";
-import { connect, type NatsConnection, type Subscription } from "@nats-io/transport-node";
-import { DeliverPolicy, jetstream, jetstreamManager } from "@nats-io/jetstream";
-import { agentRecord, ensureAgentSpawned, psRowAlive, stuckWarning, wirePrincipal, type PsRow } from "./addressing.ts";
+import { existsSync } from "node:fs";
+import { CotalEndpoint, DEV_OWNER, parsePrincipalKey, unicastRecvFilter, unicastSubject } from "@cotal-ai/core";
+import { jetstream } from "@nats-io/jetstream";
+import type { NatsConnection, Subscription } from "@nats-io/transport-node";
+import { agentRecord, ensureAgentSpawned, personaFilePath, psRowAlive, stuckWarning, wirePrincipal, type PsRow } from "./addressing.ts";
 import { sharedManagerControl, withManagerControl } from "./control.ts";
+import { localManagerInstanceId } from "./hosted.ts";
+import { RENEW_BEFORE_SEC, watchConsumerName } from "./remote-creds.ts";
+import { dmLastSeqOn, openForward, openWatch, readFiltered, standInEndpointAuth, standInPrincipal, type Held } from "./sleep-dial.ts";
 import {
   MAX_WAKE_FAILURES,
   clearSleep,
@@ -40,7 +49,7 @@ import {
   writeWakingRecord,
   type SleepRecord,
 } from "./sleep-state.ts";
-import { pawServer } from "./server.ts";
+import { isRemoteSpace, pawServer } from "./server.ts";
 
 const TICK_MS = 1000;
 /** How often the tick also reconciles against ps and re-checks undelivered backlog. */
@@ -61,9 +70,10 @@ export function reconcileTargets(sleeping: string[], rows: PsRow[], inflight: Se
 /** Gap before the second forward pass that catches DMs sent while the stand-in was handing over. */
 const STRAGGLER_MS = 3000;
 
-/** The subjects a sleeping agent's mail can arrive on: the stand-in's and the despawned seat's. */
-export function backlogFilters(space: string, rec: SleepRecord): string[] {
-  const out = [unicastRecvFilter(space, DEV_OWNER, standInActor(space, rec.name))];
+/** The subjects a sleeping agent's mail can arrive on: the stand-in's and the despawned seat's.
+ *  `standIn` defaults to the open mesh's stable hash actor; a remote space passes its persisted nkey. */
+export function backlogFilters(space: string, rec: SleepRecord, standIn: { owner: string; actor: string } = { owner: DEV_OWNER, actor: standInActor(space, rec.name) }): string[] {
+  const out = [unicastRecvFilter(space, standIn.owner, standIn.actor)];
   const old = rec.lastId ? parsePrincipalKey(rec.lastId) : undefined;
   if (old) out.push(unicastRecvFilter(space, old.owner, old.actor));
   return out;
@@ -88,86 +98,75 @@ export function toForward<T extends { seq: number }>(backlog: T[], forwarded: nu
   return backlog.filter((m) => !done.has(m.seq));
 }
 
-async function withNc<T>(server: string, fn: (nc: NatsConnection) => Promise<T>): Promise<T> {
-  const nc = await connect({ servers: server });
+/** Pure: the DM subjects a forward publishes on — the woken seat, from each backlog sender. */
+export function forwardSubjects(space: string, target: { owner: string; actor: string }, subjects: string[]): string[] {
+  const out = new Set<string>();
+  for (const s of subjects) {
+    const snd = dmSender(s);
+    if (snd) out.add(unicastSubject(space, target.owner, target.actor, snd.owner, snd.actor));
+  }
+  return [...out];
+}
+
+/** Pure: may this machine stand in for `rec`? On a remote space only for an agent it hosts: the record
+ *  names THIS machine's manager instance and the persona lives here. Local spaces: always. */
+export function standInRefusal(o: { remote: boolean; rec: SleepRecord; localInstanceId?: string; personaHere: boolean }): string | undefined {
+  if (!o.remote) return undefined;
+  if (!o.localInstanceId) return "no manager of this machine has registered in the space";
+  if (!o.rec.instanceId) return "its sleep record names no manager instance (not slept by this machine)";
+  if (o.rec.instanceId !== o.localInstanceId) return `it was slept from manager ${o.rec.instanceId}, not this machine's ${o.localInstanceId} — hosted on another machine`;
+  if (!o.personaHere) return "its persona is not in this machine's paw state — hosted on another machine";
+  return undefined;
+}
+
+/** How many DMs are stored on `filters` after `cursorSeq` (the CLI's pre-despawn check). */
+export async function dmsSince(space: string, name: string, filters: string[], cursorSeq: number, server = pawServer(space)): Promise<number> {
+  const held = await openWatch(space, server, name, filters, "cli");
   try {
-    return await fn(nc);
+    let n = 0;
+    for (const [i, f] of filters.entries()) n += (await readFiltered(held.nc, space, f, cursorSeq, watchConsumerName(space, name, "cli", i), true)).pending;
+    return n;
   } finally {
-    await nc.close().catch(() => {});
+    await held.nc.close().catch(() => {});
   }
 }
 
-/** How many DMs are stored on `filters` after `cursorSeq` (an ordered consumer's pending count). */
-export async function dmsSince(space: string, filters: string[], cursorSeq: number, server = pawServer(space)): Promise<number> {
-  return withNc(server, async (nc) => {
-    const c = await jetstream(nc).consumers.get(dmStream(space), { filter_subjects: filters, deliver_policy: DeliverPolicy.StartSequence, opt_start_seq: cursorSeq + 1 });
-    try {
-      return (await c.info(true)).num_pending;
-    } finally {
-      await c.delete().catch(() => {});
-    }
-  });
-}
-
-/** Every DM stored on `filters` after `cursorSeq`, oldest first. */
-async function readBacklog(nc: NatsConnection, space: string, filters: string[], cursorSeq: number): Promise<Array<{ subject: string; seq: number; data: Record<string, unknown> }>> {
-  const last = (await (await jetstreamManager(nc)).streams.info(dmStream(space))).state.last_seq;
+/** Every DM stored on `filters` after `cursorSeq`, oldest first (one filter-pinned read per subject). */
+async function readBacklog(nc: NatsConnection, space: string, name: string, filters: string[], cursorSeq: number): Promise<Array<{ subject: string; seq: number; data: Record<string, unknown> }>> {
+  const last = await dmLastSeqOn(nc, space);
   const from = effectiveCursor(cursorSeq, last);
   if (from !== cursorSeq) console.error(`[sleep] cursor ${cursorSeq} is past the DM stream's end (${last}) — the stream was reset; forwarding everything retained`);
-  const c = await jetstream(nc).consumers.get(dmStream(space), { filter_subjects: filters, deliver_policy: DeliverPolicy.StartSequence, opt_start_seq: from + 1 });
   const out: Array<{ subject: string; seq: number; data: Record<string, unknown> }> = [];
-  try {
-    for (;;) {
-      if ((await c.info(true)).num_pending === 0) break;
-      const batch = await c.fetch({ max_messages: 200, expires: 2000 });
-      let n = 0;
-      for await (const m of batch) {
-        n++;
-        try {
-          out.push({ subject: m.subject, seq: m.seq, data: m.json() });
-        } catch {
-          /* not a cotal envelope — nothing to forward */
-        }
-      }
-      if (n === 0) break;
-    }
-  } finally {
-    await c.delete().catch(() => {});
-  }
-  return out;
+  for (const [i, f] of filters.entries()) out.push(...(await readFiltered(nc, space, f, from, watchConsumerName(space, name, "host", i))).msgs);
+  return out.sort((a, b) => a.seq - b.seq);
 }
 
 export async function startSleepHost(space: string, server = pawServer(space)): Promise<() => Promise<void>> {
-  const nc = await connect({ servers: server });
-  const standIns = new Map<string, { ep: CotalEndpoint; subs: Subscription[] }>();
+  const remote = isRemoteSpace(space);
+  /** One watch connection per sleeping agent (remote: its own narrow cred; open mesh: bare). */
+  const watches = new Map<string, Held & { subs: Subscription[] }>();
+  const standIns = new Map<string, { ep: CotalEndpoint }>();
   const inflight = new Set<string>();
   const failedAt = new Map<string, number>();
   const reportedBad = new Set<string>();
-
-  const lower = async (name: string) => {
-    const s = standIns.get(name);
-    if (!s) return;
-    standIns.delete(name);
-    yielded.delete(name);
-    for (const sub of s.subs) sub.unsubscribe();
-    await s.ep.stop().catch(() => {});
-    markStandIn(space, name, false);
+  /** Per-agent serialization of backlog reads (their consumer names are fixed per agent). */
+  const chains = new Map<string, Promise<unknown>>();
+  const serial = <T>(name: string, fn: () => Promise<T>): Promise<T> => {
+    const next = (chains.get(name) ?? Promise.resolve()).then(fn, fn);
+    chains.set(name, next.catch(() => {}));
+    return next;
   };
 
-  const raise = async (rec: SleepRecord) => {
-    const ep = new CotalEndpoint({
-      space,
-      servers: server,
-      channels: [],
-      registerPresence: true,
-      consume: false, // the backlog stays in the stream; the host reads it on wake
-      watchPresence: false,
-      card: { name: rec.name, kind: "agent", id: standInActor(space, rec.name), description: "asleep (paw sleep) — a DM wakes it" },
-    });
-    ep.on("error", (e: Error) => console.error(`[sleep] stand-in ${rec.name}: ${e.message}`));
-    await ep.start();
-    const subs = backlogFilters(space, rec).map((f) => {
-      const sub = nc.subscribe(f);
+  const filtersOf = (rec: SleepRecord) => backlogFilters(space, rec, standInPrincipal(space, rec.name));
+
+  /** Open (or re-open, when its cred nears expiry) the agent's watch: live DM subscriptions → wake. */
+  const watch = async (rec: SleepRecord): Promise<NatsConnection> => {
+    const cur = watches.get(rec.name);
+    if (cur && cur.expSec - Date.now() / 1000 > RENEW_BEFORE_SEC) return cur.nc;
+    const filters = filtersOf(rec);
+    const held = await openWatch(space, server, rec.name, filters, "host");
+    const subs = filters.map((f) => {
+      const sub = held.nc.subscribe(f);
       void (async () => {
         for await (const m of sub) {
           let from = "?";
@@ -181,10 +180,61 @@ export async function startSleepHost(space: string, server = pawServer(space)): 
       })();
       return sub;
     });
-    standIns.set(rec.name, { ep, subs });
+    watches.set(rec.name, { ...held, subs });
+    if (cur) await cur.nc.close().catch(() => {}); // the renewed watch is up first; then drop the old
+    return held.nc;
+  };
+
+  const unwatch = async (name: string) => {
+    const w = watches.get(name);
+    if (!w) return;
+    watches.delete(name);
+    for (const sub of w.subs) sub.unsubscribe();
+    await w.nc.close().catch(() => {});
+  };
+
+  const lower = async (name: string) => {
+    const s = standIns.get(name);
+    if (!s) return;
+    standIns.delete(name);
+    yielded.delete(name);
+    await unwatch(name);
+    await s.ep.stop().catch(() => {});
+    markStandIn(space, name, false);
+  };
+
+  const raise = async (rec: SleepRecord) => {
+    const refusal = standInRefusal({ remote, rec, localInstanceId: remote ? localManagerInstanceId(space) : undefined, personaHere: existsSync(personaFilePath(space, rec.name)) });
+    if (refusal) {
+      clearSleep(space, rec.name);
+      sleepLog(space, `NOT standing in for ${rec.name} — ${refusal}; dropped its sleep record`);
+      return;
+    }
+    const auth = await standInEndpointAuth(space, rec.name);
+    const ep = new CotalEndpoint({
+      space,
+      servers: server,
+      ...(auth.creds ? { creds: auth.creds, tls: auth.tls, lifecycleUid: auth.lifecycleUid } : {}),
+      channels: [],
+      registerPresence: true,
+      consume: false, // the backlog stays in the stream; the host reads it on wake
+      watchPresence: false,
+      card: { name: rec.name, kind: "agent", ...(auth.cardId ? { id: auth.cardId } : {}), description: "asleep (paw sleep) — a DM wakes it" },
+    });
+    ep.on("error", (e: Error) => console.error(`[sleep] stand-in ${rec.name}: ${e.message}`));
+    // The watch first: a stand-in nobody listens behind would swallow the wake DM (the next tick
+    // skips a name whose stand-in is up). If the presence then fails, the watch goes with it.
+    const nc = await watch(rec);
+    try {
+      await ep.start();
+    } catch (e) {
+      await unwatch(rec.name);
+      throw e;
+    }
+    standIns.set(rec.name, { ep });
     markStandIn(space, rec.name, true);
     // Mail that landed between the despawn and this stand-in (on the old seat's subject) is a wake too.
-    const pending = await readBacklog(nc, space, backlogFilters(space, rec), rec.cursorSeq);
+    const pending = await serial(rec.name, () => readBacklog(nc, space, rec.name, filtersOf(rec), rec.cursorSeq));
     if (toForward(pending, rec.forwarded).length) void finish(rec.name, `${pending.length} DM(s) queued before the stand-in came up`);
   };
 
@@ -211,23 +261,37 @@ export async function startSleepHost(space: string, server = pawServer(space)): 
   const forward = async (name: string, newId: string): Promise<number> => {
     const target = parsePrincipalKey(newId);
     if (!target) throw new Error(`woken "${name}" has no valid principal (${newId})`);
-    const js = jetstream(nc);
     let rec = readWakingRecord(space, name)!;
-    let n = 0;
-    for (const { subject, seq, data } of toForward(await readBacklog(nc, space, backlogFilters(space, rec), rec.cursorSeq), rec.forwarded)) {
-      const snd = dmSender(subject);
-      if (snd) {
-        const ts = typeof data.ts === "number" ? data.ts : Date.now();
-        const parts = Array.isArray(data.parts) ? data.parts : [];
-        const note = { kind: "text", text: `[sent ${Math.max(1, Math.round((Date.now() - ts) / 60_000))}m ago, while you were asleep]` };
-        const msg = { ...data, id: randomUUID(), to: newId, parts: [note, ...parts] };
-        await js.publish(unicastSubject(space, target.owner, target.actor, snd.owner, snd.actor), JSON.stringify(msg), { msgID: msg.id });
-        n++;
+    // The watch may be gone (lowered); a forward then reads through a fresh one of its own.
+    const own = watches.get(name) ? undefined : await openWatch(space, server, name, filtersOf(rec), "host");
+    try {
+      const nc = own?.nc ?? watches.get(name)!.nc;
+      const backlog = toForward(await serial(name, () => readBacklog(nc, space, name, filtersOf(rec), rec.cursorSeq)), rec.forwarded);
+      if (!backlog.length) return 0;
+      const pub = await openForward(space, server, forwardSubjects(space, target, backlog.map((m) => m.subject)));
+      try {
+        const js = jetstream(pub);
+        let n = 0;
+        for (const { subject, seq, data } of backlog) {
+          const snd = dmSender(subject);
+          if (snd) {
+            const ts = typeof data.ts === "number" ? data.ts : Date.now();
+            const parts = Array.isArray(data.parts) ? data.parts : [];
+            const note = { kind: "text", text: `[sent ${Math.max(1, Math.round((Date.now() - ts) / 60_000))}m ago, while you were asleep]` };
+            const msg = { ...data, id: randomUUID(), to: newId, parts: [note, ...parts] };
+            await js.publish(unicastSubject(space, target.owner, target.actor, snd.owner, snd.actor), JSON.stringify(msg), { msgID: msg.id });
+            n++;
+          }
+          rec = { ...rec, forwarded: [...(rec.forwarded ?? []), seq] };
+          writeWakingRecord(space, rec); // after EACH publish: a crash mid-forward never re-sends what went out
+        }
+        return n;
+      } finally {
+        await pub.close().catch(() => {});
       }
-      rec = { ...rec, forwarded: [...(rec.forwarded ?? []), seq] };
-      writeWakingRecord(space, rec); // after EACH publish: a crash mid-forward never re-sends what went out
+    } finally {
+      await own?.nc.close().catch(() => {});
     }
-    return n;
   };
 
   /** Bring the agent up (stand-in kept until it is live) and hand it its backlog. */
@@ -241,6 +305,13 @@ export async function startSleepHost(space: string, server = pawServer(space)): 
       prepareWake(space, name); // asleep -> waking, so failures are counted on the waking record
       const rec = readWakingRecord(space, name);
       if (!rec) return;
+      const refusal = standInRefusal({ remote, rec, localInstanceId: remote ? localManagerInstanceId(space) : undefined, personaHere: existsSync(personaFilePath(space, name)) });
+      if (refusal) {
+        clearSleep(space, name);
+        await lower(name);
+        sleepLog(space, `NOT waking ${name} — ${refusal}; dropped its sleep record (${why})`);
+        return;
+      }
       const reg = agentRecord(space, name);
       if (!reg || reg.folder !== rec.folder) {
         clearSleep(space, name);
@@ -310,6 +381,10 @@ export async function startSleepHost(space: string, server = pawServer(space)): 
         if (standIns.has(rec.name) || inflight.has(rec.name)) continue;
         await raise(rec).catch((e) => console.error(`[sleep] raise ${rec.name}: ${(e as Error).message}`));
       }
+      // A held watch whose cred nears expiry is renewed in place (remote spaces; open-mesh ones never expire).
+      for (const rec of [...sleeping.records, ...waking.records]) {
+        if (watches.has(rec.name)) await watch(rec).catch((e) => console.error(`[sleep] renew watch ${rec.name}: ${(e as Error).message}`));
+      }
       // An external wake (`paw dm`, `paw chat`, `paw start`) is already spawning in another process and
       // retries a held name for 30s: yield the name now, then take over the hand-off.
       for (const rec of waking.records) {
@@ -330,8 +405,9 @@ export async function startSleepHost(space: string, server = pawServer(space)): 
         }
         // A wake that failed leaves its triggering DM unforwarded; retry it without waiting for a new DM.
         for (const rec of sleeping.records) {
-          if (inflight.has(rec.name)) continue;
-          const pending = toForward(await readBacklog(nc, space, backlogFilters(space, rec), rec.cursorSeq), rec.forwarded);
+          const w = watches.get(rec.name);
+          if (inflight.has(rec.name) || !w) continue;
+          const pending = toForward(await serial(rec.name, () => readBacklog(w.nc, space, rec.name, filtersOf(rec), rec.cursorSeq)), rec.forwarded);
           if (pending.length) void finish(rec.name, `${pending.length} DM(s) still waiting`);
         }
       }
@@ -343,15 +419,10 @@ export async function startSleepHost(space: string, server = pawServer(space)): 
   };
   const timer = setInterval(() => void tick(), TICK_MS);
   await tick();
-  console.error(`[sleep] host up for space "${space}"`);
+  console.error(`[sleep] host up for space "${space}"${remote ? " (remote: narrow per-agent creds, hosted-here agents only)" : ""}`);
   return async () => {
     clearInterval(timer);
     for (const name of [...standIns.keys()]) await lower(name);
-    await nc.close().catch(() => {});
+    for (const name of [...watches.keys()]) await unwatch(name);
   };
-}
-
-/** The stand-in's wire principal (for tests and `paw sleep` output). */
-export function standInPrincipal(space: string, name: string): string {
-  return principalKey(DEV_OWNER, standInActor(space, name)).key;
 }

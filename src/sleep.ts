@@ -21,19 +21,20 @@
  */
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { registry, dmStream, parsePrincipalKey, unicastRecvFilter, type Command } from "@cotal-ai/core";
-import { connect } from "@nats-io/transport-node";
-import { jetstreamManager } from "@nats-io/jetstream";
-import { agentRecord, listAgents, personaFilePath, setPersonaKeys, wirePrincipal, type PsRow } from "./addressing.ts";
+import { registry, parsePrincipalKey, unicastRecvFilter, type Command } from "@cotal-ai/core";
+import { agentRecord, humanEndpointAuth, listAgents, personaFilePath, setPersonaKeys, wirePrincipal, type PsRow } from "./addressing.ts";
 import type { ManagerControl } from "./control.ts";
+import { hostedElsewhereError, hosting } from "./hosted.ts";
+import { presenceLive, readMeshRoster } from "./roster.ts";
+import { dmLastSeqOn, openStreamInfo } from "./sleep-dial.ts";
 import { resolveSpace, withEnsuredManager } from "./lifecycle.ts";
 import { liveSessionProcs } from "./named.ts";
 import { personaTranscriptRoots, personaValue, readResumeId, transcriptMtime, transcriptPath } from "./session.ts";
 import { dmsSince } from "./sleep-host.ts";
 import { listSleeping, readSleepRecord, readWakingRecord, scanRecords, sleepLog, sleepState, writeSleepRecord, type SleepRecord } from "./sleep-state.ts";
-import { collectStatus, type AgentStatus } from "./status.ts";
+import { collectStatus, readManagerPs, type AgentStatus } from "./status.ts";
 import { tailRead } from "./transcript.ts";
-import { pawServer } from "./server.ts";
+import { isRemoteSpace, pawServer } from "./server.ts";
 
 /** The prompt cache TTL: below it a sleep would make the wake pay a cold cache. */
 export const MIN_HIBERNATE_MS = 60 * 60_000;
@@ -269,12 +270,28 @@ export function mergeSleepRecord(prior: SleepRecord | undefined, next: SleepReco
 
 /** The DM stream's last sequence — the backlog cursor. */
 export async function dmLastSeq(space: string, server = pawServer(space)): Promise<number> {
-  const nc = await connect({ servers: server });
+  const nc = await openStreamInfo(space, server);
   try {
-    return (await (await jetstreamManager(nc)).streams.info(dmStream(space))).state.last_seq;
+    return await dmLastSeqOn(nc, space);
   } finally {
     await nc.close();
   }
+}
+
+/**
+ * REMOTE space: refuse, loudly, an agent this machine does not host. The manager's ps here is pinned to
+ * this machine's instance (src/control.ts), so another machine's seat is simply absent from it; what
+ * says "it exists, elsewhere" is the presence roster. A name that is neither ours nor live anywhere
+ * falls through to the ordinary "not registered / not running" errors. Local spaces: no-op.
+ */
+export async function assertNotHostedElsewhere(space: string, name: string, row: PsRow | undefined): Promise<void> {
+  if (!isRemoteSpace(space)) return;
+  const h = hosting(space, name, row);
+  if (h.here) return;
+  if (row) throw hostedElsewhereError(name, space, h.why); // listed by our manager but not ours by the row
+  const roster = await readMeshRoster(space, pawServer(space), (await humanEndpointAuth(space, "operator")).creds, new Set([name]));
+  const seen = roster.get(name);
+  if (seen && presenceLive(seen, Date.now())) throw hostedElsewhereError(name, space, `it is live on the mesh as ${seen.id}, but this machine's manager does not run it`);
 }
 
 /** How long a despawned seat may stay in the manager's ps before `paw sleep` calls the despawn failed. */
@@ -296,16 +313,21 @@ export async function seatLingers(ctl: ManagerControl, name: string, id: string 
 /**
  * Despawn `name` and record it asleep (the sleep host then raises its stand-in). `cursorSeq` and
  * `snapshotActiveMs` come from BEFORE the decision; the agent is re-checked against them right before the
- * despawn (see {@link preDespawnCheck}). Refuses under PAW_AUTH: re-delivering the backlog re-publishes
- * each DM under its original sender, which only an open mesh permits.
+ * despawn (see {@link preDespawnCheck}). On a REMOTE space only an agent this machine hosts
+ * ({@link assertNotHostedElsewhere}); the record pins this machine's manager instance. A local PAW_AUTH mesh
+ * is refused: re-delivery re-publishes each DM under its original sender, which only an open mesh or
+ * paw's scoped remote-space creds allow.
  */
 export async function sleepAgent(space: string, ctl: ManagerControl, name: string, reason: string, snap: { cursorSeq: number; snapshotActiveMs?: number; force?: boolean }): Promise<void> {
-  if (process.env.PAW_AUTH === "1") throw new Error("paw: `paw sleep` is open-mesh only (v1) — waking re-delivers DMs under their original sender, which an authed mesh forbids");
-  const rec = agentRecord(space, name);
-  if (!rec) throw new Error(`paw: "${name}" is not a registered agent`);
+  const remote = isRemoteSpace(space);
+  if (process.env.PAW_AUTH === "1" && !remote)
+    throw new Error("paw: `paw sleep` on a local PAW_AUTH mesh is not supported — waking re-delivers DMs under their original sender, which only paw's remote-space creds are scoped for");
   const ps = await ctl.ps();
   if (!ps.ok) throw new Error(`paw: manager isn't answering (${ps.error ?? "no reply"})`);
   const row = ((ps.data as PsRow[]) ?? []).find((r) => r.name === name);
+  await assertNotHostedElsewhere(space, name, row);
+  const rec = agentRecord(space, name);
+  if (!rec) throw new Error(`paw: "${name}" is not a registered agent`);
   if (!row) throw new Error(`paw: "${name}" is not running`);
   const lastId = row.id ? wirePrincipal(row.id) : undefined;
   if (!snap.force) {
@@ -316,7 +338,7 @@ export async function sleepAgent(space: string, ctl: ManagerControl, name: strin
       snapshotActiveMs: snap.snapshotActiveMs,
       activeMsNow: pin ? transcriptMtime(pin, personaTranscriptRoots(personaFilePath(space, name))) : undefined,
       meshNow: row.mesh,
-      dmsSinceCursor: await dmsSince(space, [unicastRecvFilter(space, old.owner, old.actor)], snap.cursorSeq),
+      dmsSinceCursor: await dmsSince(space, name, [unicastRecvFilter(space, old.owner, old.actor)], snap.cursorSeq),
     });
     if (why) throw new Error(`paw: not sleeping "${name}" — ${why}`);
   }
@@ -339,7 +361,7 @@ export async function sleepAgent(space: string, ctl: ManagerControl, name: strin
       return undefined;
     }
   })();
-  writeSleepRecord(space, mergeSleepRecord(prior, { name, folder: rec.folder, since: Date.now(), cursorSeq: snap.cursorSeq, lastId, reason }));
+  writeSleepRecord(space, mergeSleepRecord(prior, { name, folder: rec.folder, since: Date.now(), cursorSeq: snap.cursorSeq, lastId, reason, ...(remote ? { instanceId: row.instanceId } : {}) }));
   sleepLog(space, `slept ${name} — ${reason} (cursor ${Math.min(prior?.cursorSeq ?? snap.cursorSeq, snap.cursorSeq)})`);
 }
 
@@ -401,7 +423,10 @@ async function sleepCmd(argv: string[]): Promise<void> {
     const v = o.off ? "off" : parseHibernate(o.after!); // validate before writing anything
     for (const name of o.names) {
       if (NEVER_SLEEP.has(name)) throw new Error(`paw sleep: "${name}" never sleeps`);
-      if (!agentRecord(space, name)) throw new Error(`paw sleep: "${name}" is not a registered agent`);
+      if (!agentRecord(space, name)) {
+        await assertNotHostedElsewhere(space, name, undefined);
+        throw new Error(`paw sleep: "${name}" is not a registered agent`);
+      }
       setPersonaKeys(space, name, { hibernate: v === "off" ? undefined : o.after });
       sleepLog(space, v === "off" ? `opt-out ${name}` : `opt-in ${name} after ${o.after} idle`);
       console.log(v === "off" ? `${name}: will not sleep` : `${name}: sleeps after ${o.after} idle with nothing running; a DM wakes it`);
@@ -417,8 +442,10 @@ async function sleepCmd(argv: string[]): Promise<void> {
         return;
       }
       const cursorSeq = await dmLastSeq(space, server);
-      const { rows } = await collectStatus(space, ctl, { git: false });
+      const ps = await readManagerPs(ctl);
+      const { rows } = await collectStatus(space, ctl, { git: false, ps });
       for (const name of o.names) {
+        await assertNotHostedElsewhere(space, name, ps.get(name));
         const row = rows.find((r) => r.name === name);
         if (!row) throw new Error(`paw sleep: "${name}" is not a registered agent`);
         const file = personaFilePath(space, name);

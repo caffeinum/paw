@@ -1,5 +1,5 @@
 /**
- * The on-disk state of `paw sleep` — a leaf module (node imports only) so addressing.ts can call
+ * The on-disk state of `paw sleep` — a leaf module (node + remote-mesh.ts only) so addressing.ts can call
  * {@link prepareWake}/{@link clearSleep} without an import cycle.
  *
  * Layout under `$PAW_HOME/spaces/<space>/sleep/`:
@@ -21,6 +21,7 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { readRemoteMesh } from "./remote-mesh.ts";
 
 export interface SleepRecord {
   name: string;
@@ -41,6 +42,9 @@ export interface SleepRecord {
   lastError?: string;
   /** Stream seqs already re-delivered to the woken agent (a retried forward never sends one twice). */
   forwarded?: number[];
+  /** REMOTE space only: the manager instance (this machine's) that ran the seat when it was slept. The
+   *  sleep host stands in only for a record whose instance is still this machine's (src/hosted.ts). */
+  instanceId?: string;
 }
 
 /** Failed wakes in a row before the agent is put back to sleep and the failure surfaced. */
@@ -61,6 +65,36 @@ const beaconPath = (space: string, name: string) => join(sleepDir(space), `${nam
  *  the same DM subject, NATS-safe (`[A-Za-z0-9_]`, no dashes). */
 export function standInActor(space: string, name: string): string {
   return `pawsleep_${createHash("sha256").update(`${space}\0${name}`).digest("hex").slice(0, 24)}`;
+}
+
+/**
+ * REMOTE (authed) space: a broker-authenticated endpoint's id IS its cred's nkey, so the stand-in's
+ * stable actor is a persisted nkey of its own — `sleep/<name>.standin.nkey` (0600, a bearer secret,
+ * never printed). Not the agent's identity: the agent's seat nkey is its manager's to mint.
+ */
+const standInKeyPath = (space: string, name: string) => join(sleepDir(space), `${name}.standin.nkey`);
+
+/** The persisted stand-in identity, or undefined when none was ever minted. A malformed file throws. */
+export function readStandInIdentity(space: string, name: string): { id: string; seed: string } | undefined {
+  const file = standInKeyPath(space, name);
+  if (!existsSync(file)) return undefined;
+  const v = JSON.parse(readFileSync(file, "utf8")) as { id?: unknown; seed?: unknown };
+  if (typeof v.id !== "string" || typeof v.seed !== "string") throw new Error(`paw: ${file} is not a {id, seed} identity — delete it to mint a new stand-in`);
+  return { id: v.id, seed: v.seed };
+}
+
+/** Persist `fresh` as the stand-in identity unless one exists; returns the one on disk. */
+export function claimStandInIdentity(space: string, name: string, fresh: { id: string; seed: string }): { id: string; seed: string } {
+  const cur = readStandInIdentity(space, name);
+  if (cur) return cur;
+  writeFileSync(standInKeyPath(space, name), JSON.stringify(fresh), { mode: 0o600, flag: "wx" });
+  return fresh;
+}
+
+/** The stand-in's actor on `space`: the persisted nkey on a remote space (undefined until minted), the
+ *  stable hash on an open mesh. */
+export function standInActorFor(space: string, name: string): string | undefined {
+  return readRemoteMesh(space) ? readStandInIdentity(space, name)?.id : standInActor(space, name);
 }
 
 function parse(file: string): SleepRecord {

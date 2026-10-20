@@ -46,11 +46,40 @@ untouched: a space with no record resolves exactly as before.
 - **One space per agent**: `assertOneSpace` (ensureAgentSpawned, adopt) refuses a session another
   space's persona pins, when either side is remote.
 
-## Off on a remote space (open-mesh only today)
+- **One manager per machine, pinned** (`pinFor`, src/control.ts): cotal 0.84 lets every machine run its
+  own manager on the same remote space. Unpinned, describe + every command ride the class queue, so
+  `ps`/`spawn`/`despawn` from this machine could land on ANOTHER machine's manager (and `paw down` could
+  have despawned its agents). A remote space's control rail is pinned to THIS machine's manager instance
+  (`loadManagerInstanceIdentity(root, space)`, persisted by cotal under the record root) with cotal's
+  `--on` grant rows (`instancePinnedInstrumentCapabilities`); before that manager ever registered,
+  control fails loud instead of reaching a foreign one. Local spaces keep the class route.
+- **Hosted here** (src/hosted.ts): an agent is this machine's iff its persona is in this
+  `$PAW_HOME/spaces/<s>/personas/` AND its ps row's `instanceId` is the local manager's. Only such an
+  agent may be slept, stood in for, or have a stand-in identity minted; anything else that is live on
+  the roster fails loud: `"<name>" is hosted on another machine`.
+- **Narrow creds** (src/remote-creds.ts): paw signs its own user JWTs with the space signer, one
+  allow-list per job, each with an expiry:
+  - `inbox-lag` — pub `$JS.API.CONSUMER.INFO.DM_<s>.*` + its `_INBOX_<id>.>`; cached
+    `spaces/<s>/creds/inbox-lag.creds` (0600, 24h, re-signed with <1h left).
+  - `sleep-watch` (per sleeping agent, memory only, 24h, renewed in place) — sub the stand-in's + old
+    seat's DM subjects; consumer CREATE/INFO/MSG.NEXT/DELETE pinned to `pawsl_<hash>_<host|cli><i>` names
+    AND their filter (a stream-wide MSG.NEXT could drain an agent's durable); `STREAM.INFO DM_<s>`.
+  - `sleep-forward` (per wake, 5 min) — pub ONLY `inst.<woken seat>.<sender>` for the backlog's senders.
+  - `dm-cursor` (per `paw sleep`, 5 min) — `STREAM.INFO DM_<s>` only.
+  - the stand-in presence — cotal's own `agent` mint for a persisted stand-in nkey
+    (`sleep/<name>.standin.nkey`, 0600), never the agent's seat identity.
+- **INBOX lag**: per hosted seat, `consumers.info(DM_<s>, dm_<owner>-<actor>-<lifecycleUid>)` (all three
+  from our ps row) with the `inbox-lag` cred and its scoped `inboxPrefix` (the old listing used the
+  default `_INBOX.` → `Permissions Violation for Subscription to "_INBOX.<…>.*"`, and `CONSUMER.LIST` is
+  in no narrow grant). Roster-only peers on a remote space are never claimed (`—`).
+- **paw sleep / the sleep host**: on. The mailbox's host dials with the creds above; the sleep record
+  pins `instanceId`, and the host drops (loudly, `sleep.log`) any record not slept by this machine's
+  instance or whose persona is not here. Backlog reads are one named, filter-pinned consumer per subject.
 
-The sleep host and stale-id forwarder (both dial bare), presence-latch detection (AUTH-GAP), and the
-`paw status` INBOX lag column (the admin view holds no JetStream-API inbox rows → `?` + an error line).
-`paw spaces` reads the local broker only.
+## Off on a remote space
+
+The stale-id forwarder (re-publishes ANY peer's DM under its sender — no narrow grant for that),
+presence-latch detection (AUTH-GAP), and `paw spaces` (reads the local broker only).
 
 ## cotal gaps found
 
@@ -72,7 +101,11 @@ The sleep host and stale-id forwarder (both dial bare), presence-latch detection
 --no-manager` JWT + TLS broker with a self-signed cert, `mint --signer`, `paw mesh add`, no-CA
 refusal, a real haiku claude spawned by `paw dm --space` (its cotal MCP carries `COTAL_TLS=1`, read
 with `ps -E`), reply read by `paw inbox`, who/status (the TLS-required presence probe reaches the broker),
-`paw restart`, second DM, teardown. PAW_SPACE is a decoy local space and PAW_SERVER a dead port, so
+`paw restart`, second DM; INBOX lag a real number (cached 0600 lag cred); a SECOND machine (own
+PAW_HOME + root + signer copy, its own manager) spawns its agent — machine 1 never lists it or its lag
+and `paw sleep` on it fails "hosted on another machine" (both directions, `--force` too); then
+`paw sleep agent --now`, stand-in raised under its own nkey, a raw DM by name resolves to the stand-in,
+wakes the agent and is re-delivered (reply in `paw inbox`); teardown. PAW_SPACE is a decoy local space and PAW_SERVER a dead port, so
 any path that ignores `--space` fails instead of touching the live mesh. The cotal-ai package must
 be installed OUTSIDE the repo; run with `COTAL_SKIP_CONNECTOR_SEED=1` (the script sets it) or cotal
 touches the operator's `~/.config/cotal` seed store.
