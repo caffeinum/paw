@@ -34,6 +34,18 @@ untouched: a space with no record resolves exactly as before.
   role, mirroring cotal: `agent` (+ a fresh lifecycle uid) for the mailbox presence, `operator` to send
   and read the roster (`cotal send`), `admin` to read DM/channel history (`cotal console`). Local spaces
   keep `controlCreds`.
+- **`paw chat`** (`openHumanInbox`, src/human-inbox.ts): chat is the one CONSUMING "you". Under auth an
+  agent cred may only BIND its `dm_<owner>-<actor>-<uid>` / `dlv_…` durables; creating them is a
+  `provisioner` act its launcher does (the manager for agents, `cotal spawn` for a foreground one).
+  Nobody launched "you", so until 2026-10-19 chat bound a durable for a fresh uid no one had created
+  and died with cotal's bare "consumer not found". Now chat does what `cotal spawn` does: per run, a
+  fresh lifecycle uid → `provisionAgentDurables` under the signer → an `agent` cred for that uid
+  (channel grant `>`, like a persona) → bind; on quit it retires the footprint (DM + DELIVER durables,
+  read-ACL row, channel member rows) with a target-pinned `deprovisioner` cred over a TLS-REQUIRED dial
+  (cotal's `deprovisionAgent` dials `tls: false`). A SIGKILLed chat leaves that one footprint behind
+  (authed durables have no inactive threshold) — same class as a crashed `cotal spawn`. A bind failure
+  is reworded by `describeInboxBindFailure`. e2e-remote drives chat over piped stdin and counts "you"'s
+  durables before / during / after.
 - **Seats** (`remoteTlsEnv`, src/connector.ts): cotal's launch env is an allowlist without the CA knobs;
   a remote space's seats get `NODE_EXTRA_CA_CERTS` / `SSL_CERT_FILE` through `envAllow` when set.
   `remoteSeatTls` adds `COTAL_TLS=1` to the seat env: the seat's cotal MCP reads its transport from that
@@ -62,6 +74,9 @@ The sleep host and stale-id forwarder (both dial bare), presence-latch detection
   The Manager takes no transport option at all (paw's `cotald supervise` cannot pass one), so this
   stays cotal's to fix; paw's own dials and the seats require TLS.
 - Seat launch env drops `NODE_EXTRA_CA_CERTS` and never sets `COTAL_TLS` (paw adds both, above).
+- An authed consuming endpoint whose durable was never provisioned fails `pump()` with the raw
+  JetStream "consumer not found" — no durable name, no hint that a provisioner must pre-create it
+  (the register-only path has a full "lifecycle proof failed" message; the consume path has none).
 - `cotal meshes add --mode auth` wants a fully composing trust root, so a signer-only root can't be
   registered in cotal's own registry — paw keeps its own record.
 

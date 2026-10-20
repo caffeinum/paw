@@ -149,6 +149,19 @@ assertOneSpace("remotetest-r", "99999999-0000-0000-0000-000000000000");
 assert(true, "an unshared session passes");
 rm.removeRemoteMesh("remotetest-r");
 
+console.log("chat's inbox bind failure is named, never a bare 'consumer not found'");
+{
+  const { describeInboxBindFailure } = await import("../src/human-inbox.ts");
+  const bare = new Error("consumer not found");
+  rm.writeRemoteMesh({ space: "remotetest-r", server: "tls://127.0.0.1:14322", root, ts: new Date().toISOString() });
+  const remote = describeInboxBindFailure("remotetest-r", "abc123", bare).message;
+  assert(/remote space "remotetest-r"/.test(remote) && /abc123/.test(remote) && /paw inbox --space remotetest-r/.test(remote), `remote: ${remote.slice(0, 90)}…`);
+  rm.removeRemoteMesh("remotetest-r");
+  assert(/space "remotetest-local"/.test(describeInboxBindFailure("remotetest-local", undefined, bare).message), "local: names the space");
+  const other = new Error("timeout");
+  assert(describeInboxBindFailure("remotetest-local", undefined, other) === other, "any other error passes through untouched");
+}
+
 console.log("signer root");
 const full = await createSpaceAuth("remotetest-s");
 const sroot = mkdtempSync(join(tmpdir(), "paw-remote-signer-"));

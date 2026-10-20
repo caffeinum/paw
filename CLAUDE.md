@@ -101,6 +101,8 @@ Each entry: what it is + the most load-bearing rule. Full notes behind the link.
 - `src/remote-mesh.ts` + `src/commands/mesh.ts` — `paw mesh add <space> --server tls://… --root <dir>`: a
   space on a broker paw never starts; `root/.cotal/auth/auth.json` = the `cotal mint --signer` file
   (bearer secret, 0600, never printed). `pawServer(space)` routes; no record ⇒ local, unchanged.
+- `src/human-inbox.ts` — `paw chat` on a remote space provisions its own DM/DELIVER durables (agent creds
+  only BIND under auth) and retires them on quit, TLS required. → [remote-mesh.md](docs/notes/remote-mesh.md)
 
 ### Control rail → [control-rail.md](docs/notes/control-rail.md)
 - `src/control.ts` — the ONE door to the manager: v0.4 service endpoint (`resolveService` once, invoke
