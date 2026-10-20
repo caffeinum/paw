@@ -189,6 +189,15 @@ const cotal = (args: string[]) => run(process.execPath, [COTAL, ...args], withCa
 const out = (r: SpawnSyncReturns<string>) => `${r.stdout ?? ""}${r.stderr ?? ""}`.replace(/^paw: PAW_RELEASE=dev.*\n/gm, "");
 const procs = (needle: string) =>
   execFileSync("ps", ["-A", "-o", "pid=,command="], { encoding: "utf8" }).split("\n").filter((l) => l.includes(needle) && !l.includes("e2e-remote"));
+/** nats-servers THIS run could have started: their config lies under its temp dirs (the remote broker
+ *  under `work`, anything paw would wrongly start under a test PAW_HOME's spaces dir). A concurrent
+ *  e2e's brokers (or the live fleet's) on this host are not ours to count. */
+const runDirs = [home, homeB, work].flatMap((d) => [d, realpathSync(d)]).map((d) => `${d}/`);
+const ourBrokers = () =>
+  procs("nats-server").filter((l) => {
+    const conf = /\s(?:-c|--config)\s+(\S+)/.exec(l)?.[1];
+    return !!conf && runDirs.some((d) => conf.startsWith(d));
+  });
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 async function inboxHas(word: string, ms: number, env = withCa): Promise<boolean> {
   const deadline = Date.now() + ms;
@@ -308,7 +317,7 @@ try {
   ok("the signer never reaches the output", !out(add).includes("signingSeed") && !out(paw(["mesh", "--json"])).includes("signingSeed"));
 
   // ── 2. TLS trust is required, and paw never starts a broker for it ───────────────────────────────
-  const natsBefore = procs("nats-server").length;
+  const natsBefore = ourBrokers().length;
   const noCa = paw(["status", "--space", R], base);
   ok("without the CA, ensure() fails loud naming TLS trust", noCa.status !== 0 && /NODE_EXTRA_CA_CERTS/.test(out(noCa)), out(noCa).trim().split("\n")[0]);
   ok("…and no paw daemon started for it", procs(`--space ${R}`).filter((l) => !l.includes(COTAL)).length === 0);
@@ -317,7 +326,8 @@ try {
   const dm = paw(["dm", "--space", R, agentDir, "reply with just the word: pong"]);
   ok("paw dm --space R spawns the folder's agent and sends", dm.status === 0, out(dm).trim().split("\n").pop());
   ok("the agent's reply lands in paw inbox --space R", await inboxHas("pong", 150_000));
-  ok("paw started no broker", procs("nats-server").length === natsBefore);
+  // exactly the remote broker (`cotal up` above, under `work`) — before and after
+  ok("paw started no broker", natsBefore === 1 && ourBrokers().length === 1, ourBrokers().join(" | "));
   const mgr = procs(`supervise --space ${R} --server ${server}`);
   ok("the manager dials the remote broker", mgr.length > 0);
   // The seat's cotal MCP takes its transport from COTAL_TLS alone; without it the seat dialled tls://
@@ -362,12 +372,25 @@ try {
     headers.length === 2 && headers.some((l) => /1 agent/.test(l)) && headers.some((l) => /no agents/.test(l)),
     headers.join(" | ") || out(psB).trim().split("\n").slice(-3).join(" | "),
   );
-  // B's attach goes through `paw cotal attach` so no paw gate adopts/ensures anything for home B.
+  // B's `paw cotal ps`/`attach` still run ensure() for home B: it pgrep-adopts the managers, but the
+  // mailbox is pid-file based, so home B starts its OWN "operator-b" mailbox (+ sleep host) — what a
+  // real machine B would do. It is stopped below with B's manager, so nothing of B outlives this step.
   const attB = await ptyAttach(["cotal", "attach", "--name", name, "--space", R], { ...withCaB, PAW_SPACE: R }, 90_000);
   ok("attach from machine B's root reaches the seat A's manager hosts", attB.attached && attB.tui && attB.detached, attB.attached ? `${attB.streamed} bytes, exit ${attB.code}` : tail(attB.output));
   mgrB.kill("SIGTERM");
   for (let i = 0; i < 20 && mgrB.exitCode === null; i++) await sleep(500);
   if (mgrB.exitCode === null) mgrB.kill("SIGKILL");
+  const mbPidB = join(homeB, "spaces", R, "mailbox.pid");
+  if (existsSync(mbPidB)) {
+    const pid = Number(readFileSync(mbPidB, "utf8").trim());
+    try {
+      process.kill(pid, "SIGTERM");
+    } catch {
+      /* already gone */
+    }
+    for (let i = 0; i < 20 && procs(`paw.ts mailbox --space ${R}`).some((l) => l.trim().startsWith(`${pid} `)); i++) await sleep(250);
+  }
+  ok("…machine B's mailbox is gone, machine A's is still up", procs(`paw.ts mailbox --space ${R}`).length === 1, procs(`paw.ts mailbox --space ${R}`).join(" | "));
   ok("…and the agent is still live", out(paw(["who", "--space", R])).includes(name));
 
   // ── 4. paw chat: a CONSUMING "you" (binds its own durable inbox) on the authed mesh ──────────────
@@ -522,9 +545,18 @@ try {
   }
   ok("a DM by name resolves to the stand-in (not the agent's old seat)", to.endsWith(standIn.id), `${to} ${out(raw).slice(0, 300)}`);
   ok("the DM wakes it and is delivered — its reply lands in paw inbox", await inboxHas("awake", 180_000));
-  const log = existsSync(join(home, "spaces", R, "sleep.log")) ? readFileSync(join(home, "spaces", R, "sleep.log"), "utf8") : "";
-  ok("sleep.log: woke it and re-delivered the DM", new RegExp(`woke agent — DM from ${HUMAN}; re-delivered [1-9]`).test(log), log.trim().split("\n").slice(-3).join(" | "));
-  ok("record and stand-in cleared", !existsSync(join(sleepDir, `${name}.json`)) && !existsSync(join(sleepDir, `${name}.waking`)) && !existsSync(join(sleepDir, `${name}.beacon`)));
+  // The reply can land BEFORE the host finishes: it answers the FIRST forward pass, while the host
+  // still runs the straggler pass (STRAGGLER_MS + a fresh watch connection) and only then clears the
+  // record and logs the wake. Measured 2026-10-20: forward 05:53:37, reply 05:53:39, "woke" logged
+  // 05:53:42 — a ~3s window (longer on a loaded host) in which reading once fails a correct wake.
+  const sleepLogFile = join(home, "spaces", R, "sleep.log");
+  const readSleepLog = () => (existsSync(sleepLogFile) ? readFileSync(sleepLogFile, "utf8") : "");
+  const woke = new RegExp(`woke agent — DM from ${HUMAN}; re-delivered [1-9]`);
+  const cleared = () => !existsSync(join(sleepDir, `${name}.json`)) && !existsSync(join(sleepDir, `${name}.waking`)) && !existsSync(join(sleepDir, `${name}.beacon`));
+  for (let i = 0; i < 60 && !(woke.test(readSleepLog()) && cleared()); i++) await sleep(1000);
+  const log = readSleepLog();
+  ok("sleep.log: woke it and re-delivered the DM", woke.test(log), log.trim().split("\n").slice(-3).join(" | "));
+  ok("record and stand-in cleared", cleared());
   const lag3 = await lagOf(name);
   ok("after the wake its lag reads again (the new incarnation's durable)", lag3.row?.inbox?.kind === "lag", JSON.stringify(lag3.row?.inbox));
 } finally {
@@ -535,9 +567,12 @@ try {
   console.log(out(cdown).trim());
   ok("nothing left naming the remote space", procs(R).length === 0, procs(R).join(" | "));
   ok("nothing left naming the decoy space", procs(DECOY).length === 0);
-  rmSync(home, { recursive: true, force: true });
-  rmSync(homeB, { recursive: true, force: true });
-  rmSync(work, { recursive: true, force: true });
+  if (process.env.E2E_KEEP) console.log(`E2E_KEEP: kept ${home} ${homeB} ${work}`);
+  else {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(homeB, { recursive: true, force: true });
+    rmSync(work, { recursive: true, force: true });
+  }
 }
 if (fails) {
   console.error(`\ne2e:remote — ${fails} failure(s)`);
