@@ -199,7 +199,9 @@ Moved verbatim from CLAUDE.md (2026-10-02 split). Index: [CLAUDE.md](../../CLAUD
   own tap BEFORE `unicast` has returned the id, so "not in `ownIds`" is not yet evidence of "not
   mine", and deciding on the spot made a session label its OWN message `(other session)` (seen live).
   The tap therefore waits out any in-flight send (`sending` counter, plus a short grace for the
-  resolve itself) and re-checks before rendering. The tap handler is shape-guarded (a space tap also sees control replies, which carry no
+  resolve itself) and re-checks before rendering. On a REMOTE space the tap is narrowed to "you"'s own
+  send subjects (src/chat-own.ts, [remote-mesh.md](remote-mesh.md#paw-chat--paw-web-taps)) — the
+  space wildcard is a Permissions Violation for chat's `agent` cred. The tap handler is shape-guarded (a space tap also sees control replies, which carry no
   `from`, and core doesn't try/catch it — an unguarded deref kills the feed permanently).
   **↓ picker:** readline maps down-arrow to history-next, which on an EMPTY line with nothing ahead
   does nothing — so the keystroke was free. ↓ opens a real picker: live peers (with status) then

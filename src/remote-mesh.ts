@@ -25,6 +25,9 @@ export interface RemoteMesh {
   server: string;
   /** Absolute dir whose `.cotal/auth/auth.json` is this space's account signer. */
   root: string;
+  /** The operator's mesh name on this space (`paw mesh add --as` / `paw mesh set --as`). Absent ⇒ the
+   *  default `you` (src/names.ts). A shared broker sees every operator's mailbox, so each needs its own. */
+  human?: string;
   /** ISO time the record was written. */
   ts: string;
 }
@@ -59,6 +62,14 @@ export function checkSpaceName(space: string): string {
   return space;
 }
 
+/** A human peer name an agent can type into cotal_dm: a subset of cotal's `assertValidName` (no
+ *  whitespace, no '/', single line) narrowed to what is safe unquoted in a shell and a brief. */
+export function checkHumanName(name: string): string {
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(name))
+    throw new Error(`paw: human name "${name}" must start with a letter or digit and use only letters, digits, '.', '-' or '_' (max 64)`);
+  return name;
+}
+
 function parseRecord(space: string, path: string, raw: string): RemoteMesh {
   let v: unknown;
   try {
@@ -71,7 +82,15 @@ function parseRecord(space: string, path: string, raw: string): RemoteMesh {
     throw new Error(`paw: remote mesh record ${path} is malformed (needs space="${space}", server, root, ts) — fix it or \`paw mesh rm ${space}\``);
   checkRemoteServer(r.server);
   if (!isAbsolute(r.root)) throw new Error(`paw: remote mesh record ${path} has a relative root "${r.root}"`);
-  return { space: r.space, server: r.server, root: r.root, ts: r.ts };
+  if (r.human !== undefined) {
+    if (typeof r.human !== "string") throw new Error(`paw: remote mesh record ${path} has a non-string human`);
+    try {
+      checkHumanName(r.human);
+    } catch (e) {
+      throw new Error(`${(e as Error).message} — in ${path}; fix it with \`paw mesh set ${space} --as <name>\``);
+    }
+  }
+  return { space: r.space, server: r.server, root: r.root, ...(r.human !== undefined ? { human: r.human } : {}), ts: r.ts };
 }
 
 /** The space's remote record, or undefined when the space is local. A record that exists but cannot

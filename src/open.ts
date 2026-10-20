@@ -4,8 +4,8 @@
  * live pty via cotal's own `attach` command. Where `paw chat` is the durable DM conversation, `open`
  * drops you into the agent's real terminal.
  *
- * Built on cotal: the spawn goes through the manager's service endpoint. The PTY attach does NOT
- * work on cotal 0.25 and says so — see {@link attachResolved}.
+ * Built on cotal: the spawn goes through the manager's service endpoint; the pty attach is cotal's own
+ * `attach` run as a subprocess with the tty passed through — see {@link attachResolved}.
  * Self-registers an "open" command on import; bin/paw.ts ensures the mesh + manager are up first.
  */
 import { spawnSync } from "node:child_process";
@@ -22,7 +22,11 @@ import { join } from "node:path";
 import { withManagerControl } from "./control.ts";
 import { readForeground } from "./foreground.ts";
 import { isAddressHandle, resolveAddress } from "./address.ts";
-import { readRuntimeMarker, resolveSpace } from "./lifecycle.ts";
+import { cotaldViaNode, readRuntimeMarker, resolveSpace } from "./lifecycle.ts";
+import { findMesh } from "@cotal-ai/workspace";
+import { pawCotalRoot } from "./cotal-root.ts";
+import { remoteCotalArgv } from "./dispatch.ts";
+import { readRemoteMesh } from "./remote-mesh.ts";
 import { pawServer } from "./server.ts";
 
 function parseArgs(argv: string[]): { space?: string; target?: string; model?: string; name?: string } {
@@ -94,7 +98,7 @@ async function open(argv: string[]): Promise<void> {
  * The attach core shared by `paw open`/`paw attach` and `paw adopt`'s auto-attach: given a resolved
  * `space` + agent `name` (and an optional folder to spawn from), does the foreground check, reads the
  * runtime marker, spawns-if-needed over one control round-trip, then attaches per runtime (native tmux,
- * a cmux pointer, or the pty ws stream). Behavior-identical to what `open()` used to inline.
+ * a cmux pointer, or cotal's grant-based pty attach). Behavior-identical to what `open()` used to inline.
  */
 export async function attachResolved(
   space: string,
@@ -167,27 +171,60 @@ export async function attachResolved(
     return;
   }
 
-  // pty: THERE IS NO TERMINAL TO ATTACH TO ANY MORE, and this says so rather than half-working.
+  // pty: cotal's own `attach` (bin/cotald.ts → runCli), with the tty passed straight through.
   //
-  // Until cotal 0.15 the manager's `attach` handed back a loopback `ws://` URL and paw streamed the pty
-  // with its own wire client (src/attach-client.ts, still in the tree). cotal 0.25's `attach` returns a
-  // signed §13.6 SESSION GRANT instead — no URL anywhere in the reply schema — which a caller redeems
-  // over the mesh by minting a per-session `session-caller` credential and driving the framed session
-  // rail. paw cannot do that here for a reason that is not about effort: minting that credential needs
-  // the space's local trust SEED, and paw's default mesh is OPEN (no auth material at all). cotal's own
-  // `attach` refuses the same case in the same words ("mesh attach needs the local space seed"), so on
-  // a paw open mesh this door is shut upstream, not merely unported.
-  //
-  // The agent is UP and reachable — only the terminal takeover is gone — so the useful thing is to say
-  // what still works instead of a bare error.
+  // Until cotal 0.15 the manager's `attach` handed back a loopback `ws://` URL that paw streamed with
+  // its own client (src/attach-client.ts, dead code). Since 0.25 it returns a signed §13.6 SESSION
+  // GRANT, redeemed over the mesh: on an authed mesh with a `session-caller` cred minted from the
+  // space's signer, on a REGISTERED open mesh over a bare connection (cotal #1205, fixed by 0.84).
+  // cotal also locates which manager instance hosts the seat (a scatter `ps` across every manager in
+  // the space) and pins the call there, so an agent another machine's manager runs attaches too.
+  // paw's only job is to run it from where cotal can find that material — see cotalAttachInvocation.
+  attachPty(space, name);
+}
+
+/**
+ * How `cotal attach` must be invoked for `space` so it resolves the right trust material.
+ *  - REMOTE space (`paw mesh add`): cwd = the record root (its `.cotal/auth` is the stripped signer),
+ *    `--server <record server>`, NO `--space` — cotal's registry doesn't know the space, and naming it
+ *    sends cotal down its raw open arm (bare connect → refused). See remoteCotalArgv.
+ *  - LOCAL space: cwd = pawCotalRoot(space), `--space <s> --server <broker>` — the registry entry
+ *    `cotal up` recorded carries the mode (open → bare redeem; PAW_AUTH=1 → the root's seed).
+ * Pure over the records, so check:remote covers it.
+ */
+export function cotalAttachInvocation(space: string, name: string): { argv: string[]; cwd: string; remote: boolean } {
+  const remote = readRemoteMesh(space);
+  if (remote) return { argv: remoteCotalArgv(["attach", "--name", name], remote.server).argv, cwd: remote.root, remote: true };
+  return { argv: ["attach", "--name", name, "--space", space, "--server", pawServer(space)], cwd: pawCotalRoot(space), remote: false };
+}
+
+function attachPty(space: string, name: string): void {
+  if (!process.stdin.isTTY || !process.stdout.isTTY)
+    throw new Error(`paw: attaching to "${name}" needs a terminal (stdin and stdout must be a tty) — \`paw log ${name} -f\` follows it without one`);
+  const { argv, cwd, remote } = cotalAttachInvocation(space, name);
+  const alternatives =
+    `    paw chat ${name}  — talk to it\n` +
+    `    paw log ${name} -f  — watch its session` +
+    (remote ? "" : `\n    paw runtime tmux  — switch this space to tmux, where \`paw attach\` enters the real window`);
+  // A local space cotal's registry doesn't know (its broker wasn't started by paw's `cotal up`, e.g. a
+  // hand-run PAW_SERVER broker): cotal can't tell it is OPEN, takes the sealed arm and refuses for want
+  // of a seed. Say that precisely up front instead of after a round trip.
+  if (!remote && !findMesh(space))
+    throw new Error(
+      `paw: can't attach a terminal to "${name}": space "${space}" (broker ${pawServer(space)}) is not in cotal's mesh registry.\n` +
+        `  cotal redeems the attach grant by the space's RECORDED mode — open → a bare connection, auth → a cred minted\n` +
+        `  from the space seed. An unrecorded space gets neither (paw records a space only when it starts its broker).\n` +
+        `  If the agent is running it is still reachable:\n${alternatives}`,
+    );
+  const [exec, args] = cotaldViaNode(argv);
+  process.stderr.write(`attaching to ${name} — Ctrl-] detaches (the agent keeps running) · \`paw stop ${name}\` ends it\n`);
+  const r = spawnSync(exec, args, { stdio: "inherit", cwd });
+  if (r.error) throw new Error(`paw: couldn't run cotal attach for "${name}": ${r.error.message}`);
+  if (r.status === 0) return;
+  // cotal already printed its own ✗ line (which names the root/broker it resolved). Add what still works.
   throw new Error(
-    `paw: can't attach a terminal to "${name}" under the pty runtime on cotal 0.25.\n` +
-      `  cotal replaced the manager's ws pty attach with a signed session grant that must be redeemed with\n` +
-      `  a credential minted from the space's local seed — which an OPEN mesh (paw's default) does not have.\n` +
-      `  The agent itself is running and reachable:\n` +
-      `    paw chat ${name}     talk to it\n` +
-      `    paw log ${name}      watch its session\n` +
-      `    paw runtime tmux     switch the fleet to tmux, where \`paw attach\` enters the real window`,
+    `paw: cotal couldn't attach a terminal to "${name}" (exit ${r.status ?? r.signal}) — see its message above.\n` +
+      `  If the agent is running it is still reachable:\n${alternatives}`,
   );
 }
 

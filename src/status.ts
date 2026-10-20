@@ -8,7 +8,7 @@
  */
 import { sleepState } from "./sleep-state.ts";
 import { readRestartHistory } from "./restart-history.ts";
-import { dmDurable, dmStream, parsePrincipalKey, type Command, type Presence, registry } from "@cotal-ai/core";
+import { dmDurable, dmStream, idFromCreds, parsePrincipalKey, type Command, type Presence, registry } from "@cotal-ai/core";
 import { JetStreamApiCodes, JetStreamApiError, jetstreamManager } from "@nats-io/jetstream";
 import { connect, credsAuthenticator } from "@nats-io/transport-node";
 import { closeSync, existsSync, openSync, readSync, statSync } from "node:fs";
@@ -26,7 +26,9 @@ import { claudeProjectsRoot, isClaudeHarness, personaTranscriptRoots, readAgentT
 import { lastFailure, lastUsage, type ContextUsage } from "./transcript.ts";
 import { tailRead, turnState, type PendingTool, type TurnState } from "./transcript.ts";
 import { gitInfoMany, type GitInfo } from "./git.ts";
-import { natsTls, pawServer } from "./server.ts";
+import { isRemoteSpace, natsTls, pawServer } from "./server.ts";
+import { localManagerInstanceId } from "./hosted.ts";
+import { lagReaderCreds } from "./remote-creds.ts";
 import { pickRoster, presenceLive, readMeshRoster } from "./roster.ts";
 import { authGapWarning, probePresenceWrites } from "./presence-health.ts";
 import { personaGlyph } from "./personality.ts";
@@ -715,17 +717,22 @@ export type DmConsumerListing =
   | { kind: "unreachable"; message: string }
   | { kind: "failed"; message: string };
 
+/** A raw JetStream connection for the lag read. Under creds the connection takes the cred's scoped
+ *  reply inbox (`_INBOX_<id>`): on the default `_INBOX.` every request died on a subscribe violation
+ *  before reaching the API (what team2027 showed: `Permissions Violation for Subscription to
+ *  "_INBOX.<…>.*"`). */
+async function lagConnect(space: string, server: string, creds: string | undefined) {
+  return connect({
+    servers: server,
+    ...(creds ? { authenticator: credsAuthenticator(new TextEncoder().encode(creds)), inboxPrefix: `_INBOX_${idFromCreds(creds)}` } : {}),
+    ...natsTls(space),
+  });
+}
+
 async function listDmConsumers(space: string, server: string): Promise<DmConsumerListing> {
   let nc;
   try {
-    // Remote (authed) spaces read with the human's `admin` view — the privileged control instrument
-    // holds no JetStream API rows there. Local spaces: the same control creds as always.
-    const { creds } = await humanEndpointAuth(space, "admin");
-    nc = await connect({
-      servers: server,
-      ...(creds ? { authenticator: credsAuthenticator(new TextEncoder().encode(creds)) } : {}),
-      ...natsTls(space),
-    });
+    nc = await lagConnect(space, server, (await humanEndpointAuth(space, "admin")).creds);
   } catch (e) {
     return { kind: "unreachable", message: (e as Error).message };
   }
@@ -743,6 +750,51 @@ async function listDmConsumers(space: string, server: string): Promise<DmConsume
   } finally {
     await nc.close().catch(() => {});
   }
+}
+
+/**
+ * The REMOTE-space listing: only the durables of agents this machine hosts, each read by its EXACT
+ * name `dm_<owner>-<actor>-<lifecycleUid>` (the ps row carries all three), with paw's own
+ * consumer-INFO-only cred ({@link lagReaderCreds}) — never a listing of the whole space's consumers,
+ * which no narrow grant expresses and which would claim other machines' agents. A durable that does
+ * not exist is simply absent (→ "none", like a listing without it); any other failure is "failed".
+ */
+async function readDmConsumers(space: string, server: string, durables: string[]): Promise<DmConsumerListing> {
+  let nc;
+  try {
+    nc = await lagConnect(space, server, await lagReaderCreds(space));
+  } catch (e) {
+    return { kind: "unreachable", message: (e as Error).message };
+  }
+  try {
+    const jsm = await jetstreamManager(nc, { checkAPI: false });
+    const consumers: Array<{ name: string; num_pending: number; num_ack_pending: number }> = [];
+    for (const name of durables) {
+      try {
+        const ci = await jsm.consumers.info(dmStream(space), name);
+        consumers.push({ name: ci.name, num_pending: ci.num_pending, num_ack_pending: ci.num_ack_pending });
+      } catch (e) {
+        const code = e instanceof JetStreamApiError ? e.code : undefined;
+        if (code === JetStreamApiCodes.StreamNotFound) return { kind: "no-stream" };
+        if (code === JetStreamApiCodes.ConsumerNotFound) continue;
+        return { kind: "failed", message: (e as Error).message };
+      }
+    }
+    return { kind: "ok", consumers };
+  } finally {
+    await nc.close().catch(() => {});
+  }
+}
+
+/** Pure: on a remote space, the ps rows whose inbox lag this machine may claim — spawned by THIS
+ *  machine's manager (`instanceId`) and carrying the incarnation that names their durable. */
+export function hostedLagTargets(rows: PsRow[], localInstanceId: string | undefined): Array<{ name: string; id: string; durable: string }> {
+  if (!localInstanceId) return [];
+  return rows.flatMap((r) => {
+    if (r.instanceId !== localInstanceId || !r.id || !r.lifecycleUid) return [];
+    const p = parsePrincipalKey(wirePrincipal(r.id));
+    return p ? [{ name: r.name, id: r.id, durable: dmDurable(p.owner, p.actor, r.lifecycleUid) }] : [];
+  });
 }
 
 /**
@@ -830,8 +882,11 @@ export interface CollectOpts {
  */
 export async function collectStatus(space: string, ctl?: ManagerControl, opts: CollectOpts = {}): Promise<{ rows: AgentStatus[]; errors: string[] }> {
   const server = pawServer(space);
-  const consumers = listDmConsumers(space, server); // independent of everything below — start it now
-  consumers.catch(() => {}); // awaited later; never an unhandled rejection meanwhile
+  const remote = isRemoteSpace(space);
+  // Local: one listing, independent of everything below — start it now. Remote: per-durable reads of
+  // the agents this machine hosts, which needs the ps rows first (see readDmConsumers).
+  const consumers = remote ? undefined : listDmConsumers(space, server);
+  consumers?.catch(() => {}); // awaited later; never an unhandled rejection meanwhile
   let agents = listAgents(space);
   const runtime = readRuntimeMarker(space);
   // A caller that polls (paw web) passes its long-lived handle; a one-shot CLI opens and closes one.
@@ -897,12 +952,18 @@ export async function collectStatus(space: string, ctl?: ManagerControl, opts: C
   };
   // Inbox lag needs the agent's mesh id: a ps-listed agent's nkey (minted at spawn), or a foreground
   // agent's roster card.id. A registered-but-unlisted, non-foreground agent has no consumer → "—".
-  const withIds = agents
-    .map(({ name }) => ({ name, id: psByName.get(name)?.id ?? (fgByName.has(name) || unmanagedLive(name) ? rosterByName.get(name)?.id : undefined) }))
-    .concat([...psByName.values()].filter((r) => !agents.some((a) => a.name === r.name)).map((r) => ({ name: r.name, id: r.id })))
-    .filter((a): a is { name: string; id: string } => typeof a.id === "string" && a.id.length > 0);
+  // A REMOTE space claims lag only for seats THIS machine's manager spawned: a roster-only (unmanaged)
+  // peer there may be another machine's agent, and its durable is not ours to read or report.
+  const hostedLag = remote ? hostedLagTargets([...psByName.values()], localManagerInstanceId(space)) : [];
+  const withIds = remote
+    ? hostedLag.map(({ name, id }) => ({ name, id }))
+    : agents
+        .map(({ name }) => ({ name, id: psByName.get(name)?.id ?? (fgByName.has(name) || unmanagedLive(name) ? rosterByName.get(name)?.id : undefined) }))
+        .concat([...psByName.values()].filter((r) => !agents.some((a) => a.name === r.name)).map((r) => ({ name: r.name, id: r.id })))
+        .filter((a): a is { name: string; id: string } => typeof a.id === "string" && a.id.length > 0);
   const inboxErrors: string[] = [];
-  const inboxByName = inboxLag(withIds.length ? await consumers : { kind: "no-stream" }, server, withIds, inboxErrors);
+  const listing = !withIds.length ? ({ kind: "no-stream" } as const) : remote ? await readDmConsumers(space, server, hostedLag.map((t) => t.durable)) : await consumers!;
+  const inboxByName = inboxLag(listing, server, withIds, inboxErrors);
   const gitByFolder = await git;
   const procs = await procsByPin;
   const rows: AgentStatus[] = agents.map(({ folder, name }) => {

@@ -2,8 +2,12 @@
  * `paw mesh` — which spaces live on a REMOTE broker (src/remote-mesh.ts).
  *
  *   paw mesh [ls] [--json]                                   list remote records
- *   paw mesh add <space> --server tls://host:port --root <dir> [--force]
+ *   paw mesh add <space> --server tls://host:port --root <dir> [--as <name>] [--force]
+ *   paw mesh set <space> --as <name>                          your mesh name on that space
  *   paw mesh rm <space>
+ *
+ * `--as` is the operator's mesh name on the space (src/names.ts `humanPeer`) — default `you`. On a
+ * SHARED broker every operator's mailbox would otherwise register as `you`; pick a distinct one.
  *
  * `--root` is a directory whose `.cotal/auth/auth.json` is the space's account signer — the file
  * `cotal mint --signer` writes on the box that runs the broker. It is a bearer secret: paw checks it
@@ -14,17 +18,20 @@ import { statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { registry, type Command } from "@cotal-ai/core";
 import { authDir, loadSpaceAuth } from "@cotal-ai/workspace";
+import { HUMAN_PEER } from "../names.ts";
 import { DEFAULT_SPACE } from "../space.ts";
-import { checkRemoteServer, checkSpaceName, listRemoteMeshes, readRemoteMesh, removeRemoteMesh, writeRemoteMesh } from "../remote-mesh.ts";
+import { checkHumanName, checkRemoteServer, checkSpaceName, listRemoteMeshes, readRemoteMesh, removeRemoteMesh, writeRemoteMesh } from "../remote-mesh.ts";
 import { writeJson } from "../stdout.ts";
 
-const USAGE = "mesh [ls [--json]] | mesh add <space> --server tls://host:port --root <dir> [--force] | mesh rm <space>";
+const USAGE = "mesh [ls [--json]] | mesh add <space> --server tls://host:port --root <dir> [--as <name>] [--force] | mesh set <space> --as <name> | mesh rm <space>";
 
 export interface MeshArgs {
-  verb: "ls" | "add" | "rm";
+  verb: "ls" | "add" | "set" | "rm";
   space?: string;
   server?: string;
   root?: string;
+  /** `--as`: the operator's mesh name on this space (validated by checkHumanName). */
+  human?: string;
   force: boolean;
   json: boolean;
 }
@@ -43,6 +50,7 @@ export function parseMeshArgs(argv: string[]): MeshArgs {
     };
     if (a === "--server") out.server = value();
     else if (a === "--root") out.root = value();
+    else if (a === "--as") out.human = checkHumanName(value());
     else if (a === "--space") flagSpace = value();
     else if (a === "--force") out.force = true;
     else if (a === "--json") out.json = true;
@@ -50,11 +58,13 @@ export function parseMeshArgs(argv: string[]): MeshArgs {
     else pos.push(a);
   }
   const verb = pos.shift() ?? "ls";
-  if (verb !== "ls" && verb !== "add" && verb !== "rm") throw new Error(`paw: unknown \`mesh ${verb}\` — ${USAGE}`);
+  if (verb !== "ls" && verb !== "add" && verb !== "set" && verb !== "rm") throw new Error(`paw: unknown \`mesh ${verb}\` — ${USAGE}`);
   out.verb = verb;
   if (pos.length > 1) throw new Error(`paw: unexpected "${pos[1]}" — ${USAGE}`);
   out.space = pos[0] ?? (verb === "ls" ? undefined : flagSpace);
   if (verb !== "add" && (out.server || out.root || out.force)) throw new Error(`paw: --server/--root/--force belong to \`paw mesh add\` — ${USAGE}`);
+  if (out.human !== undefined && verb !== "add" && verb !== "set") throw new Error(`paw: --as belongs to \`paw mesh add\` / \`paw mesh set\` — ${USAGE}`);
+  if (verb === "set" && out.human === undefined) throw new Error(`paw: \`paw mesh set\` needs --as <name> — ${USAGE}`);
   return out;
 }
 
@@ -94,7 +104,7 @@ async function mesh(argv: string[]): Promise<void> {
     const all = listRemoteMeshes();
     if (args.json) return writeJson(all);
     if (!all.length) return console.log("no remote meshes — every space is on the local broker. add one: paw mesh add <space> --server tls://host:port --root <dir>");
-    for (const r of all) console.log(`${r.space.padEnd(20)} ${r.server.padEnd(36)} ${r.root}`);
+    for (const r of all) console.log(`${r.space.padEnd(20)} ${r.server.padEnd(36)} as ${(r.human ?? HUMAN_PEER).padEnd(16)} ${r.root}`);
     return;
   }
   const space = args.space;
@@ -107,6 +117,16 @@ async function mesh(argv: string[]): Promise<void> {
     if (!removeRemoteMesh(space)) throw new Error(`paw: space "${space}" has no remote record`);
     return console.log(`✓ "${space}" is no longer a remote mesh (the signer under its root was left alone)`);
   }
+  if (args.verb === "set") {
+    const existing = readRemoteMesh(space);
+    if (!existing) throw new Error(`paw: space "${space}" has no remote record — \`paw mesh add ${space} --server … --root … --as ${args.human}\` first (local spaces are always "${HUMAN_PEER}")`);
+    const { human: _old, ...rest } = existing;
+    writeRemoteMesh({ ...rest, ...(args.human !== HUMAN_PEER ? { human: args.human } : {}), ts: new Date().toISOString() });
+    console.log(`✓ you are "${args.human}" on "${space}" (was "${existing.human ?? HUMAN_PEER}")`);
+    console.log(`  running daemons keep the old name until restarted — \`paw restart --space ${space}\` (mailbox + manager, revives live agents with the new brief)`);
+    console.log(`  your identity (nkey, unread inbox) is unchanged: a DM inbox is keyed by id, not name`);
+    return;
+  }
   if (space === DEFAULT_SPACE) throw new Error(`paw: "${DEFAULT_SPACE}" is the local default space — a remote mesh needs its own space name`);
   if (!args.server) throw new Error(`paw: --server tls://host:port is required — ${USAGE}`);
   if (!args.root) throw new Error(`paw: --root <dir> is required (the dir whose .cotal/auth/auth.json is the signer) — ${USAGE}`);
@@ -115,8 +135,10 @@ async function mesh(argv: string[]): Promise<void> {
   const existing = readRemoteMesh(space);
   if (existing && !args.force)
     throw new Error(`paw: "${space}" is already remote (${existing.server}, root ${existing.root}) — pass --force to replace it`);
-  const path = writeRemoteMesh({ space, server, root, ts: new Date().toISOString() });
-  console.log(`✓ space "${space}" → ${server} (signer under ${root})`);
+  // --force keeps a name set earlier unless --as replaces it; "you" is the default, so it is not stored.
+  const human = args.human ?? existing?.human;
+  const path = writeRemoteMesh({ space, server, root, ...(human !== undefined && human !== HUMAN_PEER ? { human } : {}), ts: new Date().toISOString() });
+  console.log(`✓ space "${space}" → ${server} (signer under ${root}), you are "${human ?? HUMAN_PEER}" there`);
   console.log(`  record: ${path}`);
   console.log(`  next: paw dm --space ${space} <folder> "hi"   (paw runs a manager + mailbox here; it never starts that broker)`);
 }
@@ -125,7 +147,7 @@ const meshCommand: Command = {
   kind: "command",
   name: "mesh",
   group: "Mesh",
-  summary: "which spaces live on a remote broker (add/rm/ls); local spaces need no record",
+  summary: "which spaces live on a remote broker (add/set/rm/ls) and your name there; local spaces need no record",
   usage: USAGE,
   run: (a) => mesh([...a.raw]),
 };

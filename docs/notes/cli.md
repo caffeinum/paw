@@ -158,8 +158,11 @@ an old server ignores the header and frames land on "default". `rm` the file to 
 
 ## src/names.ts
 
-- `src/names.ts` — `HUMAN_PEER` constant (the name the human joins under), shared by the connector
-  brief and chat with zero deps to avoid a cycle.
+- `src/names.ts` — `HUMAN_PEER` = `"you"` (the default human name, and the UI's "me" label) and
+  `humanPeer(space)` = the operator's WIRE name on a space: the remote record's `human`
+  (`paw mesh add … --as` / `paw mesh set --as`), else `"you"`. Every human endpoint card and every
+  agent brief uses `humanPeer(space)`. Imports only the leaf remote-mesh.ts (no cycle).
+  → [remote-mesh.md#human-name](remote-mesh.md#human-name)
 
 ## paw global
 

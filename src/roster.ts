@@ -8,7 +8,7 @@
  * the second witness.
  */
 import { CotalEndpoint, type Presence } from "@cotal-ai/core";
-import { standInActor } from "./sleep-state.ts";
+import { standInActorFor } from "./sleep-state.ts";
 import { meshTls } from "./server.ts";
 
 /** How recent a presence heartbeat must be to count as a running agent. cotal heartbeats every 2s; a
@@ -26,10 +26,10 @@ export function presenceLive(p: { status: string; ts: number }, now: number, fre
 }
 
 /** A `paw sleep` stand-in holds the sleeping agent's NAME on the roster (so a DM can wake it) under its
- *  own actor. It is not the agent: reading it as live would mean never waking anything. Pure. */
+ *  own actor (a persisted nkey on a remote space). It is not the agent: reading it as live would mean never waking anything. Pure. */
 export function isStandIn(space: string, name: string, cardId: string): boolean {
-  const actor = standInActor(space, name);
-  return cardId === actor || cardId.endsWith(`.${actor}`);
+  const actor = standInActorFor(space, name);
+  return !!actor && (cardId === actor || cardId.endsWith(`.${actor}`));
 }
 
 /** Pick, per wanted name, the best roster record: a live one over an offline one, newest first. Stand-ins

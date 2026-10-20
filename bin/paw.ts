@@ -14,8 +14,9 @@
  */
 import { registry, type Command } from "@cotal-ai/core";
 import { spawnSync } from "node:child_process";
-import { downSpace, explicitSpace, expandEqFlags, expandShortForm, oneShotReplyNote, SHORT_FORMS, stripCotalNamespace, withDefaultSpace } from "../src/dispatch.ts";
+import { downSpace, explicitSpace, expandEqFlags, expandShortForm, hoistAddressSpace, oneShotReplyNote, remoteCotalArgv, SHORT_FORMS, stripCotalNamespace, withDefaultSpace } from "../src/dispatch.ts";
 import { cotaldViaNode, ensure, resolveSpace, stop } from "../src/lifecycle.ts";
+import { readRemoteMesh } from "../src/remote-mesh.ts";
 import { isRemoteSpace } from "../src/server.ts";
 
 /** Every command module, in the order they always registered — each self-registers into the registry
@@ -101,6 +102,7 @@ function help(): string {
     ...lines,
     `  ${"down".padEnd(width)}  stop the daemons paw started for this space`,
     "",
+    "address another space: <agent>#<space> = <agent> --space <space>   (paw dm intern#team2027 \"hi\"; quote it under zsh extendedglob)",
     "raw cotal verbs: paw cotal <cmd> …   (subprocess passthrough to the cotal CLI)",
   ].join("\n");
 }
@@ -127,7 +129,24 @@ try {
     const replyNote = oneShotReplyNote(rest);
     if (replyNote) console.error(replyNote);
     const spaceless = COTAL_SPACELESS.has(rest[0]);
-    const space = spaceless ? undefined : (await ensure({ needMesh: true, needManager: COTAL_NEEDS_MANAGER.has(rest[0]) })).space;
+    // A `--space` naming a REMOTE space is the space this verb needs up (as the command gate does);
+    // with no --space, the current space may itself be remote (PAW_SPACE=team2027).
+    const remote = spaceless ? undefined : readRemoteMesh(explicitSpace(rest) ?? resolveSpace());
+    const space = spaceless
+      ? undefined
+      : (await ensure({ needMesh: true, needManager: COTAL_NEEDS_MANAGER.has(rest[0]), ...(remote ? { space: remote.space } : {}) })).space;
+    if (remote) {
+      // cotal can't resolve a remote paw space by name: run it from the record root (its signer) with
+      // the record's server and no --space — see remoteCotalArgv.
+      const { argv: remoteArgv, droppedCreds } = remoteCotalArgv(rest, remote.server);
+      if (droppedCreds)
+        process.stderr.write(
+          `paw: --creds dropped — a raw creds file can't make control calls; cotal mints the one-shot instrument from ${remote.root}/.cotal/auth\n`,
+        );
+      const [exec, args] = cotaldViaNode(remoteArgv);
+      const res = spawnSync(exec, args, { stdio: "inherit", cwd: remote.root });
+      process.exit(res.status ?? 1);
+    }
     const [exec, args] = cotaldViaNode(space ? withDefaultSpace(rest, space) : rest);
     const res = spawnSync(exec, args, { stdio: "inherit" });
     process.exit(res.status ?? 1);
@@ -139,7 +158,7 @@ try {
     // claude.ts self-ensures, and appending a trailing `--space` would leak into the claude passthrough.
     // The remaining raw tokens go through verbatim (claude.ts peels its own --space/--name first).
     const { runClaude } = await import("../src/claude.ts");
-    await runClaude(raw.slice(1));
+    await runClaude(hoistAddressSpace(cmd, raw.slice(1)));
     process.exit(0); // runClaude normally process.exit()s on the child's exit; this is a fallback
   }
 
@@ -189,12 +208,14 @@ try {
 
   // The gate ensures the CURRENT space (PAW_SPACE or the default), as it always has — except when the
   // command names a REMOTE space with --space: then that space's broker/manager is the one it needs.
-  const named = explicitSpace(raw.slice(1));
+  // `<agent>#<space>` becomes `<agent> --space <space>` FIRST, so the gate below ensures that space.
+  const args = hoistAddressSpace(cmd, raw.slice(1));
+  const named = explicitSpace(args);
   const gate = named && isRemoteSpace(named) ? { space: named } : {};
   if (NEEDS_MANAGER.has(cmd)) await ensure({ needMesh: true, needManager: true, ...gate });
   else if (NEEDS_MESH.has(cmd)) await ensure({ needMesh: true, ...gate });
 
-  const argv = expandEqFlags(withDefaultSpace(raw.slice(1), resolveSpace()));
+  const argv = expandEqFlags(withDefaultSpace(args, resolveSpace()));
   await command.run({ values: {}, positionals: [], raw: argv });
 } catch (err) {
   // Operator-facing failures should read as one clear line, not a V8 stack dump. The errors paw

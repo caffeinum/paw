@@ -64,7 +64,7 @@ Each entry: what it is + the most load-bearing rule. Full notes behind the link.
 - `src/commands/bind.ts` — `paw bind`: one-time Telegram bind code minted over the mesh, as a distinct
   ephemeral peer (never HUMAN_PEER — would contend for the inbox durable). → [cli.md#paw-bind](docs/notes/cli.md#paw-bind)
 - `src/dispatch.ts` — `withDefaultSpace`, `stripCotalNamespace`, `expandEqFlags`. → [cli.md#srcdispatchts](docs/notes/cli.md#srcdispatchts)
-- `src/names.ts` — `HUMAN_PEER`, zero deps. → [cli.md#srcnamests](docs/notes/cli.md#srcnamests)
+- `src/names.ts` — `HUMAN_PEER` (default `you`, UI label) + `humanPeer(space)` (wire name: remote record `human` else `you`). → [cli.md#srcnamests](docs/notes/cli.md#srcnamests)
 - `src/global.ts` — `paw global`: always-on `global` agent at `~/.paw/global`, the wake authority;
   refuses to clobber a differently-named mapping. → [cli.md#paw-global](docs/notes/cli.md#paw-global)
 - `src/keeper.ts` — the unstick sweep on the global keeper tick (history; see the no-auto-restart rule). → [cli.md#keeper-unstick-sweep](docs/notes/cli.md#keeper-unstick-sweep)
@@ -101,6 +101,13 @@ Each entry: what it is + the most load-bearing rule. Full notes behind the link.
 - `src/remote-mesh.ts` + `src/commands/mesh.ts` — `paw mesh add <space> --server tls://… --root <dir>`: a
   space on a broker paw never starts; `root/.cotal/auth/auth.json` = the `cotal mint --signer` file
   (bearer secret, 0600, never printed). `pawServer(space)` routes; no record ⇒ local, unchanged.
+  `--as <name>` / `paw mesh set <space> --as <name>` = your human name there (`humanPeer(space)`, default
+  `you`; shared brokers need distinct ones). → [remote-mesh.md#human-name](docs/notes/remote-mesh.md#human-name)
+- `src/human-inbox.ts` — `paw chat` on a remote space provisions its own DM/DELIVER durables (agent creds
+  only BIND under auth) and retires them on quit, TLS required. → [remote-mesh.md](docs/notes/remote-mesh.md)
+- `src/hosted.ts` + `src/remote-creds.ts` + `src/sleep-dial.ts` — remote control is PINNED to this machine's
+  manager instance; `paw sleep` + INBOX lag only for agents hosted HERE (local persona + our instance),
+  with paw-signed narrow creds; others fail loud "hosted on another machine". → [remote-mesh.md](docs/notes/remote-mesh.md)
 
 ### Control rail → [control-rail.md](docs/notes/control-rail.md)
 - `src/control.ts` — the ONE door to the manager: v0.4 service endpoint (`resolveService` once, invoke
@@ -129,7 +136,8 @@ Each entry: what it is + the most load-bearing rule. Full notes behind the link.
 - `src/session.ts` — `readResumeId`, `transcriptExists`; leaf module. → [agents.md#srcsessionts](docs/notes/agents.md#srcsessionts)
 - **Two-writer guard** — never start an agent whose pinned session a standalone claude holds. → [agents.md#two-writer-guard](docs/notes/agents.md#two-writer-guard)
 - `src/open.ts` — `paw open`/`paw attach`: runtime-aware; tmux → real window, cmux → names the tab, pty
-  attach fails loud on cotal ≥0.25 (grant-based). → [agents.md#paw-open](docs/notes/agents.md#paw-open)
+  → cotal's own grant-based `attach` subprocess (remote space: cwd = record root, `--server`, NO
+  `--space`; `paw cotal <verb> --space <remote>` same rewrite). → [agents.md#pty-attach-cotal-084](docs/notes/agents.md#pty-attach-cotal-084)
 - `src/native-attach.ts` — `attachTmux`; default socket; `nudgeTmuxConfirm`. → [agents.md#native-attach](docs/notes/agents.md#native-attach)
 - `src/attach-client.ts` — ws pty attach client, now dead code. → [agents.md#attach-client](docs/notes/agents.md#attach-client)
 - Waking a sleeping agent: `cotal_dm("global", "wake <name>")`; the tty dev-channels prompt nudge. → [agents.md#waking-a-sleeping-agent-the-in-mesh-gap-and-the-tty-prompt](docs/notes/agents.md#waking-a-sleeping-agent-the-in-mesh-gap-and-the-tty-prompt)
@@ -140,6 +148,9 @@ Each entry: what it is + the most load-bearing rule. Full notes behind the link.
 - `src/addressing.ts` — folder→name registry (`folders.json` defaults + `agents.json` extras, never
   both); `ensureAgentSpawned` (wake gate: start/reuse/restart from ps liveness, starting-grace 15s,
   busy-guard 3min, persona channel grants `[">"]` + `subscribe: [general]`); `assertUnambiguousTarget`. → [addressing.md#srcaddressingts](docs/notes/addressing.md#srcaddressingts)
+- `<agent>#<space>` = `<agent> --space <space>` on every agent-naming verb: one parser
+  (`splitAddressSpace`, src/dispatch.ts), hoisted in bin/paw.ts before the gate; unknown space or a
+  disagreeing `--space` fails loud; github handles keep `#branch`. → [addressing.md#namespace](docs/notes/addressing.md#namespace)
 - `src/adopt.ts` — `paw adopt`: bring a past/running session live; make-before-break `--force`;
   self-adopt via detached child; `assertSafeRepin` (one agent per session, `--replace` to re-pin);
   worktree sessions adoptable from the repo root. → [addressing.md#paw-adopt](docs/notes/addressing.md#paw-adopt)
@@ -174,6 +185,8 @@ Each entry: what it is + the most load-bearing rule. Full notes behind the link.
 - `src/chat.ts` — the headline REPL as a persistent human peer; bare `paw chat` = `.`, `--all` global,
   `@agent` filtered (hidden messages never marked read), `#channel`; `--fresh` is the birth verb (fails
   if an agent exists); follows the conversation only when input is empty. → [chat.md#srcchatts](docs/notes/chat.md#srcchatts)
+- `src/chat-own.ts` — chat's echo tap + tasks seed; remote: only "you"'s own send subjects (narrow
+  `chat-echo`/`chat-history` creds), never the space wildcard. → [remote-mesh.md#paw-chat--paw-web-taps](docs/notes/remote-mesh.md#paw-chat--paw-web-taps)
 - `src/images.ts` — `[Image #N]` attachments as TEXT (never a new part kind); stage ephemeral paths. → [chat.md#images](docs/notes/chat.md#images)
 - `src/paste.ts` — bracketed paste → one `[Pasted text #N]` message; suppression starts at the START marker. → [chat.md#paste](docs/notes/chat.md#paste)
 - `src/multiline.ts` — alt/shift+enter and trailing `\` continuation. → [chat.md#multiline](docs/notes/chat.md#multiline)

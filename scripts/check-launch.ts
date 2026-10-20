@@ -100,6 +100,16 @@ assert(
   /CHANNELS ARE DIFFERENT/.test(args[appendIdx + 1]) && /NOT required to answer/.test(args[appendIdx + 1]),
   "brief: a channel message doesn't oblige a reply (only DMs do)",
 );
+assert(args[appendIdx + 1].includes('cotal_dm("you"'), "brief: the human is \"you\" on a space with no remote record");
+{
+  // A remote space's record may name the operator (`paw mesh add … --as` / `paw mesh set`): the brief must say so.
+  const { writeRemoteMesh, removeRemoteMesh } = await import("../src/remote-mesh.ts");
+  writeRemoteMesh({ space: "demoremote", server: "tls://127.0.0.1:1", root: work, human: "aleks-mac-mini", ts: new Date().toISOString() });
+  const ra = pawConnector.buildLaunch({ space: "demoremote", workspaceRoot: work, name: "rt" }).args;
+  const rb = ra[ra.indexOf("--append-system-prompt") + 1] ?? "";
+  assert(rb.includes('peer "aleks-mac-mini", e.g. cotal_dm("aleks-mac-mini"') && !rb.includes('cotal_dm("you"'), "brief: a remote space's `human` is the peer agents reply to");
+  removeRemoteMesh("demoremote");
+}
 assert(spec.env?.COTAL_CHANNEL === "1", "COTAL_CHANNEL=1 inherited from cotal connector");
 assert(spec.env?.COTAL_NAME === "tester", "COTAL_NAME passed through");
 

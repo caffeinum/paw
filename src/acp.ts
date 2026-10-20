@@ -20,15 +20,15 @@ import { resolveAcpHost } from "./acp-host.ts";
 import { beadsDir } from "./beads-dir.ts";
 import { ADDRESSING_BRIEF, CHANNELS_BRIEF, OPERATOR_REQUESTS_BRIEF, TASKS_BRIEF, UNATTENDED_BRIEF, WAKE_BRIEF } from "./brief.ts";
 import { niced } from "./connector.ts";
-import { HUMAN_PEER } from "./names.ts";
+import { HUMAN_PEER, humanPeer } from "./names.ts";
 import { personaValue, readNice } from "./session.ts";
 
 export { ACP_AGENT } from "./acp-agent.ts";
 
-export function acpBrief(name: string): string {
+export function acpBrief(name: string, human: string = HUMAN_PEER): string {
   return [
     `You are "${name}", a paw agent rooted at this folder and a peer on the cotal mesh, running on an ACP harness.`,
-    `The human operator is the peer "${HUMAN_PEER}"; a teammate is addressed by their agent name.`,
+    `The human operator is the peer "${human}"; a teammate is addressed by their agent name.`,
     ...ADDRESSING_BRIEF,
     ...CHANNELS_BRIEF,
     ...UNATTENDED_BRIEF,
@@ -80,7 +80,7 @@ export const pawAcpConnector: Connector = {
         ...spec,
         env: {
           ...spec.env,
-          COTAL_ACP_INSTRUCTIONS: acpBrief(opts.name),
+          COTAL_ACP_INSTRUCTIONS: acpBrief(opts.name, humanPeer(opts.space)),
           BEADS_DIR: beadsDir(),
           BEADS_ACTOR: opts.name,
         },

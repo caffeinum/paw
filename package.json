@@ -56,7 +56,8 @@
     "check:wake-gate": "node scripts/check-wake-gate.ts",
     "check:prune": "node scripts/check-prune.ts",
     "check:remote": "node scripts/check-remote.ts",
-    "check:bypass-consent": "node scripts/check-bypass-consent.ts"
+    "check:bypass-consent": "node scripts/check-bypass-consent.ts",
+    "check:hash-space": "node scripts/check-hash-space.ts"
   },
   "dependencies": {
     "@cotal-ai/cli": "0.84.0",
@@ -70,6 +71,8 @@
     "@cotal-ai/tmux": "0.84.0",
     "@cotal-ai/workspace": "0.84.0",
     "@nats-io/jetstream": "^3.4.0",
+    "@nats-io/jwt": "0.0.10-5",
+    "@nats-io/nkeys": "2.0.3",
     "@nats-io/transport-node": "^3.4.0",
     "cotal-connector-acp": "file:vendor/cotal-connector-acp-0.1.0.tgz"
   },

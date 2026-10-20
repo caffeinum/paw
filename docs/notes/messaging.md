@@ -4,6 +4,9 @@ Moved verbatim from CLAUDE.md (2026-10-02 split). Index: [CLAUDE.md](../../CLAUD
 
 ## paw dm
 
+("you" below is the DEFAULT human name; on a remote space with a record `human` it is that name —
+`humanPeer(space)`, [remote-mesh.md#human-name](remote-mesh.md#human-name).)
+
 - `src/dm.ts` — `paw dm <name|folder|repo@branch> "<msg>"|-`: **fire-and-forget** DM to an agent. A lone
   **`-`** reads the message on **STDIN** — for producers that hand text to a command rather than build an
   argv (voice dictation prompted it: yapless runs its `output.command` with the transcript on stdin).
