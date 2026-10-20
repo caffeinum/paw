@@ -78,7 +78,7 @@ import { isContinueKey, joinLines, peelContinuation } from "./multiline.ts";
 import { ensureManagerOn, ensureSpaceFor, resolveSpace } from "./lifecycle.ts";
 import { chatAgentInfo } from "./agent-summary.ts";
 import { renderMarkdown } from "./markdown.ts";
-import { HUMAN_PEER } from "./names.ts";
+import { HUMAN_PEER, humanPeer } from "./names.ts";
 import { describeInboxBindFailure, openHumanInbox } from "./human-inbox.ts";
 import { cachedLedger, ledgerName } from "./peer-ledger.ts";
 import { hueSgr, parsePersonalityArg, personaGlyph, personalityFor, type Glyph } from "./personality.ts";
@@ -510,8 +510,8 @@ async function chat(argv: string[]): Promise<void> {
   const humanAuth = inbox.auth;
   const creds = humanAuth.creds;
   const card = creds
-    ? { name: HUMAN_PEER, kind: "endpoint" as const }
-    : { name: HUMAN_PEER, kind: "endpoint" as const, id: stableHumanId(space) };
+    ? { name: humanPeer(space), kind: "endpoint" as const }
+    : { name: humanPeer(space), kind: "endpoint" as const, id: stableHumanId(space) };
   const ep = new CotalEndpoint({
     space,
     servers: server,

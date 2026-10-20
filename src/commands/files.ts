@@ -6,14 +6,14 @@
  * rides in the message, so this reader NEVER hardcodes the endpoint's files dir; it just reads the
  * announcements and prints the paths for an agent (or you) to open with a Read tool.
  *
- * PURE READER, same observer shape as `paw history`: HUMAN_PEER card, registerPresence:false +
+ * PURE READER, same observer shape as `paw history`: humanPeer(space) card, registerPresence:false +
  * consume:false + watchPresence:false — it never binds a durable consumer, never appears in the
  * roster, just reads the channel backlog and exits.
  */
 import { CotalEndpoint, assertValidChannel, registry, type Command, type CotalMessage } from "@cotal-ai/core";
 import { humanEndpointAuth, stableHumanId } from "../addressing.ts";
 import { resolveSpace } from "../lifecycle.ts";
-import { HUMAN_PEER } from "../names.ts";
+import { humanPeer } from "../names.ts";
 import { formatWhen } from "./history.ts";
 import { ago } from "../status.ts";
 import { pawServer } from "../server.ts";
@@ -128,8 +128,8 @@ async function files(argv: string[]): Promise<void> {
   const humanAuth = await humanEndpointAuth(space, "admin");
   const creds = humanAuth.creds;
   const card = creds
-    ? { name: HUMAN_PEER, kind: "endpoint" as const }
-    : { name: HUMAN_PEER, kind: "endpoint" as const, id: stableHumanId(space) };
+    ? { name: humanPeer(space), kind: "endpoint" as const }
+    : { name: humanPeer(space), kind: "endpoint" as const, id: stableHumanId(space) };
   const ep = new CotalEndpoint({ space, servers: server, ...humanAuth, card, registerPresence: false, consume: false, watchPresence: false });
   ep.on("error", (e: Error) => console.error(c.red("! " + e.message)));
   await ep.start();
