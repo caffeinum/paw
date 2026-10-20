@@ -153,6 +153,8 @@ an old server ignores the header and frames land on "default". `rm` the file to 
   word in a message body), `stripCotalNamespace` (peel the `paw cotal <cmd>` prefix so bin routes the
   remainder to the cotald subprocess), and `expandEqFlags` (`--space=x`/`--server=x` → two-token form
   the commands' hand parsers read; only those two flags, positionals untouched). check:dispatch.
+  `oneShotReplyNote`: `paw cotal send dm|ask` without `--creds` warns on stderr that a reply to cotal's
+  one-shot sender reaches nobody → [messaging.md#replies-to-a-one-shot-cotal-send-the-headless-join-missing-dms](messaging.md#replies-to-a-one-shot-cotal-send-the-headless-join-missing-dms).
 
 ## src/names.ts
 

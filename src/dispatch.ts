@@ -20,6 +20,29 @@ export function stripCotalNamespace(argv: string[]): string[] {
 }
 
 /**
+ * The stderr note for `paw cotal send dm|ask` without `--creds`, else undefined.
+ *
+ * cotal's one-shot `send` connects as a FRESH principal every run (`connectOrThrow` mints
+ * `newIdentity()` on an auth mesh; an open mesh self-mints) and binds no inbox, so an agent that
+ * replies to the sender — which the mesh brief tells it to do — stores the reply on a subject nobody
+ * will ever read. It shows in `paw history` as `agent → <login>@<host>` and nowhere else; a headless
+ * `cotal join` on the same machine is a DIFFERENT principal and never sees it (team2027, 2026-10-19).
+ * `--creds` of a session that holds an inbox (a running join) makes the sender that principal, so
+ * replies reach it. `msg` is not flagged: channel replies go to the channel. Pure; check:dispatch.
+ */
+export function oneShotReplyNote(argv: string[]): string | undefined {
+  if (argv[0] !== "send" || (argv[1] !== "dm" && argv[1] !== "ask")) return undefined;
+  const end = argv.indexOf("--");
+  const mine = end === -1 ? argv : argv.slice(0, end);
+  if (mine.some((a) => a === "--creds" || a.startsWith("--creds="))) return undefined;
+  return (
+    "paw: note — `cotal send` speaks from a one-shot identity with no inbox: a reply to it reaches nobody " +
+    "(it shows only in `paw history`). For a reply you can read, use `paw dm <agent> \"…\"` (replies land in " +
+    "`paw inbox`), or pass --creds of a session that holds an inbox (e.g. a running `cotal join`)."
+  );
+}
+
+/**
  * Append `--space <space>` as a TRAILING flag (parseArgs collects flags from anywhere, so a command
  * that reads its subcommand from the FIRST positional — e.g. cotal's `history clear` via the
  * passthrough — still sees it; injecting at the front would shadow that subcommand). Skip injection

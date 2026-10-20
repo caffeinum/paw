@@ -14,7 +14,7 @@
  */
 import { registry, type Command } from "@cotal-ai/core";
 import { spawnSync } from "node:child_process";
-import { downSpace, explicitSpace, expandEqFlags, expandShortForm, SHORT_FORMS, stripCotalNamespace, withDefaultSpace } from "../src/dispatch.ts";
+import { downSpace, explicitSpace, expandEqFlags, expandShortForm, oneShotReplyNote, SHORT_FORMS, stripCotalNamespace, withDefaultSpace } from "../src/dispatch.ts";
 import { cotaldViaNode, ensure, resolveSpace, stop } from "../src/lifecycle.ts";
 import { isRemoteSpace } from "../src/server.ts";
 
@@ -124,6 +124,8 @@ try {
       console.log("paw cotal <cmd> — passthrough to the cotal CLI; e.g. `paw cotal console`");
       process.exit(0);
     }
+    const replyNote = oneShotReplyNote(rest);
+    if (replyNote) console.error(replyNote);
     const spaceless = COTAL_SPACELESS.has(rest[0]);
     const space = spaceless ? undefined : (await ensure({ needMesh: true, needManager: COTAL_NEEDS_MANAGER.has(rest[0]) })).space;
     const [exec, args] = cotaldViaNode(space ? withDefaultSpace(rest, space) : rest);

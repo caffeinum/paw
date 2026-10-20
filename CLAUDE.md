@@ -166,6 +166,8 @@ Each entry: what it is + the most load-bearing rule. Full notes behind the link.
   `--json` never advances the cursor; `--sent`, `--mark-read`. → [messaging.md#paw-inbox](docs/notes/messaging.md#paw-inbox)
 - `src/feed.ts` — `messageText` (THE flattener), `observerEndpoint`, `readConversation`, `pollLoop`. → [messaging.md#srcfeedts](docs/notes/messaging.md#srcfeedts)
 - `src/cursor.ts` — forward-only unread cursor shared by inbox + chat. → [messaging.md#srccursorts](docs/notes/messaging.md#srccursorts)
+- `paw cotal send dm|ask` sends from a one-shot principal with no inbox — a reply reaches nobody (only
+  `paw history`); paw warns on stderr. Headless `cotal join` DOES print DMs to it. → [messaging.md#replies-to-a-one-shot-cotal-send-the-headless-join-missing-dms](docs/notes/messaging.md#replies-to-a-one-shot-cotal-send-the-headless-join-missing-dms)
 - Channel replay on restart; bound it with `paw cotal channels default --window 1h`. → [messaging.md#channel-replay-why-a-restarted-agent-gets-flooded](docs/notes/messaging.md#channel-replay-why-a-restarted-agent-gets-flooded)
 
 ### paw chat → [chat.md](docs/notes/chat.md)
