@@ -15,6 +15,9 @@
  *
  *   COTAL_BIN=<cotal-ai@0.84.0>/dist/cotal.js node scripts/e2e-remote.ts
  *
+ * E2E_HUMAN=<name> adds `--as <name>` to `paw mesh add`: the mailbox presence must then appear under
+ * that name (never "you") and the agent's reply — briefed to cotal_dm that name — must reach the inbox.
+ *
  * COTAL_BIN must be the `cotal-ai` package at the version of the repo's @cotal-ai/cli (it runs the
  * broker's delivery daemon, which @cotal-ai/cli alone cannot start). Install it OUTSIDE the repo,
  * e.g. `npm i --prefix /tmp/cotal084 --ignore-scripts cotal-ai@0.84.0`.
@@ -32,6 +35,7 @@ const want = JSON.parse(readFileSync(join(REPO, "node_modules/@cotal-ai/cli/pack
 const have = JSON.parse(readFileSync(join(dirname(dirname(COTAL)), "package.json"), "utf8")) as { name: string; version: string };
 if (have.name !== "cotal-ai" || have.version !== want) throw new Error(`COTAL_BIN is ${have.name}@${have.version}; the repo pins cotal ${want}`);
 
+const HUMAN = process.env.E2E_HUMAN?.trim() || "you";
 const tag = `${process.pid}`;
 const R = `remotetest-${tag}`; // the remote space
 const DECOY = `remotedecoy-${tag}`; // PAW_SPACE: a local space nothing should touch
@@ -105,8 +109,9 @@ try {
   const loose = paw(["mesh", "add", R, "--server", server, "--root", localRoot]);
   ok("mesh add refuses a world-readable signer", loose.status !== 0 && /chmod 600/.test(out(loose)));
   chmodSync(signer, 0o600);
-  const add = paw(["mesh", "add", R, "--server", server, "--root", localRoot]);
+  const add = paw(["mesh", "add", R, "--server", server, "--root", localRoot, ...(HUMAN !== "you" ? ["--as", HUMAN] : [])]);
   ok("mesh add records the remote space", add.status === 0, out(add).split("\n")[0]);
+  ok(`mesh ls shows you as "${HUMAN}"`, out(paw(["mesh", "ls"])).includes(`as ${HUMAN}`));
   ok("the signer never reaches the output", !out(add).includes("signingSeed") && !out(paw(["mesh", "--json"])).includes("signingSeed"));
 
   // ── 2. TLS trust is required, and paw never starts a broker for it ───────────────────────────────
@@ -133,7 +138,9 @@ try {
   // ── 4. who / status / restart ───────────────────────────────────────────────────────────────────
   const name = "agent";
   const who = paw(["who", "--space", R]);
-  ok("who --space R lists the agent and you", who.status === 0 && out(who).includes(name) && out(who).includes("you"), out(who).trim().split("\n")[0]);
+  const whoNames = out(who).replace(/\x1b\[[0-9;]*m/g, "").split("\n").map((l) => l.trim().split(/[\s/]+/)[0]);
+  ok(`who --space R lists the agent and the mailbox as "${HUMAN}"`, who.status === 0 && out(who).includes(name) && whoNames.includes(HUMAN), out(who).trim().split("\n")[0]);
+  if (HUMAN !== "you") ok('…and nobody is "you" on the space', !whoNames.includes("you"), out(who).trim().replace(/\n/g, " | "));
   const st = paw(["status", "--space", R, "--json"]);
   let row: { name?: string; live?: boolean; mesh?: string } | undefined;
   let errors: string[] | undefined;

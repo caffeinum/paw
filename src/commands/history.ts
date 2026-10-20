@@ -11,7 +11,7 @@
 import { CotalEndpoint, assertValidChannel, registry, type Command, type CotalMessage } from "@cotal-ai/core";
 import { humanEndpointAuth, stableHumanId } from "../addressing.ts";
 import { resolveSpace } from "../lifecycle.ts";
-import { HUMAN_PEER } from "../names.ts";
+import { humanPeer } from "../names.ts";
 import { messageText as textOf } from "../feed.ts";
 import { pawServer } from "../server.ts";
 import { cachedLedger, peerLabel } from "../peer-ledger.ts";
@@ -104,8 +104,8 @@ async function history(argv: string[]): Promise<void> {
   const humanAuth = await humanEndpointAuth(space, "admin");
   const creds = humanAuth.creds;
   const card = creds
-    ? { name: HUMAN_PEER, kind: "endpoint" as const }
-    : { name: HUMAN_PEER, kind: "endpoint" as const, id: stableHumanId(space) };
+    ? { name: humanPeer(space), kind: "endpoint" as const }
+    : { name: humanPeer(space), kind: "endpoint" as const, id: stableHumanId(space) };
   const ep = new CotalEndpoint({ space, servers: server, ...humanAuth, card, registerPresence: false, consume: false, watchPresence: false });
   ep.on("error", (e: Error) => console.error(c.red("! " + e.message)));
   await ep.start();

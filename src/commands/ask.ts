@@ -7,7 +7,7 @@
 import { CotalEndpoint, registry, type Command } from "@cotal-ai/core";
 import { humanEndpointAuth, stableHumanId } from "../addressing.ts";
 import { resolveSpace } from "../lifecycle.ts";
-import { HUMAN_PEER } from "../names.ts";
+import { humanPeer } from "../names.ts";
 import { pawServer } from "../server.ts";
 
 const tty = process.stdout.isTTY === true;
@@ -47,8 +47,8 @@ async function ask(argv: string[]): Promise<void> {
   const humanAuth = await humanEndpointAuth(space, "operator");
   const creds = humanAuth.creds;
   const card = creds
-    ? { name: HUMAN_PEER, kind: "endpoint" as const }
-    : { name: HUMAN_PEER, kind: "endpoint" as const, id: stableHumanId(space) };
+    ? { name: humanPeer(space), kind: "endpoint" as const }
+    : { name: humanPeer(space), kind: "endpoint" as const, id: stableHumanId(space) };
   const ep = new CotalEndpoint({
     space,
     servers: server,
