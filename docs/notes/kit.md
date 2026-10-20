@@ -22,6 +22,7 @@ variant: high          # optional — codex reasoning effort (kit --effort)
 cwd: /Users/aleks/Github/team2027/evals
 resume: <uuid>         # minted at birth, as for every paw agent
 storage: claude        # optional — see "Session storage"; absent (or `kit`) = kit's own store
+kitArgs: ["-e","high"] # optional — kit's own flags, verbatim, appended last (a -m/-P here can replace provider:)
 ---
 <persona body — becomes part of kit's system prompt>
 ```
@@ -45,7 +46,17 @@ storage: claude        # optional — see "Session storage"; absent (or `kit`) =
     next section. A brand-new agent gets a fresh session; a claude agent switched to kit continues its
     claude transcript (in place with `storage: claude`, as a fork without).
   - **no cotal MCP / hub shim**: kit speaks cotal itself (built-in cotal_dm/cotal_send/cotal_roster).
-    Shared MCP servers (`paw mcp`) cannot reach it — the connector refuses a non-empty share.
+    Shared MCP servers (`paw mcp`) cannot reach it, so `ensureAgentSpawned` sends every kit spawn
+    `shareTools: []` whatever the persona says (a persona `shareTools: a,b` gets a stderr note). The
+    connector still refuses a non-empty share as a backstop. **Why (the old "kit needs `shareTools:
+    none`" gotcha, reproduced 2026-10-20):** with no selection, cotal hands a connector every server its
+    config declares FOR it (`connectors.kit.mcpServers`); the kit connector refused that set inside
+    `buildLaunch`, which runs AFTER the manager has accepted the spawn and logs nothing, so paw only saw
+    "never reached the mesh within 60s — its process is gone". For the same reason the CLI now runs the
+    connector's own persona read (`readKitPersona`) and kit's parse of `kitArgs` before spawning: a
+    refusal there is loud, at once, instead of a silent 60s timeout. A kit that EXITS at launch (a model
+    it can't resolve, `-P` contradicting `-m`) prints why on its own stderr, which the pty runtime
+    doesn't keep; paw's error now names the exit (the manager's `seat reaped` cause) and the kitArgs.
   - **env**: an OS allow-list (PATH, HOME, TERM, LANG, TMPDIR, XDG_*, KIT_HOME…) + `COTAL_NAME`/
     `COTAL_SPACE` (paw's process-identity stamps) + `BEADS_DIR`/`BEADS_ACTOR`. Nothing else of the
     manager's env. Tokens: kit's own `~/.kit/auth.json`, else borrowed read-only from codex/opencode.
@@ -133,8 +144,62 @@ never creates; `--agent` is the explicit ask. Types: `kit`, `codex`, `opencode`,
 claude), `provider:` (kit only, default codex), `model:` (non-claude only — a claude `--model` stays a
 per-spawn flag), `shareTools: none` (kit), a fresh `resume:` uuid, `cwd:`, grants and the default body.
 Fails loud: an unknown type; `--provider` without `--agent kit`; `--agent X` on an existing agent whose
-`agent:` is not X (or a different kit provider) — switching harness is a persona edit; `--agent` with
-`--all` or a bare unregistered name (no folder). Works with `--fresh` and `--name`.
+`agent:` is not X (or a different kit provider) — switching an EXISTING agent's harness is `paw restart
+<agent> --agent …` (next section); `--agent` with `--all` or a bare unregistered name (no folder).
+Works with `--fresh` and `--name`.
+
+## Swapping a harness: `paw restart <agent> --agent kit|claude`
+
+```
+paw restart <agent> --agent kit -- <kit flags verbatim>     # e.g. -- -m grok-4.7 -e high
+paw restart <agent> --agent kit --model grok-4.7             # --model is shared by claude & kit, ok before --
+paw restart <agent> --agent claude                           # swap back
+```
+
+`src/swap.ts` (`planSwap` pure, `applySwap` writes), parsed by `parseArgs` in src/commands/runtime.ts,
+then the ordinary `restartAgent`. Principle: transparent, no inventions.
+
+- **kit flags are kit's.** Everything after `--` is stored VERBATIM as persona `kitArgs:` (a JSON array,
+  like `claudeArgs:` — `readKitArgs`, src/session.ts) and appended LAST to every `kit run` argv
+  (kitLaunch), so on a repeated flag Go's flag package keeps the operator's. paw renames nothing and
+  has no `--provider` of its own. `kit run` accepts `-m`/`--model [provider/]model`, `-P`/`--provider`,
+  `-e`/`--effort` (and its other run flags: `--compact-at`, `--turn-timeout`, …) — checked against kit's
+  source and the binary. A `-m`/`-P` in `kitArgs` stands in for `provider:` (readKitPersona).
+- **Checked by kit itself, before anything is written:** `preflightKitArgs` runs `kit run <kitArgs> -h`.
+  Exit 0 (help) = every flag parsed. Exit 2 = kit's own "unknown flag" line, shown as is. Exit 1 = the
+  `-h` was never read: a bare word or `--` stopped Go's flag parse, and in a real launch every flag
+  after it would have been silently ignored — refused. The same preflight runs on every kit spawn
+  (`ensureAgentSpawned`), so a hand edit or a rebuilt binary that dropped a flag fails loud too.
+  Value checks (an unknown model, `-P codex -m grok-4.7`) are kit's at launch; that exit is named in
+  paw's error (see "no cotal MCP" above).
+- **paw-owned flags are refused** in `kitArgs` (`checkKitArgs`): `--cwd --name --space --server
+  --channels --actor --lifecycle-uid --append-system-prompt-file --session --resume --session-id
+  --overwrite` — each names the persona key that owns it (`resume:`, `storage: claude`, …).
+- **claude → kit** needs the `resume:` pin (none ⇒ fails loud: there is no session to continue; `paw
+  start <agent>` once mints it) and sets **`storage: claude`** (kit `--overwrite`): an existing agent
+  stays bound to its claude transcript instead of forking it into kit's store (the operator's rule).
+  The output says which file it keeps appending to, or that none exists yet. A claude persona that
+  pins `model:`/`variant:` is refused (kit would read a claude model name as its own). Needs a model
+  or provider (`-m`, `-P` or `--model`). `shareTools:` is left alone for the swap back.
+- **kit → kit** replaces `kitArgs`. The one overlap: a persona `provider:`/`model:` (dropped when the new
+  flags carry `-m`) or `variant:` (dropped on `-e`) is REMOVED and printed, so one record says it.
+  Existing kit agents (tracepaper, evals-reviewer) keep working on `provider:`/`model:` untouched until
+  someone passes flags.
+- **kit → claude** removes `agent:`, `kitArgs:`, `provider:`, `storage:`, `model:`, `variant:`, keeps the
+  pin. If the agent ran on kit's own store, the output warns that its kit turns stay in the fork and
+  claude resumes the claude original without them.
+- **`--model`** before `--` is the one flag both share: kit → `["--model", M, …]` at the head of
+  `kitArgs` (with a `-m` after `--` too ⇒ refused, "say it once"); claude → `--model M` in `claudeArgs`
+  (replacing an earlier one).
+- **Loud:** prints `persona <name>: agent: kit, kitArgs: ["-m","grok-4.7"], storage: claude (saved; undo:
+  paw restart <name> --agent claude)` plus a line per side effect. Fails loud, persona untouched: an
+  `--agent` other than kit/claude (other harnesses stay a persona edit), `--` without `--agent kit`,
+  `--model` without `--agent`, `--agent` on a runtime word or the bare manager restart, an unregistered
+  agent, `<agent>#<space>` disagreeing with `--space` (dispatch's `restart` spec now lists `--agent` and
+  `--model` as value flags; everything after `--` is never hoisted or space-injected).
+
+Test: `check:kit` (kitArgs, preflight with stub binaries, planSwap), `check:commands` (parseArgs), and
+`scripts/lean/kit/e2e-kit-swap.ts` (below).
 
 ## kit's own CLI (no paw needed)
 
@@ -173,6 +238,20 @@ gets the reply on screen; `--agent codex` on it and `--agent gpt` fail loud.
 store-aware (two stale assertions fixed: `paw open`'s kit notice goes to stderr since bfb66ed; kit's
 `--resume` listing now says "store priority").
 
+## Verified (2026-10-20, isolated: own nats-server, throwaway HOME + PAW_HOME, PAW_SPACE=kit-test-*, PAW_RELEASE=dev, KIT_BIN=~/.paw/bin/kit of 2026-10-16)
+
+`scripts/lean/kit/e2e-kit-swap.ts`, all green. Before the shareTools fix its phase 0 reproduced the
+gotcha (a kit persona without `shareTools: none`, the cotal config declaring `connectors.kit.mcpServers`:
+`paw start` skipped it after 61s, "process is gone", nothing in manager.log); after, it comes up in ~1s.
+A claude persona with a pin + a claude transcript → `restart --agent kit -- -P fake:codex -e high`:
+the exact persona line + undo printed, persona has agent kit + kitArgs verbatim + `storage: claude` + the
+same pin; `kit run … --overwrite --resume <pin> -P fake:codex -e high`; a DM turn lands in the SAME claude
+transcript, nothing in kit's store. `-- -m grok-4.7 -e high` and `--model grok-4.7` reach the argv
+verbatim (no grok login in the throwaway HOME, so no grok turn was asked for). `-- -P codex -m
+grok-4.7` → kit exits at launch, paw's error names the exit + the kitArgs. Ten refusals with the
+persona byte-identical. `--agent claude` → kit keys gone, pin kept; the manager launches claude (a stub
+on PATH) with `--resume <pin>`. A pinless agent → fails loud. `e2e-kit-storage.ts` still green.
+
 ## Not verified / not done
 
 tmux/cmux runtimes (pty only); PAW_AUTH meshes (the connector refuses them); `paw sleep` on a kit
@@ -187,10 +266,11 @@ Operator only, when the fleet is idle — never automated.
 1. Build the binary paw will use: `cd ~/Github/caffeinum/kit && go build -o ~/.paw/bin/kit ./cmd/kit`.
 2. `paw release` then `paw restart` (the manager loads the new connector registration at startup;
    `paw restart` revives the agents that were live).
-3. Edit `~/.paw/spaces/paw/personas/evals-reviewer.md`: `agent: kit`, add `provider: codex`, keep
-   (or set) `model: gpt-6.1-sol`, keep `resume:` and `cwd:`. If it was a codex agent, its `resume:`
-   pin has no Claude transcript, so its first kit boot creates a fresh session at that id.
-   Remove `shareTools`-dependent expectations (no MCP for kit). Add `storage: claude` to keep it
-   appending to its claude transcript (leave it out to fork into kit's store — see "Session storage").
-4. `paw restart evals-reviewer` → `paw status evals-reviewer` (managed, idle), `paw dm evals-reviewer
-   "…"`, `paw log evals-reviewer`.
+3. A claude agent: `paw restart evals-reviewer --agent kit -- -m gpt-6.1-sol` (sets `storage: claude`
+   itself; see "Swapping a harness"). A codex agent (not a swap source): edit
+   `~/.paw/spaces/paw/personas/evals-reviewer.md` — `agent: kit`, `provider: codex`, keep (or set)
+   `model: gpt-6.1-sol`, `resume:` and `cwd:`; its pin has no Claude transcript, so its first kit boot
+   creates a fresh session at that id. No `shareTools` line is needed (kit spawns share nothing).
+   Add `storage: claude` to keep a claude transcript appending in place (leave it out to fork into
+   kit's store — see "Session storage"), then `paw restart evals-reviewer`.
+4. `paw status evals-reviewer` (managed, idle), `paw dm evals-reviewer "…"`, `paw log evals-reviewer`.

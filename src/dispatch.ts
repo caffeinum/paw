@@ -300,7 +300,7 @@ export const ADDRESS_ARGS: Readonly<Record<string, AddressSpec>> = {
   start: { values: V, slots: "all" },
   sleep: { values: [...V, "--after"], slots: "all" },
   inbox: { values: [...V, "--limit", "-n"], slots: "all" },
-  restart: { values: V, slots: [0] },
+  restart: { values: [...V, "--agent", "--model"], slots: [0] },
   unstick: { values: V, slots: [0] },
   type: { values: V, slots: [0], atOnly: true },
   nice: { values: V, slots: [0] },

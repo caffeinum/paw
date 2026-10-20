@@ -71,16 +71,29 @@ export function readResumeId(configPath: string | undefined): string | undefined
  * A malformed value throws rather than silently launching without the operator's flags.
  */
 export function readClaudeArgs(configPath: string | undefined): string[] {
-  const value = configPath ? personaValue(configPath, "claudeArgs") : undefined;
+  return readArgsKey(configPath, "claudeArgs", '["--model","opus"]');
+}
+
+/**
+ * Read the `kitArgs:` line — kit flags the operator gave after `--` (`paw restart <agent> --agent kit --
+ * -m grok-4.7 -e high`), appended VERBATIM to every `kit run` (src/kit.ts). Same JSON-array rule and
+ * the same throw on a malformed value as {@link readClaudeArgs}.
+ */
+export function readKitArgs(configPath: string | undefined): string[] {
+  return readArgsKey(configPath, "kitArgs", '["-m","grok-4.7"]');
+}
+
+function readArgsKey(configPath: string | undefined, key: string, example: string): string[] {
+  const value = configPath ? personaValue(configPath, key) : undefined;
   if (!value) return [];
   let parsed: unknown;
   try {
     parsed = JSON.parse(value);
   } catch {
-    throw new Error(`paw: claudeArgs in ${configPath} is not valid JSON (${value}) — expected an array like ["--model","opus"]`);
+    throw new Error(`paw: ${key} in ${configPath} is not valid JSON (${value}) — expected an array like ${example}`);
   }
   if (!Array.isArray(parsed) || parsed.some((a) => typeof a !== "string"))
-    throw new Error(`paw: claudeArgs in ${configPath} must be an array of strings, got ${value}`);
+    throw new Error(`paw: ${key} in ${configPath} must be an array of strings, got ${value}`);
   return parsed as string[];
 }
 

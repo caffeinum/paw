@@ -500,6 +500,53 @@ rmSync(unmapped, { recursive: true, force: true });
   assert(paneTail("a\n\n  b  \nc\n", 2).join("|") === "  b|c", "pane: tail = the last non-blank lines");
 }
 
+{
+  // `paw restart <agent> --agent kit|claude [--model M] [-- <kit flags>]` — the harness swap's parse.
+  const { parseArgs } = await import("../src/commands/runtime.ts");
+  const { hoistAddressSpace } = await import("../src/dispatch.ts");
+  const fails = (argv: string[], re: RegExp) => {
+    try {
+      parseArgs(argv, "restart");
+      return false;
+    } catch (e) {
+      return re.test((e as Error).message);
+    }
+  };
+  const s = parseArgs(["evals", "--agent", "kit", "--space", "x", "--", "-m", "grok-4.7", "-e", "high", "--space", "y"], "restart");
+  assert(
+    s.agent === "evals" && s.space === "x" && JSON.stringify(s.swap) === JSON.stringify({ agent: "kit", kitArgs: ["-m", "grok-4.7", "-e", "high", "--space", "y"] }),
+    "restart swap: everything after -- is kit's, verbatim (a --space there is kit's word, not paw's)",
+  );
+  assert(parseArgs(["evals", "--agent", "kit", "--model", "grok-4.7"], "restart").swap?.model === "grok-4.7", "restart swap: --model before --");
+  assert(parseArgs(["evals", "--agent", "claude"], "restart").swap?.kitArgs === undefined, "restart swap: no -- ⇒ kitArgs undefined (keep the persona's)");
+  assert(parseArgs(["evals"], "restart").swap === undefined, "plain restart <agent>: no swap");
+  assert(fails(["evals", "--agent", "gpt"], /swaps an agent between claude and kit/), "restart swap: an unknown --agent fails loud");
+  assert(fails(["evals", "--agent", "claude", "--", "-m", "x"], /is not kit/), "restart swap: -- with --agent claude fails loud");
+  assert(fails(["evals", "--", "-m", "x"], /needs --agent kit/), "restart: -- without --agent fails loud");
+  assert(fails(["evals", "--model", "x"], /needs --agent/), "restart: --model without --agent fails loud");
+  assert(fails(["pty", "--agent", "kit"], /name it/) && fails(["--agent", "kit"], /name it/), "restart swap: --agent on the manager / a runtime fails loud");
+  assert(fails(["evals", "--agent"], /needs a value/), "restart swap: --agent needs a value");
+  assert(
+    (() => {
+      try {
+        parseArgs(["--", "x"], "runtime");
+        return false;
+      } catch {
+        return true;
+      }
+    })(),
+    "paw runtime: a stray -- is refused, never silently ignored",
+  );
+  const deps = { isKnownSpace: (sp: string) => sp === "team2027" || sp === "paw", knownSpaces: () => ["paw", "team2027"], pathExists: () => false };
+  let mismatch = false;
+  try {
+    hoistAddressSpace("restart", ["evals#team2027", "--agent", "kit", "--space", "paw"], deps);
+  } catch (e) {
+    mismatch = /--space says "paw"/.test((e as Error).message);
+  }
+  assert(mismatch, "restart swap: <agent>#<space> disagreeing with --space fails loud");
+}
+
 if (failures > 0) {
   console.error(`\n${failures} paw command check(s) failed`);
   process.exit(1);
