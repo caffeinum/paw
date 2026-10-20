@@ -193,7 +193,7 @@ function mailboxLogPath(space: string): string {
 function meshLogPath(space: string): string {
   return join(pawDir(space), "mesh.log");
 }
-function managerLogPath(space: string): string {
+export function managerLogPath(space: string): string {
   return join(pawDir(space), "manager.log");
 }
 function lockPath(space: string): string {

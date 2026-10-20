@@ -34,6 +34,7 @@ import { claudeProjectDir, latestSession, pinClaudeArgs, pinSession } from "./ad
 import { pawConnector } from "./connector.ts";
 import { pawCotalRoot } from "./cotal-root.ts";
 import { confineAndTrustCwd } from "./cwd.ts";
+import { ensureBypassConsent, launchesBypass } from "./bypass-consent.ts";
 import { attachResolved } from "./open.ts";
 import { readForeground, registerForeground, unregisterForeground } from "./foreground.ts";
 import { daemonEnv, resolveSpace, withEnsuredManager } from "./lifecycle.ts";
@@ -274,6 +275,7 @@ export async function runClaude(argv: string[]): Promise<void> {
 
     // (f) Confine + pre-trust the cwd (the same safety the manager spawn site applies).
     const cwd = confineAndTrustCwd(folder);
+    if (launchesBypass(finalArgs)) ensureBypassConsent();
 
     // (h) Exec the REAL claude in this terminal (inherited stdio), carrying the connector's mesh env.
     //     cotal ≥0.59 writes the launch material (persona, MCP config, and paw's paw-brief.md beside

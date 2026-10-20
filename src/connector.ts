@@ -3,6 +3,7 @@ import { registry, type Connector, type LaunchOpts, type LaunchSpec } from "@cot
 import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { HUMAN_PEER } from "./names.ts";
+import { permissionMode } from "./bypass-consent.ts";
 import { ADDRESSING_BRIEF, BACKGROUND_BASH_BRIEF, CHANNELS_BRIEF, FILES_BRIEF, OPERATOR_REQUESTS_BRIEF, TASKS_BRIEF, UNATTENDED_BRIEF, WAKE_BRIEF } from "./brief.ts";
 import { beadsDir } from "./beads-dir.ts";
 import { voiceLineFor } from "./personality.ts";
@@ -28,24 +29,6 @@ export function remoteTlsEnv(opts: LaunchOpts): { envAllow?: string[] } {
  *  and a plaintext listener at that address would have been handed the seat's creds. Local: nothing. */
 export function remoteSeatTls(space: string): { COTAL_TLS?: "1" } {
   return isRemoteSpace(space) ? { COTAL_TLS: "1" } : {};
-}
-
-/** Claude Code's permission modes — PAW_PERMISSION must be one of these (fail loud otherwise). */
-const PERMISSION_MODES = ["default", "acceptEdits", "bypassPermissions", "plan"] as const;
-
-/**
- * Default permission mode for paw agents. They run unattended on your repos, so they must not
- * block on tool-approval prompts — hence `bypassPermissions`. Override per process with
- * PAW_PERMISSION (one of PERMISSION_MODES) to put a human back in the loop. An unknown value
- * throws rather than passing a bad mode through to claude with a misleading "launching" notice.
- */
-function permissionMode(): string {
-  const override = process.env.PAW_PERMISSION?.trim();
-  if (!override) return "bypassPermissions";
-  if (!(PERMISSION_MODES as readonly string[]).includes(override)) {
-    throw new Error(`paw: PAW_PERMISSION="${override}" is not a valid permission mode (expected one of: ${PERMISSION_MODES.join(", ")})`);
-  }
-  return override;
 }
 
 /** Remove every `flag <value>` pair from args. Mutates args in place. */
