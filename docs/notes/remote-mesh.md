@@ -114,6 +114,18 @@ A shared broker sees every operator's mailbox, and they were all `you` (team2027
   (web village/pending, dialog, feed `from`) stay `"you"` — perspective, not identity.
 - `paw mesh ls` prints `as <name>`; `--force` re-add keeps an earlier `human` unless `--as` replaces it.
 
+## Attach
+
+`paw attach <agent> --space <remote>` (= `paw attach <agent>#<remote>`) works for pty agents, including
+one another machine's manager hosts: paw runs cotal's `attach` from the record root with `--server
+<record>` and no `--space`, so cotal mints the one-shot instrument + the `session-caller` cred from the
+signer and pins the session to the hosting manager instance. `paw cotal <verb> --space <remote>` gets
+the same rewrite (and drops a `--creds`, which cotal's control calls refuse). Ctrl-] detaches; the agent
+keeps running. Details + per-space-type table: [agents.md#pty-attach-cotal-084](agents.md#pty-attach-cotal-084).
+The gate still ensures THIS machine's manager on the space first (as for every NEEDS_MANAGER verb), and
+the runtime branch reads THIS machine's runtime marker — an agent in another machine's tmux/cmux can't
+be attached from here (no grant-based attach for those runtimes).
+
 ## paw chat / paw web taps
 
 `paw chat` tapped the whole space (`cotal.<s>.>`) to mirror what another chat session sent; chat's
@@ -148,7 +160,11 @@ presence-latch detection (AUTH-GAP), and `paw spaces` (reads the local broker on
   JetStream "consumer not found" — no durable name, no hint that a provisioner must pre-create it
   (the register-only path has a full "lifecycle proof failed" message; the consume path has none).
 - `cotal meshes add --mode auth` wants a fully composing trust root, so a signer-only root can't be
-  registered in cotal's own registry — paw keeps its own record.
+  registered in cotal's own registry — paw keeps its own record. Consequence: cotal verbs can't name
+  the space (`--space` + `--server` on an unregistered space = cotal's raw OPEN arm, a bare connect),
+  so paw runs them from the record root with `--server` only (`remoteCotalArgv`).
+- A raw `--creds` control call is refused ("no endpoint-caller triple … cannot mint one") — by design,
+  but the message doesn't say that `--server` from the root holding the signer is the working form.
 
 ## Test
 
@@ -157,7 +173,11 @@ presence-latch detection (AUTH-GAP), and `paw spaces` (reads the local broker on
 --no-manager` JWT + TLS broker with a self-signed cert, `mint --signer`, `paw mesh add`, no-CA
 refusal, a real haiku claude spawned by `paw dm --space` (its cotal MCP carries `COTAL_TLS=1`, read
 with `ps -E`), reply read by `paw inbox`, who/status (the TLS-required presence probe reaches the broker),
-`paw restart`, second DM; INBOX lag a real number (cached 0600 lag cred); a SECOND machine (own
+`paw restart`, second DM. Step 4a/4b attaches under node-pty: `paw attach` (grant issued +
+redeemed, claude's TUI streams, Ctrl-] exits 0, agent still live), `paw cotal attach --space R --creds
+<junk>` (the operator's failing shape), and an attach from a second root while a SECOND manager
+instance serves the space (cotal pins the session to the instance hosting the seat).
+INBOX lag a real number (cached 0600 lag cred); a SECOND machine (own
 PAW_HOME + root + signer copy + its own manager, driven through paw's library since both share one host's
 process table) spawns its agent — machine 1 never lists it or its lag, and sleeping across machines fails
 "hosted on another machine" (both directions, `--force` and `--after` too); then `paw sleep agent --now`,
