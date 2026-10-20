@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { registry, type Command } from "@cotal-ai/core";
-import { downSpace, expandEqFlags, stripCotalNamespace, withDefaultSpace } from "../src/dispatch.ts";
+import { downSpace, expandEqFlags, oneShotReplyNote, stripCotalNamespace, withDefaultSpace } from "../src/dispatch.ts";
 import { assertRuntimeUsable, resolveRuntime, runtimePreferencePath, writeRuntimePreference } from "../src/lifecycle.ts";
 
 let failures = 0;
@@ -222,6 +222,15 @@ for (const name of ["stop", "msg", "ask", "who", "history", "watch", "runtime", 
   assert(expandShortForm("attach") === "attach" && expandShortForm("ab") === "ab" && expandShortForm(undefined) === undefined, "short: anything else passes through untouched (no prefix guessing)");
   assert(expandShortForm("constructor") === "constructor" && expandShortForm("toString") === "toString", "short: Object prototype names are not aliases");
 }
+
+// oneShotReplyNote: a one-shot `cotal send dm|ask` has no inbox, so a reply to it reaches nobody.
+assert(oneShotReplyNote(["send", "dm", "intern", "ping"])?.includes("paw dm") === true, "reply note: send dm without --creds is flagged");
+assert(oneShotReplyNote(["send", "ask", "reviewer", "look"]) !== undefined, "reply note: send ask is flagged");
+assert(oneShotReplyNote(["send", "msg", "general", "hi"]) === undefined, "reply note: send msg is not (replies go to the channel)");
+assert(oneShotReplyNote(["send", "dm", "intern", "ping", "--creds", "/x.creds"]) === undefined, "reply note: --creds silences it");
+assert(oneShotReplyNote(["send", "dm", "intern", "ping", "--creds=/x.creds"]) === undefined, "reply note: --creds= silences it");
+assert(oneShotReplyNote(["send", "dm", "intern", "--", "--creds"]) !== undefined, "reply note: a --creds after -- is message text, not a flag");
+assert(oneShotReplyNote(["join", "--name", "mini"]) === undefined && oneShotReplyNote([]) === undefined, "reply note: other verbs untouched");
 
 if (failures > 0) {
   console.error(`\n${failures} paw dispatch check(s) failed`);

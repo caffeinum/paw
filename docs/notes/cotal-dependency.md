@@ -47,6 +47,11 @@ EXACT version (replacing 0.81.1's) — **delete it after 2026-10-24**. What chan
   hub/manager/mailbox pids were the same before and after.
 - NOT verified / open: the live cutover (`rm -rf node_modules && pnpm install` + `paw release` +
   `paw restart` — operator's call); a real claude trust dialog on tmux (pre-trusted folders only).
+- **Upstream-able gap (2026-10-19): `cotal send dm|ask` is unreplyable.** The one-shot sends from a fresh
+  principal per run with no inbox and no presence, yet carries a human-looking `<login>@<host>` name, so
+  an agent that replies (as briefed) stores the reply where nobody reads it. Not a join bug — headless
+  `cotal join` prints DMs addressed to it in full. paw warns at `paw cotal send` (`oneShotReplyNote`); no
+  patch. → [messaging.md#replies-to-a-one-shot-cotal-send-the-headless-join-missing-dms](messaging.md#replies-to-a-one-shot-cotal-send-the-headless-join-missing-dms)
 
 ## cotal 0.81.1
 

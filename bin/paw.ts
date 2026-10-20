@@ -14,7 +14,7 @@
  */
 import { registry, type Command } from "@cotal-ai/core";
 import { spawnSync } from "node:child_process";
-import { downSpace, explicitSpace, expandEqFlags, expandShortForm, hoistAddressSpace, remoteCotalArgv, SHORT_FORMS, stripCotalNamespace, withDefaultSpace } from "../src/dispatch.ts";
+import { downSpace, explicitSpace, expandEqFlags, expandShortForm, hoistAddressSpace, oneShotReplyNote, remoteCotalArgv, SHORT_FORMS, stripCotalNamespace, withDefaultSpace } from "../src/dispatch.ts";
 import { cotaldViaNode, ensure, resolveSpace, stop } from "../src/lifecycle.ts";
 import { readRemoteMesh } from "../src/remote-mesh.ts";
 import { isRemoteSpace } from "../src/server.ts";
@@ -126,6 +126,8 @@ try {
       console.log("paw cotal <cmd> — passthrough to the cotal CLI; e.g. `paw cotal console`");
       process.exit(0);
     }
+    const replyNote = oneShotReplyNote(rest);
+    if (replyNote) console.error(replyNote);
     const spaceless = COTAL_SPACELESS.has(rest[0]);
     // A `--space` naming a REMOTE space is the space this verb needs up (as the command gate does);
     // with no --space, the current space may itself be remote (PAW_SPACE=team2027).

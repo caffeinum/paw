@@ -175,3 +175,38 @@ now ("id X is offline; delivered to its successor Y under the same name"), or (b
 evals (X) is offline — it restarted as Y; address peers by name". Today the tool reply (`recipient was
 idle at send`) even reports the dead row's last status as if it were live. paw's forwarder is the
 workaround and can only work on an open mesh (it must publish as the original sender).
+
+## Replies to a one-shot `cotal send` (the headless-join "missing DMs")
+
+**Incident (2026-10-19, team2027):** aleks's Mac mini runs a headless presence holder
+(`tail -f /dev/null | paw cotal join --space team2027 --creds … --lifecycle-uid … --name aleks-mac-mini
+> ~/.cotal-team2027/join.log`). Agents' replies to pings sent from that Mac (`2027-intern →
+aleks@Alekss-Mac-Mini.local: pong …` in `paw history`) never appeared in join.log; only the agents'
+status flips did. It looked like headless join drops DM text. **It doesn't.**
+
+- **Headless join prints DMs, in full.** cotal 0.84 `dist/commands/join.js:231-240`: one `message`
+  handler for both modes; `m.to === me` → `(DM) <sender> → you: <full text>`, then `d.ack()` on the
+  join's OWN lifecycle-keyed `dm_<owner>-<actor>-<uid>` durable (`endpoint.js` `startConsumers` →
+  `pump`). The live join.log has two such lines (`(DM) evals → you: pong 🐾 …`,
+  `(DM) aleks@aleks-macbook → you: macbook here …`). That ack takes nothing from another reader: no one
+  else binds that durable, and the DM stream keeps acked messages (`paw history` still lists them).
+- **The replies were addressed to someone else.** `paw cotal send dm …` is cotal's one-shot
+  (`dist/commands/send.js`): display name `<login>@<host>` (= `aleks@Alekss-Mac-Mini.local`), principal a
+  FRESH identity per run (`openTransient` → `connectOrThrow` → `newIdentity()` on an auth mesh; an open
+  mesh self-mints), `consume: false`, no presence, no inbox. The agent replied to `m.from.id` — that
+  dead one-shot principal — so the reply sits in `DM_<space>` with no consumer. `paw history` names the
+  recipient from the sender's own `from.name`, hence the arrow pointing at "aleks@Alekss-Mac-Mini.local".
+- **Fix (paw):** `paw cotal send dm|ask` without `--creds` prints a stderr note (`oneShotReplyNote`,
+  src/dispatch.ts; check:dispatch) pointing at the two paths where a reply is readable: `paw dm <agent>`
+  (sends as the stable "you" principal; replies land in `paw inbox`, remote spaces included), or
+  `--creds` of a session that holds an inbox — a one-shot sent with the join's creds IS the join's
+  principal, so replies print in its log. No cotal patch: the join is right.
+- **Verified** (own nats-server on a random port, temp PAW_HOME/COTAL_HOME, `PAW_RELEASE=dev`): headless
+  join under `tail -f /dev/null` printed `(DM) … → you: <full text>` and `#general …: <full text>` for
+  `paw cotal send dm|msg`; a stand-in agent that replies to its sender answered a one-shot `cotal send`
+  → `intern → aleks@Alekss-Mac-Mini.local: pong …` in history, nothing in join.log (the incident, exactly);
+  the same ping sent under the join's principal → `(DM) intern → you: pong …` in join.log; history kept
+  every acked DM; the "you" inbox untouched. The `--creds` path was simulated in open mode (same
+  principal), not run against an auth broker.
+- **Privacy:** join.log holds DM text. It is the operator's own DMs on their own machine — fine — but
+  the redirect creates it 0644; start the join under `umask 077` (or `chmod 600` the log).
