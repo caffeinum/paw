@@ -86,6 +86,11 @@ export function parseLaunchdArgs(argv: string[]): LaunchdArgs {
   return out;
 }
 
+/** Each job's launcher name — what Login Items / Background Items shows for it. */
+export const FLEET_BIN = "paw-fleet";
+export const WEB_BIN = "paw-web";
+export const GLOBAL_BIN = "paw-global";
+
 export interface JobSpec {
   label: string;
   args: string[];
@@ -139,16 +144,17 @@ ${env}
  *  real node binary lives in a VERSIONED directory — brew's Cellar (a `brew upgrade node` deleted it and
  *  took paw-web/fleet/global down at once, 2026-08-31) and nvm's `versions/node/vX` alike. On this box
  *  node comes from nvm, never brew (operator rule), and nvm has no fixed symlink — so the stable thing
- *  paw can bake is a SHIM it owns (`$PAW_HOME/bin/node`) that sources nvm.sh and execs `nvm which default`
+ *  paw can bake is a SHIM it owns (`$PAW_HOME/bin/<name>`) that sources nvm.sh and execs `nvm which default`
  *  at launch: nvm itself picks the node every time the job starts, so an `nvm install`/`alias default`
- *  later needs no reinstall. Falls back to nodeBin() (resolved once, baked) when nvm isn't installed. */
-export function stableNodeBin(): string {
+ *  later needs no reinstall. Without nvm the shim execs nodeBin() (resolved once, baked).
+ *  One shim PER JOB, named after it: macOS lists a launchd agent in Login Items / Background Items under
+ *  its executable's basename, so a shared `node` shim made every paw job read "node" (2026-10-19). */
+export function stableNodeBin(name: string): string {
   const nvmDir = process.env.NVM_DIR ?? join(homedir(), ".nvm");
-  if (!existsSync(join(nvmDir, "nvm.sh"))) return nodeBin();
   const dir = join(pawHome(), "bin");
   mkdirSync(dir, { recursive: true });
-  const shim = join(dir, "node");
-  writeFileSync(shim, nvmShim(nvmDir), { mode: 0o755 });
+  const shim = join(dir, name);
+  writeFileSync(shim, existsSync(join(nvmDir, "nvm.sh")) ? nvmShim(nvmDir) : fixedShim(nodeBin()), { mode: 0o755 });
   chmodSync(shim, 0o755);
   return shim;
 }
@@ -164,14 +170,21 @@ NODE="$(nvm which default 2>/dev/null)"
 exec "$NODE" "$@"
 `;
 }
+/** No nvm: the node resolved at install time, behind a named shim all the same. */
+export function fixedShim(node: string): string {
+  return `#!/bin/sh
+# paw-owned node shim (written by \`paw launchd install\`; no nvm, so the node resolved at install).
+exec ${JSON.stringify(node)} "$@"
+`;
+}
 function pawHome(): string {
   return process.env.PAW_HOME ?? join(homedir(), ".paw");
 }
 
 /** The CLI invocation every job shares: absolute node + the checkout's bin/paw.ts (node strips the
  *  types itself — no tsx). */
-function pawCli(): string[] {
-  return [stableNodeBin(), join(REPO_ROOT, "bin", "paw.ts")];
+function pawCli(name: string): string[] {
+  return [stableNodeBin(name), join(REPO_ROOT, "bin", "paw.ts")];
 }
 
 function jobEnv(): Record<string, string> {
@@ -188,7 +201,7 @@ function jobEnv(): Record<string, string> {
 export function fleetJob(space: string, names: string[], opts: { cli?: string[]; env?: Record<string, string>; log: string; cwd: string }): JobSpec {
   return {
     label: FLEET_LABEL,
-    args: [...(opts.cli ?? pawCli()), "start", ...names, "--space", space],
+    args: [...(opts.cli ?? pawCli(FLEET_BIN)), "start", ...names, "--space", space],
     keepAlive: false,
     log: opts.log,
     cwd: opts.cwd,
@@ -199,7 +212,7 @@ export function fleetJob(space: string, names: string[], opts: { cli?: string[];
 export function webJob(space: string, port: number | undefined, opts: { cli?: string[]; env?: Record<string, string>; log: string; cwd: string }): JobSpec {
   return {
     label: WEB_LABEL,
-    args: [...(opts.cli ?? pawCli()), "web", "--no-open", ...(port ? ["--port", String(port)] : []), "--space", space],
+    args: [...(opts.cli ?? pawCli(WEB_BIN)), "web", "--no-open", ...(port ? ["--port", String(port)] : []), "--space", space],
     keepAlive: true,
     log: opts.log,
     cwd: opts.cwd,
@@ -210,7 +223,7 @@ export function webJob(space: string, port: number | undefined, opts: { cli?: st
 export function globalJob(space: string, opts: { cli?: string[]; env?: Record<string, string>; log: string; cwd: string }): JobSpec {
   return {
     label: GLOBAL_LABEL,
-    args: [...(opts.cli ?? pawCli()), "global", "--space", space],
+    args: [...(opts.cli ?? pawCli(GLOBAL_BIN)), "global", "--space", space],
     keepAlive: false,
     startInterval: GLOBAL_INTERVAL_S,
     log: opts.log,
