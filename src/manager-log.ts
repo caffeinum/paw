@@ -25,8 +25,24 @@ export function logOffset(path: string): number {
 
 /** The last `diagnostic:` the manager logged for seat `name` after `from`, or undefined when it logged none. */
 export function seatDiagnostic(path: string, name: string, from: number): string | undefined {
+  for (const line of seatLines(path, name, from).reverse()) {
+    const m = /[;,] diagnostic: (.+)$/.exec(line);
+    if (m) return m[1].trim();
+  }
+  return undefined;
+}
+
+/** The cause half of the last `seat reaped: <name> (…) - <cause>` line after `from` — e.g. "its own
+ *  process exited and this manager did not stop it; exit code 1, signal 0" — for a seat that died
+ *  without a diagnostic (kit: its own error went to the seat's terminal). Undefined when none. */
+export function seatExit(path: string, name: string, from: number): string | undefined {
+  const line = seatLines(path, name, from).reverse().find((l) => l.startsWith(`seat reaped: ${name} (`));
+  return line ? /\) - (.+)$/.exec(line)?.[1].trim() : undefined;
+}
+
+function seatLines(path: string, name: string, from: number): string[] {
   const size = logOffset(path);
-  if (size <= from) return undefined;
+  if (size <= from) return [];
   const start = Math.max(from, size - MAX_READ);
   const buf = Buffer.alloc(size - start);
   const fd = openSync(path, "r");
@@ -36,10 +52,5 @@ export function seatDiagnostic(path: string, name: string, from: number): string
     closeSync(fd);
   }
   const ours = (line: string) => line.startsWith(`seat reaped: ${name} (`) || line.startsWith(`${name} exited on launch`) || line.includes(` ${name} exited on launch`);
-  const lines = buf.toString("utf8").split("\n").filter(ours);
-  for (let i = lines.length - 1; i >= 0; i--) {
-    const m = /[;,] diagnostic: (.+)$/.exec(lines[i]);
-    if (m) return m[1].trim();
-  }
-  return undefined;
+  return buf.toString("utf8").split("\n").filter(ours);
 }

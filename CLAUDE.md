@@ -126,6 +126,7 @@ Each entry: what it is + the most load-bearing rule. Full notes behind the link.
 - `src/foreground.ts` — registry of `paw claude --fg` agents; self-reaps dead pids; prevents duplicate
   manager copies. → [agents.md#foreground-registry](docs/notes/agents.md#foreground-registry)
 - persona `agent:` pin — which connector (claude/codex/opencode) respawns the agent. → [agents.md#agent-persona-pin](docs/notes/agents.md#agent-persona-pin)
+- `src/swap.ts` — `paw restart <agent> --agent kit|claude [--model M] [-- <kit flags>]`: kit flags VERBATIM as JSON `kitArgs:` (kit's own `run -h` parse checks them), claude→kit sets `storage: claude`, prints writes + undo; kit spawns share no MCP (the silent `shareTools: none` timeout). → [kit.md#swapping-a-harness-paw-restart-agent---agent-kitclaude](docs/notes/kit.md#swapping-a-harness-paw-restart-agent---agent-kitclaude)
 - `src/hermes.ts` — `agent: hermes`: cotal's hermes connector in a durable paw-owned profile
   (`$PAW_HOME/hermes/profiles/<space>-<name>`), one OAuth login per profile, `hermesHome:` adopts one. → [agents.md#hermes](docs/notes/agents.md#hermes)
 - `src/acp.ts` — `agent: acp`: any ACP agent via the vendored `cotal-connector-acp` plugin; paw adds brief,

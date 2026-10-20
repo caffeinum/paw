@@ -88,6 +88,13 @@ Moved verbatim from CLAUDE.md (2026-10-02 split). Index: [CLAUDE.md](../../CLAUD
   after a change an agent reads only at startup (a new MCP server, an edited persona), which is when
   bouncing the fleet is the wrong tool. Runtime names and agent names are disjoint, so the positional
   itself says which is meant; an unknown word fails loud naming both possibilities.
+  **Harness swap (2026-10-20):** `paw restart <agent> --agent kit|claude [--model M] [-- <kit flags>]`
+  edits the persona first (src/swap.ts — printed with the undo, persona untouched on any refusal),
+  then restarts. Done BEFORE ensure(), so a refused swap never boots a manager. `parseArgs` (exported,
+  `check:commands`) splits at `--`: everything after it is kit's, verbatim (bin/paw.ts already injects
+  `--space` before a `--`, and the `#space` hoist stops there). `--agent`/`--model`/`--` only with an
+  agent target; `--model`/`--` need `--agent`; `--` needs `--agent kit`; only kit and claude swap. Full
+  rules: [kit.md#swapping-a-harness-paw-restart-agent---agent-kitclaude](kit.md#swapping-a-harness-paw-restart-agent---agent-kitclaude).
 
 ### tracepaper direct (2026-10-05)
 `src/tracepaper-direct.ts`: when `$PAW_HOME/spaces/<s>/tracepaper-url` holds tracepaper's MCP url (e.g.

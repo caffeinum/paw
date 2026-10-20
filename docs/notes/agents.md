@@ -117,7 +117,11 @@ Moved verbatim from CLAUDE.md (2026-10-02 split). Index: [CLAUDE.md](../../CLAUD
   forwarded as the spawn op's `agent` (cotal 0.25 `SPAWN_INPUT_SCHEMA` accepts it), so the harness is
   durable in the same file as the name/pin. Absent ⇒ default claude, unchanged. Verified live: `paw
   start codex1` → `codex1 codex · tmux`. `agent: kit` (the lean Go harness on codex/grok) is the same mechanism with a
-  paw-side connector — see [kit.md](kit.md). Non-claude agents are still NOT in the launchd fleet list on
+  paw-side connector — see [kit.md](kit.md). An EXISTING agent switches between claude and kit with
+  `paw restart <agent> --agent kit [--model M] [-- <kit flags>]` / `--agent claude` (src/swap.ts):
+  kit flags persist verbatim as JSON `kitArgs:` (mirroring `claudeArgs:`), claude → kit needs the pin
+  and sets `storage: claude` so the claude transcript keeps growing in place, every write is printed
+  with its undo — [kit.md#swapping-a-harness-paw-restart-agent---agent-kitclaude](kit.md#swapping-a-harness-paw-restart-agent---agent-kitclaude). Non-claude agents are still NOT in the launchd fleet list on
   purpose (booting them at login spends codex/grok sessions — the operator's call). Test: `check:mcp`.
 
 ## hermes

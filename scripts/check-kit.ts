@@ -257,6 +257,89 @@ const parsed = parseChatArgs([".", "--agent", "kit", "--provider", "grok", "--mo
 ok("chat parses --agent/--provider/--model/--name", parsed.agent === "kit" && parsed.provider === "grok" && parsed.model === "m" && parsed.name === "n" && parsed.target === ".");
 ok("chat: --agent without a value throws", throws(() => parseChatArgs([".", "--agent"]), /needs a value/));
 
+// ── kitArgs: kit's own flags, verbatim ────────────────────────────────────────────────────────
+{
+  const { checkKitArgs, preflightKitArgs } = await import("../src/kit.ts");
+  const { readKitArgs } = await import("../src/session.ts");
+  const ka = persona(`agent: kit\nresume: ${PIN}\nkitArgs: ["-m","grok-4.7","-e","high"]`);
+  ok("readKitArgs: the JSON array", JSON.stringify(readKitArgs(ka)) === '["-m","grok-4.7","-e","high"]');
+  ok("readKitArgs: malformed JSON throws", throws(() => readKitArgs(persona(`kitArgs: -m grok`)), /not valid JSON/));
+  ok("readKitArgs: a non-string element throws", throws(() => readKitArgs(persona(`kitArgs: ["-m",4]`)), /array of strings/));
+  const kp = readKitPersona(ka);
+  ok("a -m in kitArgs stands in for provider:", kp.provider === undefined && kp.kitArgs.length === 4);
+  ok("-P in kitArgs stands in for provider: too", readKitPersona(persona(`resume: ${PIN}\nkitArgs: ["-P","grok"]`)).provider === undefined);
+  ok("no provider: and no -m/-P throws", throws(() => readKitPersona(persona(`resume: ${PIN}\nkitArgs: ["-e","high"]`)), /no `provider:` and no -m\/-P/));
+  const la = kitLaunch(opts, kp, deps(true)).args;
+  ok("kitLaunch: no --provider without provider:, kitArgs appended LAST, verbatim", !la.includes("--provider") && la.slice(-6).join(" ") === `--resume ${PIN} -m grok-4.7 -e high`, la.join(" "));
+  const both = kitLaunch(opts, { ...p, kitArgs: ["-e", "low"] }, deps(true)).args;
+  ok("kitLaunch: kitArgs come after the persona's flags (Go keeps the last)", both.indexOf("--effort") < both.lastIndexOf("-e"));
+  ok("checkKitArgs: names model/provider/effort in every Go form", JSON.stringify(checkKitArgs(["--model=x", "-P", "grok", "--e", "high"], "t")) === '{"model":true,"provider":true,"effort":true}');
+  ok("checkKitArgs: a value is never read as a flag", JSON.stringify(checkKitArgs(["--compact-keep", "-1"], "t")) === '{"model":false,"provider":false,"effort":false}');
+  for (const f of ["--resume", "-session-id", "--overwrite", "--name=x", "--actor", "--cwd", "--channels", "--append-system-prompt-file", "--server", "--space", "--session", "--lifecycle-uid"])
+    ok(`checkKitArgs: paw-owned ${f} refused`, throws(() => checkKitArgs([f, "v"], "t"), /paw's to set/));
+  const stub = (name: string, body: string) => {
+    const f = join(home, name);
+    writeFileSync(f, `#!/bin/sh\necho "$*" > ${f}.argv\n${body}\n`, { mode: 0o755 });
+    return f;
+  };
+  const yes = stub("kit-yes", "exit 0");
+  preflightKitArgs(yes, ["-m", "grok-4.7"], "t");
+  ok("preflight asks `kit run <args> -h`", readFileSync(`${yes}.argv`, "utf8").trim() === "run -m grok-4.7 -h");
+  ok("preflight: kit's own parse error is the message", throws(() => preflightKitArgs(stub("kit-unk", "echo 'kit: unknown flag -x' >&2; exit 2"), ["-x", "1"], "t"), /does not accept.*kit: unknown flag -x/));
+  ok("preflight: an unread -h (bare word / --) is named", throws(() => preflightKitArgs(stub("kit-pos", "echo 'kit: --cwd required' >&2; exit 1"), ["high"], "t"), /stopped reading flags/));
+  ok("preflight: no kitArgs ⇒ nothing run", (() => {
+    preflightKitArgs("/nonexistent/kit", [], "t");
+    return true;
+  })());
+  const addr = readFileSync(join(import.meta.dirname, "..", "src", "addressing.ts"), "utf8");
+  const kitBlock = addr.slice(addr.indexOf("if (kit) {"), addr.indexOf("// Hermes publishes no AG-UI"));
+  ok("spawn: a kit agent always selects NO shared MCP servers (no silent post-accept refusal)", /args\.shareTools = \[\];/.test(kitBlock));
+  ok("spawn: the kit persona + kitArgs are checked CLI-side, before the manager", kitBlock.includes("readKitPersona(config)") && kitBlock.includes("preflightKitArgs("));
+}
+
+// ── planSwap: `paw restart <agent> --agent kit|claude` ────────────────────────────────────────
+{
+  const { planSwap } = await import("../src/swap.ts");
+  const claudeP = { file: "/p/evals.md", pin: PIN, kitArgs: [], claudeArgs: [], claudeTranscript: "/h/.claude/projects/x/p.jsonl" };
+  const s1 = planSwap("evals", claudeP, { agent: "kit", kitArgs: ["-m", "grok-4.7"] });
+  ok(
+    "claude → kit: agent kit, kitArgs verbatim, storage claude; undo names --agent claude",
+    s1.summary === 'persona evals: agent: kit, kitArgs: ["-m","grok-4.7"], storage: claude' && s1.undo === "paw restart evals --agent claude" && s1.set.agent === "kit" && s1.set.storage === "claude",
+    s1.summary,
+  );
+  ok("claude → kit: says the transcript it keeps appending to", s1.notes.some((n) => n.includes("storage: claude set") && n.includes(claudeP.claudeTranscript)));
+  ok("claude → kit with no transcript yet says so", planSwap("evals", { ...claudeP, claudeTranscript: undefined }, { agent: "kit", kitArgs: ["-P", "grok"] }).notes.some((n) => /no transcript at resume/.test(n)));
+  ok("claude → kit: --model is kitArgs' head", planSwap("evals", claudeP, { agent: "kit", model: "grok-4.7" }).set.kitArgs === '["--model","grok-4.7"]');
+  ok("claude → kit: --model + kit flags", planSwap("evals", claudeP, { agent: "kit", model: "grok-4.7", kitArgs: ["-e", "high"] }).set.kitArgs === '["--model","grok-4.7","-e","high"]');
+  ok("claude → kit: no pin fails loud", throws(() => planSwap("evals", { ...claudeP, pin: undefined }, { agent: "kit", kitArgs: ["-m", "x"] }), /no `resume:` pin/));
+  ok("claude → kit: no model/provider fails loud", throws(() => planSwap("evals", claudeP, { agent: "kit" }), /kit needs a model or provider/));
+  ok("claude → kit: a claude model: line fails loud", throws(() => planSwap("evals", { ...claudeP, model: "opus" }, { agent: "kit", kitArgs: ["-m", "x"] }), /pins model: opus/));
+  ok("--model twice fails loud", throws(() => planSwap("evals", claudeP, { agent: "kit", model: "a", kitArgs: ["-m", "b"] }), /say it once/));
+  ok("a paw-owned kit flag fails loud", throws(() => planSwap("evals", claudeP, { agent: "kit", kitArgs: ["-m", "x", "--overwrite"] }), /storage: claude/));
+  ok("unknown / other harnesses fail loud", throws(() => planSwap("evals", claudeP, { agent: "codex" }), /between claude and kit/) && throws(() => planSwap("evals", { ...claudeP, agent: "hermes" }, { agent: "kit" }), /runs on hermes/));
+  ok("`--` with --agent claude fails loud", throws(() => planSwap("evals", claudeP, { agent: "claude", kitArgs: [] }), /is not kit/));
+  const kitP = { file: "/p/tp.md", agent: "kit", pin: PIN, provider: "grok", model: "grok-4.7", variant: "high", storage: "claude", kitArgs: [], claudeArgs: [] };
+  const s2 = planSwap("tp", kitP, { agent: "kit", kitArgs: ["-m", "grok-4.8"] });
+  ok(
+    "kit → kit: the new -m drops model:/provider: (one record says it), variant stays; undo restores them",
+    s2.summary === 'persona tp: kitArgs: ["-m","grok-4.8"], removed model: grok-4.7, provider: grok' && s2.set.variant === undefined && !("variant" in s2.set) && s2.undo === "paw restart tp --agent kit --, and put back provider: grok, model: grok-4.7, variant: high in /p/tp.md",
+    `${s2.summary} | ${s2.undo}`,
+  );
+  ok("kit → kit: -e drops variant:", "variant" in planSwap("tp", kitP, { agent: "kit", kitArgs: ["-e", "low"] }).set);
+  ok("kit → kit with nothing given changes nothing", Object.keys(planSwap("tp", kitP, { agent: "kit" }).set).length === 0);
+  const s3 = planSwap("tp", { ...kitP, kitArgs: ["-e", "low"], storage: undefined, kitTranscript: "/k/s/p.jsonl" }, { agent: "claude" });
+  ok(
+    "kit → claude: removes agent/kitArgs/provider/model/variant, keeps the pin",
+    ["agent", "kitArgs", "provider", "model", "variant"].every((k) => k in s3.set && s3.set[k] === undefined) && !("resume" in s3.set) && s3.notes.some((n) => n.includes(`resume: ${PIN} kept`)),
+    s3.summary,
+  );
+  ok("kit → claude from kit's own store warns its kit turns stay behind", s3.notes.some((n) => n.includes("/k/s/p.jsonl") && /without them/.test(n)));
+  ok("kit → claude: undo names the old kit flags + keys", s3.undo === "paw restart tp --agent kit -- -e low, and put back provider: grok, model: grok-4.7, variant: high in /p/tp.md", s3.undo);
+  ok("kit → claude: removes storage: claude too", "storage" in planSwap("tp", kitP, { agent: "claude" }).set);
+  ok("claude → claude: nothing to change", Object.keys(planSwap("evals", claudeP, { agent: "claude" }).set).length === 0);
+  ok("claude --model is persisted in claudeArgs, replacing a previous --model", planSwap("evals", { ...claudeP, claudeArgs: ["--model", "sonnet", "--add-dir", "/x"] }, { agent: "claude", model: "opus" }).set.claudeArgs === '["--add-dir","/x","--model","opus"]');
+}
+
 if (fails) {
   console.error(`\n${fails} kit check(s) failed`);
   process.exit(1);

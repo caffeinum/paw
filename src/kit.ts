@@ -4,7 +4,9 @@
  * itself (docs/notes/kit.md). One `kit run` process per agent, spawned by the manager like any seat.
  *
  * Selected by the persona: `agent: kit` + `provider: codex|grok` (+ optional `model:`, `variant:` =
- * codex reasoning effort, `storage:`). The durable `resume:` pin works as for claude: `--session-id <pin>`
+ * codex reasoning effort, `storage:`), and/or `kitArgs:` — kit's own flags as a JSON array, appended
+ * verbatim (`paw restart <agent> --agent kit -- -m grok-4.7`; a `-m`/`-P` there stands in for
+ * `provider:`). The durable `resume:` pin works as for claude: `--session-id <pin>`
  * until a transcript exists, `--resume <pin>` after. WHERE is the persona's `storage:` — kit's own store
  * by default (`<KIT_HOME>/sessions/<slug>/<pin>.jsonl`; a claude transcript at the pin is forked there
  * on first resume), or `storage: claude` = `kit run --overwrite`, appending to the claude transcript
@@ -16,7 +18,7 @@
  * the manager's readiness fence (presence under exactly that principal + incarnation) sees it and ps
  * tracks it as a managed seat. It publishes no AG-UI event plane, so paw spawns it with `events: false`.
  */
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -25,7 +27,7 @@ import { beadsDir } from "./beads-dir.ts";
 import { ADDRESSING_BRIEF, CHANNELS_BRIEF, OPERATOR_REQUESTS_BRIEF, TASKS_BRIEF, UNATTENDED_BRIEF, WAKE_BRIEF } from "./brief.ts";
 import { HUMAN_PEER, humanPeer } from "./names.ts";
 import { voiceLineFor } from "./personality.ts";
-import { readKitStorage, readResumeId, transcriptExists, transcriptRoots, type KitStorage } from "./session.ts";
+import { readKitArgs, readKitStorage, readResumeId, transcriptExists, transcriptRoots, type KitStorage } from "./session.ts";
 
 export const KIT_AGENT = "kit";
 
@@ -113,17 +115,81 @@ const ENV_ALLOW = [
   "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME", "KIT_HOME",
 ];
 
-export type KitPersona = { provider: string; model?: string; variant?: string; body: string; pin?: string; storage: KitStorage; voice?: string };
+/** `kit run` flags paw sets itself on every launch, and the record that owns each. The same flag in
+ *  `kitArgs:` would fight paw's copy (Go's flag package: the last one wins), so it is refused. */
+const PAW_OWNED_KIT_FLAGS: Record<string, string> = {
+  cwd: "the manager runs kit in the persona's `cwd:`",
+  name: "the agent's name",
+  space: "the agent's space",
+  server: "the space's mesh server",
+  channels: "the persona's channel subscriptions",
+  actor: "the manager-assigned identity",
+  "lifecycle-uid": "the manager-assigned identity",
+  "append-system-prompt-file": "the persona body + paw's brief",
+  session: "the persona's `resume:` pin",
+  resume: "the persona's `resume:` pin",
+  "session-id": "the persona's `resume:` pin",
+  overwrite: "the persona's `storage: claude`",
+};
+
+/** What a `kitArgs:` list sets that the persona's `provider:` / `model:` / `variant:` would also say. */
+export type KitArgsNames = { model: boolean; provider: boolean; effort: boolean };
+
+/**
+ * Read `kitArgs` the way kit's Go flag parser will: `-f v`, `--f v`, `-f=v`, `--f=v`. Refuses the flags
+ * paw owns; reports which of model / provider / effort the list sets. It does NOT judge whether kit
+ * knows a flag — {@link preflightKitArgs} asks the binary itself. Every `kit run` flag but `--overwrite`
+ * (paw-owned) takes a value, so the token after a bare flag is its value, never read as a flag.
+ */
+export function checkKitArgs(args: string[], where: string): KitArgsNames {
+  const named: KitArgsNames = { model: false, provider: false, effort: false };
+  for (let i = 0; i < args.length; i++) {
+    const m = /^--?([^-=][^=]*)(=.*)?$/.exec(args[i]);
+    if (!m) continue; // a bare word: kit stops parsing there — preflightKitArgs reports it
+    const flag = m[1];
+    if (Object.hasOwn(PAW_OWNED_KIT_FLAGS, flag))
+      throw new Error(`paw: ${where}: kit flag ${args[i]} is paw's to set (${PAW_OWNED_KIT_FLAGS[flag]}) — leave it out of the kit args`);
+    if (flag === "m" || flag === "model") named.model = true;
+    if (flag === "P" || flag === "provider") named.provider = true;
+    if (flag === "e" || flag === "effort") named.effort = true;
+    if (m[2] === undefined) i++;
+  }
+  return named;
+}
+
+/**
+ * Ask the kit binary whether `kit run` parses `args`: `kit run <args> -h` exits 0 (its help) only when
+ * every flag before the `-h` parsed. An unknown flag exits 2 with kit's own message; a bare word or a
+ * `--` stops Go's flag parsing, so the `-h` is never read and kit exits 1 — which in a real launch would
+ * have IGNORED every flag after that word. Nothing is launched; kit exits inside its flag parse.
+ */
+export function preflightKitArgs(bin: string, args: string[], where: string): void {
+  if (!args.length) return;
+  const r = spawnSync(bin, ["run", ...args, "-h"], { encoding: "utf8", timeout: 15_000 });
+  if (r.status === 0) return;
+  const said = (r.stderr || r.error?.message || "").trim().split("\n")[0];
+  const why =
+    r.status === 1
+      ? "kit stopped reading flags before the end — a bare word or `--` in them, so every flag after it would be ignored"
+      : said || `exit ${r.status ?? r.signal}`;
+  throw new Error(`paw: ${where}: \`${bin} run\` does not accept the kit args ${JSON.stringify(args)} — ${why}`);
+}
+
+export type KitPersona = { provider?: string; model?: string; variant?: string; kitArgs: string[]; body: string; pin?: string; storage: KitStorage; voice?: string };
 
 /** What the persona says about this kit agent. Throws on what kit cannot run. */
 export function readKitPersona(configPath: string | undefined): KitPersona {
   if (!configPath) throw new Error("paw: a kit agent needs its persona file (agent: kit, provider: codex|grok)");
   const def = loadAgentFile(configPath);
-  const provider = def.meta?.provider?.trim();
-  if (!provider) throw new Error(`paw: ${configPath} is a kit agent with no \`provider:\` — set provider: codex or provider: grok`);
-  if (!PROVIDER_RE.test(provider)) throw new Error(`paw: ${configPath}: provider "${provider}" — kit drives codex or grok`);
+  const provider = def.meta?.provider?.trim() || undefined;
+  const kitArgs = readKitArgs(configPath);
+  const named = checkKitArgs(kitArgs, `kitArgs in ${configPath}`);
+  // kit needs a provider, or a model that names one; `kitArgs` may carry either (`-m grok-4.7`, `-P grok`).
+  if (!provider && !named.model && !named.provider)
+    throw new Error(`paw: ${configPath} is a kit agent with no \`provider:\` and no -m/-P in \`kitArgs:\` — set provider: codex|grok, or \`paw restart <agent> --agent kit -- -m <model>\``);
+  if (provider && !PROVIDER_RE.test(provider)) throw new Error(`paw: ${configPath}: provider "${provider}" — kit drives codex or grok`);
   const pin = readResumeId(configPath);
-  return { provider, model: def.model, variant: def.variant, body: def.persona?.trim() ?? "", pin, storage: readKitStorage(configPath), voice: voiceLineFor(configPath) };
+  return { provider, model: def.model, variant: def.variant, kitArgs, body: def.persona?.trim() ?? "", pin, storage: readKitStorage(configPath), voice: voiceLineFor(configPath) };
 }
 
 /** The launch, pure apart from reading the persona: kit's argv + env. `brief` is the file the caller
@@ -141,7 +207,7 @@ export function kitLaunch(opts: LaunchOpts, persona: KitPersona, deps: { bin: st
   if (!persona.pin) refuse("its persona has no `resume:` pin — kit needs a durable session id");
 
   const args = ["run", "--cwd", ".", "--name", opts.name, "--space", opts.space, "--server", opts.servers!];
-  args.push("--provider", persona.provider);
+  if (persona.provider) args.push("--provider", persona.provider);
   const model = opts.model?.trim() || persona.model;
   if (model) args.push("--model", model);
   const variant = opts.variant?.trim() || persona.variant;
@@ -151,6 +217,9 @@ export function kitLaunch(opts: LaunchOpts, persona: KitPersona, deps: { bin: st
   args.push("--append-system-prompt-file", deps.brief);
   if (persona.storage === "claude") args.push("--overwrite");
   args.push(deps.sessionExists(persona.pin!) ? "--resume" : "--session-id", persona.pin!);
+  // The operator's kit flags, verbatim and LAST: on a repeated flag Go keeps the last value, so
+  // `-m grok-4.7` here beats the persona's `model:` above (paw-owned flags were refused by checkKitArgs).
+  args.push(...persona.kitArgs);
 
   const src = deps.env ?? process.env;
   const env: Record<string, string> = {};

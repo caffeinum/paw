@@ -40,19 +40,37 @@ import {
   spawnDetachedRestart,
   writeRuntimePreference,
 } from "../lifecycle.ts";
+import { KIT_AGENT } from "../kit.ts";
 import { pawServer } from "../server.ts";
+import { applySwap, SWAP_AGENTS, type SwapRequest } from "../swap.ts";
 
 const tty = process.stdout.isTTY === true;
 const wrap = (code: string) => (s: string) => (tty ? `\x1b[${code}m${s}\x1b[0m` : s);
 const c = { dim: wrap("2"), bold: wrap("1"), green: wrap("32"), yellow: wrap("33") };
 
-/** Parse `[<runtime>] [--space s]`: at most one positional (the runtime), validated against RUNTIMES. */
-function parseArgs(argv: string[], verb: string): { space?: string; runtime?: Runtime; agent?: string } {
-  const out: { space?: string; runtime?: Runtime; agent?: string } = {};
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i];
-    if (a === "--space") out.space = argv[++i];
-    else if (a.startsWith("-")) throw new Error(`paw: unknown flag "${a}" — ${verb} [<${RUNTIMES.join("|")}>] [--space s]`);
+export type RestartArgs = { space?: string; runtime?: Runtime; agent?: string; swap?: SwapRequest };
+
+/** Parse `[<runtime>] [--space s]`: at most one positional (the runtime), validated against RUNTIMES.
+ *  `restart <agent>` also takes the harness swap: `--agent kit|claude`, `--model M`, and after `--`
+ *  kit's own flags, kept verbatim (src/swap.ts). Pure; check:commands covers it. */
+export function parseArgs(argv: string[], verb: string): RestartArgs {
+  const out: RestartArgs = {};
+  const end = argv.indexOf("--");
+  const mine = end === -1 ? argv : argv.slice(0, end);
+  let swapAgent: string | undefined;
+  let model: string | undefined;
+  const value = (i: number, flag: string) => {
+    const v = mine[i];
+    if (v === undefined || v.startsWith("-")) throw new Error(`paw: ${flag} needs a value`);
+    return v;
+  };
+  const usage = verb === "restart" ? `restart [<agent> [--agent kit|claude] [--model M] [-- <kit flags>] | <${RUNTIMES.join("|")}>] [--space s]` : `${verb} [<${RUNTIMES.join("|")}>] [--space s]`;
+  for (let i = 0; i < mine.length; i++) {
+    const a = mine[i];
+    if (a === "--space") out.space = value(++i, "--space");
+    else if (verb === "restart" && a === "--agent") swapAgent = value(++i, "--agent");
+    else if (verb === "restart" && a === "--model") model = value(++i, "--model");
+    else if (a.startsWith("-")) throw new Error(`paw: unknown flag "${a}" — ${usage}`);
     else {
       if (out.runtime !== undefined || out.agent !== undefined)
         throw new Error(`paw: ${verb} takes a single target — got "${out.runtime ?? out.agent}" and "${a}"`);
@@ -65,6 +83,19 @@ function parseArgs(argv: string[], verb: string): { space?: string; runtime?: Ru
       else throw new Error(`paw: "${a}" is not a runtime — expected ${RUNTIMES.join(", ")}`);
     }
   }
+  const kitArgs = end === -1 ? undefined : argv.slice(end + 1);
+  if (swapAgent === undefined) {
+    if (model !== undefined) throw new Error("paw: restart --model needs --agent kit|claude — it is saved in the persona as part of the swap");
+    if (kitArgs !== undefined) throw new Error("paw: `--` passes flags to kit — it needs --agent kit");
+    return out;
+  }
+  if (out.agent === undefined)
+    throw new Error(`paw: --agent swaps ONE agent's harness — name it: \`paw restart <agent> --agent ${swapAgent}\`${out.runtime ? ` ("${out.runtime}" is a runtime)` : ""}`);
+  if (!(SWAP_AGENTS as readonly string[]).includes(swapAgent))
+    throw new Error(`paw: restart --agent "${swapAgent}" — a restart swaps an agent between ${SWAP_AGENTS.join(" and ")}; any other harness is a persona edit`);
+  if (kitArgs !== undefined && swapAgent !== KIT_AGENT)
+    throw new Error(`paw: \`--\` passes flags to kit, and --agent ${swapAgent} is not kit — claude's own flags are \`paw claude <flags>\` (claudeArgs)`);
+  out.swap = { agent: swapAgent, model, kitArgs };
   return out;
 }
 
@@ -164,8 +195,17 @@ async function runtime(argv: string[]): Promise<void> {
 }
 
 async function restart(argv: string[]): Promise<void> {
-  const { space: spaceArg, runtime: r, agent } = parseArgs(argv, "restart");
+  const { space: spaceArg, runtime: r, agent, swap } = parseArgs(argv, "restart");
   const space = spaceArg ?? resolveSpace();
+
+  // `paw restart <agent> --agent kit|claude …` — switch its harness in the persona FIRST (printed, with
+  // the undo), then the plain restart below boots it on the new one. Done before ensure(): a refused
+  // swap must not boot a manager, and the persona is the whole record, so the manager isn't needed.
+  if (swap !== undefined) {
+    if (!agentRecord(space, agent!))
+      throw new Error(`paw: "${agent}" is not a registered agent in space ${space} — \`paw status\` lists them; a swap edits its persona`);
+    applySwap(space, agent!, swap, (line) => console.log(line));
+  }
 
   // `paw restart <agent>` — bounce ONE agent, leaving the manager and every other agent alone. There
   // was no verb for this: `paw restart` means the MANAGER, and the only way to cycle a single agent was
@@ -248,8 +288,8 @@ const restartCommand: Command = {
   kind: "command",
   name: "restart",
   group: "Lifecycle",
-  summary: "restart ONE agent (`restart <agent>`), or force-restart the manager (optionally switching runtime)",
-  usage: "restart [<agent>|<pty|tmux|cmux>] [--space s]",
+  summary: "restart ONE agent (`restart <agent>`, `--agent kit|claude` swaps its harness), or force-restart the manager (optionally switching runtime)",
+  usage: "restart [<agent> [--agent kit|claude] [--model M] [-- <kit flags>] | <pty|tmux|cmux>] [--space s]",
   run: (a) => restart([...a.raw]),
 };
 

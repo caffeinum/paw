@@ -35,13 +35,13 @@ import { pawServer } from "./server.ts";
 import { readRemoteMesh } from "./remote-mesh.ts";
 import { withFileLock, withFileLockAsync, type LockOpts } from "./lock.ts";
 import { liveSessionProcs, meshAgentSession, meshIdentity, type LiveSessionProc } from "./named.ts";
-import { ensureKitBinary, isKitProvider, KIT_AGENT } from "./kit.ts";
+import { ensureKitBinary, isKitProvider, KIT_AGENT, preflightKitArgs, readKitPersona } from "./kit.ts";
 import { HERMES_AGENT } from "./hermes-profile.ts";
 import { ACP_AGENT } from "./acp-agent.ts";
 import { resolveAcpHost } from "./acp-host.ts";
-import { isClaudeHarness, personaTranscriptRoots, personaValue, readAgentType, readClaudeArgs, readCwd, readResumeId, readShareTools, transcriptMtime } from "./session.ts";
+import { isClaudeHarness, personaTranscriptRoots, personaValue, readAgentType, readClaudeArgs, readCwd, readKitArgs, readResumeId, readShareTools, transcriptMtime } from "./session.ts";
 import { defaultTmuxEnv, managerLogPath, readRuntimeMarker } from "./lifecycle.ts";
-import { logOffset, seatDiagnostic } from "./manager-log.ts";
+import { logOffset, seatDiagnostic, seatExit } from "./manager-log.ts";
 import { ensureBypassConsent, managedLaunchesBypass } from "./bypass-consent.ts";
 import { readStartupPrompt, tmuxSplit, tmuxSplitAdvice, type StartupScreen } from "./native-attach.ts";
 import { HOST_RE } from "./url.ts";
@@ -1060,7 +1060,19 @@ export async function ensureAgentSpawned(
       // kit publishes no AG-UI event plane (the manager refuses an armed spawn on a connector without
       // one), and the manager only resolves its binary — building it is the CLI's job, here.
       args.events = false;
-      ensureKitBinary();
+      // kit has no MCP client. Without a selection cotal hands a connector every server its config
+      // declares FOR it (`connectors.kit.mcpServers`), the kit connector refuses a non-empty set — and
+      // it refused AFTER the manager had accepted the spawn, logging nothing, so paw only ever saw
+      // "never reached the mesh within 60s" (the old "needs shareTools: none" gotcha). Kit spawns
+      // always select none now, whatever the persona says.
+      args.shareTools = [];
+      if (share && parseShareSelection(share)?.length)
+        console.error(`paw: "${opts.name}" runs on kit, which has no MCP client — its shareTools: ${share} is not shared to it`);
+      // The rest of what the connector would refuse inside the manager (equally silent there) is
+      // refused HERE, loud: the persona read the connector does, and kit's own parse of the kitArgs.
+      const persona = readKitPersona(config);
+      if (!persona.pin) throw new Error(`paw: kit agent "${opts.name}" has no \`resume:\` pin in ${config} — kit needs a durable session id`);
+      preflightKitArgs(ensureKitBinary(), persona.kitArgs, `kitArgs in ${config}`);
     }
     // Hermes publishes no AG-UI event plane either (cotal's connector has no eventChannel).
     if (hermes) args.events = false;
@@ -1129,10 +1141,17 @@ export async function ensureAgentSpawned(
         return { spawned: true, id, starting: true };
       }
       const diagnostic = gone ? seatDiagnostic(managerLogPath(opts.space), opts.name, logFrom) : undefined;
+      // kit writes its refusal (a model it can't resolve, -P contradicting -m, …) to its own stderr,
+      // which the runtime doesn't keep — so name the exit and the flags it was given instead of nothing.
+      const kitExit = gone && kit && !diagnostic ? seatExit(managerLogPath(opts.space), opts.name, logFrom) : undefined;
       throw new Error(
         `paw: the manager accepted "${opts.name}" but it never reached the mesh within ${Math.round(readyMs / 1000)}s` +
           (gone ? ` — its process is gone (ps row: ${row ? `status=${row.status}` : "missing"})` : "") +
           (diagnostic ? ` — the manager logged: ${diagnostic}` : "") +
+          (kitExit
+            ? ` — kit exited at launch (${kitExit}); it prints why on its own stderr, which the runtime doesn't keep — ` +
+              `check the model/provider it was given (persona provider:/model:, kitArgs: ${JSON.stringify(readKitArgs(config))})`
+            : "") +
           (!after.ok ? ` — and the manager didn't answer ps to say whether it still runs (${after.error ?? "no reply"})` : "") +
           (watch.cause() || (gone || !after.ok ? "" : ` — it is stuck at a prompt`)) +
           `. \`paw status\` to see its row, \`paw log ${opts.name}\` for what it did.`,
