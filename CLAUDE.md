@@ -105,6 +105,9 @@ Each entry: what it is + the most load-bearing rule. Full notes behind the link.
   `you`; shared brokers need distinct ones). → [remote-mesh.md#human-name](docs/notes/remote-mesh.md#human-name)
 - `src/human-inbox.ts` — `paw chat` on a remote space provisions its own DM/DELIVER durables (agent creds
   only BIND under auth) and retires them on quit, TLS required. → [remote-mesh.md](docs/notes/remote-mesh.md)
+- `src/hosted.ts` + `src/remote-creds.ts` + `src/sleep-dial.ts` — remote control is PINNED to this machine's
+  manager instance; `paw sleep` + INBOX lag only for agents hosted HERE (local persona + our instance),
+  with paw-signed narrow creds; others fail loud "hosted on another machine". → [remote-mesh.md](docs/notes/remote-mesh.md)
 
 ### Control rail → [control-rail.md](docs/notes/control-rail.md)
 - `src/control.ts` — the ONE door to the manager: v0.4 service endpoint (`resolveService` once, invoke
