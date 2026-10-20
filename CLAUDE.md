@@ -182,6 +182,8 @@ Each entry: what it is + the most load-bearing rule. Full notes behind the link.
 - `src/chat.ts` — the headline REPL as a persistent human peer; bare `paw chat` = `.`, `--all` global,
   `@agent` filtered (hidden messages never marked read), `#channel`; `--fresh` is the birth verb (fails
   if an agent exists); follows the conversation only when input is empty. → [chat.md#srcchatts](docs/notes/chat.md#srcchatts)
+- `src/chat-own.ts` — chat's echo tap + tasks seed; remote: only "you"'s own send subjects (narrow
+  `chat-echo`/`chat-history` creds), never the space wildcard. → [remote-mesh.md#paw-chat--paw-web-taps](docs/notes/remote-mesh.md#paw-chat--paw-web-taps)
 - `src/images.ts` — `[Image #N]` attachments as TEXT (never a new part kind); stage ephemeral paths. → [chat.md#images](docs/notes/chat.md#images)
 - `src/paste.ts` — bracketed paste → one `[Pasted text #N]` message; suppression starts at the START marker. → [chat.md#paste](docs/notes/chat.md#paste)
 - `src/multiline.ts` — alt/shift+enter and trailing `\` continuation. → [chat.md#multiline](docs/notes/chat.md#multiline)

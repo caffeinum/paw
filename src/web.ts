@@ -45,7 +45,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { Socket } from "node:net";
 import { extname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { registry, seedChannelRegistry, type Command, type CotalEndpoint, type CotalMessage } from "@cotal-ai/core";
+import { registry, seedChannelRegistry, spacePrefix, type Command, type CotalEndpoint, type CotalMessage } from "@cotal-ai/core";
 import { controlCreds, folderForName, personaFilePath } from "./addressing.ts";
 import { claudeProjectDir } from "./adopt.ts";
 import { advanceCursor, cursorPath, readCursor } from "./cursor.ts";
@@ -103,7 +103,7 @@ import { randomBytes } from "node:crypto";
 import { imagesDir } from "./images.ts";
 import { prInfo, prInfoByUrl, prInfoMany } from "./git.ts";
 import { bashMessage, runBash } from "./bash.ts";
-import { pawServer } from "./server.ts";
+import { isRemoteSpace, pawServer } from "./server.ts";
 
 /** 7788, NOT 7799 — `cotal web` owns 7799 and running both at once is the normal case, not a clash. */
 const DEFAULT_PORT = 7788;
@@ -1612,6 +1612,17 @@ export async function startWebServer(deps: WebDeps): Promise<WebServer> {
 
 /* ── the command ──────────────────────────────────────────────────────────────────────────────── */
 
+/**
+ * What the live feed subscribes to. Open mesh: the whole space (undefined = cotal's space wildcard).
+ * Remote: the observer holds cotal's `admin` cred, whose `sub.allow` enumerates the messaging planes and
+ * excludes the space wildcard — a `cotal.<s>.>` tap is a Permissions Violation there — so tap each plane.
+ */
+export function webTapSubjects(space: string, remote: boolean): Array<string | undefined> {
+  if (!remote) return [undefined];
+  const p = spacePrefix(space);
+  return [`${p}.chat.>`, `${p}.inst.>`, `${p}.svc.>`];
+}
+
 async function web(argv: string[]): Promise<void> {
   // BEFORE anything else, and before the mesh is touched: under bun this process cannot serve a
   // WebSocket at all (node:http never emits `upgrade`), so hand the whole command to node and
@@ -1855,7 +1866,7 @@ async function web(argv: string[]): Promise<void> {
 
   // Live path: instant, ephemeral, non-contending — and wrapped, because core does not try/catch this
   // handler and one throw would kill the feed for the life of the process.
-  ep.tap((_subject, m) => {
+  const onTap = (_subject: string, m: CotalMessage | undefined): void => {
     try {
       // TWO admitters, one frame. Each answers its own question and neither can widen the other: a DM
       // can never be a channel message, so at most one of these returns an entry. The channel entry
@@ -1869,7 +1880,8 @@ async function web(argv: string[]): Promise<void> {
     } catch (e) {
       console.error(c.red("! " + (e as Error).message));
     }
-  });
+  };
+  for (const subject of webTapSubjects(space, isRemoteSpace(space))) ep.tap(onTap, subject ? { subject } : undefined);
 
   const reconcileLoop = pausableLoop(
     async () => {

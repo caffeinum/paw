@@ -235,6 +235,33 @@ assert(rc.watchConsumerName("remotetest-s", "a", "cli", 0) !== names[0], "the CL
 const fwd = rc.forwardGrants([unicastSubject("remotetest-s", DEV_OWNER, "UNEW", DEV_OWNER, "USENDER")]);
 assert(fwd.pub.length === 1 && fwd.sub.length === 0, "sleep-forward publishes to exactly the woken seat's subjects from the backlog's senders");
 
+console.log("paw chat / paw web on a remote space: no space-wide tap");
+const own = await import("../src/chat-own.ts");
+const ME = own.principalOfId("local.UME");
+assert(ME.owner === "local" && ME.actor === "UME", "\"you\"'s principal comes from the endpoint's dot-form id (owner.actor)");
+throws(() => own.principalOfId("UME"), /not an <owner>\.<actor> principal/, "a bare id fails loud rather than guessing an owner");
+const subj = own.ownSendSubjects("remotetest-s", ME);
+assert(subj.chat === "cotal.remotetest-s.chat.local.UME.>" && subj.dm === "cotal.remotetest-s.inst.*.*.local.UME", `chat's echo taps only "you"'s own send subjects — ${subj.chat} ${subj.dm}`);
+const human = { allowSubscribe: [">"] };
+const { permissionsFor, subjectMatches, mintLifecycleUid: mlu } = await import("@cotal-ai/core");
+const agentSub = (permissionsFor("agent", "remotetest-s", { owner: DEV_OWNER, actor: "UME", connId: "UMEconn00", lifecycleUid: mlu() }, human) as { sub?: { allow?: string[] } }).sub?.allow ?? [];
+assert(agentSub.some((a) => subjectMatches(a, subj.chat.replace(/>$/, "general"))) && !agentSub.some((a) => a === "cotal.remotetest-s.>"), "…the channel half rides chat's own `agent` cred (its chat.*.*.> grant), which has no space wildcard");
+const echo = await rc.signScopedCreds("remotetest-s", "chat-echo", newIdentity(), rc.echoGrants(subj.dm), rc.ECHO_TTL_SEC);
+const echoClaims = credsClaims(echo);
+assert(JSON.stringify(echoClaims.nats?.sub?.allow) === JSON.stringify([`_INBOX_${idFromCreds(echo)}.>`, subj.dm]) && (echoClaims.nats?.pub?.allow ?? []).length === 0, "the chat-echo cred subscribes ONLY \"you\"'s outbound DMs (+ its reply inbox) and publishes nothing");
+assert(typeof echoClaims.exp === "number" && Math.abs(echoClaims.exp - (Date.now() / 1000 + rc.ECHO_TTL_SEC)) < 60, "…and expires (24h)");
+const convF = own.ownConversationFilters("remotetest-s", ME);
+assert(convF.length === 2 && convF[0] === unicastRecvFilter("remotetest-s", DEV_OWNER, "UME") && convF[1] === subj.dm, "the tasks-view seed reads DMs to and from \"you\" only");
+const hn = own.historyConsumerNames("remotetest-s", ME, "n1", 2);
+const hg = rc.filteredReadGrants("remotetest-s", convF, hn);
+assert(hg.sub.length === 0 && hg.pub.includes(`$JS.API.CONSUMER.CREATE.DM_remotetest-s.${hn[0]}.${convF[0]}`) && hg.pub.every((p) => !/MSG\.NEXT\.DM_[^.]+\.[*>]|CONSUMER\.CREATE\.DM_[^.]+(\.[*>])?$/.test(p)), "…through name- and filter-pinned consumers, no live subscribe");
+assert(own.historyConsumerNames("remotetest-s", ME, "n2", 1)[0] !== hn[0], "…named per read (two chats never share a consumer)");
+const { webTapSubjects } = await import("../src/web.ts");
+assert(JSON.stringify(webTapSubjects("remotetest-s", false)) === JSON.stringify([undefined]), "paw web taps the whole space on an open mesh (unchanged)");
+const wt = webTapSubjects("remotetest-s", true) as string[];
+const adminSub = (permissionsFor("admin", "remotetest-s", { owner: DEV_OWNER, actor: "UME", connId: "UMEconn00" }, {}) as { sub?: { allow?: string[] } }).sub?.allow ?? [];
+assert(wt.length === 3 && wt.every((t) => adminSub.includes(t)), `…and on a remote space each plane its admin observer may read — ${wt.join(" ")}`);
+
 console.log("hosted here (one machine of several on a remote space)");
 const { hostingOf, hosting, localManagerInstanceId } = await import("../src/hosted.ts");
 const { createManagerInstanceIdentity } = await import("@cotal-ai/workspace");
