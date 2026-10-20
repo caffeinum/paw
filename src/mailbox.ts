@@ -16,7 +16,7 @@
 import { CotalEndpoint, registry, type Command } from "@cotal-ai/core";
 import { humanEndpointAuth, stableHumanId } from "./addressing.ts";
 import { resolveSpace } from "./lifecycle.ts";
-import { HUMAN_PEER } from "./names.ts";
+import { humanPeer } from "./names.ts";
 import { startSleepHost } from "./sleep-host.ts";
 import { startStaleForwarder } from "./stale-forward.ts";
 import { pawServer } from "./server.ts";
@@ -40,8 +40,8 @@ async function mailbox(argv: string[]): Promise<void> {
   const humanAuth = await humanEndpointAuth(space, "agent");
   const creds = humanAuth.creds;
   const card = creds
-    ? { name: HUMAN_PEER, kind: "endpoint" as const }
-    : { name: HUMAN_PEER, kind: "endpoint" as const, id: stableHumanId(space) };
+    ? { name: humanPeer(space), kind: "endpoint" as const }
+    : { name: humanPeer(space), kind: "endpoint" as const, id: stableHumanId(space) };
   const ep = new CotalEndpoint({
     space,
     servers: server,
@@ -55,7 +55,7 @@ async function mailbox(argv: string[]): Promise<void> {
   // shouldn't kill the daemon — log it and stay up.
   ep.on("error", (e: Error) => console.error(`[mailbox] ${e.message}`));
   await ep.start();
-  console.error(`[mailbox] present as "${HUMAN_PEER}" in space "${space}" — keeping you reachable for replies`);
+  console.error(`[mailbox] present as "${humanPeer(space)}" in space "${space}" — keeping you reachable for replies`);
 
   // The sleep host (src/sleep-host.ts): stand-in presences for hibernated agents + wake on DM. Its own
   // failure must not take the "you" beacon down with it — log loudly and keep beaconing.

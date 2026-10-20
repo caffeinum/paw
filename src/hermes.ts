@@ -33,7 +33,7 @@ import { loadAgentFile, type Connector, type LaunchOpts, type LaunchSpec } from 
 import { beadsDir } from "./beads-dir.ts";
 import { ADDRESSING_BRIEF, CHANNELS_BRIEF, OPERATOR_REQUESTS_BRIEF, TASKS_BRIEF, UNATTENDED_BRIEF, WAKE_BRIEF } from "./brief.ts";
 import { hermesHomeFor, hermesProfileId, hermesRoot, hermesVenv } from "./hermes-profile.ts";
-import { HUMAN_PEER } from "./names.ts";
+import { HUMAN_PEER, humanPeer } from "./names.ts";
 import { voiceLineFor } from "./personality.ts";
 
 export { HERMES_AGENT } from "./hermes-profile.ts";
@@ -84,12 +84,12 @@ export function readHermesPersona(configPath: string | undefined, space: string,
 }
 
 /** The brief for a hermes agent: what paw knows that Hermes' own cotal plugin doesn't say. */
-export function hermesBrief(name: string, voice?: string): string {
+export function hermesBrief(name: string, voice?: string, human: string = HUMAN_PEER): string {
   return [
     `You are "${name}", a paw agent rooted at this folder and a peer on the cotal mesh, running on Hermes.`,
     `Mesh messages arrive as your turns, and your reply to a message goes back to its sender on its own.`,
     `To reach anyone else use the cotal tools (cotal_dm, cotal_send, …). The human operator is the peer`,
-    `"${HUMAN_PEER}"; a teammate is addressed by their agent name.`,
+    `"${human}"; a teammate is addressed by their agent name.`,
     ...(voice ? [voice] : []),
     ...ADDRESSING_BRIEF,
     ...CHANNELS_BRIEF,
@@ -188,7 +188,7 @@ export function hermesLaunch(opts: LaunchOpts, persona: HermesPersona, inner: Co
       );
     }
     writeAtomic(join(persona.home, "config.yaml"), hermesConfigYaml({ model: model!, provider: persona.provider!, baseUrl: persona.baseUrl, cwd: persona.cwd }));
-    writeAtomic(join(persona.home, "SOUL.md"), [persona.body, hermesBrief(opts.name, persona.voice)].filter(Boolean).join("\n\n") + "\n");
+    writeAtomic(join(persona.home, "SOUL.md"), [persona.body, hermesBrief(opts.name, persona.voice, humanPeer(opts.space))].filter(Boolean).join("\n\n") + "\n");
   } else if (model) {
     refuse(`runs in the adopted profile ${persona.home}, whose config.yaml picks the model — drop the --model override`);
   }

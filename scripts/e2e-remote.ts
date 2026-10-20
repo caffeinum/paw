@@ -10,24 +10,28 @@
  *   1. paw mesh add (refused for a world-readable signer, accepted at 0600);
  *   2. without the CA, ensure() fails loud naming TLS trust — and starts no broker;
  *   3. paw dm --space R <folder> spawns a real claude (haiku) there; it replies; paw inbox reads it;
- *   4. who / status see it; paw restart --space R revives it and a second DM is answered;
- *   5. status: INBOX lag is a real number for the local agent (paw's cached consumer-INFO-only cred);
- *   6. a SECOND machine (own PAW_HOME, root, signer copy → its own manager) spawns its agent: machine 1
+ *   4. paw chat @agent --space R (piped stdin) binds "you"'s durable inbox, sends, and shows the reply;
+ *   5. who / status see it; paw restart --space R revives it and a second DM is answered;
+ *   6. status: INBOX lag is a real number for the local agent (paw's cached consumer-INFO-only cred);
+ *   7. a SECOND machine (own PAW_HOME, root, signer copy → its own manager) spawns its agent: machine 1
  *      never lists it or claims its lag, and `paw sleep` across machines fails "hosted on another machine";
- *   7. paw sleep agent --now: stand-in under its own nkey; a raw DM by name reaches the stand-in, wakes
+ *   8. paw sleep agent --now: stand-in under its own nkey; a raw DM by name reaches the stand-in, wakes
  *      the agent, and is re-delivered (its reply lands in paw inbox);
- *   8. paw down --space R + cotal down: nothing left naming either space.
+ *   9. paw down --space R + cotal down: nothing left naming either space.
  *
  *   COTAL_BIN=<cotal-ai@0.84.0>/dist/cotal.js node scripts/e2e-remote.ts
+ *
+ * E2E_HUMAN=<name> adds `--as <name>` to `paw mesh add`: the mailbox presence must then appear under
+ * that name (never "you") and the agent's reply — briefed to cotal_dm that name — must reach the inbox.
  *
  * COTAL_BIN must be the `cotal-ai` package at the version of the repo's @cotal-ai/cli (it runs the
  * broker's delivery daemon, which @cotal-ai/cli alone cannot start). Install it OUTSIDE the repo,
  * e.g. `npm i --prefix /tmp/cotal084 --ignore-scripts cotal-ai@0.84.0`.
  */
-import { execFileSync, spawnSync, type SpawnSyncReturns } from "node:child_process";
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync } from "node:fs";
+import { execFileSync, spawn, spawnSync, type SpawnSyncReturns } from "node:child_process";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync } from "node:fs";
 import { createServer } from "node:net";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const REPO = fileURLToPath(new URL("..", import.meta.url));
@@ -45,7 +49,8 @@ if (process.argv[2] === "--send-raw") {
   const { CotalEndpoint } = await import("@cotal-ai/core");
   const { humanEndpointAuth } = await import("../src/addressing.ts");
   const { pawServer } = await import("../src/server.ts");
-  const ep = new CotalEndpoint({ space: space!, servers: pawServer(space), ...(await humanEndpointAuth(space!, "operator")), card: { name: "you", kind: "endpoint" }, registerPresence: false, consume: false, watchPresence: true });
+  const { humanPeer } = await import("../src/names.ts");
+  const ep = new CotalEndpoint({ space: space!, servers: pawServer(space), ...(await humanEndpointAuth(space!, "operator")), card: { name: humanPeer(space!), kind: "endpoint" }, registerPresence: false, consume: false, watchPresence: true });
   ep.on("error", () => {});
   await ep.start();
   let to: string | undefined;
@@ -124,6 +129,7 @@ if (process.argv[2] === "--m2") {
   throw new Error(`unknown --m2 op ${op}`);
 }
 
+const HUMAN = process.env.E2E_HUMAN?.trim() || "you";
 const tag = `${process.pid}`;
 const R = `remotetest-${tag}`; // the remote space
 const DECOY = `remotedecoy-${tag}`; // PAW_SPACE: a local space nothing should touch
@@ -206,6 +212,44 @@ async function lagOf(name: string, env = withCa, ms = 60_000): Promise<{ row?: R
   return last;
 }
 
+/** The DM/DELIVER durables named for "you" (the persisted human nkey), read from the broker's own
+ *  store dir (no cotal cred may LIST consumers) — proves chat retired what it provisioned. */
+function humanDurables(): string[] {
+  const id = (JSON.parse(readFileSync(join(home, "spaces", R, "human.nkey.json"), "utf8")) as { id: string }).id;
+  const found: string[] = [];
+  const walk = (dir: string): void => {
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      if (!e.isDirectory()) continue;
+      if (basename(dir) === "obs" && /^(DM|DLV)_/.test(basename(dirname(dir)))) {
+        if (e.name.includes(id)) found.push(e.name);
+      } else walk(join(dir, e.name));
+    }
+  };
+  walk(join(work, "store"));
+  return found;
+}
+
+/** Drive `paw chat @<agent> --space R` over piped stdin: send one line, wait for `want` in its output. */
+async function chatRoundTrip(agent: string, line: string, want: string, ms: number): Promise<{ ok: boolean; clean: boolean; live: string[]; output: string }> {
+  const child = spawn(process.execPath, [join(REPO, "bin/paw.ts"), "chat", `@${agent}`, "--space", R], { env: withCa, cwd: REPO, stdio: ["pipe", "pipe", "pipe"] });
+  let output = "";
+  let exited = false;
+  child.stdout.on("data", (d: Buffer) => (output += d.toString()));
+  child.stderr.on("data", (d: Buffer) => (output += d.toString()));
+  child.on("exit", () => (exited = true));
+  await sleep(8000); // connect + bind before typing
+  if (!exited) child.stdin.write(`${line}\n`);
+  const deadline = Date.now() + ms;
+  while (!exited && Date.now() < deadline && !output.toLowerCase().includes(want)) await sleep(1000);
+  const found = output.toLowerCase().includes(want);
+  const live = exited ? [] : humanDurables();
+  child.stdin.end(); // EOF = quit: chat retires the inbox footprint it provisioned
+  for (let i = 0; i < 20 && !exited; i++) await sleep(500);
+  const clean = exited;
+  if (!exited) child.kill("SIGKILL");
+  return { ok: found, clean, live, output };
+}
+
 try {
   // ── the "remote": cotal 0.84, JWT auth + TLS, broker only ────────────────────────────────────────
   const up = cotal(["up", "--detach", "--no-manager", "--space", R, "--server", server, "--tls-cert", cert, "--tls-key", key, "--store-dir", join(work, "store")]);
@@ -219,8 +263,9 @@ try {
   const loose = paw(["mesh", "add", R, "--server", server, "--root", localRoot]);
   ok("mesh add refuses a world-readable signer", loose.status !== 0 && /chmod 600/.test(out(loose)));
   chmodSync(signer, 0o600);
-  const add = paw(["mesh", "add", R, "--server", server, "--root", localRoot]);
+  const add = paw(["mesh", "add", R, "--server", server, "--root", localRoot, ...(HUMAN !== "you" ? ["--as", HUMAN] : [])]);
   ok("mesh add records the remote space", add.status === 0, out(add).split("\n")[0]);
+  ok(`mesh ls shows you as "${HUMAN}"`, out(paw(["mesh", "ls"])).includes(`as ${HUMAN}`));
   ok("the signer never reaches the output", !out(add).includes("signingSeed") && !out(paw(["mesh", "--json"])).includes("signingSeed"));
 
   // ── 2. TLS trust is required, and paw never starts a broker for it ───────────────────────────────
@@ -244,10 +289,23 @@ try {
   ok("the seat's cotal MCP requires TLS (COTAL_TLS=1)", seatMcp.length > 0 && seatMcp.every((l) => /\sCOTAL_TLS=1(\s|$)/.test(l)), `${seatMcp.length} seat MCP process(es)`);
   ok("nothing ran for the decoy space", procs(DECOY).length === 0 && !existsSync(join(home, "spaces", DECOY, "manager.log")));
 
-  // ── 4. who / status / restart ───────────────────────────────────────────────────────────────────
   const name = "agent";
+  // ── 4. paw chat: a CONSUMING "you" (binds its own durable inbox) on the authed mesh ──────────────
+  const durablesBefore = humanDurables();
+  const chat = await chatRoundTrip(name, "reply with only the word pong spelled backwards, nothing else", "gnop", 150_000);
+  ok("paw chat --space R binds its inbox and shows the agent's reply", chat.ok, chat.ok ? "" : chat.output.trim().split("\n").slice(-6).join(" | "));
+  const durablesAfter = humanDurables();
+  ok(
+    "…and quits on EOF, retiring the inbox durables it provisioned",
+    chat.clean && !/left its inbox footprint/.test(chat.output) && chat.live.length >= 2 && durablesAfter.length === durablesBefore.length,
+    `"you" durables before ${durablesBefore.length}, during ${chat.live.length}, after ${durablesAfter.length}${chat.output.match(/.*footprint.*/)?.[0] ?? ""}`,
+  );
+
+  // ── 5. who / status / restart ───────────────────────────────────────────────────────────────────
   const who = paw(["who", "--space", R]);
-  ok("who --space R lists the agent and you", who.status === 0 && out(who).includes(name) && out(who).includes("you"), out(who).trim().split("\n")[0]);
+  const whoNames = out(who).replace(/\x1b\[[0-9;]*m/g, "").split("\n").map((l) => l.trim().split(/[\s/]+/)[0]);
+  ok(`who --space R lists the agent and the mailbox as "${HUMAN}"`, who.status === 0 && out(who).includes(name) && whoNames.includes(HUMAN), out(who).trim().split("\n")[0]);
+  if (HUMAN !== "you") ok('…and nobody is "you" on the space', !whoNames.includes("you"), out(who).trim().replace(/\n/g, " | "));
   const st = paw(["status", "--space", R, "--json"]);
   let row: { name?: string; live?: boolean; mesh?: string } | undefined;
   let errors: string[] | undefined;
@@ -384,12 +442,12 @@ try {
   ok("a DM by name resolves to the stand-in (not the agent's old seat)", to.endsWith(standIn.id), `${to} ${out(raw).slice(0, 300)}`);
   ok("the DM wakes it and is delivered — its reply lands in paw inbox", await inboxHas("awake", 180_000));
   const log = existsSync(join(home, "spaces", R, "sleep.log")) ? readFileSync(join(home, "spaces", R, "sleep.log"), "utf8") : "";
-  ok("sleep.log: woke it and re-delivered the DM", /woke agent — DM from you; re-delivered [1-9]/.test(log), log.trim().split("\n").slice(-3).join(" | "));
+  ok("sleep.log: woke it and re-delivered the DM", new RegExp(`woke agent — DM from ${HUMAN}; re-delivered [1-9]`).test(log), log.trim().split("\n").slice(-3).join(" | "));
   ok("record and stand-in cleared", !existsSync(join(sleepDir, `${name}.json`)) && !existsSync(join(sleepDir, `${name}.waking`)) && !existsSync(join(sleepDir, `${name}.beacon`)));
   const lag3 = await lagOf(name);
   ok("after the wake its lag reads again (the new incarnation's durable)", lag3.row?.inbox?.kind === "lag", JSON.stringify(lag3.row?.inbox));
 } finally {
-  // ── 5. teardown ─────────────────────────────────────────────────────────────────────────────────
+  // ── 6. teardown ─────────────────────────────────────────────────────────────────────────────────
   const down = paw(["down", "--space", R]);
   console.log(out(down).trim());
   const cdown = cotal(["down"]);

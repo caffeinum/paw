@@ -88,6 +88,35 @@ assert(parseMeshArgs(["--space", "paw"]).verb === "ls", "bare `paw mesh` lists")
 throws(() => parseMeshArgs(["rm", "x", "--server", "tls://h:1"]), /belong to/, "--server on rm refused");
 throws(() => parseMeshArgs(["frob"]), /unknown/, "unknown verb refused");
 
+assert(parseMeshArgs(["add", "team", "--server", "tls://h:4222", "--root", "/r", "--as", "aleks-mac-mini"]).human === "aleks-mac-mini", "add --as <name> parsed");
+const st = parseMeshArgs(["set", "team", "--as", "bob"]);
+assert(st.verb === "set" && st.space === "team" && st.human === "bob", "set <space> --as <name> parsed");
+throws(() => parseMeshArgs(["set", "team"]), /needs --as/, "set without --as refused");
+throws(() => parseMeshArgs(["rm", "team", "--as", "bob"]), /--as belongs/, "--as on rm refused");
+throws(() => parseMeshArgs(["set", "team", "--as", "bad name"]), /human name/, "--as with a space refused");
+throws(() => parseMeshArgs(["set", "team", "--as", "a/b"]), /human name/, "--as with a slash refused");
+
+console.log("human peer name per space");
+const { HUMAN_PEER, humanPeer } = await import("../src/names.ts");
+assert(HUMAN_PEER === "you" && humanPeer("remotetest-local") === "you", "local space (no record) ⇒ \"you\"");
+rm.writeRemoteMesh({ space: "remotetest-h", server: "tls://127.0.0.1:14322", root, ts: new Date().toISOString() });
+assert(humanPeer("remotetest-h") === "you", "remote record without human ⇒ \"you\" (existing records unchanged)");
+rm.writeRemoteMesh({ space: "remotetest-h", server: "tls://127.0.0.1:14322", root, human: "aleks-mac-mini", ts: new Date().toISOString() });
+assert(humanPeer("remotetest-h") === "aleks-mac-mini" && rm.readRemoteMesh("remotetest-h")?.human === "aleks-mac-mini", "remote record human ⇒ that name");
+assert(humanPeer("remotetest-local") === "you", "…and other spaces keep \"you\"");
+for (const bad of ["", "-x", "a b", "a/b", "x".repeat(65)]) throws(() => rm.checkHumanName(bad), /human name/, `checkHumanName refuses ${JSON.stringify(bad.slice(0, 8))}`);
+assert(rm.checkHumanName("aleks.mac_mini-2") === "aleks.mac_mini-2", "checkHumanName accepts letters/digits/._-");
+writeFileSync(rm.remoteMeshPath("remotetest-h"), JSON.stringify({ space: "remotetest-h", server: "tls://h:1", root, human: "bad name", ts: "x" }));
+throws(() => humanPeer("remotetest-h"), /human name.*paw mesh set/, "a record with a bad human fails loud, never falls back to \"you\"");
+const { meshBrief } = await import("../src/connector.ts");
+const { kitBrief } = await import("../src/kit.ts");
+const { hermesBrief } = await import("../src/hermes.ts");
+const { acpBrief } = await import("../src/acp.ts");
+assert(meshBrief("a").includes('cotal_dm("you"') && kitBrief("a").includes('cotal_dm("you"') && hermesBrief("a").includes('"you"') && acpBrief("a").includes('"you"'), "briefs default to \"you\"");
+assert(meshBrief("a", undefined, "aleks-mac-mini").includes('peer "aleks-mac-mini", e.g. cotal_dm("aleks-mac-mini"') && !meshBrief("a", undefined, "aleks-mac-mini").includes('"you"'), "claude brief names the custom human");
+assert(kitBrief("a", undefined, "aleks-mac-mini").includes('cotal_dm("aleks-mac-mini"') && hermesBrief("a", undefined, "aleks-mac-mini").includes('"aleks-mac-mini"') && acpBrief("a", "aleks-mac-mini").includes('"aleks-mac-mini"'), "kit/hermes/acp briefs name the custom human");
+rm.removeRemoteMesh("remotetest-h");
+
 console.log("CLI routing");
 const { explicitSpace } = await import("../src/dispatch.ts");
 assert(explicitSpace(["x", "--space", "team"]) === "team" && explicitSpace(["--space=team"]) === "team", "explicitSpace reads --space / --space=");
@@ -148,6 +177,19 @@ throws(() => assertOneSpace("remotetest-local", sid), /in space "remotetest-r"/,
 assertOneSpace("remotetest-r", "99999999-0000-0000-0000-000000000000");
 assert(true, "an unshared session passes");
 rm.removeRemoteMesh("remotetest-r");
+
+console.log("chat's inbox bind failure is named, never a bare 'consumer not found'");
+{
+  const { describeInboxBindFailure } = await import("../src/human-inbox.ts");
+  const bare = new Error("consumer not found");
+  rm.writeRemoteMesh({ space: "remotetest-r", server: "tls://127.0.0.1:14322", root, ts: new Date().toISOString() });
+  const remote = describeInboxBindFailure("remotetest-r", "abc123", bare).message;
+  assert(/remote space "remotetest-r"/.test(remote) && /abc123/.test(remote) && /paw inbox --space remotetest-r/.test(remote), `remote: ${remote.slice(0, 90)}…`);
+  rm.removeRemoteMesh("remotetest-r");
+  assert(/space "remotetest-local"/.test(describeInboxBindFailure("remotetest-local", undefined, bare).message), "local: names the space");
+  const other = new Error("timeout");
+  assert(describeInboxBindFailure("remotetest-local", undefined, other) === other, "any other error passes through untouched");
+}
 
 console.log("signer root");
 const full = await createSpaceAuth("remotetest-s");

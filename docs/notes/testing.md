@@ -13,6 +13,8 @@ Moved verbatim from CLAUDE.md (2026-10-02 split). Index: [CLAUDE.md](../../CLAUD
   `scripts/check-dispatch.ts` (`pnpm check:dispatch`) — --space injection (operator --space/-= form
   respected; trailing body-word not mistaken), `stripCotalNamespace`, `expandEqFlags`
   (--space=/--server= expansion, positionals untouched), + all 7 native commands self-register.
+  `scripts/check-hash-space.ts` (`pnpm check:hash-space`) — `<agent>#<space>`: parser precedence,
+  per-command hoisting through each command's own parser, every address verb via the real CLI.
   `scripts/check-commands.ts` (`pnpm check:commands`) — the native commands' registration
   (summary/usage present) + pure helpers (formatPs, resolveStopName, stripChannel, formatWhen,
   idNames, renderTap, formatWho) under a temp PAW_HOME; hermetic, no daemons.

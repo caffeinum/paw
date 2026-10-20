@@ -29,7 +29,6 @@ import {
   checkAgentSpec,
   assertUnambiguousTarget,
   canonicalDir,
-  humanEndpointAuth,
   ensureAgentSpawned,
   stuckWarning,
   folderForName,
@@ -79,7 +78,9 @@ import { isContinueKey, joinLines, peelContinuation } from "./multiline.ts";
 import { ensureManagerOn, ensureSpaceFor, resolveSpace } from "./lifecycle.ts";
 import { chatAgentInfo } from "./agent-summary.ts";
 import { renderMarkdown } from "./markdown.ts";
-import { HUMAN_PEER } from "./names.ts";
+import { HUMAN_PEER, humanPeer } from "./names.ts";
+import { sameSpaceAddress } from "./dispatch.ts";
+import { describeInboxBindFailure, openHumanInbox } from "./human-inbox.ts";
 import { cachedLedger, ledgerName } from "./peer-ledger.ts";
 import { hueSgr, parsePersonalityArg, personaGlyph, personalityFor, type Glyph } from "./personality.ts";
 import {
@@ -504,12 +505,14 @@ async function chat(argv: string[]): Promise<void> {
   }
 
   // Persistent human peer. Open mesh => bare connection with a stable id (so replies sent while we
-  // step away queue and redeliver). Auth mesh => the minted creds carry the identity.
-  const humanAuth = await humanEndpointAuth(space, "agent");
+  // step away queue and redeliver). Auth mesh => the minted creds carry the identity, and the DM inbox
+  // durable they bind must be provisioned first (src/human-inbox.ts).
+  const inbox = await openHumanInbox(space, server, filter?.kind === "channel" ? [room] : []);
+  const humanAuth = inbox.auth;
   const creds = humanAuth.creds;
   const card = creds
-    ? { name: HUMAN_PEER, kind: "endpoint" as const }
-    : { name: HUMAN_PEER, kind: "endpoint" as const, id: stableHumanId(space) };
+    ? { name: humanPeer(space), kind: "endpoint" as const }
+    : { name: humanPeer(space), kind: "endpoint" as const, id: stableHumanId(space) };
   const ep = new CotalEndpoint({
     space,
     servers: server,
@@ -523,6 +526,7 @@ async function chat(argv: string[]): Promise<void> {
     // no subscription (multicast is a publish), which is why only the read side needs this.
     ...(filter?.kind === "channel" ? { channels: [room] } : {}),
   });
+  const releaseInbox = () => inbox.release().catch((e: Error) => console.error(e.message));
   // Declared BEFORE ep.start() so the "error" handler (which calls emit) can't hit a temporal-dead-
   // zone ReferenceError if the endpoint emits "error" mid-startup — that would crash the process and
   // mask the real mesh error. emit guards on rl, so it's safe to run before readline exists.
@@ -674,7 +678,12 @@ async function chat(argv: string[]): Promise<void> {
     readline.cursorTo(process.stdout, pos.cols);
   }
   ep.on("error", (e: Error) => emit(c.red("! " + e.message)));
-  await startResilient(ep);
+  try {
+    await startResilient(ep);
+  } catch (e) {
+    await releaseInbox();
+    throw describeInboxBindFailure(space, humanAuth.lifecycleUid, e as Error);
+  }
   const me = ep.card.id;
 
   // Resolve a peer by name, preferring a LIVE one. Restarting an agent (e.g. re-adopt) leaves stale
@@ -700,6 +709,16 @@ async function chat(argv: string[]): Promise<void> {
   const findPeer = (to: string) => {
     const peers = ep.getRoster().filter((p) => p.card.name.toLowerCase() === to.toLowerCase() && p.card.id !== me);
     return peers.find((p) => p.status !== "offline") ?? peers[0];
+  };
+  /** A typed `name#space` / `#chan#space`: this session's space → the bare name; another (or unknown)
+   *  space → said in red and undefined — this REPL is one space's endpoint and never re-routes. */
+  const inThisSpace = (typed: string): string | undefined => {
+    try {
+      return sameSpaceAddress(typed, space, "chat");
+    } catch (e) {
+      emit(c.red((e as Error).message));
+      return undefined;
+    }
   };
 
   // The current sticky DM target: plain lines go here once set. Undefined => broadcast mode (plain
@@ -739,10 +758,12 @@ async function chat(argv: string[]): Promise<void> {
       }
     } catch (e) {
       await ep.stop().catch(() => {});
+      await releaseInbox();
       throw e;
     }
     if (!curId) {
       await ep.stop().catch(() => {});
+      await releaseInbox();
       throw folder
         ? new Error(`paw: agent "${name}" isn't reachable on the mesh — try \`paw down\` then retry`)
         : new Error(`paw: no live agent named "${name}" — start one with \`paw chat <folder>\``);
@@ -1799,6 +1820,7 @@ async function chat(argv: string[]): Promise<void> {
     clickMode = false;
     rl?.close();
     await ep.stop().catch(() => {});
+    await releaseInbox();
     process.exit(0);
   }
 
@@ -1999,20 +2021,23 @@ async function chat(argv: string[]): Promise<void> {
         const sp = rest.indexOf(" ");
         if (sp < 1) emit(c.red("usage: /dm <name> <message>"));
         else {
-          const to = rest.slice(0, sp);
+          const typed = rest.slice(0, sp);
           const body = rest.slice(sp + 1);
-          const peer = findPeer(to);
-          if (!peer) emit(c.red(`no peer named "${to}" present`));
-          else {
+          const to = inThisSpace(typed); // undefined: another space, already said in red
+          const peer = to === undefined ? undefined : findPeer(to);
+          if (to !== undefined && !peer) emit(c.red(`no peer named "${to}" present`));
+          else if (peer) {
             markWaiting(peer.card.name, await sent(ep.unicast(peer.card.id, flush(body)))); // confirm sent + await the reply (typed line alone isn't proof)
           }
         }
       } else if (text.startsWith("@")) {
         // @name [message] — switch the sticky target to <name> (and send the rest as a DM if given).
         const sp = text.indexOf(" ");
-        const to = (sp === -1 ? text.slice(1) : text.slice(1, sp)).trim();
+        const typed = (sp === -1 ? text.slice(1) : text.slice(1, sp)).trim();
         const body = sp === -1 ? "" : text.slice(sp + 1).trim();
-        if (!to) emit(c.red("usage: @<name> [message]"));
+        const to = typed ? inThisSpace(typed) : "";
+        if (to === undefined) warnStranded(typed, body);
+        else if (!to) emit(c.red("usage: @<name> [message]"));
         else {
           let peer = findPeer(to);
           let stuckId: string | undefined; // a stuck seat's inbox address: queue there instead of stranding
@@ -2073,9 +2098,11 @@ async function chat(argv: string[]): Promise<void> {
         const sp = text.indexOf(" ");
         if (sp < 2) emit(c.red("usage: #<channel> <message>"));
         else {
-          const channel = text.slice(1, sp).trim();
+          const typed = inThisSpace(text.slice(0, sp).trim());
+          const channel = typed?.slice(1);
           const body = text.slice(sp + 1).trim();
-          await sent(ep.multicast(flush(body, `#${channel}`), { channel }));
+          if (channel !== undefined) await sent(ep.multicast(flush(body, `#${channel}`), { channel }));
+          else warnStranded(text.slice(0, sp).trim(), body);
         }
       } else if (curId) {
         refreshTarget();
@@ -2113,7 +2140,7 @@ const chatCommand: Command = {
   name: "chat",
   group: "Mesh",
   summary: "chat with an EXISTING agent (by @name or folder; wakes it if offline); replies stream back live — --fresh creates a new one",
-  usage: 'chat [<folder>|<name>|@<name>|#<channel>] [--only] [--all] [--name <n>] [--fresh [--personality <seed|"vibe"|none>]] [--agent kit|codex|opencode|hermes|claude [--provider codex|grok|<hermes provider>] [--model m]]   (default: "." — this folder\'s agent; --all = every conversation, nothing preselected; --name pins a 2nd+ EXTRA agent at the folder; --fresh births a NEW default agent, fails loud if one already exists; --agent creates the agent on that harness, or targets it if it already runs there)',
+  usage: 'chat [<folder>|<name>|@<name>|#<channel>][#<space>] [--only] [--all] [--name <n>] [--fresh [--personality <seed|"vibe"|none>]] [--agent kit|codex|opencode|hermes|claude [--provider codex|grok|<hermes provider>] [--model m]]   (default: "." — this folder\'s agent; --all = every conversation, nothing preselected; --name pins a 2nd+ EXTRA agent at the folder; --fresh births a NEW default agent, fails loud if one already exists; --agent creates the agent on that harness, or targets it if it already runs there)',
   run: (a) => chat([...a.raw]),
 };
 

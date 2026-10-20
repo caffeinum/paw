@@ -156,8 +156,11 @@ an old server ignores the header and frames land on "default". `rm` the file to 
 
 ## src/names.ts
 
-- `src/names.ts` — `HUMAN_PEER` constant (the name the human joins under), shared by the connector
-  brief and chat with zero deps to avoid a cycle.
+- `src/names.ts` — `HUMAN_PEER` = `"you"` (the default human name, and the UI's "me" label) and
+  `humanPeer(space)` = the operator's WIRE name on a space: the remote record's `human`
+  (`paw mesh add … --as` / `paw mesh set --as`), else `"you"`. Every human endpoint card and every
+  agent brief uses `humanPeer(space)`. Imports only the leaf remote-mesh.ts (no cycle).
+  → [remote-mesh.md#human-name](remote-mesh.md#human-name)
 
 ## paw global
 
@@ -233,6 +236,11 @@ an old server ignores the header and frames land on "default". `rm` the file to 
   fails loud if nothing is live. Runs node + the checkout's tsx + `bin/paw.ts` (the CLI's documented
   home; the daemons still resolve through the release), PATH written from `toolDirs()` because launchd
   gives a minimal env (`nodeBin`/`toolDirs` now exported). Logs at `spaces/<s>/launchd{,-web}.log`.
+  **Named launchers (2026-10-19):** each job execs its OWN copy of the nvm shim, `$PAW_HOME/bin/paw-fleet`
+  / `paw-web` / `paw-global`. macOS lists a launchd agent in System Settings → Login Items → Background
+  Items under its executable's basename (`sfltool dumpbtm`: Name = basename of Executable Path), so the
+  old shared `$PAW_HOME/bin/node` made all three read "node", indistinguishable from any other node job.
+  Existing plists keep the old shim until `paw launchd install` is re-run.
   bootout-then-bootstrap so a re-install replaces the running definition; install also RUNS the fleet
   job immediately (idempotent). Verified live: fleet job exited 0 under launchd ("10 already live"),
   web job running and listening on 7788 after handing over from a manual `paw web`. Pure helpers

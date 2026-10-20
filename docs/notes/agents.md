@@ -33,6 +33,26 @@ Moved verbatim from CLAUDE.md (2026-10-02 split). Index: [CLAUDE.md](../../CLAUD
   dir claude runs in matches the trust key). Moved out of the connector when cotal #43 gave the
   manager the cwd.
 
+## bypass consent
+
+- `src/bypass-consent.ts` — `ensureBypassConsent()`: pre-accepts Claude Code's one-time "Bypass
+  Permissions mode" dialog (default "No, exit") by writing `skipDangerousModePermissionPrompt: true`
+  into claude's USER settings, `$CLAUDE_CONFIG_DIR/settings.json` (else `~/.claude/settings.json`) —
+  idempotent, lock + atomic rename, other keys and file mode kept, malformed JSON refused loud.
+  Verified in the claude 2.1.304 binary: the dialog's accept handler is
+  `updateSettings("userSettings",{skipDangerousModePermissionPrompt:true})`, and the dialog renders
+  only while no user/local/flag/policy settings carry it; `bypassPermissionsModeAccepted` in
+  `~/.claude.json` is a legacy key claude migrates into that flag. Called beside `confineAndTrustCwd`
+  in `ensureAgentSpawned` (claude harness, when `--permission-mode` + persona `claudeArgs` resolve to
+  bypass) and in `paw claude --fg`. Without it the first agent on a fresh Mac died: cotal's startup
+  watch answers only the trust dialog + dev-channels gate, timed out after 15s and SIGTERMed the seat
+  (caffeinum/paw#1). `permissionMode()` (PAW_PERMISSION) lives here now; the connector imports it.
+- `src/manager-log.ts` — `seatDiagnostic(log, name, fromOffset)`: the spawn records manager.log's
+  size before asking for the seat; when the seat is gone it reads back the manager's own
+  `seat reaped: <name> (…); diagnostic: …` (or `<name> exited on launch …; diagnostic: …`) appended
+  after that offset and puts it in the "never reached the mesh — its process is gone" error, so
+  `paw dm` names the cause instead of just the death. `check:bypass-consent` covers both.
+
 ## paw claude
 
 - `src/claude.ts` — **claude with its own flags, brought onto the mesh.** `paw claude [claude-args…]`

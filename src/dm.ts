@@ -36,7 +36,7 @@ import { isAddressHandle, resolveAddress } from "./address.ts";
 import { withManagerControl } from "./control.ts";
 import { composeMessage, peelWords, stageAttachment } from "./images.ts";
 import { resolveSpace } from "./lifecycle.ts";
-import { HUMAN_PEER } from "./names.ts";
+import { humanPeer } from "./names.ts";
 import { pawServer } from "./server.ts";
 
 const tty = process.stdout.isTTY === true;
@@ -211,8 +211,8 @@ export async function sendAsYou(opts: {
   const humanAuth = await humanEndpointAuth(space, "operator");
   const creds = humanAuth.creds;
   const card = creds
-    ? { name: HUMAN_PEER, kind: "endpoint" as const }
-    : { name: HUMAN_PEER, kind: "endpoint" as const, id: stableHumanId(space) };
+    ? { name: humanPeer(space), kind: "endpoint" as const }
+    : { name: humanPeer(space), kind: "endpoint" as const, id: stableHumanId(space) };
   const ep = new CotalEndpoint({ space, servers: server, ...humanAuth, card, registerPresence: false, consume: false, watchPresence: true });
   ep.on("error", (e: Error) => console.error(c.red("! " + e.message)));
   await ep.start();
@@ -284,7 +284,7 @@ const dmCommand: Command = {
   name: "dm",
   group: "Mesh",
   summary: "fire-and-forget DM to an agent — read replies with `paw inbox` (use `paw chat` for a live conversation)",
-  usage: 'dm <name|folder|repo@branch> "<message>"|- [--name n] [--model m] [--space s]',
+  usage: 'dm <name|folder|repo@branch>[#space] "<message>"|- [--name n] [--model m] [--space s]   (x#space = x --space space)',
   run: (a) => dm([...a.raw]),
 };
 

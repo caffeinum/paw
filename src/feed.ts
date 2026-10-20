@@ -14,7 +14,7 @@
  */
 import { CotalEndpoint, type CotalMessage } from "@cotal-ai/core";
 import { humanEndpointAuth, stableHumanId } from "./addressing.ts";
-import { HUMAN_PEER } from "./names.ts";
+import { HUMAN_PEER, humanPeer } from "./names.ts";
 import { cachedLedger } from "./peer-ledger.ts";
 
 /** How deep to read a backlog. cotal's dmHistory returns the OLDEST N, so to surface the NEWEST we
@@ -57,8 +57,8 @@ export async function observerEndpoint(space: string, server: string, opts: { wa
   const humanAuth = await humanEndpointAuth(space, "admin");
   const creds = humanAuth.creds;
   const card = creds
-    ? { name: HUMAN_PEER, kind: "endpoint" as const }
-    : { name: HUMAN_PEER, kind: "endpoint" as const, id: stableHumanId(space) };
+    ? { name: humanPeer(space), kind: "endpoint" as const }
+    : { name: humanPeer(space), kind: "endpoint" as const, id: stableHumanId(space) };
   const ep = new CotalEndpoint({
     space,
     servers: server,
