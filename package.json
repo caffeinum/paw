@@ -55,7 +55,8 @@
     "check:presence-latch": "node scripts/check-presence-latch.ts",
     "check:wake-gate": "node scripts/check-wake-gate.ts",
     "check:prune": "node scripts/check-prune.ts",
-    "check:remote": "node scripts/check-remote.ts"
+    "check:remote": "node scripts/check-remote.ts",
+    "check:bypass-consent": "node scripts/check-bypass-consent.ts"
   },
   "dependencies": {
     "@cotal-ai/cli": "0.84.0",

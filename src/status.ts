@@ -26,7 +26,7 @@ import { claudeProjectsRoot, isClaudeHarness, personaTranscriptRoots, readAgentT
 import { lastFailure, lastUsage, type ContextUsage } from "./transcript.ts";
 import { tailRead, turnState, type PendingTool, type TurnState } from "./transcript.ts";
 import { gitInfoMany, type GitInfo } from "./git.ts";
-import { isRemoteSpace, pawServer } from "./server.ts";
+import { natsTls, pawServer } from "./server.ts";
 import { pickRoster, presenceLive, readMeshRoster } from "./roster.ts";
 import { authGapWarning, probePresenceWrites } from "./presence-health.ts";
 import { personaGlyph } from "./personality.ts";
@@ -724,7 +724,7 @@ async function listDmConsumers(space: string, server: string): Promise<DmConsume
     nc = await connect({
       servers: server,
       ...(creds ? { authenticator: credsAuthenticator(new TextEncoder().encode(creds)) } : {}),
-      ...(isRemoteSpace(space) ? { tls: {} } : {}),
+      ...natsTls(space),
     });
   } catch (e) {
     return { kind: "unreachable", message: (e as Error).message };

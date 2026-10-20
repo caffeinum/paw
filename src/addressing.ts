@@ -39,8 +39,10 @@ import { ensureKitBinary, isKitProvider, KIT_AGENT } from "./kit.ts";
 import { HERMES_AGENT } from "./hermes-profile.ts";
 import { ACP_AGENT } from "./acp-agent.ts";
 import { resolveAcpHost } from "./acp-host.ts";
-import { isClaudeHarness, personaTranscriptRoots, personaValue, readAgentType, readCwd, readResumeId, readShareTools, transcriptMtime } from "./session.ts";
-import { defaultTmuxEnv, readRuntimeMarker } from "./lifecycle.ts";
+import { isClaudeHarness, personaTranscriptRoots, personaValue, readAgentType, readClaudeArgs, readCwd, readResumeId, readShareTools, transcriptMtime } from "./session.ts";
+import { defaultTmuxEnv, managerLogPath, readRuntimeMarker } from "./lifecycle.ts";
+import { logOffset, seatDiagnostic } from "./manager-log.ts";
+import { ensureBypassConsent, managedLaunchesBypass } from "./bypass-consent.ts";
 import { readStartupPrompt, tmuxSplit, tmuxSplitAdvice, type StartupScreen } from "./native-attach.ts";
 import { HOST_RE } from "./url.ts";
 import { personalityFor, readPersonality } from "./personality.ts";
@@ -1029,6 +1031,9 @@ export async function ensureAgentSpawned(
     const agentType = readAgentType(config);
     // Only Claude Code reads ~/.claude.json's folder trust; other harnesses get confinement alone.
     const cwd = isClaudeHarness(agentType) ? confineAndTrustCwd(opts.cwd) : confineCwdOnly(opts.cwd);
+    // Claude's one-time bypass-permissions consent dialog is answered by nobody (cotal's startup watch
+    // knows only the trust dialog + dev-channels gate): pre-accept it like the folder trust (#1).
+    if (isClaudeHarness(agentType) && managedLaunchesBypass(readClaudeArgs(config))) ensureBypassConsent();
     // `identity` HARD-PINS the name: on a collision the manager refuses instead of minting `<name>_2`.
     // Without it a restart whose old presence hadn't expired yet came back as `queue-ea_2` — alive,
     // resumed, and unreachable under its own name (2026-09-16: eight restarts, eight `_2` agents).
@@ -1063,6 +1068,7 @@ export async function ensureAgentSpawned(
       args.events = false;
       resolveAcpHost(config);
     }
+    const logFrom = logOffset(managerLogPath(opts.space));
     const reply = await spawnPinned(ctl, args, opts.name);
     if (!reply.ok) {
       const err = reply.error ?? "no reply";
@@ -1120,9 +1126,11 @@ export async function ensureAgentSpawned(
         );
         return { spawned: true, id, starting: true };
       }
+      const diagnostic = gone ? seatDiagnostic(managerLogPath(opts.space), opts.name, logFrom) : undefined;
       throw new Error(
         `paw: the manager accepted "${opts.name}" but it never reached the mesh within ${Math.round(readyMs / 1000)}s` +
           (gone ? ` — its process is gone (ps row: ${row ? `status=${row.status}` : "missing"})` : "") +
+          (diagnostic ? ` — the manager logged: ${diagnostic}` : "") +
           (!after.ok ? ` — and the manager didn't answer ps to say whether it still runs (${after.error ?? "no reply"})` : "") +
           (watch.cause() || (gone || !after.ok ? "" : ` — it is stuck at a prompt`)) +
           `. \`paw status\` to see its row, \`paw log ${opts.name}\` for what it did.`,
