@@ -509,7 +509,7 @@ console.log("\nall paw command checks passed 🐾");
 
 // ── launchd bakes a paw-owned nvm shim, never a versioned (brew Cellar / nvm versions) path ──
 {
-  const { nvmShim, stableNodeBin } = await import("../src/commands/launchd.ts");
+  const { nvmShim, fixedShim, stableNodeBin, FLEET_BIN, WEB_BIN, GLOBAL_BIN } = await import("../src/commands/launchd.ts");
   const { existsSync, statSync, readFileSync } = await import("node:fs");
   const body = nvmShim("/Users/x/.nvm");
   assert(body.startsWith("#!/bin/sh"), "shim is a sh script launchd can exec directly");
@@ -517,12 +517,18 @@ console.log("\nall paw command checks passed 🐾");
   assert(body.includes("nvm which default"), "shim asks nvm for the DEFAULT node at launch time");
   assert(body.includes('exec "$NODE"'), "shim execs so the job's pid IS node");
   assert(!body.includes("homebrew"), "shim never mentions brew");
-  const p = stableNodeBin();
+  assert(fixedShim("/opt/n/bin/node").includes('exec "/opt/n/bin/node" "$@"'), "without nvm the named shim execs the resolved node");
+  const prevHome = process.env.PAW_HOME;
+  process.env.PAW_HOME = (await import("node:fs")).mkdtempSync(`${(await import("node:os")).tmpdir()}/paw-shim-`);
+  const p = stableNodeBin("paw-web");
   assert(existsSync(p) && (statSync(p).mode & 0o111) !== 0, "stableNodeBin returns an existing executable");
+  assert(p.endsWith("/bin/paw-web"), "the shim is named after its job (macOS Background Items shows the executable's basename)");
+  assert(new Set([FLEET_BIN, WEB_BIN, GLOBAL_BIN]).size === 3 && ![FLEET_BIN, WEB_BIN, GLOBAL_BIN].includes("node"), "every job has its own launcher name, none of them \"node\"");
   if (existsSync(`${process.env.HOME}/.nvm/nvm.sh`)) {
-    assert(p.endsWith("/bin/node") && readFileSync(p, "utf8").includes("nvm which default"), "with nvm installed, the baked path is paw's shim, not a versioned binary");
+    assert(readFileSync(p, "utf8").includes("nvm which default"), "with nvm installed, the baked path is paw's shim, not a versioned binary");
     assert(!p.includes("/Cellar/") && !p.includes("/.nvm/versions/"), "never a path an upgrade can delete");
   }
+  if (prevHome === undefined) delete process.env.PAW_HOME; else process.env.PAW_HOME = prevHome;
   console.log("✓ launchd node path is the nvm shim");
 }
 
