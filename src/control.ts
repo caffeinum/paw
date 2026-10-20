@@ -40,6 +40,7 @@ import {
   DEV_OWNER,
   EpEnvelopeError,
   fetchContractClosure,
+  instancePinnedInstrumentCapabilities,
   invokeCommand,
   mintCreds,
   mintLifecycleUid,
@@ -54,6 +55,7 @@ import {
 } from "@cotal-ai/core";
 import { authDir, loadSpaceAuth } from "@cotal-ai/workspace";
 import { pawCotalRoot } from "./cotal-root.ts";
+import { localManagerInstanceId } from "./hosted.ts";
 import { isRemoteSpace } from "./server.ts";
 
 /** A manager reply in paw's shape: `{ok, data, error}`, the same three fields every call site read
@@ -84,6 +86,22 @@ interface Rail {
   nc: NatsConnection;
   caller: EpCaller;
   service: ResolvedService;
+}
+
+/** The manager instance a rail is PINNED to, or undefined for the class route.
+ *
+ *  A REMOTE space can have one paw manager per machine on the same broker (cotal 0.84: several
+ *  managers per space, one per workspace root). Unpinned, `describe` and every command ride the class
+ *  queue — whichever manager wins — so `ps`/`spawn`/`despawn` from this machine could list or land on
+ *  ANOTHER machine's manager. A remote space's rail is therefore pinned to THIS machine's manager
+ *  instance (persisted by cotal under the record root). Before that manager ever registered there is
+ *  nothing of ours to talk to, and the call fails loud rather than reaching a foreign one. Local
+ *  spaces keep the class route (one manager per space). */
+function pinFor(space: string): string | undefined {
+  if (!isRemoteSpace(space)) return undefined;
+  const id = localManagerInstanceId(space);
+  if (!id) throw new Error(`paw: no manager of this machine has registered in remote space "${space}" yet (no instance identity under ${pawCotalRoot(space)}) — refusing to address another machine's manager`);
+  return id;
 }
 
 /** The manager's own row shape as returned by `ps`/`inspect`. `lifecycleUid` is new in v0.4 and is
@@ -286,7 +304,8 @@ export class ManagerControl {
   }
 
   private async openRail(tier: Tier, resolveMs: number): Promise<Rail> {
-    const { creds, caller } = await callerFor(this.space, tier);
+    const instanceId = pinFor(this.space);
+    const { creds, caller } = await callerFor(this.space, tier, instanceId);
     const nc = await connect({
       servers: this.server,
       // A remote space REQUIRES TLS (its record is tls:// only); a local one stays exactly as it was.
@@ -294,9 +313,10 @@ export class ManagerControl {
       maxReconnectAttempts: 0,
     });
     try {
+      const pin = instanceId !== undefined ? { instanceId } : {};
       const service = this.only
-        ? await resolveCommands(nc, this.space, BASELINE_LIFECYCLE_ENDPOINT, caller, this.only, { deadlineMs: resolveMs })
-        : await resolveService(nc, this.space, BASELINE_LIFECYCLE_ENDPOINT, caller, { deadlineMs: resolveMs });
+        ? await resolveCommands(nc, this.space, BASELINE_LIFECYCLE_ENDPOINT, caller, this.only, { deadlineMs: resolveMs, ...pin })
+        : await resolveService(nc, this.space, BASELINE_LIFECYCLE_ENDPOINT, caller, { deadlineMs: resolveMs, ...pin });
       return { nc, caller, service };
     } catch (e) {
       await nc.drain().catch(() => nc.close());
@@ -382,7 +402,7 @@ export async function resolveCommands(
   endpoint: string,
   caller: EpCaller,
   only: ReadonlySet<string>,
-  opts: { deadlineMs?: number } = {},
+  opts: { deadlineMs?: number; instanceId?: string } = {},
 ): Promise<ResolvedService> {
   const { answer, responder } = await describeEndpoint(nc, space, endpoint, caller, opts);
   const store = await contractStoreContext(nc, space);
@@ -419,7 +439,7 @@ export async function resolveCommands(
     }),
   );
   const commands = new Map(resolved.map((rc) => [rc.command, rc]));
-  return { endpoint: answer.descriptor.endpoint, owner: answer.descriptor.owner, caller, responder, commands };
+  return { endpoint: answer.descriptor.endpoint, owner: answer.descriptor.owner, caller, responder, commands, ...(opts.instanceId !== undefined ? { pinnedInstanceId: opts.instanceId } : {}) };
 }
 
 /** The `cotal:sha256:<hex>` references anywhere in a stored schema document (as bare `sha256:<hex>`),
@@ -462,7 +482,7 @@ function hasSpaceAuth(space: string): boolean {
  * broker enforces nothing, so a fresh DEV_OWNER triple over a bare connection is the whole story —
  * this is cotal's own open-mesh path in `askManager`, not a paw shortcut.
  */
-async function callerFor(space: string, tier: Tier): Promise<{ creds?: string; caller: EpCaller }> {
+async function callerFor(space: string, tier: Tier, instanceId?: string): Promise<{ creds?: string; caller: EpCaller }> {
   const auth = loadSpaceAuth(authDir(pawCotalRoot(space)), space);
   const identity = newIdentity();
   const uid = mintLifecycleUid();
@@ -471,7 +491,10 @@ async function callerFor(space: string, tier: Tier): Promise<{ creds?: string; c
     throw new Error(`paw: space "${space}" is remote but no signer loads under ${authDir(pawCotalRoot(space))} — see \`paw mesh add\``);
   if (!auth) return { caller: { owner: DEV_OWNER, actor: identity.id, uid } };
   const profile = tier === "admin" ? "control-caller-admin" : "control-caller-privileged";
-  const creds = await mintCreds(auth, identity, profile, { lifecycleUid: uid });
+  // A pinned rail needs the exact `ep.inst.<endpoint>.<instance>.<command>` rows for that instance
+  // (cotal's `--on`): the class rows alone are refused at the broker on the instance route.
+  const pinned = instanceId !== undefined ? { endpointCapabilities: instancePinnedInstrumentCapabilities(tier, instanceId) } : {};
+  const creds = await mintCreds(auth, identity, profile, { lifecycleUid: uid, ...pinned });
   return { creds, caller: { owner: DEV_OWNER, actor: identity.id, uid } };
 }
 

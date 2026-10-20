@@ -18,7 +18,7 @@ Moved verbatim from CLAUDE.md (2026-10-02 split). Index: [CLAUDE.md](../../CLAUD
   A LIVE agent with queued/unread > 0 gets `⚠ inbox stuck — …, agent not consuming` and a footer count.
   CotalEndpoint keeps its jsm private, so status opens its own short-lived NATS connection via
   `@nats-io/{transport-node,jetstream}` (core's own client libs, now direct deps; creds via controlCreds
-  under PAW_AUTH). ConsumerNotFound(10014)/StreamNotFound(10059) → `—`; other errors → `?`.),
+  under PAW_AUTH). ConsumerNotFound(10014)/StreamNotFound(10059) → `—`; other errors → `?`. A REMOTE space reads only the seats THIS machine's manager spawned, by exact durable name, with paw's consumer-INFO-only cred — [remote-mesh.md](remote-mesh.md).),
   **ACTIVE** (transcript mtime, relative via `ago` — `transcriptMtime`), plus a
   durability/two-writer note (`⚠ two writers (pid …)` from `foreignWriters`, `⚠ no pin` (claude-only —
   an opencode/codex agent has no claude `resume:` so the warning is a lie), `fresh`, or
