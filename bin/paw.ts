@@ -14,7 +14,7 @@
  */
 import { registry, type Command } from "@cotal-ai/core";
 import { spawnSync } from "node:child_process";
-import { downSpace, explicitSpace, expandEqFlags, expandShortForm, SHORT_FORMS, stripCotalNamespace, withDefaultSpace } from "../src/dispatch.ts";
+import { downSpace, explicitSpace, expandEqFlags, expandShortForm, hoistAddressSpace, SHORT_FORMS, stripCotalNamespace, withDefaultSpace } from "../src/dispatch.ts";
 import { cotaldViaNode, ensure, resolveSpace, stop } from "../src/lifecycle.ts";
 import { isRemoteSpace } from "../src/server.ts";
 
@@ -101,6 +101,7 @@ function help(): string {
     ...lines,
     `  ${"down".padEnd(width)}  stop the daemons paw started for this space`,
     "",
+    "address another space: <agent>#<space> = <agent> --space <space>   (paw dm intern#team2027 \"hi\"; quote it under zsh extendedglob)",
     "raw cotal verbs: paw cotal <cmd> …   (subprocess passthrough to the cotal CLI)",
   ].join("\n");
 }
@@ -137,7 +138,7 @@ try {
     // claude.ts self-ensures, and appending a trailing `--space` would leak into the claude passthrough.
     // The remaining raw tokens go through verbatim (claude.ts peels its own --space/--name first).
     const { runClaude } = await import("../src/claude.ts");
-    await runClaude(raw.slice(1));
+    await runClaude(hoistAddressSpace(cmd, raw.slice(1)));
     process.exit(0); // runClaude normally process.exit()s on the child's exit; this is a fallback
   }
 
@@ -187,12 +188,14 @@ try {
 
   // The gate ensures the CURRENT space (PAW_SPACE or the default), as it always has — except when the
   // command names a REMOTE space with --space: then that space's broker/manager is the one it needs.
-  const named = explicitSpace(raw.slice(1));
+  // `<agent>#<space>` becomes `<agent> --space <space>` FIRST, so the gate below ensures that space.
+  const args = hoistAddressSpace(cmd, raw.slice(1));
+  const named = explicitSpace(args);
   const gate = named && isRemoteSpace(named) ? { space: named } : {};
   if (NEEDS_MANAGER.has(cmd)) await ensure({ needMesh: true, needManager: true, ...gate });
   else if (NEEDS_MESH.has(cmd)) await ensure({ needMesh: true, ...gate });
 
-  const argv = expandEqFlags(withDefaultSpace(raw.slice(1), resolveSpace()));
+  const argv = expandEqFlags(withDefaultSpace(args, resolveSpace()));
   await command.run({ values: {}, positionals: [], raw: argv });
 } catch (err) {
   // Operator-facing failures should read as one clear line, not a V8 stack dump. The errors paw
