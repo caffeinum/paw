@@ -579,10 +579,17 @@ try {
   }
   ok("a DM by name resolves to the stand-in (not the agent's old seat)", to.endsWith(standIn.id), `${to} ${out(raw).slice(0, 300)}`);
   ok("the DM wakes it and is delivered — its reply lands in paw inbox", await inboxHas("awake", 180_000));
-  const log = existsSync(join(home, "spaces", R, "sleep.log")) ? readFileSync(join(home, "spaces", R, "sleep.log"), "utf8") : "";
+  // The host logs the wake only after a straggler pass (STRAGGLER_MS + a second forward), and a fast
+  // agent's reply can land in the inbox before that — wait for the line rather than racing it.
+  const sleepLogFile = join(home, "spaces", R, "sleep.log");
+  let log = "";
+  for (let i = 0; i < 30; i++) {
+    log = existsSync(sleepLogFile) ? readFileSync(sleepLogFile, "utf8") : "";
+    if (/woke agent/.test(log)) break;
+    await sleep(1000);
+  }
   ok("sleep.log: woke it and re-delivered the DM", new RegExp(`woke agent — DM from ${HUMAN}; re-delivered [1-9]`).test(log), log.trim().split("\n").slice(-3).join(" | "));
-  ok("record and stand-in cleared", !existsSync(join(sleepDir, `${name}.json`)) && !existsSync(join(sleepDir, `${name}.waking`)) && !existsSync(join(sleepDir, `${name}.beacon`)));
-  const lag3 = await lagOf(name);
+  ok("record and stand-in cleared", !existsSync(join(sleepDir, `${name}.json`)) && !existsSync(join(sleepDir, `${name}.waking`)) && !existsSync(join(sleepDir, `${name}.beacon`)));  const lag3 = await lagOf(name);
   ok("after the wake its lag reads again (the new incarnation's durable)", lag3.row?.inbox?.kind === "lag", JSON.stringify(lag3.row?.inbox));
 } finally {
   // ── 6. teardown ─────────────────────────────────────────────────────────────────────────────────
