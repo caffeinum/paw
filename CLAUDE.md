@@ -64,7 +64,7 @@ Each entry: what it is + the most load-bearing rule. Full notes behind the link.
 - `src/commands/bind.ts` — `paw bind`: one-time Telegram bind code minted over the mesh, as a distinct
   ephemeral peer (never HUMAN_PEER — would contend for the inbox durable). → [cli.md#paw-bind](docs/notes/cli.md#paw-bind)
 - `src/dispatch.ts` — `withDefaultSpace`, `stripCotalNamespace`, `expandEqFlags`. → [cli.md#srcdispatchts](docs/notes/cli.md#srcdispatchts)
-- `src/names.ts` — `HUMAN_PEER`, zero deps. → [cli.md#srcnamests](docs/notes/cli.md#srcnamests)
+- `src/names.ts` — `HUMAN_PEER` (default `you`, UI label) + `humanPeer(space)` (wire name: remote record `human` else `you`). → [cli.md#srcnamests](docs/notes/cli.md#srcnamests)
 - `src/global.ts` — `paw global`: always-on `global` agent at `~/.paw/global`, the wake authority;
   refuses to clobber a differently-named mapping. → [cli.md#paw-global](docs/notes/cli.md#paw-global)
 - `src/keeper.ts` — the unstick sweep on the global keeper tick (history; see the no-auto-restart rule). → [cli.md#keeper-unstick-sweep](docs/notes/cli.md#keeper-unstick-sweep)
@@ -101,6 +101,10 @@ Each entry: what it is + the most load-bearing rule. Full notes behind the link.
 - `src/remote-mesh.ts` + `src/commands/mesh.ts` — `paw mesh add <space> --server tls://… --root <dir>`: a
   space on a broker paw never starts; `root/.cotal/auth/auth.json` = the `cotal mint --signer` file
   (bearer secret, 0600, never printed). `pawServer(space)` routes; no record ⇒ local, unchanged.
+  `--as <name>` / `paw mesh set <space> --as <name>` = your human name there (`humanPeer(space)`, default
+  `you`; shared brokers need distinct ones). → [remote-mesh.md#human-name](docs/notes/remote-mesh.md#human-name)
+- `src/human-inbox.ts` — `paw chat` on a remote space provisions its own DM/DELIVER durables (agent creds
+  only BIND under auth) and retires them on quit, TLS required. → [remote-mesh.md](docs/notes/remote-mesh.md)
 
 ### Control rail → [control-rail.md](docs/notes/control-rail.md)
 - `src/control.ts` — the ONE door to the manager: v0.4 service endpoint (`resolveService` once, invoke
