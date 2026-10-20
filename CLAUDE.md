@@ -133,7 +133,8 @@ Each entry: what it is + the most load-bearing rule. Full notes behind the link.
 - `src/session.ts` — `readResumeId`, `transcriptExists`; leaf module. → [agents.md#srcsessionts](docs/notes/agents.md#srcsessionts)
 - **Two-writer guard** — never start an agent whose pinned session a standalone claude holds. → [agents.md#two-writer-guard](docs/notes/agents.md#two-writer-guard)
 - `src/open.ts` — `paw open`/`paw attach`: runtime-aware; tmux → real window, cmux → names the tab, pty
-  attach fails loud on cotal ≥0.25 (grant-based). → [agents.md#paw-open](docs/notes/agents.md#paw-open)
+  → cotal's own grant-based `attach` subprocess (remote space: cwd = record root, `--server`, NO
+  `--space`; `paw cotal <verb> --space <remote>` same rewrite). → [agents.md#pty-attach-cotal-084](docs/notes/agents.md#pty-attach-cotal-084)
 - `src/native-attach.ts` — `attachTmux`; default socket; `nudgeTmuxConfirm`. → [agents.md#native-attach](docs/notes/agents.md#native-attach)
 - `src/attach-client.ts` — ws pty attach client, now dead code. → [agents.md#attach-client](docs/notes/agents.md#attach-client)
 - Waking a sleeping agent: `cotal_dm("global", "wake <name>")`; the tty dev-channels prompt nudge. → [agents.md#waking-a-sleeping-agent-the-in-mesh-gap-and-the-tty-prompt](docs/notes/agents.md#waking-a-sleeping-agent-the-in-mesh-gap-and-the-tty-prompt)

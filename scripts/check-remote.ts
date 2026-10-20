@@ -121,6 +121,24 @@ console.log("CLI routing");
 const { explicitSpace } = await import("../src/dispatch.ts");
 assert(explicitSpace(["x", "--space", "team"]) === "team" && explicitSpace(["--space=team"]) === "team", "explicitSpace reads --space / --space=");
 assert(explicitSpace(["x", "--", "--space", "team"]) === undefined && explicitSpace(["x"]) === undefined, "explicitSpace ignores args after -- and absence");
+{
+  // `paw cotal <verb>` / `paw attach` on a remote space: no --space/--creds for cotal, the record's server.
+  const { remoteCotalArgv } = await import("../src/dispatch.ts");
+  const srv = "tls://127.0.0.1:14322";
+  const r1 = remoteCotalArgv(["attach", "--name", "evals", "--space", "team", "--server", "tls://other:1", "--creds", "/x.creds"], srv);
+  assert(JSON.stringify(r1.argv) === JSON.stringify(["attach", "--name", "evals", "--server", srv]) && r1.droppedCreds, "remoteCotalArgv drops --space/--server/--creds, appends the record's server");
+  const r2 = remoteCotalArgv(["ps", "--space=team", "--creds=/x"], srv);
+  assert(JSON.stringify(r2.argv) === JSON.stringify(["ps", "--server", srv]) && r2.droppedCreds, "…the = forms too");
+  const r3 = remoteCotalArgv(["send", "--to", "a", "--", "--space", "kept"], srv);
+  assert(JSON.stringify(r3.argv) === JSON.stringify(["send", "--to", "a", "--server", srv, "--", "--space", "kept"]) && !r3.droppedCreds, "…never touches args after --");
+  const { cotalAttachInvocation } = await import("../src/open.ts");
+  rm.writeRemoteMesh({ space: "remotetest-r", server: srv, root, ts: new Date().toISOString() });
+  const ra = cotalAttachInvocation("remotetest-r", "evals");
+  assert(ra.remote && ra.cwd === root && JSON.stringify(ra.argv) === JSON.stringify(["attach", "--name", "evals", "--server", srv]), "remote attach: cwd = record root, --server, no --space");
+  const la = cotalAttachInvocation("remotetest-local", "evals");
+  assert(!la.remote && la.cwd === homedir() && JSON.stringify(la.argv) === JSON.stringify(["attach", "--name", "evals", "--space", "remotetest-local", "--server", DEFAULT_SERVER]), "local attach: --space + local broker, cwd = pawCotalRoot");
+  rm.removeRemoteMesh("remotetest-r");
+}
 const { remoteTlsEnv } = await import("../src/connector.ts");
 process.env.NODE_EXTRA_CA_CERTS = "/ca.pem";
 rm.writeRemoteMesh({ space: "remotetest-r", server: "tls://127.0.0.1:14322", root, ts: new Date().toISOString() });
@@ -202,6 +220,16 @@ throws(() => checkSignerRoot("remotetest-other", sroot), /no signer for space "r
 chmodSync(signerFile, 0o644);
 throws(() => checkSignerRoot("remotetest-s", sroot), /readable by other users/, "a world-readable signer is refused");
 throws(() => checkSignerRoot("remotetest-s", join(sroot, "nope")), /does not exist/, "a missing root is refused");
+{
+  // What `cotal attach` (run by paw from the record root) resolves: --server and NO --space ⇒ the root's
+  // stripped signer, mode auth ⇒ attach mints a session-caller cred. Naming the unregistered space instead
+  // is "no mesh named …" — why remoteCotalArgv drops it.
+  chmodSync(signerFile, 0o600);
+  const { resolveMeshTarget } = await import("@cotal-ai/workspace");
+  const t = resolveMeshTarget(sroot, { server: "tls://127.0.0.1:14322" });
+  assert(t.space === "remotetest-s" && t.mode === "auth" && t.auth?.account?.signingSeed !== undefined, "cotal resolves the record root's signer from --server alone (mode auth, signing seed present)");
+  throws(() => resolveMeshTarget(sroot, { server: "tls://127.0.0.1:14322", space: "remotetest-s" }), /no mesh named/, "…but --space on an unregistered space resolves nothing");
+}
 
 for (const d of [process.env.PAW_HOME!, process.env.COTAL_HOME!, root, sroot]) rmSync(d, { recursive: true, force: true });
 if (failures) {

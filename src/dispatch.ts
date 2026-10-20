@@ -63,6 +63,45 @@ export function expandEqFlags(argv: string[]): string[] {
   });
 }
 
+/**
+ * A raw cotal verb aimed at a REMOTE space (`paw mesh add`), rewritten so cotal can resolve it.
+ *
+ * cotal resolves a mesh by `--space` against ITS registry, and a remote paw space is not in it
+ * (`cotal meshes add --mode auth` refuses a signer-only root — remote-mesh.md "cotal gaps"). So:
+ *  - `--space <s>` with `--server` and no registry entry is cotal's raw OPEN arm: a bare connect, no
+ *    credentials, and every control verb then dies on the authed broker;
+ *  - `--space <s>` without `--server` is "no mesh named <s> is running";
+ *  - `--creds <file>` is a raw cred with no endpoint-caller triple, which every control call refuses
+ *    ("this control call has no endpoint-caller triple …").
+ * What works is `--server <record server>` with NO `--space`, run with cwd = the record root: cotal's
+ * resolver then takes the folder's `.cotal/auth` (the stripped signer — `loadSpaceAuth` accepts it),
+ * names the space from it, and mints the one-shot instrument itself. This drops the operator's
+ * `--space`/`--server`/`--creds` (before any `--`) and appends the record's server; the caller sets
+ * the cwd. `droppedCreds` lets it say so. Pure, so check:remote covers it.
+ */
+export function remoteCotalArgv(argv: string[], server: string): { argv: string[]; droppedCreds: boolean } {
+  const x = expandEqFlags(argv);
+  const end = x.indexOf("--");
+  const mine = end === -1 ? x : x.slice(0, end);
+  const out: string[] = [];
+  let droppedCreds = false;
+  for (let i = 0; i < mine.length; i++) {
+    const a = mine[i];
+    if (a === "--space" || a === "--server" || a === "--creds") {
+      if (a === "--creds") droppedCreds = true;
+      if (i + 1 < mine.length && !mine[i + 1].startsWith("-")) i++;
+      continue;
+    }
+    if (a.startsWith("--creds=")) {
+      droppedCreds = true;
+      continue;
+    }
+    out.push(a);
+  }
+  out.push("--server", server);
+  return { argv: end === -1 ? out : [...out, ...x.slice(end)], droppedCreds };
+}
+
 /** The operator's explicit `--space <s>` / `--space=<s>` (before any `--` terminator), else undefined. */
 export function explicitSpace(args: string[]): string | undefined {
   const argv = expandEqFlags(args);

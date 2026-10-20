@@ -227,18 +227,49 @@ a throwaway copy could rotate the operator's refresh token.
 
 - `src/open.ts` — `paw open [folder|name|repo@branch]`: resolve the folder's agent (spawn if absent)
   then attach — **runtime-aware** (branches on the `manager.runtime` marker via `readRuntimeMarker`),
-  because the manager only streams a ws pty for `pty` agents (tmux/cmux are watched natively, their
-  `attach` op throws by design): **pty** → **FAILS LOUD on cotal 0.25** — the manager's `attach` no
-  longer returns a `ws://` URL at all (`ATTACH_OUTPUT_SCHEMA` is `{grant}`, a signed §13.6 session grant
-  redeemed over the mesh with a `session-caller` cred minted from the space's LOCAL SEED, which an open
-  mesh does not have; cotal's own `attach` refuses that same case). `src/attach-client.ts` is now dead
-  code kept for the day paw learns to drive a session rail. The message names what still works
-  (`paw chat` / `paw log` / `paw runtime tmux`); **tmux** → spawn
+  because the manager only serves a pty session for `pty` agents (tmux/cmux are watched natively, their
+  `attach` op throws by design): **pty** → runs **cotal's own `attach`** (`bin/cotald.ts attach`, a
+  subprocess with the tty inherited; Ctrl-] detaches, the agent keeps running) — see
+  [pty attach](#pty-attach-cotal-084); **tmux** → spawn
   then `attachTmux` (src/native-attach.ts) drops you into the agent's real window; **cmux** → prints
   the tab to switch to in the cmux app (no terminal takeover). Falls back to a
   live **agent name** if the arg isn't a folder (mirrors chat) — so `paw open <session-named-agent>`
   works. Prints the per-runtime lifecycle on attach. Registers **both `open` and `attach`** (same run —
   `paw attach <name>` is the documented wake verb, formerly a dispatch alias).
+
+### pty attach (cotal 0.84)
+
+From cotal 0.25 to paw's 2026-10-19 fix `paw attach` THREW for every pty agent: the manager's `attach`
+op returns a signed §13.6 session GRANT (`ATTACH_OUTPUT_SCHEMA` = `{grant}`, no `ws://` URL), redeemed
+over the mesh, and paw had no redeemer. cotal's CLI has one (`attachSeat` in
+`@cotal-ai/cli/dist/commands/agents.js`), and `attachSessionMaterial` picks the redemption by the
+RESOLVED mesh mode: `open` → a bare connection (cotal #1205, fixed by 0.84 — the "needs the local
+space seed" refusal paw's old message quoted was this bug); `auth` → a `session-caller` cred minted
+from the resolved root's space auth (a stripped `cotal mint --signer` file is enough: `loadSpaceAuth`
+returns it as-is); `user` → bearer redeem; unrecorded → refused. Before the grant, `locateSeat`
+scatters a `ps` over EVERY manager instance in the space and pins the call (`--on`) to the one hosting
+the seat, so an agent another machine's manager runs attaches too. paw therefore just runs cotal's
+`attach` from where cotal resolves the right material — `cotalAttachInvocation(space, name)`:
+
+| space | invocation (cwd) | status |
+|---|---|---|
+| local, open (default) | `attach --name n --space s --server <local>` (cwd `pawCotalRoot`) | works — registry entry `open` → bare redeem (`scripts/e2e-attach-local.ts`: isolated `cotal up --open`, real claude) |
+| local, `PAW_AUTH=1` | same; the registry entry is `auth` → seed under the root | routed through cotal's standard seed arm; NOT verified live (paw's own PAW_AUTH ensure dies earlier on 0.84: presence-KV consumer-create permission) |
+| remote (`paw mesh add`) | `attach --name n --server <record>` with NO `--space` (cwd = record root) | works — e2e-remote 4a/4b |
+| remote, agent on another machine's manager | same | works — cotal pins the hosting instance (e2e-remote 4b, two manager instances) |
+| unregistered local space (paw never ran `cotal up` for it, e.g. a hand-started `PAW_SERVER` broker) | — | paw refuses up front (`findMesh` empty): cotal would take its sealed arm and refuse for want of a seed; the message names why + `paw chat` / `paw log -f` / `paw runtime tmux` |
+
+Why no `--space` on a remote space: cotal's registry doesn't hold paw's remote spaces (`cotal meshes
+add --mode auth` refuses a signer-only root), so `--space <s>` + `--server` takes cotal's raw OPEN arm
+(bare connect; the attach then dies on the authed broker) and `--space` alone is "no mesh named …";
+`--server` alone from the record root resolves `localTarget(root)` → the signer, mode `auth`, space
+named by the signer. A raw `--creds` file can never work for control verbs (no endpoint-caller triple
+— the instrument must be minted per call). The same rewrite (`remoteCotalArgv`, src/dispatch.ts)
+backs `paw cotal <verb> --space <remote>`: it ensures THAT space, drops `--space`/`--server`/`--creds`
+(saying so for `--creds`), adds the record's server and runs from the record root. Off a tty `paw
+attach` refuses (points at `paw log -f`). `check:remote` covers the argv/cwd + cotal's resolution of a
+signer root; `scripts/e2e-remote.ts` (remote) and `scripts/e2e-attach-local.ts` (local open) drive a real attach
+under node-pty (`COTAL_BIN=<cotal-ai@0.84.0>/dist/cotal.js node scripts/e2e-…`).
 
 ## native attach
 
@@ -252,7 +283,8 @@ a throwaway copy could rotate the operator's refresh token.
 
 ## attach client
 
-- `src/attach-client.ts` — paw's ws pty attach client (wire port of the manager's non-exported
+- `src/attach-client.ts` — DEAD CODE since cotal 0.25 (pty attach is cotal's own `attach` now — see
+  [pty attach](#pty-attach-cotal-084)). Was paw's ws pty attach client (wire port of the manager's non-exported
   attach-client; framing byte-identical: binary = keystrokes, text `r:<cols>,<rows>` = resize,
   Ctrl-] = detach, full tty restore incl. alt-screen wheel→PageUp/Down translation). Uses node's
   global WebSocket (hence `engines.node >= 22`). Exports `attachTo(wsUrl)`.

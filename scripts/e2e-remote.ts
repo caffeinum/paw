@@ -11,6 +11,11 @@
  *   2. without the CA, ensure() fails loud naming TLS trust — and starts no broker;
  *   3. paw dm --space R <folder> spawns a real claude (haiku) there; it replies; paw inbox reads it;
  *   4. paw chat @agent --space R (piped stdin) binds "you"'s durable inbox, sends, and shows the reply;
+ *   4b. paw attach agent --space R under a real pty: cotal's grant is issued + redeemed with a
+ *       session-caller cred minted from the signer, the TUI streams, a typed key reaches it, Ctrl-]
+ *       detaches and the agent stays live — also `paw cotal attach --space R --creds <junk>` (the
+ *       operator's exact failing shape), and from a SECOND root with its own manager instance on the
+ *       space that does not host the agent (cotal pins the session to the hosting instance);
  *   5. who / status see it; paw restart --space R revives it and a second DM is answered;
  *   6. paw down --space R + cotal down: nothing left naming either space.
  *
@@ -23,8 +28,9 @@
  * broker's delivery daemon, which @cotal-ai/cli alone cannot start). Install it OUTSIDE the repo,
  * e.g. `npm i --prefix /tmp/cotal084 --ignore-scripts cotal-ai@0.84.0`.
  */
+import { spawn as ptySpawn } from "@lydell/node-pty";
 import { execFileSync, spawn, spawnSync, type SpawnSyncReturns } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { createServer } from "node:net";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -41,11 +47,13 @@ const tag = `${process.pid}`;
 const R = `remotetest-${tag}`; // the remote space
 const DECOY = `remotedecoy-${tag}`; // PAW_SPACE: a local space nothing should touch
 const home = mkdtempSync("/tmp/pr-"); // short: the hub socket path must fit sun_path
+const homeB = mkdtempSync("/tmp/prb-"); // a SECOND operator machine on the same remote space
 const work = realpathSync(mkdtempSync(join("/tmp", "pr-work-")));
 const remoteRoot = join(work, "remote");
 const localRoot = join(work, "local");
+const localRootB = join(work, "localb");
 const agentDir = join(work, "agent");
-for (const d of [remoteRoot, join(localRoot, ".cotal", "auth"), agentDir, join(work, "cotalhome"), join(work, "xdg")]) mkdirSync(d, { recursive: true });
+for (const d of [remoteRoot, join(localRoot, ".cotal", "auth"), join(localRootB, ".cotal", "auth"), agentDir, join(work, "cotalhome"), join(work, "xdg")]) mkdirSync(d, { recursive: true });
 execFileSync("git", ["init", "-q"], { cwd: agentDir });
 const port = await new Promise<number>((r) => {
   const s = createServer().listen(0, "127.0.0.1", () => {
@@ -74,6 +82,7 @@ const base: NodeJS.ProcessEnv = {
 };
 for (const k of ["PAW_COTAL_ROOT", "PAW_AUTH", "PAW_COTAL_HUB", "NODE_EXTRA_CA_CERTS"]) delete base[k];
 const withCa: NodeJS.ProcessEnv = { ...base, NODE_EXTRA_CA_CERTS: cert };
+const withCaB: NodeJS.ProcessEnv = { ...withCa, PAW_HOME: homeB };
 
 let fails = 0;
 const ok = (label: string, cond: boolean, detail = "") => {
@@ -95,6 +104,36 @@ async function inboxHas(word: string, ms: number): Promise<boolean> {
     await sleep(3000);
   }
   return false;
+}
+
+/**
+ * Drive an attach command under a REAL pty (node-pty): wait for the agent's TUI to stream through,
+ * type one key, then press Ctrl-] (cotal's detach key) and wait for a clean exit.
+ */
+async function ptyAttach(args: string[], env: NodeJS.ProcessEnv, ms: number): Promise<{ attached: boolean; streamed: number; tui: boolean; detached: boolean; code: number | undefined; output: string }> {
+  const p = ptySpawn(process.execPath, [join(REPO, "bin/paw.ts"), ...args], { name: "xterm-256color", cols: 120, rows: 40, cwd: REPO, env: env as Record<string, string> });
+  let output = "";
+  let code: number | undefined;
+  p.onData((d) => (output += d));
+  p.onExit((e) => (code = e.exitCode));
+  const plain = () => output.replace(/\x1b\[[0-9;?]*[ -\/]*[@-~]/g, "").replace(/\x1b[\]P][^\x07\x1b]*(\x07|\x1b\\)/g, "");
+  const deadline = Date.now() + ms;
+  while (code === undefined && Date.now() < deadline && !/attached to /.test(plain())) await sleep(500);
+  const attached = /attached to /.test(plain());
+  const at = output.length;
+  // The seat repaints on attach; give the stream a few seconds, then poke it with one keystroke.
+  for (let i = 0; i < 20 && code === undefined && output.length - at < 200; i++) await sleep(500);
+  if (code === undefined) p.write(" ");
+  await sleep(2000);
+  const streamed = output.length - at;
+  // The claude TUI's own chrome, seen AFTER cotal said "attached" — bytes from the seat, not from paw/cotal.
+  const after = plain().slice(plain().search(/attached to /));
+  const tui = /bypass permissions|❯|for shortcuts/.test(after);
+  if (code === undefined) p.write("\x1d");
+  for (let i = 0; i < 30 && code === undefined; i++) await sleep(500);
+  const detached = code === 0 && /detached from /.test(plain());
+  if (code === undefined) p.kill();
+  return { attached, streamed, tui, detached, code, output: plain() };
 }
 
 /** The DM/DELIVER durables named for "you" (the persisted human nkey), read from the broker's own
@@ -175,6 +214,47 @@ try {
   ok("nothing ran for the decoy space", procs(DECOY).length === 0 && !existsSync(join(home, "spaces", DECOY, "manager.log")));
 
   const name = "agent";
+  // ── 4a. paw attach: cotal's grant-based pty attach on the authed remote mesh ────────────────────
+  const att = await ptyAttach(["attach", name, "--space", R], withCa, 60_000);
+  const tail = (o: string) => o.trim().split("\n").slice(-4).join(" | ").slice(0, 400);
+  ok("paw attach --space R: grant issued + redeemed (cotal says attached)", att.attached, att.attached ? "" : tail(att.output));
+  ok("…the agent's terminal (claude's TUI) streams through", att.tui && att.streamed > 0, `${att.streamed} bytes after attach`);
+  ok("…Ctrl-] detaches cleanly (exit 0)", att.detached, `exit ${att.code}${att.detached ? "" : ` — ${tail(att.output)}`}`);
+  ok("…and the agent is still live after the detach", out(paw(["who", "--space", R])).includes(name));
+  const passthru = await ptyAttach(["cotal", "attach", "--name", name, "--space", R, "--server", server, "--creds", join(work, "junk.creds")], withCa, 60_000);
+  ok("paw cotal attach --space R --creds <junk> (the operator's shape) attaches", passthru.attached && passthru.tui && passthru.detached, passthru.attached ? `exit ${passthru.code}` : tail(passthru.output));
+  ok("…and says it dropped --creds", /--creds dropped/.test(passthru.output));
+  // A second operator machine: its own signer copy + its OWN manager instance on the same space (cotal
+  // 0.84: per-instance leases, a manager in a second root coexists). Started raw, not through a second
+  // paw home's ensure() — on one host that would pgrep-adopt A's manager and prove nothing. The agent
+  // runs under A's manager; an attach from B's root must make cotal locate it there (a scatter `ps`
+  // over both instances) and pin the session to A's instance.
+  copyFileSync(join(localRoot, ".cotal", "auth", "auth.json"), join(localRootB, ".cotal", "auth", "auth.json"));
+  chmodSync(join(localRootB, ".cotal", "auth", "auth.json"), 0o600);
+  const addB = paw(["mesh", "add", R, "--server", server, "--root", localRootB, "--as", "operator-b"], withCaB);
+  ok("second paw home records the same remote space", addB.status === 0, out(addB).split("\n")[0]);
+  const mgrB = spawn(process.execPath, [join(REPO, "bin/cotald.ts"), "supervise", "--space", R, "--server", server], { env: withCaB, cwd: localRootB, stdio: ["ignore", "pipe", "pipe"] });
+  let mgrBOut = "";
+  mgrB.stdout.on("data", (d: Buffer) => (mgrBOut += d.toString()));
+  mgrB.stderr.on("data", (d: Buffer) => (mgrBOut += d.toString()));
+  for (let i = 0; i < 60 && !/manager up/.test(mgrBOut) && mgrB.exitCode === null; i++) await sleep(500);
+  ok("a second manager instance (machine B's root) serves the same space", /manager up/.test(mgrBOut), mgrBOut.trim().split("\n").slice(-2).join(" | "));
+  await sleep(3000); // let it register its service before the scatter
+  const psB = paw(["cotal", "ps", "--space", R], { ...withCaB, PAW_SPACE: R });
+  const headers = out(psB).replace(/\x1b\[[0-9;]*m/g, "").split("\n").filter((l) => /^manager \S+ /.test(l));
+  ok(
+    "paw cotal ps --space R (from B's root) sees two manager instances, the agent on one",
+    headers.length === 2 && headers.some((l) => /1 agent/.test(l)) && headers.some((l) => /no agents/.test(l)),
+    headers.join(" | ") || out(psB).trim().split("\n").slice(-3).join(" | "),
+  );
+  // B's attach goes through `paw cotal attach` so no paw gate adopts/ensures anything for home B.
+  const attB = await ptyAttach(["cotal", "attach", "--name", name, "--space", R], { ...withCaB, PAW_SPACE: R }, 90_000);
+  ok("attach from machine B's root reaches the seat A's manager hosts", attB.attached && attB.tui && attB.detached, attB.attached ? `${attB.streamed} bytes, exit ${attB.code}` : tail(attB.output));
+  mgrB.kill("SIGTERM");
+  for (let i = 0; i < 20 && mgrB.exitCode === null; i++) await sleep(500);
+  if (mgrB.exitCode === null) mgrB.kill("SIGKILL");
+  ok("…and the agent is still live", out(paw(["who", "--space", R])).includes(name));
+
   // ── 4. paw chat: a CONSUMING "you" (binds its own durable inbox) on the authed mesh ──────────────
   const durablesBefore = humanDurables();
   const chat = await chatRoundTrip(name, "reply with only the word pong spelled backwards, nothing else", "gnop", 150_000);
@@ -225,6 +305,7 @@ try {
   ok("nothing left naming the remote space", procs(R).length === 0, procs(R).join(" | "));
   ok("nothing left naming the decoy space", procs(DECOY).length === 0);
   rmSync(home, { recursive: true, force: true });
+  rmSync(homeB, { recursive: true, force: true });
   rmSync(work, { recursive: true, force: true });
 }
 if (fails) {
