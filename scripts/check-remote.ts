@@ -280,6 +280,7 @@ assert(standInPrincipal("remotetest-s", "a").actor === sp.actor, "stable across 
 assert(isStandIn("remotetest-s", "a", `local.${sp.actor}`), "the roster recognises the remote stand-in by its nkey");
 const sAuth = await standInEndpointAuth("remotetest-s", "a");
 assert(!!sAuth.creds && idFromCreds(sAuth.creds) === sp.actor && sAuth.tls === true && !!sAuth.lifecycleUid, "its presence cred is cotal's `agent` for the stand-in nkey, TLS required");
+assert(sAuth.kind === "endpoint", "…registered as kind `endpoint` (an authed `agent` presence must prove a provisioned dm_ durable; a stand-in consumes nothing)");
 assert(!(credsClaims(sAuth.creds!).nats?.pub?.allow ?? []).some((p) => p.includes(".chat.")), "…with no channel publish rows");
 rm.removeRemoteMesh("remotetest-s");
 

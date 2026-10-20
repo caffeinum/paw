@@ -219,7 +219,7 @@ export async function startSleepHost(space: string, server = pawServer(space)): 
       registerPresence: true,
       consume: false, // the backlog stays in the stream; the host reads it on wake
       watchPresence: false,
-      card: { name: rec.name, kind: "agent", ...(auth.cardId ? { id: auth.cardId } : {}), description: "asleep (paw sleep) — a DM wakes it" },
+      card: { name: rec.name, kind: auth.kind, ...(auth.cardId ? { id: auth.cardId } : {}), description: "asleep (paw sleep) — a DM wakes it" },
     });
     ep.on("error", (e: Error) => console.error(`[sleep] stand-in ${rec.name}: ${e.message}`));
     // The watch first: a stand-in nobody listens behind would swallow the wake DM (the next tick

@@ -424,7 +424,8 @@ try {
     beacon = existsSync(join(sleepDir, `${name}.beacon`));
     if (!beacon) await sleep(1000);
   }
-  ok("the mailbox's sleep host raised the stand-in", beacon);
+  const mbLog = join(home, "spaces", R, "mailbox.log");
+  ok("the mailbox's sleep host raised the stand-in", beacon, beacon ? "" : (existsSync(mbLog) ? readFileSync(mbLog, "utf8") : "").split("\n").filter((l) => /sleep/i.test(l)).slice(-6).join(" | "));
   const rec = existsSync(join(sleepDir, `${name}.json`)) ? (JSON.parse(readFileSync(join(sleepDir, `${name}.json`), "utf8")) as { instanceId?: string }) : undefined;
   ok("the sleep record pins this machine's manager instance", typeof rec?.instanceId === "string" && rec.instanceId.length > 0);
   const standInFile = join(sleepDir, `${name}.standin.nkey`);

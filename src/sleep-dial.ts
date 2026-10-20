@@ -58,15 +58,19 @@ export function standInPrincipal(space: string, name: string): { owner: string; 
 }
 
 /** CotalEndpoint options for the stand-in presence. Remote: the stand-in nkey minted as cotal's `agent`
- *  (presence + its own DM subject; no channel rows), TLS required, a fresh lifecycle uid. */
-export async function standInEndpointAuth(space: string, name: string): Promise<{ creds?: string; tls?: true; lifecycleUid?: string; cardId?: string }> {
-  if (!isRemoteSpace(space)) return { cardId: standInActor(space, name) };
+ *  (presence + its own DM subject; no channel rows), TLS required, a fresh lifecycle uid, and card kind
+ *  `endpoint` — the kind "you" (the mailbox beacon) registers as. An authed `agent`-kind presence must
+ *  first prove its incarnation by a provisioned `dm_` durable (SPEC 13.1 fail-before-presence); a
+ *  stand-in consumes nothing, so it provisions nothing — the host reads the stream itself. Senders resolve
+ *  it by name exactly as they resolve "you". Open mesh: unchanged (`agent`, the hash actor). */
+export async function standInEndpointAuth(space: string, name: string): Promise<{ creds?: string; tls?: true; lifecycleUid?: string; cardId?: string; kind: "agent" | "endpoint" }> {
+  if (!isRemoteSpace(space)) return { cardId: standInActor(space, name), kind: "agent" };
   const dir = authDir(pawCotalRoot(space));
   const auth = loadSpaceAuth(dir, space);
   if (!auth) throw new Error(`paw: space "${space}" is remote but no signer loads under ${dir} — see \`paw mesh add\``);
   const identity = claimStandInIdentity(space, name, newIdentity());
   const lifecycleUid = mintLifecycleUid();
-  return { creds: await mintCreds(auth, identity, "agent", { lifecycleUid }), tls: true, lifecycleUid };
+  return { creds: await mintCreds(auth, identity, "agent", { lifecycleUid }), tls: true, lifecycleUid, kind: "endpoint" };
 }
 
 /** A one-shot connection that may read the DM stream's info and nothing else (open mesh: bare). */
