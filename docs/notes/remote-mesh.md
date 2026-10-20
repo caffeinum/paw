@@ -141,6 +141,20 @@ observer cred (its village/dialog views read every DM by design), whose `sub.all
 #general echo, /who, /ps, `@name`), the tasks + logs views under a pty, and `paw web`, and fails on
 any permission line.
 
+A CLI checkout from before that fix still prints it: chat's CLI runs from the checkout `paw` links to
+(`~/.local/bin/paw` → the repo's `bin/paw.mjs`), not from a release, so the operator's
+`paw chat @evals --space team2027` on 2026-10-19 hit it from a checkout at ae8e088 (chat.ts:1017
+`ep.tap(handler)`, no subject = `cotal.<s>.>`). `check:remote` now fails if any `src/chat*.ts` calls
+`ep.tap` outside chat-own.ts or if `tapOwnSends` places a tap without a subject on a remote space.
+
+**`!cmd` for another machine's agent:** `!cmd` (chat and web) runs in the agent's registered folder on
+THIS machine; an agent hosted elsewhere has none, and the old `no registered folder for "evals" —
+\`paw status\` lists them` pointed at a status that only lists this machine's agents. On a remote space,
+no persona here ⇒ `"evals" is hosted on another machine (<card meta.host>) — !cmd runs only for agents
+hosted here` (`bangNoFolder`, src/hosted.ts; the host only when the card reports one — cotal's claude
+connector doesn't). Never remote execution. e2e-remote drives `paw chat @<machine 2's agent>` from
+machine 1: DM round-trip, `!pwd` gives that line, no permission line.
+
 ## Off on a remote space
 
 The stale-id forwarder (re-publishes ANY peer's DM under its sender — no narrow grant for that),

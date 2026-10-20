@@ -82,6 +82,7 @@ import { renderMarkdown } from "./markdown.ts";
 import { HUMAN_PEER, humanPeer } from "./names.ts";
 import { sameSpaceAddress } from "./dispatch.ts";
 import { describeInboxBindFailure, openHumanInbox } from "./human-inbox.ts";
+import { bangNoFolder } from "./hosted.ts";
 import { cachedLedger, ledgerName } from "./peer-ledger.ts";
 import { hueSgr, parsePersonalityArg, personaGlyph, personalityFor, type Glyph } from "./personality.ts";
 import {
@@ -1843,7 +1844,7 @@ async function chat(argv: string[]): Promise<void> {
   async function runBangCommand(command: string): Promise<void> {
     if (!curName || !curId) return void emit(c.red("! `!cmd` runs in an agent's folder — `@name` first (a channel has no folder)"));
     const cwd = folderForName(space, curName);
-    if (!cwd) return void emit(c.red(`! no registered folder for "${curName}" — \`paw status\` lists them`));
+    if (!cwd) return void emit(c.red(`! ${bangNoFolder(space, curName, ep.getRoster().find((p) => p.card.id === curId)?.card)}`));
     if (!existsSync(cwd)) return void emit(c.red(`! "${curName}" is registered at ${cwd}, which no longer exists`));
     emit(c.dim(`$ ${command}  (in ${cwd})`), "you", true);
     const result = await runBash(command, cwd, undefined, true); // paw chat is a real terminal → source the operator's shell rc

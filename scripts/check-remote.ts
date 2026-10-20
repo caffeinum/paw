@@ -290,6 +290,22 @@ const wt = webTapSubjects("remotetest-s", true) as string[];
 const adminSub = (permissionsFor("admin", "remotetest-s", { owner: DEV_OWNER, actor: "UME", connId: "UMEconn00" }, {}) as { sub?: { allow?: string[] } }).sub?.allow ?? [];
 assert(wt.length === 3 && wt.every((t) => adminSub.includes(t)), `…and on a remote space each plane its admin observer may read — ${wt.join(" ")}`);
 
+// The operator's 2026-10-19 `paw chat @evals --space team2027` printed `Permissions Violation for
+// Subscription to "cotal.team2027.>"`: a CLI checkout from before chat-own.ts, whose chat.ts called
+// `ep.tap(handler)` with no subject (= cotal's space wildcard). Guard both halves: chat itself taps
+// nothing directly, and on a remote space every tap tapOwnSends places names a subject.
+{
+  const { readFileSync, readdirSync } = await import("node:fs");
+  const srcDir = new URL("../src/", import.meta.url);
+  const direct = readdirSync(srcDir).filter((f) => /^chat.*\.ts$/.test(f) && f !== "chat-own.ts").filter((f) => /\bep\.tap\(/.test(readFileSync(new URL(f, srcDir), "utf8")));
+  assert(direct.length === 0, `chat's taps all go through chat-own.ts (no direct ep.tap) — ${direct.join(" ") || "none"}`);
+  const taps: Array<{ subject?: string } | undefined> = [];
+  const fakeEp = { card: { id: "local.UME" }, tap: (_h: unknown, o?: { subject?: string }) => void taps.push(o) } as unknown as Parameters<typeof own.tapOwnSends>[0];
+  // The echo dial goes to a dead port and fails; only the taps placed before it matter here.
+  await own.tapOwnSends(fakeEp, "remotetest-s", "tls://127.0.0.1:9", () => {}, () => {}).then((stop) => stop(), () => {});
+  assert(taps.length >= 1 && taps.every((o) => !!o?.subject && o.subject !== "cotal.remotetest-s.>"), `remote: tapOwnSends never taps the space wildcard — ${JSON.stringify(taps)}`);
+}
+
 console.log("hosted here (one machine of several on a remote space)");
 const { hostingOf, hosting, localManagerInstanceId } = await import("../src/hosted.ts");
 const { createManagerInstanceIdentity } = await import("@cotal-ai/workspace");
@@ -315,6 +331,13 @@ assert(hosting("remotetest-local", "anything", undefined).here, "local spaces: e
 const targets = hostedLagTargets([ours, theirs, { name: "y", id: "UYYY", instanceId: LOCAL }], LOCAL);
 assert(targets.length === 1 && targets[0]!.name === "a" && targets[0]!.durable === `dm_local-UAAA-${"b".repeat(26)}`, `lag is claimed only for our instance's seats, by exact durable — ${JSON.stringify(targets)}`);
 assert(hostedLagTargets([ours], undefined).length === 0, "no local instance → no lag claimed");
+const { bangNoFolderReason } = await import("../src/hosted.ts");
+const bangFar = bangNoFolderReason({ name: "evals", remote: true, personaHere: false, host: "mini.local", localHost: "laptop" });
+assert(bangFar === '"evals" is hosted on another machine (mini.local) — !cmd runs only for agents hosted here', `!cmd for another machine's agent says so, naming its host — ${bangFar}`);
+assert(bangNoFolderReason({ name: "evals", remote: true, personaHere: false, localHost: "laptop" }) === '"evals" is hosted on another machine — !cmd runs only for agents hosted here', "…and omits the host when its card reports none");
+assert(/runs on this host but not under this paw/.test(bangNoFolderReason({ name: "evals", remote: true, personaHere: false, host: "laptop", localHost: "laptop" })), "…never claims \"another machine\" when the card's host is this one");
+assert(/^no registered folder for "a"/.test(bangNoFolderReason({ name: "a", remote: false, personaHere: false, localHost: "laptop" })), "open mesh: the old message (every agent is hosted here)");
+assert(/^no registered folder for "a"/.test(bangNoFolderReason({ name: "a", remote: true, personaHere: true, localHost: "laptop" })), "remote, persona here but no folder: the registry message, not \"another machine\"");
 const sRec = { name: "a", folder: "/x", since: 0, cursorSeq: 1, reason: "", instanceId: LOCAL };
 assert(standInRefusal({ remote: true, rec: sRec, localInstanceId: LOCAL, personaHere: true }) === undefined, "the host stands in for a record slept by this machine");
 assert(/another machine/.test(standInRefusal({ remote: true, rec: { ...sRec, instanceId: "c".repeat(26) }, localInstanceId: LOCAL, personaHere: true }) ?? ""), "…never for one slept from another manager instance");

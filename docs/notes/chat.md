@@ -249,7 +249,9 @@ Moved verbatim from CLAUDE.md (2026-10-02 split). Index: [CLAUDE.md](../../CLAUD
 
 - **`!cmd` in `paw chat` (2026-09-09, operator's ask: "same logic as paw web")** — the same contract as the
   web composer, reusing src/bash.ts verbatim (`parseBang` / `runBash` / `bashMessage`): the command runs in
-  the STICKY agent's registered folder (`folderForName`, fail-loud if unregistered or gone), the output
+  the STICKY agent's registered folder (`folderForName`, fail-loud if unregistered or gone — on a remote
+  space an agent with no persona here is reported as hosted on another machine, see
+  [remote-mesh.md](remote-mesh.md#paw-chat--paw-web-taps)), the output
   prints in the chat, and the agent is DM'd the identical console transcript so the answer becomes its
   context. Needs an `@name` target — a channel has no folder, so broadcast mode refuses with a hint rather
   than guessing a directory. Only a LEADING `!` counts (parseBang), so prose with a `!` still sends. The
