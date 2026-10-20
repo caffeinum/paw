@@ -22,6 +22,8 @@
  *   6. status: INBOX lag is a real number for the local agent (paw's cached consumer-INFO-only cred);
  *   7. a SECOND machine (own PAW_HOME, root, signer copy → its own manager) spawns its agent: machine 1
  *      never lists it or claims its lag, and `paw sleep` across machines fails "hosted on another machine";
+ *      machine 1's `paw chat @<it>` round-trips a DM with no permission line, and `!pwd` there says
+ *      the agent is hosted on another machine;
  *   8. paw sleep agent --now: stand-in under its own nkey; a raw DM by name reaches the stand-in, wakes
  *      the agent, and is re-delivered (its reply lands in paw inbox);
  *   9. paw down --space R + cotal down: nothing left naming either space.
@@ -622,6 +624,20 @@ try {
     ok("…and machine 1's own agent still reads a real lag", st1.rows.find((r) => r.name === name)?.inbox?.kind === "lag");
     const who1 = paw(["who", "--space", R]);
     ok("machine 2's agent is live on the shared mesh (machine 1 sees it on the roster)", out(who1).includes(other), out(who1).trim().split("\n")[0]);
+    // The operator's `paw chat @evals --space team2027` (evals hosted by another machine's manager):
+    // no permission line, the DM round-trips, and `!pwd` says where the agent lives instead of
+    // "no registered folder".
+    const far = startChat([`@${other}`]);
+    await sleep(8000);
+    const farReply = await far.say("reply with only the word pong spelled backwards, nothing else", /gnop/i, 150_000);
+    ok("machine 1: paw chat @<machine 2's agent> --space R — the DM round-trips", farReply.ok, farReply.ok ? "" : tail(far.output()));
+    const farBang = await far.say("!pwd", /!cmd runs only|no registered folder|^\s*!/m, 15_000);
+    // Both "machines" share this host here, and the seat's card reports `meta.host` = this hostname, so
+    // the honest line is the same-host form; on two real machines it reads "hosted on another machine (<host>)".
+    ok("…`!pwd` says the agent is not hosted here (never \"no registered folder\")", /"other" (is hosted on another machine|runs on this host but not under this paw).*!cmd runs only for agents hosted here/.test(farBang.after) && !/no registered folder/.test(farBang.after), tail(farBang.after, 3));
+    const farClean = await far.quit();
+    const farDenied = far.output().split("\n").filter((l) => DENIED.test(l));
+    ok("…no permission error printed, and it quits cleanly", farDenied.length === 0 && farClean, farDenied.slice(0, 3).join(" | "));
     const sleepForeign = paw(["sleep", other, "--now", "--space", R]);
     ok("machine 1: paw sleep <machine 2's agent> fails loud — hosted on another machine", sleepForeign.status !== 0 && /"other" is hosted on another machine/.test(out(sleepForeign)), out(sleepForeign).trim().split("\n").slice(-1)[0]);
     const sleepForceForeign = paw(["sleep", other, "--now", "--force", "--space", R]);

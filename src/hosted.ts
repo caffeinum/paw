@@ -14,6 +14,7 @@
  * Local spaces have one manager by construction — every agent is hosted here.
  */
 import { existsSync } from "node:fs";
+import { hostname } from "node:os";
 import { loadManagerInstanceIdentity } from "@cotal-ai/workspace";
 import { personaFilePath, type PsRow } from "./addressing.ts";
 import { pawCotalRoot } from "./cotal-root.ts";
@@ -46,4 +47,25 @@ export function hosting(space: string, name: string, row: PsRow | undefined): Ho
 /** The refusal for an agent on a remote space that this machine does not host. */
 export function hostedElsewhereError(name: string, space: string, why: string): Error {
   return new Error(`paw: "${name}" is hosted on another machine (space "${space}": ${why}) — only the machine that runs it may sleep it or stand in for it`);
+}
+
+/**
+ * Pure: why `!cmd` has no folder to run in for `name` (chat + web run it in the agent's REGISTERED
+ * folder on THIS machine). On a remote space an agent whose persona is not here is another machine's
+ * — say so, naming its host when its card reports one (`meta.host`; cotal's claude connector reports
+ * none), instead of pointing at `paw status`, which only lists this machine's agents. Never attempts
+ * remote execution.
+ */
+export function bangNoFolderReason(o: { name: string; remote: boolean; personaHere: boolean; host?: string; localHost: string }): string {
+  if (o.remote && !o.personaHere) {
+    if (o.host && o.host === o.localHost) return `"${o.name}" runs on this host but not under this paw (no persona or folder registered here) — !cmd runs only for agents hosted here`;
+    return `"${o.name}" is hosted on another machine${o.host ? ` (${o.host})` : ""} — !cmd runs only for agents hosted here`;
+  }
+  return `no registered folder for "${o.name}" — \`paw status\` lists them`;
+}
+
+/** {@link bangNoFolderReason} with the local facts filled in; `card` is the target's roster card. */
+export function bangNoFolder(space: string, name: string, card?: { meta?: Record<string, unknown> }): string {
+  const host = typeof card?.meta?.host === "string" && card.meta.host ? card.meta.host : undefined;
+  return bangNoFolderReason({ name, remote: isRemoteSpace(space), personaHere: existsSync(personaFilePath(space, name)), host, localHost: hostname() });
 }

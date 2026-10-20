@@ -103,6 +103,7 @@ import { randomBytes } from "node:crypto";
 import { imagesDir } from "./images.ts";
 import { prInfo, prInfoByUrl, prInfoMany } from "./git.ts";
 import { bashMessage, runBash } from "./bash.ts";
+import { bangNoFolder } from "./hosted.ts";
 import { isRemoteSpace, pawServer } from "./server.ts";
 
 /** 7788, NOT 7799 — `cotal web` owns 7799 and running both at once is the normal case, not a clash. */
@@ -1853,7 +1854,10 @@ async function web(argv: string[]): Promise<void> {
       bash: async (typed, command) => {
         const agent = sameSpaceAddress(typed, space, "paw web");
         const cwd = folderForName(space, agent);
-        if (!cwd) throw new Error(`paw: no agent named "${agent}" — \`paw status\` lists them`);
+        if (!cwd) {
+          if (isRemoteSpace(space)) throw new Error(`paw: ${bangNoFolder(space, agent, ep.getRoster().find((p) => p.card.name === agent)?.card)}`);
+          throw new Error(`paw: no agent named "${agent}" — \`paw status\` lists them`);
+        }
         if (!existsSync(cwd)) throw new Error(`paw: "${agent}" is registered at ${cwd}, which no longer exists`);
         return runBash(command, cwd);
       },
