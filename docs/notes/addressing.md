@@ -333,3 +333,39 @@ Moved verbatim from CLAUDE.md (2026-10-02 split). Index: [CLAUDE.md](../../CLAUD
   (clone via `src/github.ts`) first, then a `<repo>@<branch>` worktree, else a plain folder.
   `paw sessions <repo>` is repo-aware: lists every worktree + the claude transcripts inside each;
   `paw sessions <repo>@<branch>` shows just that worktree.
+
+## name#space
+
+- **`<agent>#<space>` = `<agent> --space <space>`** (2026-10-19), everywhere an agent is named:
+  `paw chat @2027-intern#team2027`, `paw dm 2027-intern#team2027 "hi"`, `paw log intern#team2027`.
+  ONE parser, `splitAddressSpace` in `src/dispatch.ts`; `hoistAddressSpace(cmd, args)` runs in
+  `bin/paw.ts` BEFORE the mesh/manager gate and the default `--space` injection, so a remote space's
+  broker/manager is the one ensured. Which argv slots are addresses lives in `ADDRESS_ARGS` (per
+  command: value-taking flags to skip, positional slots, `--name` values) — a message body is never
+  read (`paw dm a "see #12"` is safe). Covered: chat, dm, open/attach, log, sessions, stop (+`--name`),
+  rm, rename (both slots), adopt (+`--name`), status, start, sleep, inbox, restart, unstick, type
+  (`@name#space` only — a bare first word may be the text; a bare `name#space` + text fails loud
+  asking for `@`), nice, persona, optimize, top, tidy, launchd install, ask (role), msg/history
+  (`#chan#space`), claude (`--name n#space`; `--space` is inserted FIRST since claude's parser stops at
+  the first claude arg). Not covered (they name no agent): who, files, watch, bind, web, global, mesh,
+  spaces, hub, runtime, release, mcp, acp-host, completion, `paw cotal …`.
+- **Rules.** Split on the LAST `#`. The space must exist — the current or default space, a dir under
+  `$PAW_HOME/spaces/`, or a `paw mesh add` record — else fail loud listing the known ones. Several
+  addresses on one line must agree; an explicit `--space` that disagrees fails loud (`paw won't
+  pick`); an agreeing one is fine. Agent names (`sanitizeAgentName`: `[A-Za-z0-9_-]`) and space names
+  (`checkSpaceName`) cannot contain `#`, so a second `#` in a name fails loud.
+- **Precedence** (first match wins): no `#` → untouched; `http(s)://…`/`web:…` → untouched (fragment);
+  `github:`/`gh:` → the FIRST `#` (gh's `@`) is the BRANCH as before, so `github:o/r#team2027` is
+  branch `team2027`; a later `#<known space>` (`github:o/r#main#team2027`) fails loud, because a
+  branch may contain `#` — use `--space` with handles; bare `#chan` → channel, `#chan#space` → that
+  channel on `space`; an EXISTING path containing `#` → that folder, unless its suffix is also a known
+  space (fails loud: both readings are real); else name/folder/`repo@branch` + space
+  (`paw@feat#team2027` = the `paw@feat` worktree's agent on team2027).
+- **One-space surfaces.** chat's REPL (`@name#space`, `/dm name#space`, `#chan#space`) and paw web
+  (`/api/dm`, `/api/bash`, invites/company DMs via the same `dm`) are bound to one space's endpoint:
+  `sameSpaceAddress` strips a matching `#space` and says, in red / a 400, when it names another space
+  — never re-routes silently.
+- **zsh.** `#` mid-word is literal in default zsh and bash. Under `setopt extendedglob`, `#` is a glob
+  operator (`x#` = zero or more x) — quote the address then: `paw dm 'intern#team2027' hi`.
+- Test: `check:hash-space` (parser precedence, each family's hoisted argv through its own exported
+  parser, and every address verb through the real CLI failing loud before any mesh).

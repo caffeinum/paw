@@ -284,7 +284,7 @@ const dmCommand: Command = {
   name: "dm",
   group: "Mesh",
   summary: "fire-and-forget DM to an agent — read replies with `paw inbox` (use `paw chat` for a live conversation)",
-  usage: 'dm <name|folder|repo@branch> "<message>"|- [--name n] [--model m] [--space s]',
+  usage: 'dm <name|folder|repo@branch>[#space] "<message>"|- [--name n] [--model m] [--space s]   (x#space = x --space space)',
   run: (a) => dm([...a.raw]),
 };
 

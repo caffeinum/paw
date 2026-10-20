@@ -87,6 +87,7 @@ import { ensure, resolveSpace, reexecUnderNode } from "./lifecycle.ts";
 import { agentTranscriptFile, blocksForAgent, chooseTranscriptId } from "./log.ts";
 import { meshAgentSession } from "./named.ts";
 import { HUMAN_PEER } from "./names.ts";
+import { sameSpaceAddress } from "./dispatch.ts";
 import { cachedLedger, ledgerName } from "./peer-ledger.ts";
 import { personaTranscriptRoots, readAgentType, readResumeId } from "./session.ts";
 import { searchEntries, searchTranscript, snippet, type MessageHit, type TranscriptHit } from "./search.ts";
@@ -1741,7 +1742,7 @@ async function web(argv: string[]): Promise<void> {
         if (loops && !loops.reconcile.active() && Date.now() - reconciledAt >= RECONCILE_MS) await loops.reconcile.runNow();
       },
       trace: (name, tail, bytes) => traceBlocks(space, name, tail, bytes),
-      dm: (to, text) => sendAsYou({ space, server, target: to, text }),
+      dm: (to, text) => sendAsYou({ space, server, target: sameSpaceAddress(to, space, "paw web"), text }),
       // The observer endpoint publishes; posting needs no consumer, so this does not touch the durable.
       post: async (channel, text) => { await ep.multicast(text, { channel }); },
       channels: () => channelNames,
@@ -1781,7 +1782,7 @@ async function web(argv: string[]): Promise<void> {
           if (!collectedAt) await refreshStatus();
           return rows;
         },
-        dm: (to, text) => sendAsYou({ space, server, target: to, text }),
+        dm: (to, text) => sendAsYou({ space, server, target: sameSpaceAddress(to, space, "paw web"), text }),
         post: async (channel, text) => { await ep.multicast(text, { channel }); },
         seedChannel: async (slug, description, instructions) => {
           const creds = await controlCreds(space);
@@ -1838,7 +1839,8 @@ async function web(argv: string[]): Promise<void> {
       // `!cmd` runs in the AGENT'S folder — the whole point is that the answer is about the thing that
       // agent is working on. An unregistered name fails loud rather than falling back to some default
       // directory, which would run the command somewhere the operator never named.
-      bash: async (agent, command) => {
+      bash: async (typed, command) => {
+        const agent = sameSpaceAddress(typed, space, "paw web");
         const cwd = folderForName(space, agent);
         if (!cwd) throw new Error(`paw: no agent named "${agent}" — \`paw status\` lists them`);
         if (!existsSync(cwd)) throw new Error(`paw: "${agent}" is registered at ${cwd}, which no longer exists`);

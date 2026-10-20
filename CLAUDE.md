@@ -144,6 +144,9 @@ Each entry: what it is + the most load-bearing rule. Full notes behind the link.
 - `src/addressing.ts` — folder→name registry (`folders.json` defaults + `agents.json` extras, never
   both); `ensureAgentSpawned` (wake gate: start/reuse/restart from ps liveness, starting-grace 15s,
   busy-guard 3min, persona channel grants `[">"]` + `subscribe: [general]`); `assertUnambiguousTarget`. → [addressing.md#srcaddressingts](docs/notes/addressing.md#srcaddressingts)
+- `<agent>#<space>` = `<agent> --space <space>` on every agent-naming verb: one parser
+  (`splitAddressSpace`, src/dispatch.ts), hoisted in bin/paw.ts before the gate; unknown space or a
+  disagreeing `--space` fails loud; github handles keep `#branch`. → [addressing.md#namespace](docs/notes/addressing.md#namespace)
 - `src/adopt.ts` — `paw adopt`: bring a past/running session live; make-before-break `--force`;
   self-adopt via detached child; `assertSafeRepin` (one agent per session, `--replace` to re-pin);
   worktree sessions adoptable from the repo root. → [addressing.md#paw-adopt](docs/notes/addressing.md#paw-adopt)
