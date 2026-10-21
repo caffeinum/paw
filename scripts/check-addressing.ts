@@ -250,6 +250,20 @@ assert(!psRowAlive({ name: "x", status: "exited", mesh: "absent" }), "psRowAlive
   assert(adv.includes("mv /private/tmp/tmux-501/default /private/tmp/tmux-501/default-57464 && kill -USR1 30256"), "split advice: moves the NEWER server's socket aside, then SIGUSR1s the one that lost its own");
   assert(adv.includes("tmux -S /private/tmp/tmux-501/default-57464 attach"), "split advice: says how to still reach the newer server's agents");
 }
+// 2026-10-20: Homebrew upgraded tmux 3.5a → 3.8 under a live 3.5a server; a 3.8 client can't attach
+// to it ("open terminal failed: not a terminal"). attachTmux must name the cause and both ways out.
+{
+  const { tmuxVersionMismatch, matchingTmuxClient } = await import("../src/native-attach.ts");
+  const base = { space: "paw", name: "firegoat-cli", matchingClient: "/h/.local/opt/tmux-3.5a/bin/tmux" };
+  assert(tmuxVersionMismatch({ ...base, serverVersion: "3.8\n", clientVersion: "tmux 3.8\n", matchingClientExists: false }) === undefined, "tmux versions: same server + client (with `tmux -V`'s prefix and newlines) is no mismatch");
+  const have = tmuxVersionMismatch({ ...base, serverVersion: "3.5a", clientVersion: "tmux 3.8", matchingClientExists: true }) ?? "";
+  assert(/server is 3\.5a but this tmux client is 3\.8/.test(have) && /predates a tmux upgrade/.test(have), "tmux versions: a mismatch names both versions and the cause");
+  assert(have.includes(`/h/.local/opt/tmux-3.5a/bin/tmux attach-session -t '=cotal-paw' \\; select-window -t 'cotal-paw:firegoat-cli'`), "tmux versions: names the exact attach command with the matching client");
+  assert(/restart the tmux server/.test(have) && /whole fleet/.test(have) && /operator's go/.test(have), "tmux versions: the restart way out says it takes the whole fleet and needs the operator's go");
+  const none = tmuxVersionMismatch({ ...base, serverVersion: "3.5a", clientVersion: "tmux 3.8", matchingClientExists: false }) ?? "";
+  assert(/there is none at \/h\/\.local\/opt\/tmux-3\.5a\/bin\/tmux; build tmux 3\.5a there/.test(none) && none.includes("--prefix=/h/.local/opt/tmux-3.5a)"), "tmux versions: with no matching client, says to build that version at that prefix");
+  assert(matchingTmuxClient("3.5a").endsWith("/.local/opt/tmux-3.5a/bin/tmux"), "tmux versions: the matching client lives at ~/.local/opt/tmux-<server version>/bin/tmux");
+}
 // `absent` = mid-start, which the PURE gate still calls alive so a legitimate boot is never killed.
 // The BOUND lives in ensureAgentSpawned: an agent that never leaves `starting…` is a failed boot, not
 // a slow one, and reusing it forever is what made `paw chat research` unreachable for 13 hours with no

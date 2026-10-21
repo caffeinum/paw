@@ -9,6 +9,9 @@
  * over, so `paw attach` just points the operator at the tab (see src/open.ts). pty keeps the ws path.
  */
 import { spawnSync, execFileSync } from "node:child_process";
+import { existsSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 
 /**
  * TWO tmux servers on one socket path (2026-09-23): the running server's socket FILE disappeared (cause
@@ -70,10 +73,68 @@ export function tmuxSession(space: string): string {
 }
 
 /**
+ * tmux server outlives a tmux upgrade (2026-10-20): the live server kept running 3.5a after Homebrew
+ * swapped the binary for 3.8 and deleted the 3.5a Cellar. Commands (`display`, `select-window`) still
+ * cross versions, but a 3.8 client can't ATTACH to a 3.5a server — it dies with "open terminal failed:
+ * not a terminal", which names nothing. Pure; returns the explanation on a mismatch, else undefined.
+ * `matchingClient` is where a client of the server's version would live; `matchingClientExists` says
+ * whether it is there. paw never picks a binary itself — it names one.
+ */
+export function tmuxVersionMismatch(m: {
+  serverVersion: string;
+  clientVersion: string;
+  space: string;
+  name: string;
+  matchingClient: string;
+  matchingClientExists: boolean;
+}): string | undefined {
+  const server = m.serverVersion.trim();
+  const client = m.clientVersion.trim().replace(/^tmux\s+/, "");
+  if (!server || !client || server === client) return undefined;
+  const session = tmuxSession(m.space);
+  const attach = `${m.matchingClient} attach-session -t '=${session}' \\; select-window -t '${session}:${m.name}'`;
+  return [
+    `paw: the tmux server is ${server} but this tmux client is ${client} — the server predates a tmux upgrade, and a ${client} client can't attach to a ${server} server ("open terminal failed: not a terminal").`,
+    `  two ways out:`,
+    m.matchingClientExists
+      ? `  1. attach with a matching ${server} client:\n       ${attach}`
+      : `  1. attach with a matching ${server} client — there is none at ${m.matchingClient}; build tmux ${server} there (github.com/tmux/tmux/releases, ./configure --prefix=${m.matchingClient.replace(/\/bin\/tmux$/, "")}), then:\n       ${attach}`,
+    `  2. restart the tmux server so it runs ${client} — that kills every agent in it (the whole fleet), so only with the operator's go.`,
+  ].join("\n");
+}
+
+/** Where a tmux client of `version` would be installed (the operator's side-by-side builds). */
+export function matchingTmuxClient(version: string): string {
+  return join(homedir(), ".local", "opt", `tmux-${version}`, "bin", "tmux");
+}
+
+/** Fail loud before attach-session when the server and client versions differ. A server the socket
+ *  doesn't reach is left to the select-window error below, which already explains it. */
+function assertTmuxVersionsMatch(space: string, name: string, env: NodeJS.ProcessEnv): void {
+  const read = (args: string[]) => spawnSync("tmux", args, { stdio: ["ignore", "pipe", "ignore"], env });
+  const srv = read(["display-message", "-p", "#{version}"]);
+  if (srv.status !== 0) return;
+  const cli = read(["-V"]);
+  if (cli.status !== 0) throw new Error(`paw: \`tmux -V\` failed (exit ${cli.status}) — can't check the client against tmux server ${srv.stdout.toString().trim()}`);
+  const serverVersion = srv.stdout.toString().trim();
+  const matchingClient = matchingTmuxClient(serverVersion);
+  const why = tmuxVersionMismatch({
+    serverVersion,
+    clientVersion: cli.stdout.toString(),
+    space,
+    name,
+    matchingClient,
+    matchingClientExists: existsSync(matchingClient),
+  });
+  if (why) throw new Error(why);
+}
+
+/**
  * Attach to a tmux-runtime agent's window. Selects `<session>:<name>` first (so the attach lands on
  * that agent, not whatever window was last active), then attaches — `switch-client` when already
  * inside tmux (attach-session refuses to nest), `attach-session` otherwise. Fails loud with the
- * manual command when tmux isn't reachable or the window is gone.
+ * manual command when tmux isn't reachable, the window is gone, or the server's tmux version isn't
+ * the client's (see tmuxVersionMismatch).
  */
 export function attachTmux(space: string, name: string): void {
   const session = tmuxSession(space);
@@ -91,6 +152,10 @@ export function attachTmux(space: string, name: string): void {
     env = { ...process.env };
     delete env.TMUX_TMPDIR;
   }
+
+  // switch-client is an ordinary command and crosses versions; only attach-session needs a client
+  // that speaks the server's protocol. Checked before select-window so a refusal changes nothing.
+  if (!inside) assertTmuxVersionsMatch(space, name, env);
 
   // Point the session at the agent's window. A missing window is a real error — don't silently
   // attach to some other agent's window.
