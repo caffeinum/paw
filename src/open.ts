@@ -12,13 +12,13 @@ import { spawnSync } from "node:child_process";
 import { registry, type Command } from "@cotal-ai/core";
 import { attachTmux, tmuxSession, tmuxSplit, tmuxSplitAdvice, tmuxWindowExists } from "./native-attach.ts";
 import { liveSessionProcs } from "./named.ts";
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import { assertUnambiguousTarget, canonicalDir, ensureAgentSpawned, folderForName, personaFilePath, registerInstance, resolveFolderAgent, setFolderName, type Kind } from "./addressing.ts";
 import { KIT_AGENT, kitBinPath } from "./kit.ts";
 import { agentSummary } from "./agent-summary.ts";
 import { personaTranscriptRoots, readAgentType, readCwd, readHeadless, readKitStorage, readResumeId, transcriptPath } from "./session.ts";
 import { claudeProjectDir } from "./adopt.ts";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { withManagerControl } from "./control.ts";
 import { readForeground } from "./foreground.ts";
 import { isAddressHandle, resolveAddress } from "./address.ts";
@@ -109,6 +109,18 @@ export async function attachResolved(
 
   // A FOREGROUND `paw claude` agent lives in the operator's OWN terminal, not under the manager — there's
   // no pty to stream and no tmux/cmux window to enter. Point at that terminal instead of trying to attach.
+  // No persona here and nothing to spawn from: the agent lives in another space (or nowhere). Say which,
+  // instead of falling through to a tmux attach that dies reading the missing persona file.
+  if (!folder && !existsSync(personaFilePath(space, name)) && !(readRuntimeMarker(space) === "tmux" && tmuxWindowExists(space, name))) {
+    const spacesDir = dirname(dirname(dirname(personaFilePath(space, name))));
+    const elsewhere = readdirSync(spacesDir).filter((s) => s !== space && existsSync(personaFilePath(s, name)));
+    throw new Error(
+      elsewhere.length
+        ? `paw: no agent "${name}" in space ${space} — it's in ${elsewhere.join(", ")}: \`paw attach ${name}#${elsewhere[0]}\``
+        : `paw: no agent "${name}" in space ${space} (\`paw status\` lists them)`,
+    );
+  }
+
   const fg = readForeground(space, name);
   if (fg) {
     process.stdout.write(
