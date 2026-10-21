@@ -61,7 +61,7 @@ const persona = (front: string, body = "You review evals.") => {
 const full = persona(`agent: kit\nprovider: codex\nmodel: gpt-6.1-sol\nvariant: high\nresume: ${PIN}\ncwd: /w`);
 const p = readKitPersona(full);
 ok("persona: provider, model, variant, pin, body", p.provider === "codex" && p.model === "gpt-6.1-sol" && p.variant === "high" && p.pin === PIN && p.body === "You review evals.", JSON.stringify(p));
-ok("persona without provider throws", throws(() => readKitPersona(persona(`agent: kit\nresume: ${PIN}`)), /no `provider:`/));
+ok("persona without provider: kit's own defaults pick it", readKitPersona(persona(`agent: kit\nresume: ${PIN}`)).provider === undefined);
 ok("persona with an unknown provider throws", throws(() => readKitPersona(persona(`agent: kit\nprovider: claude\nresume: ${PIN}`)), /kit drives codex or grok/));
 ok("grok and fake:codex are accepted", readKitPersona(persona(`provider: grok\nresume: ${PIN}`)).provider === "grok" && readKitPersona(persona(`provider: fake:codex\nresume: ${PIN}`)).provider === "fake:codex");
 ok("no persona file throws", throws(() => readKitPersona(undefined), /needs its persona file/));
@@ -268,7 +268,8 @@ ok("chat: --agent without a value throws", throws(() => parseChatArgs([".", "--a
   const kp = readKitPersona(ka);
   ok("a -m in kitArgs stands in for provider:", kp.provider === undefined && kp.kitArgs.length === 4);
   ok("-P in kitArgs stands in for provider: too", readKitPersona(persona(`resume: ${PIN}\nkitArgs: ["-P","grok"]`)).provider === undefined);
-  ok("no provider: and no -m/-P throws", throws(() => readKitPersona(persona(`resume: ${PIN}\nkitArgs: ["-e","high"]`)), /no `provider:` and no -m\/-P/));
+  const dflt = readKitPersona(persona(`resume: ${PIN}\nkitArgs: ["-e","high"]`));
+  ok("no provider: and no -m/-P launches with neither flag (kit's defaults)", !kitLaunch(opts, dflt, deps(true)).args.some((a) => a === "--provider" || a === "--model" || a === "-m"));
   const la = kitLaunch(opts, kp, deps(true)).args;
   ok("kitLaunch: no --provider without provider:, kitArgs appended LAST, verbatim", !la.includes("--provider") && la.slice(-6).join(" ") === `--resume ${PIN} -m grok-4.7 -e high`, la.join(" "));
   const both = kitLaunch(opts, { ...p, kitArgs: ["-e", "low"] }, deps(true)).args;
@@ -313,7 +314,7 @@ ok("chat: --agent without a value throws", throws(() => parseChatArgs([".", "--a
   ok("claude → kit: --model + kit flags", planSwap("evals", claudeP, { agent: "kit", model: "grok-4.7", kitArgs: ["-e", "high"] }).set.kitArgs === '["--model","grok-4.7","-e","high"]');
   const np = planSwap("evals", { ...claudeP, pin: undefined }, { agent: "kit", kitArgs: ["-m", "x"] });
   ok("claude → kit: no pin mints a fresh one (the swap must work when claude can't run)", /^[0-9a-f-]{36}$/.test(np.set.resume ?? "") && np.set.storage === "claude" && np.notes.some((n) => n.includes("FRESH session")), JSON.stringify(np));
-  ok("claude → kit: no model/provider fails loud", throws(() => planSwap("evals", claudeP, { agent: "kit" }), /kit needs a model or provider/));
+  ok("claude → kit with no model/provider: kit's defaults", planSwap("evals", claudeP, { agent: "kit" }).set.agent === "kit");
   ok("claude → kit: a claude model: line fails loud", throws(() => planSwap("evals", { ...claudeP, model: "opus" }, { agent: "kit", kitArgs: ["-m", "x"] }), /pins model: opus/));
   ok("--model twice fails loud", throws(() => planSwap("evals", claudeP, { agent: "kit", model: "a", kitArgs: ["-m", "b"] }), /say it once/));
   ok("a paw-owned kit flag fails loud", throws(() => planSwap("evals", claudeP, { agent: "kit", kitArgs: ["-m", "x", "--overwrite"] }), /storage: claude/));

@@ -140,8 +140,6 @@ export function planSwap(name: string, cur: SwapPersona, req: SwapRequest): Swap
     for (const k of ["model", "variant"] as const)
       if (cur[k] !== undefined)
         throw new Error(`paw: "${name}"'s persona pins ${k}: ${cur[k]} (claude's) — kit would launch with it; remove that line from ${cur.file}, then swap`);
-    if (!all.model && !all.provider && !cur.provider)
-      throw new Error(`paw: kit needs a model or provider — \`paw restart ${name} --agent kit -- -m grok-4.7\` (or --model <m>, or -- -P codex|grok)`);
     set.storage = "claude";
     notes.push(
       cur.claudeTranscript
@@ -162,9 +160,6 @@ export function planSwap(name: string, cur: SwapPersona, req: SwapRequest): Swap
     if (all.provider) drop("provider");
     if (all.effort) drop("variant");
   }
-  const provider = "provider" in set ? undefined : cur.provider;
-  if (!all.model && !all.provider && !provider)
-    throw new Error(`paw: kit needs a model or provider — add -m <model> or -P codex|grok after \`--\``);
   if (!Object.keys(set).length) return { set, summary: `persona ${name}: already kit with these flags, unchanged`, notes, undo: "" };
   return { set, summary: summarize(name, set, removed), notes, undo };
 }

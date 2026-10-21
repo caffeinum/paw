@@ -179,14 +179,11 @@ export type KitPersona = { provider?: string; model?: string; variant?: string; 
 
 /** What the persona says about this kit agent. Throws on what kit cannot run. */
 export function readKitPersona(configPath: string | undefined): KitPersona {
-  if (!configPath) throw new Error("paw: a kit agent needs its persona file (agent: kit, provider: codex|grok)");
+  if (!configPath) throw new Error("paw: a kit agent needs its persona file (agent: kit)");
   const def = loadAgentFile(configPath);
   const provider = def.meta?.provider?.trim() || undefined;
   const kitArgs = readKitArgs(configPath);
-  const named = checkKitArgs(kitArgs, `kitArgs in ${configPath}`);
-  // kit needs a provider, or a model that names one; `kitArgs` may carry either (`-m grok-4.7`, `-P grok`).
-  if (!provider && !named.model && !named.provider)
-    throw new Error(`paw: ${configPath} is a kit agent with no \`provider:\` and no -m/-P in \`kitArgs:\` — set provider: codex|grok, or \`paw restart <agent> --agent kit -- -m <model>\``);
+  checkKitArgs(kitArgs, `kitArgs in ${configPath}`);
   if (provider && !PROVIDER_RE.test(provider)) throw new Error(`paw: ${configPath}: provider "${provider}" — kit drives codex or grok`);
   const pin = readResumeId(configPath);
   return { provider, model: def.model, variant: def.variant, kitArgs, body: def.persona?.trim() ?? "", pin, storage: readKitStorage(configPath), voice: voiceLineFor(configPath) };

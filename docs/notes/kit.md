@@ -179,8 +179,8 @@ then the ordinary `restartAgent`. Principle: transparent, no inventions.
   start <agent>` once mints it) and sets **`storage: claude`** (kit `--overwrite`): an existing agent
   stays bound to its claude transcript instead of forking it into kit's store (the operator's rule).
   The output says which file it keeps appending to, or that none exists yet. A claude persona that
-  pins `model:`/`variant:` is refused (kit would read a claude model name as its own). Needs a model
-  or provider (`-m`, `-P` or `--model`). `shareTools:` is left alone for the swap back.
+  pins `model:`/`variant:` is refused (kit would read a claude model name as its own). With no `-m`/`-P`/
+  `--model`, kit picks its own defaults (KIT_PROVIDER/KIT_MODEL, `kit config`, built-in; kit fe1d8f4). `shareTools:` is left alone for the swap back.
 - **kit → kit** replaces `kitArgs`. The one overlap: a persona `provider:`/`model:` (dropped when the new
   flags carry `-m`) or `variant:` (dropped on `-e`) is REMOVED and printed, so one record says it.
   Existing kit agents (tracepaper, evals-reviewer) keep working on `provider:`/`model:` untouched until
