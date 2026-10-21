@@ -42,6 +42,7 @@ import {
   fetchContractClosure,
   instancePinnedInstrumentCapabilities,
   invokeCommand,
+  lifecycleBlockedFrom,
   mintCreds,
   mintLifecycleUid,
   newIdentity,
@@ -62,7 +63,11 @@ import { isRemoteSpace } from "./server.ts";
  *  off the old `ControlReply`, so the rail swap didn't also become a rewrite of what reads it.
  *  `code` is cotal's machine-readable error code when the responder sent one — carried, never
  *  invented, and never used to paper over a message. */
-export type ManagerReply = { ok: boolean; data?: unknown; error?: string; code?: string };
+/** A refusal's structured lifecycle-barrier facts (cotal's `ai.cotal.ep.lifecycle-blocked` detail), kept
+ *  so callers branch on `blockedOp`/`remedy` instead of parsing the rendered `[lifecycle …]` suffix. */
+export type LifecycleBlock = { blockedOp: string; opId?: string; remedy?: string };
+
+export type ManagerReply = { ok: boolean; data?: unknown; error?: string; code?: string; blocked?: LifecycleBlock };
 
 /** How long a `resolveService` may take. Generous because it is not one round trip: a describe, a
  *  store fetch per visible cluster, and a recompile. Matches cotal's own 10s. */
@@ -516,12 +521,14 @@ function target(caller: EpCaller, row: AgentRow): EpVerbTarget {
 
 /** An endpoint reply in paw's shape. An `ok:false` reply's message is preferred over its code, and
  *  the last resort is the literal "error" rather than a fabricated explanation. */
-function replyOf(reply: { ok?: boolean; data?: unknown; error?: { code?: string; message?: string } }): ManagerReply {
+function replyOf(reply: { ok?: boolean; data?: unknown; error?: { code?: string; message?: string; details?: unknown[] } }): ManagerReply {
   if (reply.ok === true) return { ok: true, ...(reply.data !== undefined ? { data: reply.data } : {}) };
+  const d = lifecycleBlockedFrom(reply.error);
   return {
     ok: false,
     error: reply.error?.message ?? reply.error?.code ?? "error",
     ...(reply.error?.code ? { code: reply.error.code } : {}),
+    ...(d ? { blocked: { blockedOp: d.blockedOp, ...(d.opId ? { opId: d.opId } : {}), ...(d.remedy ? { remedy: d.remedy } : {}) } } : {}),
   };
 }
 

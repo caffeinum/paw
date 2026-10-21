@@ -48,6 +48,7 @@ import { readStartupPrompt, tmuxSplit, tmuxSplitAdvice, type StartupScreen } fro
 import { HOST_RE } from "./url.ts";
 import { personalityFor, readPersonality } from "./personality.ts";
 import type { ManagerControl, ManagerReply } from "./control.ts";
+import { resolveSpace } from "./space.ts";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -848,7 +849,7 @@ export async function ensureAgentSpawned(
     /** Test seam for the presence-plane probe; defaults to a real put on the space's presence KV. */
     probePresence?: () => Promise<PresenceHealth>;
     /** Test seam: shorter starting-grace / readiness waits (check:wake-gate). */
-    timing?: { graceMs?: number; readyMs?: number };
+    timing?: { graceMs?: number; readyMs?: number; retireMs?: number; retireStepMs?: number };
     /** Progress lines for an interactive caller (`paw restart <agent>`): what is being waited on, and for how long. */
     progress?: (line: string) => void;
   },
@@ -902,6 +903,9 @@ export async function ensureAgentSpawned(
       }
       action = "restart";
     }
+    // Set when THIS call stopped the agent (the zombie restart below): a spawn refused after it leaves the
+    // agent offline by paw's own hand, and the failure must say so.
+    let restartedFrom: RestartedFrom | undefined;
     const sleeping = sleepState(opts.space, opts.name);
     const offlineRow = rows.find((r) => r.name === opts.name);
     if (action === "restart" && sleeping && offlineRow?.status !== "exited" && offlineRow?.mesh === "offline") {
@@ -985,6 +989,7 @@ export async function ensureAgentSpawned(
       console.error(
         `paw: restarting "${opts.name}" — ps row status=${row?.status ?? "?"} mesh=${row?.mesh ?? "?"}, transcript last written ${activeMs ? Math.round((Date.now() - activeMs) / 1000) + "s ago" : "never/unknown"}; its in-flight command (if any) will die`,
       );
+      restartedFrom = { status: row?.status, mesh: row?.mesh, quietMs: activeMs ? Date.now() - activeMs : undefined };
       await ctl.despawn(opts.name).catch(() => {});
     }
 
@@ -1095,7 +1100,18 @@ export async function ensureAgentSpawned(
     }
     const logFrom = logOffset(managerLogPath(opts.space));
     opts.progress?.(`starting ${opts.name}${agentType ? ` on ${agentType}` : ""}…`);
-    const reply = await spawnPinned(ctl, args, opts.name);
+    const retireMs = opts.timing?.retireMs ?? RETIREMENT_RETRY_MS;
+    const reply = await spawnPinned(ctl, args, opts.name, {
+      retireMs,
+      retireStepMs: opts.timing?.retireStepMs,
+      onRetiring: () => (opts.progress ?? ((l: string) => console.error(`paw: ${l}`)))(`waiting for cotal to finish retiring the old ${opts.name} (up to ${Math.round(retireMs / 1000)}s)…`),
+    });
+    if (isRetirementRefusal(reply)) {
+      // Still reserved after the bounded re-drive. A caller that stopped it (the zombie restart here, or
+      // restartAgent before calling us) has left it OFFLINE; say that first, then the one command.
+      const stopped = restartedFrom ?? (opts.reuseUnmanaged === false ? {} : undefined);
+      throw new Error(retirementRefusal({ space: opts.space, name: opts.name, stopped, waitedMs: retireMs, error: reply.error ?? "", opId: reply.blocked?.opId }));
+    }
     if (!reply.ok) {
       const err = reply.error ?? "no reply";
       // The cmux runtime reports "couldn't reach the app" not only when cmux is closed, but also when
@@ -1326,6 +1342,11 @@ export const SESSION_RELEASE_MS = 30_000;
 /** How long one manager `spawn` call may take to answer (a claude cold-start can take a while). */
 export const SPAWN_ACCEPT_MS = 60_000;
 
+/** How long paw re-drives a spawn the manager refuses because the name is still reserved by the
+ *  previous copy's retirement. cotal says retrying re-drives that teardown, so the retry IS the nudge;
+ *  past this bound the teardown is failing, not slow, and paw stops and says so. */
+export const RETIREMENT_RETRY_MS = 45_000;
+
 /**
  * The longest a LEGITIMATE {@link ensureAgentSpawned} can hold `spawn.<name>.lock`, summed from the waits
  * it actually makes: the starting grace, the session-release wait, spawnPinned's held-name retry window,
@@ -1336,7 +1357,7 @@ export const SPAWN_ACCEPT_MS = 60_000;
  * spawner could break a live holder's lock mid-spawn. A DEAD holder is still broken at once (pid stamp).
  */
 export const SPAWN_LOCK_HOLD_MS =
-  STARTING_GRACE_MS + SESSION_RELEASE_MS + SESSION_RELEASE_MS + 2 * SPAWN_ACCEPT_MS + SPAWN_READY_MS + PRESENCE_PROBE_MS + 20_000;
+  STARTING_GRACE_MS + SESSION_RELEASE_MS + SESSION_RELEASE_MS + RETIREMENT_RETRY_MS + 2 * SPAWN_ACCEPT_MS + SPAWN_READY_MS + PRESENCE_PROBE_MS + 20_000;
 
 /** Lock timeouts for every holder of {@link spawnLockPath}. */
 export const SPAWN_LOCK_OPTS: LockOpts = { maxWaitMs: SPAWN_LOCK_HOLD_MS, staleMs: SPAWN_LOCK_HOLD_MS };
@@ -1346,11 +1367,76 @@ export function isNameHeldRefusal(error: string | undefined): boolean {
   return !!error && /hard-pinned/.test(error) && /already held by a live incarnation/.test(error);
 }
 
-/** Spawn with a hard-pinned name, retrying while a just-retired incarnation's presence lingers. */
-async function spawnPinned(ctl: ManagerControl, args: Record<string, unknown>, name: string) {
+/** The manager's refusal for a name its previous copy's retirement still reserves, read off cotal's
+ *  structured lifecycle-blocked detail (never the rendered string). Only `remedy=retry` is retryable. */
+export function isRetirementRefusal(r: ManagerReply): boolean {
+  return !r.ok && r.blocked?.blockedOp === "retirement" && r.blocked.remedy === "retry";
+}
+
+type RestartedFrom = { status?: string; mesh?: string; quietMs?: number };
+
+function humanAge(ms: number): string {
+  const s = Math.round(ms / 1000);
+  if (s < 90) return `${s}s`;
+  const m = Math.round(s / 60);
+  return m < 120 ? `${m}m` : `${Math.round(m / 60)}h`;
+}
+
+/** The retirement teardown's own last failure, from cotal's `(last attempt: …)` clause. */
+function lastRetireAttempt(error: string): string | undefined {
+  return /\(last attempt: (.*)\)\. NEXT:/s.exec(error)?.[1];
+}
+
+/**
+ * The operator-facing failure once the retirement re-drive is exhausted: what happened, why, one command.
+ * `stopped` = paw stopped the agent on this path (so it is OFFLINE by paw's hand); cotal's raw text goes on
+ * one dim line. A timing-out teardown names the broker link — blind retries won't clear that. Pure.
+ */
+export function retirementRefusal(o: { space: string; name: string; stopped?: RestartedFrom; waitedMs: number; error: string; opId?: string; tty?: boolean }): string {
+  const { space, name, stopped } = o;
+  const why = stopped
+    ? stopped.status || stopped.mesh
+      ? ` (${stopped.status === "exited" ? "process exited" : "process up"}, but ${stopped.mesh ?? "?"} on the mesh${stopped.quietMs !== undefined ? ` and quiet for ${humanAge(stopped.quietMs)}` : ""})`
+      : ""
+    : "";
+  const head = stopped
+    ? `paw: ${name} is offline — paw stopped it to restart it${why}, and cotal is still retiring the old copy, so the new start was refused.`
+    : `paw: couldn't start ${name} — cotal is still retiring its previous copy, so the start was refused.`;
+  const last = lastRetireAttempt(o.error);
+  const timedOut = /time[d ]?out/i.test(last ?? o.error);
+  const log = managerLogPath(space).replace(homedir(), "~");
+  const cause = timedOut
+    ? `cotal couldn't finish retiring it: the ${space} broker is timing out. fix the broker/manager link first (${log}); retrying won't help until then.`
+    : `still not retired after ${humanAge(o.waitedMs)} of retries.`;
+  const flag = space === resolveSpace() ? "" : ` --space ${space}`;
+  const raw = `cotal: retirement${o.opId ? ` opId=${o.opId}` : ""}${last ? ` · last attempt: ${last}` : ""}`;
+  const dim = (o.tty ?? process.stderr.isTTY === true) ? (t: string) => `\x1b[2m${t}\x1b[22m` : (t: string) => t;
+  return `${head}\n  ${cause}\n  its session is kept. retry: paw start ${name}${flag}\n  ${dim(raw)}`;
+}
+
+/** Spawn with a hard-pinned name, retrying while a just-retired incarnation's presence lingers, and
+ *  re-driving (bounded, backing off) while its retirement still reserves the name. */
+async function spawnPinned(
+  ctl: ManagerControl,
+  args: Record<string, unknown>,
+  name: string,
+  retire: { retireMs: number; retireStepMs?: number; onRetiring: () => void },
+) {
   const deadline = Date.now() + SESSION_RELEASE_MS;
+  const retireDeadline = Date.now() + retire.retireMs;
+  let step = retire.retireStepMs ?? 1000;
+  let told = false;
   for (;;) {
     const reply = await ctl.spawn(args, SPAWN_ACCEPT_MS); // a claude cold-start can take a while
+    if (isRetirementRefusal(reply)) {
+      const left = retireDeadline - Date.now();
+      if (left <= 0) return reply;
+      if (!told) retire.onRetiring();
+      told = true;
+      await sleep(Math.min(step, left));
+      step = Math.min(step * 2, 8000);
+      continue;
+    }
     if (reply.ok || !isNameHeldRefusal(reply.error) || Date.now() >= deadline) {
       if (!reply.ok && isNameHeldRefusal(reply.error)) {
         return { ...reply, error: `"${name}" is still held on the mesh ${Math.round(SESSION_RELEASE_MS / 1000)}s after it should have stopped — \`paw status\` / \`paw cotal ps\` for who holds it (${reply.error})` };
