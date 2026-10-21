@@ -311,7 +311,8 @@ ok("chat: --agent without a value throws", throws(() => parseChatArgs([".", "--a
   ok("claude → kit with no transcript yet says so", planSwap("evals", { ...claudeP, claudeTranscript: undefined }, { agent: "kit", kitArgs: ["-P", "grok"] }).notes.some((n) => /no transcript at resume/.test(n)));
   ok("claude → kit: --model is kitArgs' head", planSwap("evals", claudeP, { agent: "kit", model: "grok-4.7" }).set.kitArgs === '["--model","grok-4.7"]');
   ok("claude → kit: --model + kit flags", planSwap("evals", claudeP, { agent: "kit", model: "grok-4.7", kitArgs: ["-e", "high"] }).set.kitArgs === '["--model","grok-4.7","-e","high"]');
-  ok("claude → kit: no pin fails loud", throws(() => planSwap("evals", { ...claudeP, pin: undefined }, { agent: "kit", kitArgs: ["-m", "x"] }), /no `resume:` pin/));
+  const np = planSwap("evals", { ...claudeP, pin: undefined }, { agent: "kit", kitArgs: ["-m", "x"] });
+  ok("claude → kit: no pin mints a fresh one (the swap must work when claude can't run)", /^[0-9a-f-]{36}$/.test(np.set.resume ?? "") && np.set.storage === "claude" && np.notes.some((n) => n.includes("FRESH session")), JSON.stringify(np));
   ok("claude → kit: no model/provider fails loud", throws(() => planSwap("evals", claudeP, { agent: "kit" }), /kit needs a model or provider/));
   ok("claude → kit: a claude model: line fails loud", throws(() => planSwap("evals", { ...claudeP, model: "opus" }, { agent: "kit", kitArgs: ["-m", "x"] }), /pins model: opus/));
   ok("--model twice fails loud", throws(() => planSwap("evals", claudeP, { agent: "kit", model: "a", kitArgs: ["-m", "b"] }), /say it once/));
