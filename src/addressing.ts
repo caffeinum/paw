@@ -35,14 +35,14 @@ import { pawServer } from "./server.ts";
 import { readRemoteMesh } from "./remote-mesh.ts";
 import { withFileLock, withFileLockAsync, type LockOpts } from "./lock.ts";
 import { liveSessionProcs, meshAgentSession, meshIdentity, type LiveSessionProc } from "./named.ts";
-import { ensureKitBinary, isKitProvider, KIT_AGENT, preflightKitArgs, readKitPersona } from "./kit.ts";
+import { checkKitArgs, ensureKitBinary, isKitProvider, KIT_AGENT, preflightKitArgs, readKitPersona } from "./kit.ts";
 import { HERMES_AGENT } from "./hermes-profile.ts";
 import { ACP_AGENT } from "./acp-agent.ts";
 import { resolveAcpHost } from "./acp-host.ts";
 import { isClaudeHarness, personaTranscriptRoots, personaValue, readAgentType, readClaudeArgs, readCwd, readKitArgs, readResumeId, readShareTools, transcriptMtime } from "./session.ts";
 import { defaultTmuxEnv, managerLogPath, readRuntimeMarker } from "./lifecycle.ts";
 import { logOffset, seatDiagnostic, seatExit } from "./manager-log.ts";
-import { assertManagerFeature, describeCodeRoot, KIT_ARGS_FEATURE, runningManagerRoot } from "./manager-features.ts";
+import { assertManagerFeature, describeCodeRoot, KIT_ARGS_FEATURE, KIT_DEFAULTS_FEATURE, runningManagerRoot } from "./manager-features.ts";
 import { ensureBypassConsent, managedLaunchesBypass } from "./bypass-consent.ts";
 import { readStartupPrompt, tmuxSplit, tmuxSplitAdvice, type StartupScreen } from "./native-attach.ts";
 import { HOST_RE } from "./url.ts";
@@ -1080,6 +1080,9 @@ export async function ensureAgentSpawned(
       // throws on a missing provider: after accepting the spawn — silently (src/manager-features.ts).
       if (persona.kitArgs.length || !persona.provider)
         assertManagerFeature(opts.space, KIT_ARGS_FEATURE, `kit agent "${opts.name}" (${persona.provider ? "kitArgs:" : "kitArgs: with no provider:"} in ${config})`);
+      const named = checkKitArgs(persona.kitArgs, `kitArgs in ${config}`);
+      if (!persona.provider && !named.model && !named.provider)
+        assertManagerFeature(opts.space, KIT_DEFAULTS_FEATURE, `kit agent "${opts.name}" (no provider:/-m/-P — kit's own defaults, in ${config})`);
       preflightKitArgs(ensureKitBinary(), persona.kitArgs, `kitArgs in ${config}`);
     }
     // Hermes publishes no AG-UI event plane either (cotal's connector has no eventChannel).
