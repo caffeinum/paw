@@ -14,7 +14,7 @@
  *            kit doesn't know, a bare word, --model twice, --agent on a runtime, a mismatched space
  *   back   4 `--agent claude` removes the kit keys, keeps the pin; the manager launches claude (a stub
  *            on PATH — no claude login here) with `--resume <pin>`
- *   nopin  5 a claude agent with no pin → `--agent kit` fails loud
+ *   nopin  5 a claude agent with no pin → `--agent kit` mints a fresh pin and starts kit on it
  *   addr   6 `paw restart . --agent kit` from the agent's folder resolves the folder's agent; `<name>#<space>`
  *            from another PAW_SPACE reaches it; an unchanged swap still restarts (a new kit process)
  *   old    7 the ccswitch hang (2026-10-20): the manager runs a release older than kit swaps (no
@@ -239,7 +239,11 @@ try {
   const nfolder = realpathSync(mkdtempSync(join(tmpdir(), "kit-pinless-")));
   setFolderName(space, nfolder, N);
   const np = paw("restart", N, "--agent", "kit", "--space", space, "--", "-P", "fake:codex");
-  ok("a claude agent with no resume: pin → fails loud", np.code !== 0 && /no `resume:` pin/.test(np.err), tail(np.err, 2));
+  ok("a claude agent with no resume: pin → swaps, minting a fresh pin", np.code === 0 && np.out.includes("FRESH session"), tail(np.out + np.err, 4));
+  const npin = readResumeId(personaFilePath(space, N));
+  ok("…the pin is in the persona", !!npin && /^[0-9a-f-]{36}$/.test(npin), npin);
+  const kn = await until(() => kitProc(N), 30_000);
+  ok("…and kit runs on that pin", !!kn && kn.cmd.includes(npin!), kn?.cmd);
 
   // ── 6 `.`, <name>#<space>, an unchanged swap ──────────────────────────────────────────────
   const sd = pawIn({ cwd: a.folder }, "restart", ".", "--agent", "kit", "--space", space, "--", "-P", "fake:codex");
@@ -258,7 +262,8 @@ try {
   ok("…a NEW kit process (the restart verb restarts)", !!k6b, `${k6?.pid} → ${kitProc(A)?.pid}`);
   ok("…and nothing was made for the other space", !existsSync(join(process.env.PAW_HOME!, "spaces", other, "personas", `${A}.md`)));
   const nd = pawIn({ cwd: nfolder }, "restart", ".", "--agent", "kit", "--space", space, "--", "-P", "fake:codex");
-  ok("restart . resolves to the folder's agent (pinless here → its pin refusal)", nd.code !== 0 && /"pinless" has no `resume:` pin/.test(nd.err), tail(nd.err, 2));
+  ok("restart . resolves to the folder's agent", nd.code === 0 && nd.out.includes(`restarting ${N} anyway`), tail(nd.out + nd.err, 2));
+  paw("stop", N, "--space", space);
   const unreg = realpathSync(mkdtempSync(join(tmpdir(), "kit-unreg-")));
   const ud = pawIn({ cwd: unreg }, "restart", ".", "--space", space);
   ok("restart . in a folder with no agent → fails loud", ud.code !== 0 && ud.err.includes(`no agent registered for ${unreg}`), tail(ud.err, 2));

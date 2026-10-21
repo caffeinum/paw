@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 /**
  * `paw restart <agent> --agent kit|claude [--model M] [-- <kit flags>]` — switch the harness an
  * EXISTING agent runs on, by editing its persona, before the restart picks it up (docs/notes/kit.md
@@ -116,11 +117,15 @@ export function planSwap(name: string, cur: SwapPersona, req: SwapRequest): Swap
   }
 
   // → kit
-  if (!cur.pin)
-    throw new Error(
-      `paw: "${name}" has no \`resume:\` pin, so there is no session for kit to continue (and kit needs one) — ` +
-        `\`paw start ${name}\` once on claude mints it, then swap`,
+  // No pin = nothing to continue (claude never had a durable session). Mint one, so kit starts a FRESH,
+  // pinned session instead of refusing — the swap must work when claude can't run at all.
+  if (!cur.pin) {
+    set.resume = randomUUID();
+    notes.push(
+      `no \`resume:\` pin — kit starts a FRESH session ${set.resume} (pinned); to continue an earlier claude ` +
+        `session instead: \`paw adopt <folder> --resume <id> --no-start\`, then swap`,
     );
+  }
   const given = req.model !== undefined || req.kitArgs !== undefined;
   const kitArgs = given ? [...(req.model !== undefined ? ["--model", req.model.trim()] : []), ...(req.kitArgs ?? [])] : cur.kitArgs;
   const named = checkKitArgs(req.kitArgs ?? [], "the kit args after `--`");
@@ -141,7 +146,7 @@ export function planSwap(name: string, cur: SwapPersona, req: SwapRequest): Swap
     notes.push(
       cur.claudeTranscript
         ? `storage: claude set — kit appends to ${name}'s claude transcript ${cur.claudeTranscript} (kit --overwrite), so the session doesn't fork`
-        : `storage: claude set — no transcript at resume: ${cur.pin} yet; kit creates it in claude's store, where claude will find it again`,
+        : `storage: claude set — no transcript at resume: ${set.resume ?? cur.pin} yet; kit creates it in claude's store, where claude will find it again`,
     );
     if (cur.shareTools && cur.shareTools !== "none") notes.push(`shareTools: ${cur.shareTools} kept for claude — kit has no MCP client, so it gets no shared servers`);
     return { set, summary: summarize(name, set, removed), notes, undo: `paw restart ${name} --agent claude` };

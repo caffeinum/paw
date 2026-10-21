@@ -17,6 +17,7 @@ import {
   assertUnambiguousTarget,
   ensureAgentSpawned,
   folderForName,
+  personaFilePath,
   psRowAlive,
   registerLivePeer,
   resolveAgentFolder,
@@ -42,6 +43,7 @@ import {
   writeRuntimePreference,
 } from "../lifecycle.ts";
 import { KIT_AGENT } from "../kit.ts";
+import { claudeProjectsRoot, kitSessionsRoot, readResumeId, transcriptExists } from "../session.ts";
 import { pawServer } from "../server.ts";
 import { applySwap, SWAP_AGENTS, type SwapRequest } from "../swap.ts";
 import { assertManagerFeature, KIT_ARGS_FEATURE } from "../manager-features.ts";
@@ -241,12 +243,14 @@ async function restart(argv: string[]): Promise<void> {
           `paw: "${agent}" is neither a runtime (${RUNTIMES.join(", ")}) nor a known agent — \`paw status\` lists the agents`,
         );
       if (!existsSync(folder)) throw new Error(`paw: "${agent}" is registered at ${folder}, which no longer exists`);
+      const pin = readResumeId(personaFilePath(space, agent));
+      const warm = !!pin && transcriptExists(pin, [claudeProjectsRoot(), kitSessionsRoot()]);
       const res = await restartAgent(ctl, { space, name: agent, cwd: folder, progress: (line) => console.log(c.dim(`  ${line}`)) });
       console.log(
         res.starting
           ? `${c.yellow("…")} ${agent}'s process runs but it hasn't reached the mesh yet ${c.dim("— messages wait in its durable inbox; `paw status` shows when it's up")}`
           : res.restarted
-          ? `${c.green("✓")} restarted ${agent} ${c.dim("— it resumes its pinned session, so it keeps its context")}`
+          ? `${c.green("✓")} restarted ${agent} ${c.dim(warm ? "— it resumes its pinned session, so it keeps its context" : "— on a FRESH session (no transcript at its pin yet)")}`
           : `${c.green("✓")} started ${agent} ${c.dim("(it wasn't running)")}`,
       );
     });
