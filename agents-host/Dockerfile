@@ -34,9 +34,10 @@ RUN mkdir -p "$NVM_DIR" \
  && /opt/node/bin/npm install -g --ignore-scripts "pnpm@${PNPM_VERSION}" && /opt/node/bin/pnpm --version
 ENV PATH=/opt/node/bin:$PATH
 
-# The agent user: claude refuses bypassPermissions as root. HOME on the volume keeps ~/.claude
-# (the Max login), ~/.kit (kit auth), ~/.paw and the transcripts across deploys.
-RUN useradd -u 1000 -d /data/home -M -s /bin/bash agent
+# Everything runs as root (a throwaway sandbox): IS_SANDBOX=1 lets claude bypassPermissions as root.
+# root's HOME on the volume keeps ~/.claude (the Max login), ~/.kit (kit auth), ~/.paw and the
+# transcripts across deploys.
+RUN sed -i "s#^root:x:0:0:root:/root:#root:x:0:0:root:/data/home:#" /etc/passwd && grep -q "^root:x:0:0:root:/data/home:" /etc/passwd
 
 # Claude Code via the official installer, then pinned into the image (updates ship with a rebuild).
 RUN HOME=/opt/claude-install bash -c 'curl -fsSL https://claude.ai/install.sh | bash' \
@@ -49,13 +50,14 @@ RUN kit --help >/dev/null 2>&1 || kit help >/dev/null 2>&1 || { echo "kit binary
 
 RUN git clone --filter=blob:none https://github.com/caffeinum/paw.git /opt/paw \
  && cd /opt/paw && git checkout --detach "$PAW_REF" \
- && pnpm install --frozen-lockfile --ignore-scripts \
- && chown -R agent:agent /opt/paw
+ && pnpm install --frozen-lockfile --ignore-scripts
 COPY paw /usr/local/bin/paw
 COPY start.sh boot.sh /usr/local/bin/
 COPY profile.sh /etc/profile.d/paw.sh
 
 ENV LANG=en_US.UTF-8 \
+    HOME=/data/home \
+    IS_SANDBOX=1 \
     PAW_HOME=/data/home/.paw \
     PAW_SPACE=team2027 \
     PAW_RUNTIME=pty \

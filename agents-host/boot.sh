@@ -1,5 +1,5 @@
 #!/bin/bash
-# The agent user's boot: make sure this box's team2027 record exists, snapshot the paw release the
+# The boot (as root): make sure this box's team2027 record exists, snapshot the paw release the
 # image carries, start the registered agents, then follow the logs. Fails loud into `fly logs`.
 set -euo pipefail
 SPACE=team2027
