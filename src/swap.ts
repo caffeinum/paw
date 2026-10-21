@@ -110,7 +110,7 @@ export function planSwap(name: string, cur: SwapPersona, req: SwapRequest): Swap
       set.claudeArgs = JSON.stringify(next);
       if (!undo) undo = cur.claudeArgs.length ? `edit claudeArgs back to ${JSON.stringify(cur.claudeArgs)} in ${cur.file}` : `remove claudeArgs from ${cur.file}`;
     }
-    if (!Object.keys(set).length) return { set, summary: `persona ${name}: already claude — nothing to change`, notes, undo: "" };
+    if (!Object.keys(set).length) return { set, summary: `persona ${name}: already claude, unchanged`, notes, undo: "" };
     if (cur.pin) notes.push(`resume: ${cur.pin} kept — claude resumes that session`);
     return { set, summary: summarize(name, set, removed), notes, undo };
   }
@@ -160,7 +160,7 @@ export function planSwap(name: string, cur: SwapPersona, req: SwapRequest): Swap
   const provider = "provider" in set ? undefined : cur.provider;
   if (!all.model && !all.provider && !provider)
     throw new Error(`paw: kit needs a model or provider — add -m <model> or -P codex|grok after \`--\``);
-  if (!Object.keys(set).length) return { set, summary: `persona ${name}: already kit with these flags — nothing to change`, notes, undo: "" };
+  if (!Object.keys(set).length) return { set, summary: `persona ${name}: already kit with these flags, unchanged`, notes, undo: "" };
   return { set, summary: summarize(name, set, removed), notes, undo };
 }
 

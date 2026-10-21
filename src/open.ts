@@ -129,7 +129,10 @@ export async function attachResolved(
   const windowOpen = runtime === "tmux" && tmuxWindowExists(space, name);
   // One control round-trip: spawn if we resolved a folder. Attaching is per-runtime below.
   if (folder && !windowOpen) {
-    await withManagerControl(space, pawServer(space), (ctl) => ensureAgentSpawned(ctl, { space, name, cwd: folder, model, brief, kind }));
+    // Attaching to an offline agent starts it, and a boot can take a minute: say so, never a blank wait.
+    // Only a real spawn prints (a live agent is reused silently).
+    const progress = (line: string) => process.stderr.write(`paw: attach ${name}: ${line}\n`);
+    await withManagerControl(space, pawServer(space), (ctl) => ensureAgentSpawned(ctl, { space, name, cwd: folder, model, brief, kind, progress }));
   }
 
   // A HEADLESS agent (`claude -p`, docs/notes/headless.md) or a KIT agent (src/kit.ts) has no TUI
