@@ -4,7 +4,7 @@
  *  - kitLaunch: `kit run` argv + env from the manager's LaunchOpts and the persona — the assigned
  *    identity (actor + lifecycle uid), `--session-id` before the transcript exists and `--resume`
  *    after, model/variant precedence, channels, a minimal env with the paw stamps; refusals for what
- *    kit can't carry (auth creds, no assigned identity, a prompt, shared MCP servers, no pin);
+ *    kit can't carry (user-mode auth, no assigned identity, a prompt, shared MCP servers, no pin);
  *  - readKitPersona: provider required + validated, model/variant/body/pin read from the persona;
  *  - kitBrief: names the human peer and kit's own tools, carries the shared sections, and none of
  *    claude's (cotal_inbox, Monitor);
@@ -97,7 +97,12 @@ ok("no model/variant ⇒ no flag (kit's default)", (() => {
   return !x.includes("--model") && !x.includes("--effort");
 })());
 ok("no channels ⇒ an empty --channels (joins none)", flag(kitLaunch({ ...opts, subscribe: undefined }, p, deps(false)).args, "--channels") === "");
-ok("refuses auth creds", throws(() => kitLaunch({ ...opts, creds: "/c" }, p, deps(false)), /open-mode/));
+ok("refuses user-mode auth", throws(() => kitLaunch({ ...opts, userAuth: { owner: "o", actor: "a", sentinelCredsPath: "/s", bearerCmd: ["b"] } }, p, deps(false)), /user-mode/));
+{
+  const a = kitLaunch({ ...opts, creds: "/run/seat.creds" }, p, deps(false)).args;
+  ok("static creds → --creds <path>", a[a.indexOf("--creds") + 1] === "/run/seat.creds");
+  ok("open mesh → no --creds", !kitLaunch(opts, p, deps(false)).args.includes("--creds"));
+}
 ok("refuses a launch without an assigned identity", throws(() => kitLaunch({ ...opts, id: undefined }, p, deps(false)), /manager-assigned identity/));
 ok("refuses an initial prompt", throws(() => kitLaunch({ ...opts, prompt: "hi" }, p, deps(false)), /no initial prompt/));
 ok("refuses shared MCP servers", throws(() => kitLaunch({ ...opts, mcpServers: { x: { command: "y" } } }, p, deps(false)), /no MCP client/));
@@ -274,6 +279,7 @@ ok("chat: --agent without a value throws", throws(() => parseChatArgs([".", "--a
   ok("kitLaunch: no --provider without provider:, kitArgs appended LAST, verbatim", !la.includes("--provider") && la.slice(-6).join(" ") === `--resume ${PIN} -m grok-4.7 -e high`, la.join(" "));
   const both = kitLaunch(opts, { ...p, kitArgs: ["-e", "low"] }, deps(true)).args;
   ok("kitLaunch: kitArgs come after the persona's flags (Go keeps the last)", both.indexOf("--effort") < both.lastIndexOf("-e"));
+  ok("kitArgs --creds is paw's", throws(() => checkKitArgs(["--creds", "/x"], "t"), /paw's to set/));
   ok("checkKitArgs: names model/provider/effort in every Go form", JSON.stringify(checkKitArgs(["--model=x", "-P", "grok", "--e", "high"], "t")) === '{"model":true,"provider":true,"effort":true}');
   ok("checkKitArgs: a value is never read as a flag", JSON.stringify(checkKitArgs(["--compact-keep", "-1"], "t")) === '{"model":false,"provider":false,"effort":false}');
   for (const f of ["--resume", "-session-id", "--overwrite", "--name=x", "--actor", "--cwd", "--channels", "--append-system-prompt-file", "--server", "--space", "--session", "--lifecycle-uid"])

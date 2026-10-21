@@ -1,0 +1,18 @@
+app = "2027-agents"
+primary_region = "sjc"
+kill_signal = "SIGTERM"
+kill_timeout = "30s"
+
+# No [[services]] and no IP: nothing inbound. The operator gets in with `fly ssh console`.
+
+[[mounts]]
+  source = "agents_data"
+  destination = "/data"
+  initial_size = "20gb"
+
+[[vm]]
+  size = "shared-cpu-2x"
+  memory = "4gb"
+
+[[restart]]
+  policy = "always"

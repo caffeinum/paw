@@ -1,0 +1,2 @@
+#!/bin/sh
+exec /opt/node/bin/node /opt/paw/bin/paw.mjs "$@"

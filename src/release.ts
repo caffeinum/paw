@@ -121,9 +121,12 @@ export function releaseId(root = REPO_ROOT): string {
  * `cp -Rc` asks APFS for a clone: copy-on-write, so 100MB costs milliseconds and no disk, and a later
  * write in the checkout leaves the release's copy untouched (that independence is the whole point).
  * `-c` degrades to a real byte copy on a filesystem without clones, which is slower but equally
- * correct. What we must NEVER do is `-l` (hardlink) or a symlink: both alias the checkout's bytes, so
+ * correct. GNU cp has no `-c` (Linux, the fly agents host): there `--reflink=auto` is the same ask
+ * (a clone on btrfs/xfs, a byte copy elsewhere). What we must NEVER do is `-l` (hardlink) or a symlink: both alias the checkout's bytes, so
  * an install there would rewrite the "immutable" release — i.e. exactly tonight's bug with extra steps.
  */
+const CLONE_FLAGS = process.platform === "linux" ? ["-R", "--reflink=auto"] : ["-Rc"];
+
 function cloneNodeModules(src: string, dst: string): void {
   const from = join(src, "node_modules");
   if (!existsSync(from)) {
@@ -132,7 +135,7 @@ function cloneNodeModules(src: string, dst: string): void {
         `release, so its dependencies must be installed first (\`pnpm install\`).`,
     );
   }
-  const r = spawnSync("cp", ["-Rc", from, join(dst, "node_modules")], { encoding: "utf8" });
+  const r = spawnSync("cp", [...CLONE_FLAGS, from, join(dst, "node_modules")], { encoding: "utf8" });
   if (r.error || r.status !== 0) {
     // Not fatal on its own: a filesystem with no clone support is a plain copy away from correct.
     const plain = spawnSync("cp", ["-R", from, join(dst, "node_modules")], { encoding: "utf8" });
