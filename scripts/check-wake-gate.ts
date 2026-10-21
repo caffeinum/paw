@@ -36,6 +36,8 @@ const {
   stuckWarning,
   SPAWN_ACCEPT_MS,
   SPAWN_READY_MS,
+  RETIREMENT_RETRY_MS,
+  retirementRefusal,
 } = await import("../src/addressing.ts");
 const { readResumeId } = await import("../src/session.ts");
 const { withFileLockAsync } = await import("../src/lock.ts");
@@ -298,10 +300,83 @@ try {
     assert(again.length === 0 && r.starting === true, `absent lone seat: re-wake within the backoff → no restart (${again.join() || "no calls"})`);
   }
 
+  // --- fix 5: a spawn refused while the old copy's retirement still reserves the name ----------------
+  // 2026-10-21 team2027: the wake gate despawned a zombie 2027-intern, the immediate spawn was refused
+  // "reserved pending retirement … remedy=retry", and paw gave up — leaving the agent offline by its own hand.
+  {
+    const lastAttempt =
+      "the static retirement did not complete (cleanup failed: broker teardown: membership inventory incomplete (timeout); rows on channels outside its launch policy stay RETAINED for uid U1)";
+    const refusal = (last?: string) => ({
+      ok: false,
+      code: "failed-precondition",
+      error:
+        `the name "zed" is reserved pending retirement: its previous agent's despawn started that lifecycle's teardown (footprint + standing-authority revoke + auth-side retirement), and the name frees only when all of it completes${last ? ` (last attempt: ${last})` : ""}. NEXT: wait a moment and retry this spawn (retrying re-drives the whole teardown), or pick another name. [lifecycle blockedOp=retirement opId=4f1fc4386f07e903f1b3ef99bf remedy=retry]`,
+      blocked: { blockedOp: "retirement", opId: "4f1fc4386f07e903f1b3ef99bf", remedy: "retry" },
+    });
+    /** A zombie `zed` (running, offline, quiet) in a live fleet whose respawn is refused `refusals` times. */
+    const scenario = async (space: string, refusals: number, last?: string, extra?: (ctl: Ctl, calls: string[]) => void) => {
+      transcriptAged(space, "zed", folder, 1_740_000);
+      const calls: string[] = [];
+      let spawned = false;
+      const ctl = fakeCtl(() => [{ name: "zed", status: "running", mesh: spawned ? "idle" : "offline" }, ...fleet(0, 6).slice(1)], calls);
+      let n = 0;
+      (ctl as unknown as { spawn: (a: { name: string }) => Promise<unknown> }).spawn = async (a) => {
+        calls.push(`spawn ${a.name}`);
+        if (++n <= refusals) return refusal(last);
+        spawned = true;
+        return { ok: true, data: { name: a.name, owner: "local", actor: "ACTORNEW" } };
+      };
+      extra?.(ctl, calls);
+      const lines: string[] = [];
+      let err = "";
+      const r = await ensureAgentSpawned(ctl, {
+        space,
+        name: "zed",
+        cwd: folder,
+        probePresence: healthy,
+        timing: { ...fast, retireMs: 400, retireStepMs: 20 },
+        progress: (l) => lines.push(l),
+      }).catch((e: Error) => ((err = e.message), undefined));
+      return { r, err, calls, lines };
+    };
+    {
+      const { r, err, calls, lines } = await scenario("g10", 2);
+      assert(!err && !!r?.spawned && calls.join() === "despawn zed,spawn zed,spawn zed,spawn zed", `retirement: re-driven until the 3rd spawn lands (${err || calls.join()})`);
+      assert(lines.filter((l) => l.startsWith("waiting for cotal to finish retiring the old zed")).length === 1, `retirement: one progress line, not one per attempt (${lines.join(" | ")})`);
+    }
+    {
+      const { r, err, calls } = await scenario("g11", 1000, lastAttempt);
+      const spawns = calls.filter((c) => c === "spawn zed").length;
+      console.log(`    final message:\n${err.split("\n").map((l) => `      ${l}`).join("\n")}`);
+      assert(!r && spawns > 2 && spawns < 40, `retirement: bounded — gives up after ${spawns} attempts, no endless spin`);
+      const [head, cause, retry, raw, ...rest] = err.split("\n");
+      assert(head === "paw: zed is offline — paw stopped it to restart it (process up, but offline on the mesh and quiet for 29m), and cotal is still retiring the old copy, so the new start was refused.", `retirement: says paw left it offline, and why (${head})`);
+      assert(cause.includes("the g11 broker is timing out") && cause.includes("broker/manager link"), `retirement: a timing-out teardown names the broker link (${cause})`);
+      assert(retry.trim() === "its session is kept. retry: paw start zed --space g11", `retirement: one exact retry command (${retry})`);
+      assert(raw.includes("opId=4f1fc4386f07e903f1b3ef99bf") && raw.includes("membership inventory incomplete") && rest.length === 0, "retirement: cotal's raw facts on ONE trailing line");
+    }
+    {
+      // A plain start (nothing stopped here) that hits the reservation: not "offline by paw".
+      const msg = retirementRefusal({ space: "g12", name: "zed", waitedMs: RETIREMENT_RETRY_MS, error: refusal().error, opId: "op1", tty: false });
+      assert(msg.startsWith("paw: couldn't start zed — cotal is still retiring its previous copy") && msg.includes("still not retired after 45s of retries.") && !msg.includes("\x1b"), `retirement: plain start, no timeout cause (${msg.split("\n")[0]})`);
+      assert(retirementRefusal({ space: "g12", name: "zed", waitedMs: 1, error: "", tty: true }).includes("\x1b[2m"), "retirement: the raw line is dim on a tty");
+    }
+    {
+      // An unknown refusal is NOT retried: it fails loud with the manager's own words.
+      const { err, calls } = await scenario("g13", 0, undefined, (ctl, calls) => {
+        (ctl as unknown as { spawn: (a: { name: string }) => Promise<unknown> }).spawn = async (a) => {
+          calls.push(`spawn ${a.name}`);
+          return { ok: false, error: "capacity exhausted", blocked: { blockedOp: "registration", remedy: "reconcile" } };
+        };
+      });
+      assert(calls.filter((c) => c === "spawn zed").length === 1 && err.includes("failed to start agent \"zed\" (capacity exhausted)"), `retirement: other lifecycle refusals fail at once, verbatim (${err.split("\n")[0]})`);
+    }
+  }
+
   // --- fix 2: spawn-lock waiters outlast a legitimate holder ---------------------------------------
   assert(
-    SPAWN_LOCK_HOLD_MS >= STARTING_GRACE_MS + 2 * SESSION_RELEASE_MS + 2 * SPAWN_ACCEPT_MS + SPAWN_READY_MS,
-    `lock: wait (${SPAWN_LOCK_HOLD_MS / 1000}s) covers grace + session release + held-name retries + two spawn calls + readiness`,
+    SPAWN_LOCK_HOLD_MS >= STARTING_GRACE_MS + 2 * SESSION_RELEASE_MS + RETIREMENT_RETRY_MS + 2 * SPAWN_ACCEPT_MS + SPAWN_READY_MS,
+    `lock: wait (${SPAWN_LOCK_HOLD_MS / 1000}s) covers grace + session release + held-name retries + retirement re-drive + two spawn calls + readiness`,
   );
   assert(SPAWN_LOCK_OPTS.maxWaitMs === SPAWN_LOCK_HOLD_MS && SPAWN_LOCK_OPTS.staleMs === SPAWN_LOCK_HOLD_MS, "lock: waiters wait the hold bound, and a live holder isn't aged out sooner");
   {

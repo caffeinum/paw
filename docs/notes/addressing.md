@@ -172,6 +172,18 @@ Moved verbatim from CLAUDE.md (2026-10-02 split). Index: [CLAUDE.md](../../CLAUD
   that reached the mesh) or on an operator `restartAgent`. Exited rows (process gone) are not budgeted.
   Corrupt record → throws (delete it). Test: `check:wake-gate` (fix 4).
 
+## retirement-reserved name: bounded re-drive (2026-10-21)
+A despawn starts cotal's retirement teardown (footprint + standing-authority revoke + auth-side
+retirement) and the name stays reserved until it completes. A spawn right behind it (the wake gate's
+zombie restart, `paw restart`) is refused with a structured `ai.cotal.ep.lifecycle-blocked` detail
+(`blockedOp=retirement remedy=retry`); `replyOf` (src/control.ts) now keeps it as `ManagerReply.blocked`.
+`spawnPinned` re-drives such a refusal (cotal: retrying re-drives the teardown) with backoff 1s→8s for
+`RETIREMENT_RETRY_MS` (45s), printing ONE "waiting for cotal to finish retiring…" line. Exhausted →
+`retirementRefusal`: says the agent is offline by paw's own stop, names a timing-out broker link when the
+`(last attempt: …)` clause says timeout (team2027 2026-10-21: "membership inventory incomplete (timeout)"),
+one `paw start <name> --space <s>`, cotal's raw facts on one dim line. Any other refusal is not retried.
+CLI-side only (ensureAgentSpawned runs in the caller) — live without a release. check:wake-gate fix 5.
+
 ## unmanaged agents
 
 - **An agent alive outside the current manager is REUSED, never duplicated (2026-10-05).** cotal ≥0.49
