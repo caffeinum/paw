@@ -338,6 +338,56 @@ ok("chat: --agent without a value throws", throws(() => parseChatArgs([".", "--a
   ok("kit → claude: removes storage: claude too", "storage" in planSwap("tp", kitP, { agent: "claude" }).set);
   ok("claude → claude: nothing to change", Object.keys(planSwap("evals", claudeP, { agent: "claude" }).set).length === 0);
   ok("claude --model is persisted in claudeArgs, replacing a previous --model", planSwap("evals", { ...claudeP, claudeArgs: ["--model", "sonnet", "--add-dir", "/x"] }, { agent: "claude", model: "opus" }).set.claudeArgs === '["--add-dir","/x","--model","opus"]');
+  ok("an unchanged swap says unchanged (the restart still runs)", /already kit with these flags, unchanged$/.test(planSwap("tp", kitP, { agent: "kit" }).summary));
+}
+
+// ── manager features: the RUNNING manager's code decides what a kit persona may say ─────────────
+{
+  const { codeRootFromCommand, codeRootFeatures, assertManagerFeature, describeCodeRoot, KIT_ARGS_FEATURE, MANAGER_FEATURES_FILE } = await import("../src/manager-features.ts");
+  const { releasesDir, REPO_ROOT } = await import("../src/release.ts");
+  const rel = join(releasesDir(), "7b8139964144");
+  ok(
+    "the manager's code root comes from its command line",
+    codeRootFromCommand(`/n/node ${rel}/bin/cotald.ts supervise --space paw --server nats://127.0.0.1:4222 --runtime tmux`) === rel,
+  );
+  ok("…a command with no cotald.ts names no root", codeRootFromCommand("node something-else.ts supervise") === undefined);
+  ok("this checkout supports kit-args", codeRootFeatures(REPO_ROOT).includes(KIT_ARGS_FEATURE));
+  mkdirSync(join(rel, "src"), { recursive: true });
+  ok("a root with no features file (a release older than the contract) supports nothing", codeRootFeatures(rel).length === 0);
+  ok("a release root is described by its id", describeCodeRoot(rel) === "release 7b8139964144", describeCodeRoot(rel));
+  let msg = "";
+  try {
+    assertManagerFeature("paw", KIT_ARGS_FEATURE, "restart ccswitch --agent kit", { running: () => rel });
+  } catch (e) {
+    msg = (e as Error).message;
+  }
+  ok(
+    "an old running manager refuses kit-args up front, naming its release and the fix",
+    msg.includes("release 7b8139964144") && msg.includes("predates it") && msg.includes("nothing was changed") && msg.includes("`paw release`, then `paw restart --space paw`"),
+    msg,
+  );
+  let none = "";
+  try {
+    assertManagerFeature("paw", KIT_ARGS_FEATURE, "x", { running: () => undefined, next: () => rel });
+  } catch (e) {
+    none = (e as Error).message;
+  }
+  ok("with no manager running, the release ensure() would start is the one judged", none.includes("would start runs release 7b8139964144"), none);
+  let passed = true;
+  try {
+    assertManagerFeature("paw", KIT_ARGS_FEATURE, "x", { running: () => REPO_ROOT });
+  } catch {
+    passed = false;
+  }
+  ok("a manager on this checkout passes", passed);
+  writeFileSync(join(rel, MANAGER_FEATURES_FILE), "{nope");
+  let bad = "";
+  try {
+    codeRootFeatures(rel);
+  } catch (e) {
+    bad = (e as Error).message;
+  }
+  ok("a malformed features file fails loud", /not valid JSON/.test(bad), bad);
 }
 
 if (fails) {

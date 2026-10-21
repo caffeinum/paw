@@ -197,6 +197,24 @@ then the ordinary `restartAgent`. Principle: transparent, no inventions.
   `--model` without `--agent`, `--agent` on a runtime word or the bare manager restart, an unregistered
   agent, `<agent>#<space>` disagreeing with `--space` (dispatch's `restart` spec now lists `--agent` and
   `--model` as value flags; everything after `--` is never hoisted or space-injected).
+- **Addressing:** the target resolves like `paw stop`'s (`resolveStopName`): a name, `.` or a folder
+  path (its agent), and `<agent>#<space>` / `--space` (a remote space like team2027 too — the persona is
+  the local one). An unchanged swap ("already kit with these flags, unchanged") still RESTARTS.
+- **The running manager must support it** (src/manager-features.ts). The CLI is the checkout, the
+  manager an older release: 2026-10-20 `paw restart ccswitch --agent kit -- -m grok-4.7 -e high` wrote
+  `kitArgs:` with no `provider:`, the local manager ran release 7b8139964144 (whose kit connector requires
+  `provider:` and knows no kitArgs), the despawn landed (`seat reaped: ccswitch` in manager.log), the
+  connector threw after acceptance — cotal logs nothing for that — and the CLI sat silent in its 60s
+  readiness wait until ^C. Now: `src/manager-features.json` lists what a tree's manager-side code does
+  (`kit-args`); the CLI reads it from the LIVE manager's root (its `<root>/bin/cotald.ts` cmdline; no
+  manager → `daemonRoot()`), and a root without it is refused BEFORE the persona is written, naming the
+  release and the fix (`paw release`, then `paw restart --space <s>`). The same check guards every kit
+  spawn whose persona has kitArgs or no provider (`ensureAgentSpawned`). Add a feature name to the json
+  when a connector learns something the CLI must not ask of an older manager.
+- **Never a silent wait:** `restart <agent>` prints `stopping…`, `starting <name> on kit…`, the readiness
+  window and a tick every 15s; a spawn that never launched a process (no ps row, nothing logged) says
+  so, names the manager's release and `manager.log`. `paw attach` of an offline agent prints the same
+  lines on stderr while it wakes it.
 
 Test: `check:kit` (kitArgs, preflight with stub binaries, planSwap), `check:commands` (parseArgs), and
 `scripts/lean/kit/e2e-kit-swap.ts` (below).

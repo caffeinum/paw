@@ -15,11 +15,18 @@
  *   back   4 `--agent claude` removes the kit keys, keeps the pin; the manager launches claude (a stub
  *            on PATH — no claude login here) with `--resume <pin>`
  *   nopin  5 a claude agent with no pin → `--agent kit` fails loud
+ *   addr   6 `paw restart . --agent kit` from the agent's folder resolves the folder's agent; `<name>#<space>`
+ *            from another PAW_SPACE reaches it; an unchanged swap still restarts (a new kit process)
+ *   old    7 the ccswitch hang (2026-10-20): the manager runs a release older than kit swaps (no
+ *            src/manager-features.json; its kit connector requires `provider:`). The swap is REFUSED
+ *            before the persona is written and the running agent is left alone. A manager that claims the
+ *            feature but refuses after accepting fails BOUNDED: progress lines, then an error naming the
+ *            never-launched spawn, the manager's release and its log, never a silent wait
  *
  *   KIT_BIN=~/.paw/bin/kit PAW_HOME=$(mktemp -d) PAW_SPACE=kit-test-$$ PAW_RELEASE=dev \
  *   PAW_COTAL_ROOT=$(mktemp -d) PAW_BEADS_DIR=$(mktemp -d) node scripts/lean/kit/e2e-kit-swap.ts
  */
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync, existsSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
@@ -76,10 +83,11 @@ const until = async <T>(fn: () => T | undefined | Promise<T | undefined>, ms: nu
   }
   return undefined;
 };
-const paw = (...args: string[]) => {
-  const r = spawnSync(process.execPath, [join(REPO, "bin/paw.mjs"), ...args], { env: process.env, encoding: "utf8", timeout: 300_000 });
+const pawIn = (o: { cwd?: string; env?: Record<string, string> }, ...args: string[]) => {
+  const r = spawnSync(process.execPath, [join(REPO, "bin/paw.mjs"), ...args], { env: { ...process.env, ...o.env }, cwd: o.cwd, encoding: "utf8", timeout: 300_000 });
   return { code: r.status, out: r.stdout ?? "", err: r.stderr ?? "" };
 };
+const paw = (...args: string[]) => pawIn({}, ...args);
 const tail = (s: string, n = 3) => s.trim().split("\n").slice(-n).join(" | ");
 const kitProc = (name: string) =>
   execFileSync("ps", ["-A", "-ww", "-o", "pid=,command="], { encoding: "utf8" }).split("\n")
@@ -232,6 +240,77 @@ try {
   setFolderName(space, nfolder, N);
   const np = paw("restart", N, "--agent", "kit", "--space", space, "--", "-P", "fake:codex");
   ok("a claude agent with no resume: pin → fails loud", np.code !== 0 && /no `resume:` pin/.test(np.err), tail(np.err, 2));
+
+  // ── 6 `.`, <name>#<space>, an unchanged swap ──────────────────────────────────────────────
+  const sd = pawIn({ cwd: a.folder }, "restart", ".", "--agent", "kit", "--space", space, "--", "-P", "fake:codex");
+  ok("restart . --agent kit (from the agent's folder) swaps THAT agent", sd.code === 0 && sd.out.includes(`persona ${A}: agent: kit`), tail(sd.out + sd.err, 4));
+  ok("…printing what it waits on", sd.out.includes(`starting ${A} on kit…`) && sd.out.includes("waiting up to 60s"), tail(sd.out, 4));
+  const k6 = await until(() => kitProc(A), 30_000);
+  ok("…kit runs it", !!k6 && k6.cmd.endsWith("-P fake:codex"), k6?.cmd);
+  const other = `${space}-other`;
+  const sh = pawIn({ env: { PAW_SPACE: other } }, "restart", `${A}#${space}`, "--agent", "kit", "--", "-P", "fake:codex");
+  ok(
+    "restart <name>#<space> from another PAW_SPACE, same flags: unchanged, restarted anyway",
+    sh.code === 0 && sh.out.includes("already kit with these flags, unchanged") && sh.out.includes(`restarting ${A} anyway`) && sh.out.includes(`restarted ${A}`),
+    tail(sh.out + sh.err, 4),
+  );
+  const k6b = await until(() => (kitProc(A) && kitProc(A)!.pid !== k6?.pid ? kitProc(A) : undefined), 30_000);
+  ok("…a NEW kit process (the restart verb restarts)", !!k6b, `${k6?.pid} → ${kitProc(A)?.pid}`);
+  ok("…and nothing was made for the other space", !existsSync(join(process.env.PAW_HOME!, "spaces", other, "personas", `${A}.md`)));
+  const nd = pawIn({ cwd: nfolder }, "restart", ".", "--agent", "kit", "--space", space, "--", "-P", "fake:codex");
+  ok("restart . resolves to the folder's agent (pinless here → its pin refusal)", nd.code !== 0 && /"pinless" has no `resume:` pin/.test(nd.err), tail(nd.err, 2));
+  const unreg = realpathSync(mkdtempSync(join(tmpdir(), "kit-unreg-")));
+  const ud = pawIn({ cwd: unreg }, "restart", ".", "--space", space);
+  ok("restart . in a folder with no agent → fails loud", ud.code !== 0 && ud.err.includes(`no agent registered for ${unreg}`), tail(ud.err, 2));
+
+  // ── 7 a manager older than kit swaps (the ccswitch hang) ──────────────────────────────────
+  const { createRelease } = await import("../../../src/release.ts");
+  const old = createRelease({ root: REPO });
+  rmSync(join(old.path, "src", "manager-features.json"));
+  const kitTs = join(old.path, "src", "kit.ts");
+  const anchor = "  const kitArgs = readKitArgs(configPath);";
+  const kitSrc = readFileSync(kitTs, "utf8");
+  if (!kitSrc.includes(anchor)) throw new Error(`e2e: can't plant the old kit connector — "${anchor}" is not in ${kitTs}`);
+  // release 7b8139964144's readKitPersona: `provider:` required, kitArgs unknown
+  const planted = "  if (!provider) throw new Error(`paw: ${configPath} is a kit agent with no provider: (old connector)`);\n";
+  writeFileSync(kitTs, kitSrc.replace(anchor, planted + anchor));
+  // A kit agent the OLD connector can run (provider:, no kitArgs), live when the manager bounces onto it.
+  setPersonaKeys(space, A, { provider: "fake:codex", kitArgs: undefined });
+  ok("seed: a provider: kit agent restarts", paw("restart", A, "--space", space).code === 0);
+  const bo = pawIn({ env: { PAW_RELEASE: old.id } }, "restart", "--space", space);
+  ok(`the manager restarts onto the old release ${old.id}`, bo.code === 0, tail(bo.out + bo.err, 3));
+  const k7 = await until(() => kitProc(A), 60_000);
+  ok("…and revives the kit agent on it", !!k7, k7?.cmd);
+  const snap7 = readFileSync(a.file, "utf8");
+  const t7 = Date.now();
+  const r7 = paw("restart", A, "--agent", "kit", "--space", space, "--", "-m", "grok-4.7", "-e", "high");
+  ok(
+    "old manager: the swap is refused up front, naming the release + the fix",
+    r7.code !== 0 && r7.err.includes(`release ${old.id}`) && r7.err.includes("predates it") && r7.err.includes("`paw release`, then `paw restart --space"),
+    `${Math.round((Date.now() - t7) / 1000)}s ${tail(r7.err, 2)}`,
+  );
+  ok("…fast (no readiness wait)", Date.now() - t7 < 20_000, `${Date.now() - t7}ms`);
+  ok("…persona untouched", readFileSync(a.file, "utf8") === snap7);
+  ok("…and the running agent left alone", kitProc(A)?.pid === k7?.pid, `${k7?.pid} → ${kitProc(A)?.pid}`);
+  // A manager that CLAIMS the feature but refuses after accepting: bounded, explained, with progress.
+  writeFileSync(join(old.path, "src", "manager-features.json"), JSON.stringify({ features: ["kit-args"] }));
+  setPersonaKeys(space, A, { provider: undefined, kitArgs: JSON.stringify(["-P", "fake:codex"]) }); // what the swap writes
+  const t7b = Date.now();
+  const r7b = paw("restart", A, "--space", space);
+  const took = Math.round((Date.now() - t7b) / 1000);
+  ok(
+    "a post-accept connector refusal fails loud, naming the never-launched spawn, the release and the log",
+    r7b.code !== 0 && r7b.err.includes("never launched a process") && r7b.err.includes(`the manager runs release ${old.id}`) && r7b.err.includes("manager.log"),
+    `${took}s ${tail(r7b.err, 2)}`,
+  );
+  ok("…bounded", took < 150, `${took}s`);
+  ok(
+    "…after printing what it was waiting on",
+    r7b.out.includes(`starting ${A} on kit…`) && r7b.out.includes("waiting up to 60s") && /still waiting for swapper to reach the mesh \(\d+s of 60s\)/.test(r7b.out),
+    tail(r7b.out, 6),
+  );
+  const back = pawIn({ env: { PAW_RELEASE: "dev" } }, "restart", "--space", space);
+  ok("the manager goes back to the checkout", back.code === 0, tail(back.out + back.err, 2));
 } finally {
   await prober?.stop().catch(() => {});
   await stop({ space }).catch((e) => console.error("stop:", (e as Error).message));

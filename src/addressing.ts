@@ -42,6 +42,7 @@ import { resolveAcpHost } from "./acp-host.ts";
 import { isClaudeHarness, personaTranscriptRoots, personaValue, readAgentType, readClaudeArgs, readCwd, readKitArgs, readResumeId, readShareTools, transcriptMtime } from "./session.ts";
 import { defaultTmuxEnv, managerLogPath, readRuntimeMarker } from "./lifecycle.ts";
 import { logOffset, seatDiagnostic, seatExit } from "./manager-log.ts";
+import { assertManagerFeature, describeCodeRoot, KIT_ARGS_FEATURE, runningManagerRoot } from "./manager-features.ts";
 import { ensureBypassConsent, managedLaunchesBypass } from "./bypass-consent.ts";
 import { readStartupPrompt, tmuxSplit, tmuxSplitAdvice, type StartupScreen } from "./native-attach.ts";
 import { HOST_RE } from "./url.ts";
@@ -848,6 +849,8 @@ export async function ensureAgentSpawned(
     probePresence?: () => Promise<PresenceHealth>;
     /** Test seam: shorter starting-grace / readiness waits (check:wake-gate). */
     timing?: { graceMs?: number; readyMs?: number };
+    /** Progress lines for an interactive caller (`paw restart <agent>`): what is being waited on, and for how long. */
+    progress?: (line: string) => void;
   },
 ): Promise<SpawnOutcome> {
   const graceMs = opts.timing?.graceMs ?? STARTING_GRACE_MS;
@@ -1003,6 +1006,7 @@ export async function ensureAgentSpawned(
       // Mesh holders count too. A restart despawns the old process but its window can take seconds to
       // exit, and a second agent on the same pin (the `evals_2` / `canary-env-52_2` incidents) writes the
       // same transcript. Give a despawned holder a bounded window to go, then refuse.
+      if (liveSessionProcs(pin).length) opts.progress?.(`waiting up to ${SESSION_RELEASE_MS / 1000}s for the old process to release session ${pin}…`);
       await waitForSessionRelease(pin, SESSION_RELEASE_MS);
       const foreign = liveSessionProcs(pin).map((p) => ({ ...p, ...(p.mesh ? { identity: meshIdentity(p.pid) } : {}) }));
       if (foreign.length) {
@@ -1072,6 +1076,10 @@ export async function ensureAgentSpawned(
       // refused HERE, loud: the persona read the connector does, and kit's own parse of the kitArgs.
       const persona = readKitPersona(config);
       if (!persona.pin) throw new Error(`paw: kit agent "${opts.name}" has no \`resume:\` pin in ${config} — kit needs a durable session id`);
+      // And what only the MANAGER's code can refuse: an older release's kit connector ignores kitArgs and
+      // throws on a missing provider: after accepting the spawn — silently (src/manager-features.ts).
+      if (persona.kitArgs.length || !persona.provider)
+        assertManagerFeature(opts.space, KIT_ARGS_FEATURE, `kit agent "${opts.name}" (${persona.provider ? "kitArgs:" : "kitArgs: with no provider:"} in ${config})`);
       preflightKitArgs(ensureKitBinary(), persona.kitArgs, `kitArgs in ${config}`);
     }
     // Hermes publishes no AG-UI event plane either (cotal's connector has no eventChannel).
@@ -1083,6 +1091,7 @@ export async function ensureAgentSpawned(
       resolveAcpHost(config);
     }
     const logFrom = logOffset(managerLogPath(opts.space));
+    opts.progress?.(`starting ${opts.name}${agentType ? ` on ${agentType}` : ""}…`);
     const reply = await spawnPinned(ctl, args, opts.name);
     if (!reply.ok) {
       const err = reply.error ?? "no reply";
@@ -1123,7 +1132,18 @@ export async function ensureAgentSpawned(
     // kit has no TUI: no trust dialog, no dev-channels gate, nothing on a pane to answer.
     // Nor does hermes: its gateway is a daemon, not a pane to read.
     const watch = kit || hermes || acp ? { poll: () => {}, cause: () => "", stuck: () => false } : startupWatch(opts.space, opts.name, cwd, agentType);
-    if (!(await waitForMeshLive(ctl, opts.name, readyMs, watch.poll))) {
+    const waitFrom = Date.now();
+    let ticked = 0;
+    const poll = (): void => {
+      watch.poll();
+      const s = Math.floor((Date.now() - waitFrom) / 15_000) * 15;
+      if (s > ticked) {
+        ticked = s;
+        opts.progress?.(`still waiting for ${opts.name} to reach the mesh (${s}s of ${Math.round(readyMs / 1000)}s)…`);
+      }
+    };
+    opts.progress?.(`the manager accepted it — waiting up to ${Math.round(readyMs / 1000)}s for ${opts.name} to reach the mesh…`);
+    if (!(await waitForMeshLive(ctl, opts.name, readyMs, poll))) {
       // Not on the mesh YET is not a failed boot. On a starved host a claude can need longer, and throwing
       // here made every caller treat a booting seat as dead: the next wake restarted it, the sleep host
       // retried into it. A running process that isn't parked at a prompt is still starting — say so and
@@ -1144,6 +1164,19 @@ export async function ensureAgentSpawned(
       // kit writes its refusal (a model it can't resolve, -P contradicting -m, …) to its own stderr,
       // which the runtime doesn't keep — so name the exit and the flags it was given instead of nothing.
       const kitExit = gone && kit && !diagnostic ? seatExit(managerLogPath(opts.space), opts.name, logFrom) : undefined;
+      // No row and nothing logged: the manager never launched a process. cotal answers a connector that
+      // throws AFTER acceptance with a failed goal terminal paw doesn't follow, and logs nothing — so the
+      // manager's code is the first suspect, and which code that is is the one fact paw can add.
+      const neverLaunched = gone && !row && !diagnostic && !kitExit;
+      let managerCode = "";
+      if (neverLaunched) {
+        try {
+          const root = runningManagerRoot(opts.space);
+          managerCode = root ? ` (the manager runs ${describeCodeRoot(root)})` : "";
+        } catch (e) {
+          managerCode = ` (${(e as Error).message})`;
+        }
+      }
       throw new Error(
         `paw: the manager accepted "${opts.name}" but it never reached the mesh within ${Math.round(readyMs / 1000)}s` +
           (gone ? ` — its process is gone (ps row: ${row ? `status=${row.status}` : "missing"})` : "") +
@@ -1152,9 +1185,14 @@ export async function ensureAgentSpawned(
             ? ` — kit exited at launch (${kitExit}); it prints why on its own stderr, which the runtime doesn't keep — ` +
               `check the model/provider it was given (persona provider:/model:, kitArgs: ${JSON.stringify(readKitArgs(config))})`
             : "") +
+          (neverLaunched
+            ? ` — the manager accepted the spawn but never launched a process: its connector refused the launch after accepting it, ` +
+              `which cotal logs nowhere${managerCode}; a manager older than this paw refuses persona keys it doesn't know — ` +
+              `\`paw release\` + \`paw restart --space ${opts.space}\` runs this checkout's`
+            : "") +
           (!after.ok ? ` — and the manager didn't answer ps to say whether it still runs (${after.error ?? "no reply"})` : "") +
           (watch.cause() || (gone || !after.ok ? "" : ` — it is stuck at a prompt`)) +
-          `. \`paw status\` to see its row, \`paw log ${opts.name}\` for what it did.`,
+          `. \`paw status\` to see its row, \`paw log ${opts.name}\` for what it did, ${managerLogPath(opts.space)} for the manager's side.`,
       );
     }
     clearRestartHistory(opts.space, opts.name);
@@ -1334,8 +1372,8 @@ async function waitForSessionRelease(pin: string, timeoutMs: number): Promise<vo
  */
 export async function restartAgent(
   ctl: ManagerControl,
-  opts: { space: string; name: string; cwd: string; model?: string; allowForeignWriter?: boolean },
-): Promise<{ spawned: boolean; id?: string; restarted: boolean }> {
+  opts: { space: string; name: string; cwd: string; model?: string; allowForeignWriter?: boolean; progress?: (line: string) => void },
+): Promise<SpawnOutcome & { restarted: boolean }> {
   // Check what the respawn needs BEFORE stopping anything: a restart into a deleted worktree stopped
   // the agent and then could not start it (paw optimize, 2026-09-16).
   if (!existsSync(opts.cwd)) throw new Error(`paw: won't restart "${opts.name}" — its folder ${opts.cwd} no longer exists, so it could not come back`);
@@ -1346,6 +1384,7 @@ export async function restartAgent(
   if (!ps.ok) throw new Error(`paw: manager isn't answering (${ps.error ?? "no reply"})`);
   const live = ((ps.data as Array<{ name: string }>) ?? []).some((a) => a.name === opts.name);
   if (live) {
+    opts.progress?.(`stopping ${opts.name}…`);
     const stopped = await ctl.despawn(opts.name);
     if (!stopped.ok) throw new Error(`paw: couldn't stop the running "${opts.name}" to re-adopt it (${stopped.error ?? "no reply"})`);
   }
