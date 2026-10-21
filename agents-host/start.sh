@@ -1,8 +1,8 @@
 #!/bin/sh
-# Runs as root at every boot: prepare the volume, then hand over to the agent user.
+# Runs as root at every boot: prepare the volume, then start paw (as root — the box is a sandbox).
 set -eu
 mkdir -p /data/home /data/repos /data/cotal-root/.cotal/auth
-chown agent:agent /data/home /data/repos
-chown -R agent:agent /data/cotal-root
+chown -R root:root /data/home /data/repos /data/cotal-root
 chmod 700 /data/cotal-root/.cotal /data/cotal-root/.cotal/auth
-exec runuser -u agent -- env HOME=/data/home USER=agent LOGNAME=agent SHELL=/bin/bash /usr/local/bin/boot.sh
+cd /data/home
+exec env HOME=/data/home USER=root LOGNAME=root SHELL=/bin/bash IS_SANDBOX=1 /usr/local/bin/boot.sh
