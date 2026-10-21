@@ -125,6 +125,7 @@ const PAW_OWNED_KIT_FLAGS: Record<string, string> = {
   channels: "the persona's channel subscriptions",
   actor: "the manager-assigned identity",
   "lifecycle-uid": "the manager-assigned identity",
+  creds: "the manager-minted credential (remote spaces)",
   "append-system-prompt-file": "the persona body + paw's brief",
   session: "the persona's `resume:` pin",
   resume: "the persona's `resume:` pin",
@@ -195,7 +196,7 @@ export function kitLaunch(opts: LaunchOpts, persona: KitPersona, deps: { bin: st
   const refuse = (what: string) => {
     throw new Error(`paw: kit agent "${opts.name}": ${what}`);
   };
-  if (opts.creds || opts.userAuth) refuse("kit speaks open-mode cotal only (no PAW_AUTH meshes yet)");
+  if (opts.userAuth) refuse("kit speaks open-mode cotal and static JWT creds only (no user-mode auth)");
   if (!opts.id || !opts.lifecycleUid) refuse("no manager-assigned identity (COTAL_ID / lifecycle uid) — kit runs as a managed seat");
   if (!opts.servers) refuse("no mesh server");
   if (opts.prompt) refuse("kit takes no initial prompt — DM it once it is up");
@@ -211,6 +212,9 @@ export function kitLaunch(opts: LaunchOpts, persona: KitPersona, deps: { bin: st
   if (variant) args.push("--effort", variant);
   args.push("--channels", (opts.subscribe ?? []).join(","));
   args.push("--actor", opts.id!, "--lifecycle-uid", opts.lifecycleUid!);
+  // A JWT mesh (a remote space): the manager-minted creds file, re-read by kit on every reconnect so
+  // the manager's in-place renewal is picked up. TLS comes from the `tls://` server url itself.
+  if (opts.creds) args.push("--creds", opts.creds);
   args.push("--append-system-prompt-file", deps.brief);
   if (persona.storage === "claude") args.push("--overwrite");
   args.push(deps.sessionExists(persona.pin!) ? "--resume" : "--session-id", persona.pin!);

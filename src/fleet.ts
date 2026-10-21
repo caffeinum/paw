@@ -18,6 +18,7 @@ import { basename } from "node:path";
 import type { Verdict } from "./commands/optimize.ts";
 import { ago, hungTool, type AgentStatus } from "./status.ts";
 import { UNSTICK_TOOL_DEFAULT_MIN } from "./unstick.ts";
+import { PS_ALL_ENV } from "./ps-env.ts";
 
 export interface Proc {
   pid: number;
@@ -305,7 +306,7 @@ async function machineInfo(): Promise<Machine> {
 export async function snapshotFleet(space: string, opts: { all?: boolean; sampleMs?: number } = {}): Promise<Fleet> {
   const sampleMs = opts.sampleMs ?? 1000;
   const t0 = Date.now();
-  const procs = parsePs((await run("ps", ["-axE", "-o", "pid=,ppid=,pgid=,etime=,time=,command="])).out);
+  const procs = parsePs((await run("ps", [...PS_ALL_ENV, "-o", "pid=,ppid=,pgid=,etime=,time=,command="])).out);
   const g = groupProcs(procs, space, opts.all);
   const pids = groupPids(g);
   const list = ["-p", pids.join(",")];

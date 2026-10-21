@@ -9,6 +9,7 @@ import { execFile, execFileSync } from "node:child_process";
 import { existsSync, readFileSync, readdirSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { PS_ENV } from "./ps-env.ts";
 
 const sessionsIndexDir = (): string => join(homedir(), ".claude", "sessions");
 
@@ -162,7 +163,7 @@ export function meshAgentSession(space: string, name: string): { sessionId: stri
     if (e.pid === undefined || !isAlive(e.pid)) continue;
     let cmd: string;
     try {
-      cmd = execFileSync("ps", ["-E", "-o", "command=", "-p", String(e.pid)], { encoding: "utf8" });
+      cmd = execFileSync("ps", [...PS_ENV, "-o", "command=", "-p", String(e.pid)], { encoding: "utf8" });
     } catch {
       continue;
     }
@@ -191,7 +192,7 @@ export function parseCotalIdentity(psE: string): { name?: string; space?: string
 /** Which mesh agent (name, space) process `pid` is, from its environment. Empty when unreadable. */
 export function meshIdentity(pid: number): { name?: string; space?: string } {
   try {
-    return parseCotalIdentity(execFileSync("ps", ["-E", "-o", "command=", "-p", String(pid)], { encoding: "utf8" }));
+    return parseCotalIdentity(execFileSync("ps", [...PS_ENV, "-o", "command=", "-p", String(pid)], { encoding: "utf8" }));
   } catch {
     return {};
   }

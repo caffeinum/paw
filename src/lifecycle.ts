@@ -80,6 +80,7 @@ export interface EnsureOpts {
 
 /** The single space all paw agents share unless explicitly overridden. */
 import { resolveSpace } from "./space.ts";
+import { PS_ENV } from "./ps-env.ts";
 export { resolveSpace };
 
 /** The manager runtimes bin/cotald.ts registers (pty ships with the manager; tmux/cmux are the
@@ -1176,7 +1177,7 @@ function pgrepFAsync(pattern: string): Promise<number[]> {
 async function psCommandsAsync(pids: number[], env = false): Promise<Map<number, string>> {
   const one = (pid: number) =>
     new Promise<[number, string] | undefined>((resolve) =>
-      execFile("ps", [...(env ? ["-E"] : []), "-o", "command=", "-p", String(pid)], { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 }, (err, stdout) =>
+      execFile("ps", [...(env ? PS_ENV : []), "-o", "command=", "-p", String(pid)], { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 }, (err, stdout) =>
         resolve(!err && typeof stdout === "string" ? [pid, stdout.trim()] : undefined),
       ),
     );
