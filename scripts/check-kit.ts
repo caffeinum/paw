@@ -345,7 +345,7 @@ ok("chat: --agent without a value throws", throws(() => parseChatArgs([".", "--a
 
 // ── manager features: the RUNNING manager's code decides what a kit persona may say ─────────────
 {
-  const { codeRootFromCommand, codeRootFeatures, assertManagerFeature, describeCodeRoot, KIT_ARGS_FEATURE, MANAGER_FEATURES_FILE } = await import("../src/manager-features.ts");
+  const { codeRootFromCommand, codeRootFeatures, assertManagerFeature, describeCodeRoot, KIT_ARGS_FEATURE, KIT_DEFAULTS_FEATURE, MANAGER_FEATURES_FILE } = await import("../src/manager-features.ts");
   const { releasesDir, REPO_ROOT } = await import("../src/release.ts");
   const rel = join(releasesDir(), "7b8139964144");
   ok(
@@ -382,6 +382,15 @@ ok("chat: --agent without a value throws", throws(() => parseChatArgs([".", "--a
     passed = false;
   }
   ok("a manager on this checkout passes", passed);
+  ok("this checkout supports kit-defaults", codeRootFeatures(REPO_ROOT).includes(KIT_DEFAULTS_FEATURE));
+  writeFileSync(join(rel, MANAGER_FEATURES_FILE), JSON.stringify({ features: [KIT_ARGS_FEATURE] }));
+  let dflt = "";
+  try {
+    assertManagerFeature("paw", KIT_DEFAULTS_FEATURE, "restart ccswitch --agent kit with no model", { running: () => rel });
+  } catch (e) {
+    dflt = (e as Error).message;
+  }
+  ok("a kit-args-only manager (84e7a88777c8) refuses a no-model kit launch up front", dflt.includes("kit-defaults") && dflt.includes("nothing was changed"), dflt);
   writeFileSync(join(rel, MANAGER_FEATURES_FILE), "{nope");
   let bad = "";
   try {

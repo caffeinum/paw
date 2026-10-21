@@ -42,11 +42,11 @@ import {
   spawnDetachedRestart,
   writeRuntimePreference,
 } from "../lifecycle.ts";
-import { KIT_AGENT } from "../kit.ts";
+import { checkKitArgs, KIT_AGENT } from "../kit.ts";
 import { claudeProjectsRoot, kitSessionsRoot, readResumeId, transcriptExists } from "../session.ts";
 import { pawServer } from "../server.ts";
-import { applySwap, SWAP_AGENTS, type SwapRequest } from "../swap.ts";
-import { assertManagerFeature, KIT_ARGS_FEATURE } from "../manager-features.ts";
+import { applySwap, readSwapPersona, SWAP_AGENTS, type SwapRequest } from "../swap.ts";
+import { assertManagerFeature, KIT_ARGS_FEATURE, KIT_DEFAULTS_FEATURE } from "../manager-features.ts";
 import { resolveStopName } from "./stop.ts";
 
 const tty = process.stdout.isTTY === true;
@@ -220,7 +220,15 @@ async function restart(argv: string[]): Promise<void> {
     // AFTER accepting the spawn, logging nothing: the agent was stopped and never came back while the
     // CLI sat in its readiness wait (ccswitch, 2026-10-20). Ask the manager's own code first; refuse
     // before the persona is touched.
-    if (swap.agent.trim() === KIT_AGENT) assertManagerFeature(space, KIT_ARGS_FEATURE, `restart ${agent} --agent kit`);
+    if (swap.agent.trim() === KIT_AGENT) {
+      assertManagerFeature(space, KIT_ARGS_FEATURE, `restart ${agent} --agent kit`);
+      // An older manager's kit connector throws on a persona with no provider:/-m/-P after accepting it.
+      const cur = readSwapPersona(space, agent!);
+      const given = swap.model !== undefined || swap.kitArgs !== undefined; // flags given replace the persona's
+      const named = checkKitArgs(given ? (swap.kitArgs ?? []) : cur.kitArgs, "the kit args");
+      if (swap.model === undefined && !named.model && !named.provider && !cur.provider)
+        assertManagerFeature(space, KIT_DEFAULTS_FEATURE, `restart ${agent} --agent kit with no model (kit's own defaults)`);
+    }
     if (!applySwap(space, agent!, swap, (line) => console.log(line))) console.log(c.dim(`  restarting ${agent} anyway`));
   }
 
