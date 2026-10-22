@@ -383,3 +383,26 @@ export function hoistAddressSpace(cmd: string, args: string[], deps: AddressDeps
   if (explicit !== undefined) return out;
   return cmd === "claude" ? ["--space", space, ...out] : withDefaultSpace(out, space);
 }
+
+/**
+ * The one stderr report bin/paw.ts prints before `exit(1)`. NEVER empty: an Error with an empty message
+ * (or a thrown non-Error — `undefined`, a string, a plain object) used to print a blank line, so a failed
+ * run left no reason behind. `stamped` (stderr isn't a terminal — a launchd/cron log) closes the report
+ * with a timestamped `paw <cmd> failed` line: those logs append every run with no timestamps of their
+ * own, and a reboot's failure was otherwise indistinguishable from the runs around it.
+ */
+export function failureLine(cmd: string | undefined, err: unknown, stamped: boolean, now: Date = new Date()): string {
+  let msg: string;
+  if (err instanceof Error) {
+    msg = err.message.trim() ? err.message : `paw ${cmd ?? ""}: failed with ${err.name || "an error"} carrying no message${err.stack ? `\n${err.stack}` : ""}`;
+  } else {
+    let shown: string;
+    try {
+      shown = typeof err === "string" ? err : (JSON.stringify(err) ?? String(err));
+    } catch {
+      shown = String(err);
+    }
+    msg = shown.trim() ? shown : `paw ${cmd ?? ""}: failed with a thrown ${err === null ? "null" : typeof err} carrying no message`;
+  }
+  return stamped ? `${msg}\n[${now.toISOString()}] paw ${cmd ?? ""} failed (exit 1)` : msg;
+}

@@ -52,7 +52,7 @@ import { authDir, loadSpaceAuth, saveSpaceAuth } from "@cotal-ai/workspace";
 import { daemonRoot } from "./release.ts";
 import { pawCotalRoot } from "./cotal-root.ts";
 import { withManagerControl, type ManagerControl } from "./control.ts";
-import { withFileLock } from "./lock.ts";
+import { withFileLock, withFileLockAsync, type LockOpts } from "./lock.ts";
 import { customServer, isRemoteSpace, pawServer } from "./server.ts";
 import { readRemoteMesh } from "./remote-mesh.ts";
 import { ensureShim, hubEnabled, hubModeFile, hubSocketPath } from "./hub/paths.ts";
@@ -234,49 +234,32 @@ function tail(path: string, tailN = 25): string {
   return lines.slice(-tailN).join("\n");
 }
 
+/** How long one ensure()/restart/stop can legitimately hold the lifecycle lock on a COLD, loaded
+ *  machine: `cotal up` (spawnSync timeout {@link MESH_UP_TIMEOUT_MS}) + the adopt wait
+ *  ({@link MESH_ADOPT_WAIT_MS}) + the hub ({@link HUB_READY_MS}) + the manager's readiness window
+ *  ({@link MANAGER_READY_MS}), twice on a rollback. The lock is held across all of it. */
+export const LIFECYCLE_LOCK_HOLD_MS = 180_000;
 /**
- * Serialize the whole ensure/stop sequence under an exclusive lock keyed at paw's per-space root,
- * mirroring connector.ts withLock(): exclusive-create a lock file, retry with a short sync sleep,
- * and break a stale lock left by a crashed process. Async fn so the lock spans the awaited boot.
+ * Wait opts for the lifecycle lock. WHY not lock.ts's defaults (30s wait, 60s age-out): at LOGIN three
+ * launchd jobs (fleet `paw start`, `paw global`, `paw web`) all call ensure() at once on a cold, loaded
+ * machine, and the one that wins boots the mesh + manager while the others wait. That boot can outlast
+ * 30s, so the waiters failed with "timed out acquiring lifecycle lock" — and with the 60s age-out a
+ * later waiter broke the LIVE holder's lock and booted a second mesh/manager beside it. A dead holder
+ * is still broken at once (pid stamp); the age test only catches a pid recycled across a reboot.
+ */
+export const LIFECYCLE_LOCK_OPTS: LockOpts = { maxWaitMs: LIFECYCLE_LOCK_HOLD_MS, staleMs: LIFECYCLE_LOCK_HOLD_MS + 60_000 };
+
+/**
+ * Serialize the whole ensure/stop sequence under paw's per-space lifecycle lock (src/lock.ts: O_EXCL,
+ * pid-stamped, a dead holder broken at once). Async so the lock spans the awaited boot. A waiter says
+ * so on stderr once — a cold boot can keep it waiting for a minute, and a silent wait reads as a hang.
  */
 async function withLock<T>(space: string, fn: () => Promise<T>): Promise<T> {
-  const path = lockPath(space);
-  const maxWaitMs = 30_000; // a cold mesh+manager boot can take seconds — wait it out
-  const staleMs = 60_000;
-  const stepMs = 25;
-  const sleeper = new Int32Array(new SharedArrayBuffer(4));
-  for (let waited = 0; ; waited += stepMs) {
-    let fd: number;
-    try {
-      fd = openSync(path, "wx");
-      writeFileSync(fd, String(process.pid)); // record holder so a crashed holder is detectable
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
-      // Break a crashed holder immediately (its recorded pid is dead); else fall back to mtime age.
-      const holder = readPid(path);
-      if (holder !== undefined && !alive(holder)) {
-        rmSync(path, { force: true });
-        continue;
-      }
-      try {
-        if (Date.now() - statSync(path).mtimeMs > staleMs) {
-          rmSync(path, { force: true });
-          continue;
-        }
-      } catch {
-        continue; // lock vanished between open and stat — retry immediately
-      }
-      if (waited >= maxWaitMs) throw new Error(`paw: timed out acquiring lifecycle lock ${path}`);
-      Atomics.wait(sleeper, 0, 0, stepMs);
-      continue;
-    }
-    try {
-      return await fn();
-    } finally {
-      closeSync(fd);
-      rmSync(path, { force: true });
-    }
-  }
+  return withFileLockAsync(lockPath(space), fn, {
+    ...LIFECYCLE_LOCK_OPTS,
+    onWait: (holder) =>
+      console.error(`paw: waiting for ${holder !== undefined ? `pid ${holder}` : "another paw command"} to finish bringing up space "${space}"'s daemons…`),
+  });
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -429,7 +412,11 @@ export function reexecUnderNode(sub: string[]): boolean {
   if (!process.versions.bun) return false;
   const [cmd, args] = pawViaNode(sub);
   const child = spawn(cmd, args, { stdio: "inherit", env: daemonEnv(process.env) });
-  child.on("exit", (code, signal) => process.exit(signal ? 1 : (code ?? 0)));
+  child.on("exit", (code, signal) => {
+    // A child killed by a signal has no exit code of its own; say which signal before exiting 1.
+    if (signal) console.error(`paw: the node re-exec of \`paw ${sub[0] ?? ""}\` was killed by ${signal}`);
+    process.exit(signal ? 1 : (code ?? 0));
+  });
   // Forward the signals an operator actually sends a foreground server, so Ctrl-C stops the CHILD
   // rather than orphaning it behind a dead parent.
   for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"] as const) process.on(sig, () => child.kill(sig));
@@ -851,41 +838,82 @@ async function ensureMesh(space: string, server: string): Promise<void> {
     rmSync(meshPidPath(space), { force: true });
   }
 
-  // Start the mesh by DRIVING the registered `up` command through bin/cotald.ts under plain node (never
-  // the current runtime — the CLI may be bun, which can't host the mesh manager's native node-pty).
-  // `up --detach` boots nats in the background and writes .cotal/nats.pid; adopt that pid as paw-owned
-  // so stop() tears down only the mesh paw started. spawnSync: `up` is a short-lived bootstrapper.
-  const [meshExec, upArgs] = cotaldViaNode([
-    "up",
-    "--detach",
-    "--space",
-    space,
-    "--server",
-    server,
-    ...(open ? ["--open"] : []),
-    "--store-dir",
-    meshStoreDir(space),
-  ]);
+  await bootLocalMesh(space, server, { open, creds });
+}
+
+/** `cotal up` is a short-lived bootstrapper; past this it is killed and the boot reported failed. */
+export const MESH_UP_TIMEOUT_MS = 60_000;
+/** After a `cotal up` that exited non-zero, how long to watch for the broker to answer anyway. */
+export const MESH_ADOPT_WAIT_MS = 15_000;
+
+/**
+ * The `cotal up` argv paw drives (through bin/cotald.ts). **`--no-manager` is load-bearing (cotal 0.84):**
+ * paw starts its OWN manager right after (`cotald supervise`, see startManagerDaemon), so `up` must not
+ * try to. When it did, cotal's #1629 self-exec guard refused — `up` would re-exec `process.argv[1]`, and
+ * that is bin/cotald.ts, not the `cotal-ai` package's entry — and printed "! control plane degraded:
+ * refusing to re-exec this process as `cotal` …". Harmless before 0.84; since 0.84 a degraded control
+ * plane makes `up --detach` EXIT 1 even though the broker came up, which paw read as "mesh failed to
+ * start" — so every COLD boot failed (the 2026-10-20 reboot: the login `paw start` fleet job exited 1,
+ * the 60s keeper tick then found the mesh up and succeeded).
+ */
+export function meshUpArgs(space: string, server: string, open: boolean, storeDir: string): string[] {
+  return ["up", "--detach", "--no-manager", "--space", space, "--server", server, ...(open ? ["--open"] : []), "--store-dir", storeDir];
+}
+
+/**
+ * Boot the LOCAL broker for `space` at `server` by driving `cotal up --detach` (plain node, never the
+ * current runtime — the CLI may be bun, which can't host the mesh manager's native node-pty), and adopt
+ * the nats pid it records as paw-owned so stop() tears down only the mesh paw started. Exported for
+ * check:boot, which runs it on a private port (ensureMesh only ever boots the default :4222).
+ *
+ * `cotal up` exiting non-zero is NOT taken as "no mesh" on its own: under PAW_AUTH=1 it still reports a
+ * degraded control plane (its delivery daemon hits the same self-exec guard — see meshUpArgs), and a
+ * concurrent boot of the same broker by another process (another local space shares :4222 and NOT this
+ * space's lifecycle lock; two `up`s in one root race on `.cotal/`) fails the loser while the winner's
+ * broker comes up. So on a non-zero exit paw watches the broker for {@link MESH_ADOPT_WAIT_MS}: one that
+ * answers AND accepts a connection in our auth mode is adopted, with the exit status and log tail said
+ * on stderr; otherwise the boot fails loud with the log tail. Never a retry loop.
+ */
+export async function bootLocalMesh(space: string, server: string, o: { open: boolean; creds?: string }): Promise<void> {
+  const [meshExec, upArgs] = cotaldViaNode(meshUpArgs(space, server, o.open, meshStoreDir(space)));
   const meshFd = openSync(meshLogPath(space), "a");
   const res = spawnSync(meshExec, upArgs, {
     stdio: ["ignore", meshFd, meshFd],
-    timeout: 60_000,
+    timeout: MESH_UP_TIMEOUT_MS,
     cwd: pawCotalRoot(space),
     env: daemonEnv(),
   });
   closeSync(meshFd);
-  if (res.status !== 0) {
-    throw new Error(
-      `paw: mesh failed to start at ${server} (cotal up exited ${res.status ?? res.signal ?? "?"}).\n--- mesh.log tail ---\n${tail(meshLogPath(space))}`,
-    );
-  }
   const natsPid = readPid(cotalNatsPidPath(space)); // `up --detach` recorded the server pid here
+  if (res.status !== 0) {
+    const how = res.error ? `cotal up failed: ${res.error.message}` : `cotal up exited ${res.status ?? res.signal ?? "?"}`;
+    if (!(await meshComesUp(space, server, o.creds, MESH_ADOPT_WAIT_MS)))
+      throw new Error(
+        `paw: mesh failed to start at ${server} (${how}).\n--- mesh.log tail (${meshLogPath(space)}) ---\n${tail(meshLogPath(space))}\n` +
+          `--- end of mesh.log tail — paw: the mesh did not come up (${how}) ---`,
+      );
+    console.error(
+      `paw: ${how}, but the mesh at ${server} is up and accepts us — adopting it. mesh.log tail:\n${tail(meshLogPath(space), 6)}`,
+    );
+    if (natsPid !== undefined && alive(natsPid)) writePid(meshPidPath(space), natsPid);
+    return;
+  }
   if (natsPid !== undefined) writePid(meshPidPath(space), natsPid);
 
   if (!(await isReachable(server))) {
     throw new Error(
       `paw: mesh started but is not reachable at ${server}.\n--- mesh.log tail ---\n${tail(meshLogPath(space))}`,
     );
+  }
+}
+
+/** Does the broker at `server` answer — and accept a connection in our auth mode — within `ms`? */
+async function meshComesUp(space: string, server: string, creds: string | undefined, ms: number): Promise<boolean> {
+  const deadline = Date.now() + ms;
+  for (;;) {
+    if ((await isReachable(server, creds ? { creds } : undefined)) && (await meshConnectable(space, server, creds))) return true;
+    if (Date.now() >= deadline) return false;
+    await sleep(250);
   }
 }
 

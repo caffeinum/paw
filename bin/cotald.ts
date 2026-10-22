@@ -75,7 +75,10 @@ async function supervise(argv: string[]): Promise<void> {
     void mgr
       .stop()
       .then(() => process.exit(0))
-      .catch(() => process.exit(1));
+      .catch((err) => {
+        console.error(`cotald: manager stop failed on shutdown: ${(err as Error)?.message || String(err)}`);
+        process.exit(1);
+      });
   };
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
@@ -88,7 +91,7 @@ try {
   else await runCli(registry, argv);
 } catch (err) {
   // Failures surface in daemon logs / the passthrough terminal: one clear line, stack behind PAW_DEBUG.
-  console.error((err as Error)?.message ?? String(err));
+  console.error((err as Error)?.message || `cotald ${argv[0] ?? ""}: failed with no message: ${String(err)}`);
   if (process.env.PAW_DEBUG) console.error(err);
   process.exit(1);
 }

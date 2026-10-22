@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { registry, type Command } from "@cotal-ai/core";
-import { downSpace, expandEqFlags, oneShotReplyNote, stripCotalNamespace, withDefaultSpace } from "../src/dispatch.ts";
+import { downSpace, expandEqFlags, failureLine, oneShotReplyNote, stripCotalNamespace, withDefaultSpace } from "../src/dispatch.ts";
 import { assertRuntimeUsable, resolveRuntime, runtimePreferencePath, writeRuntimePreference } from "../src/lifecycle.ts";
 
 let failures = 0;
@@ -231,6 +231,22 @@ assert(oneShotReplyNote(["send", "dm", "intern", "ping", "--creds", "/x.creds"])
 assert(oneShotReplyNote(["send", "dm", "intern", "ping", "--creds=/x.creds"]) === undefined, "reply note: --creds= silences it");
 assert(oneShotReplyNote(["send", "dm", "intern", "--", "--creds"]) !== undefined, "reply note: a --creds after -- is message text, not a flag");
 assert(oneShotReplyNote(["join", "--name", "mini"]) === undefined && oneShotReplyNote([]) === undefined, "reply note: other verbs untouched");
+
+// failureLine: what bin/paw.ts prints before exit(1) — never blank (a launchd log showed a failed run with no reason).
+{
+  const at = new Date("2026-10-20T02:39:21.000Z");
+  assert(failureLine("start", new Error("paw: mesh failed"), false) === "paw: mesh failed", "failure line: a real message prints as-is on a terminal");
+  const blank = failureLine("start", new Error(""), false);
+  assert(blank.trim().length > 0 && blank.includes("paw start") && blank.includes("no message"), "failure line: an Error with an EMPTY message still names a failure");
+  for (const thrown of [undefined, null, "", {}])
+    assert(failureLine("start", thrown, false).trim().length > 0, `failure line: a thrown ${JSON.stringify(thrown) ?? "undefined"} is never blank`);
+  assert(failureLine("start", "boom", false) === "boom", "failure line: a thrown string prints as-is");
+  const stamped = failureLine("start", new Error("paw: mesh failed"), true, at);
+  assert(
+    stamped === "paw: mesh failed\n[2026-10-20T02:39:21.000Z] paw start failed (exit 1)",
+    "failure line: off a terminal (launchd log) it closes with a timestamped `paw <cmd> failed` line",
+  );
+}
 
 if (failures > 0) {
   console.error(`\n${failures} paw dispatch check(s) failed`);
