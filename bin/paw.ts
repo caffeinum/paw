@@ -14,7 +14,7 @@
  */
 import { registry, type Command } from "@cotal-ai/core";
 import { spawnSync } from "node:child_process";
-import { downSpace, explicitSpace, expandEqFlags, expandShortForm, hoistAddressSpace, oneShotReplyNote, remoteCotalArgv, SHORT_FORMS, stripCotalNamespace, withDefaultSpace } from "../src/dispatch.ts";
+import { downSpace, explicitSpace, expandEqFlags, expandShortForm, failureLine, hoistAddressSpace, oneShotReplyNote, remoteCotalArgv, SHORT_FORMS, stripCotalNamespace, withDefaultSpace } from "../src/dispatch.ts";
 import { cotaldViaNode, ensure, resolveSpace, stop } from "../src/lifecycle.ts";
 import { readRemoteMesh } from "../src/remote-mesh.ts";
 import { isRemoteSpace } from "../src/server.ts";
@@ -220,7 +220,9 @@ try {
 } catch (err) {
   // Operator-facing failures should read as one clear line, not a V8 stack dump. The errors paw
   // throws are already actionable; keep the full stack behind PAW_DEBUG for when it isn't.
-  console.error((err as Error)?.message ?? String(err));
+  // Never exit 1 SILENTLY: an error with an empty message (or a thrown non-Error) used to print a blank
+  // line, and a launchd log then showed a failed run with no reason. failureLine always names one.
+  process.stderr.write(failureLine(cmd, err, !process.stderr.isTTY) + "\n");
   if (process.env.PAW_DEBUG) console.error(err);
   process.exit(1);
 }
