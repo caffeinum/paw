@@ -17,14 +17,20 @@ const STEP_MS = 25;
  * alive but not ours, which still counts as HELD. An unreadable or pidless lock returns undefined so
  * the caller falls back to the age test rather than guessing.
  */
-function holderAlive(lockPath: string): boolean | undefined {
+/** The pid stamped in a lock, or undefined when it's unreadable/pidless (never a guessed pid). */
+function holderPid(lockPath: string): number | undefined {
   let pid: number;
   try {
     pid = Number(readFileSync(lockPath, "utf8").trim());
   } catch {
     return undefined; // vanished or unreadable — let the caller decide
   }
-  if (!Number.isInteger(pid) || pid <= 0) return undefined; // written by an older paw, or mid-write
+  return Number.isInteger(pid) && pid > 0 ? pid : undefined; // pidless = an older paw, or mid-write
+}
+
+function holderAlive(lockPath: string): boolean | undefined {
+  const pid = holderPid(lockPath);
+  if (pid === undefined) return undefined;
   try {
     process.kill(pid, 0);
     return true;
@@ -76,6 +82,21 @@ function stamp(fd: number): void {
 export interface LockOpts {
   maxWaitMs?: number;
   staleMs?: number;
+  /** Called ONCE when a waiter has waited {@link WAIT_NOTICE_MS} for a live holder (its pid when
+   *  stamped) — so a long wait reads as a wait, not a hang. */
+  onWait?: (holder: number | undefined) => void;
+}
+
+/** How long a waiter waits before `onWait` fires. */
+const WAIT_NOTICE_MS = 2_000;
+
+/** The timeout error: names the holder, so "who is holding it" never needs a second investigation. */
+function timeoutError(lockPath: string, waitedMs: number): Error {
+  const pid = holderPid(lockPath);
+  return new Error(
+    `paw: timed out after ${Math.round(waitedMs / 1000)}s acquiring lock ${lockPath}` +
+      (pid !== undefined ? ` — still held by pid ${pid}` : ""),
+  );
 }
 
 /** Run `fn` while holding an exclusive lock at `lockPath` (synchronous body). */
@@ -90,7 +111,8 @@ export function withFileLock<T>(lockPath: string, fn: () => T, opts: LockOpts = 
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
       if (breakIfStale(lockPath, stale)) continue;
-      if (waited >= maxWait) throw new Error(`paw: timed out acquiring lock ${lockPath}`);
+      if (waited >= maxWait) throw timeoutError(lockPath, waited);
+      if (waited === WAIT_NOTICE_MS) opts.onWait?.(holderPid(lockPath));
       Atomics.wait(sleeper, 0, 0, STEP_MS);
       continue;
     }
@@ -116,7 +138,8 @@ export async function withFileLockAsync<T>(lockPath: string, fn: () => Promise<T
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
       if (breakIfStale(lockPath, stale)) continue;
-      if (waited >= maxWait) throw new Error(`paw: timed out acquiring lock ${lockPath}`);
+      if (waited >= maxWait) throw timeoutError(lockPath, waited);
+      if (waited === WAIT_NOTICE_MS) opts.onWait?.(holderPid(lockPath));
       await new Promise((r) => setTimeout(r, STEP_MS));
       continue;
     }

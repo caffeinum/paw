@@ -57,7 +57,8 @@
     "check:prune": "node scripts/check-prune.ts",
     "check:remote": "node scripts/check-remote.ts",
     "check:bypass-consent": "node scripts/check-bypass-consent.ts",
-    "check:hash-space": "node scripts/check-hash-space.ts"
+    "check:hash-space": "node scripts/check-hash-space.ts",
+    "check:boot": "node scripts/check-boot.ts"
   },
   "dependencies": {
     "@cotal-ai/cli": "0.84.0",

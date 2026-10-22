@@ -7,6 +7,10 @@ Moved verbatim from CLAUDE.md (2026-10-02 split). Index: [CLAUDE.md](../../CLAUD
 **Bumped 0.81.1 → 0.84.0 on 2026-10-16** (operator-approved, inside the 7-day min-release-age window:
 0.84.0 published 2026-10-16T19:38Z). `minimumReleaseAgeExclude` lists the eleven 0.84.0 packages by
 EXACT version (replacing 0.81.1's) — **delete it after 2026-10-24**. What changed, and what paw did:
+- **0.84 `up --detach` exits 1 on a degraded control plane** — found by the 2026-10-20 reboot (the login
+  `paw start` failed every cold boot). paw now passes `--no-manager`; see
+  [lifecycle.md#srclifecyclets](lifecycle.md#srclifecyclets) ("Cold mesh boot"). Under `PAW_AUTH=1` the
+  delivery daemon still can't start via cotald (cotal's #1629 self-exec guard) — open upstream gap.
 - **0.84 native MCP discovery** (#3943, `feat(claude)!`): the claude connector drops
   `--strict-mcp-config` unless the launch is exclusive (`LaunchOpts.mcpServersExclusive`, or a carried
   home); the manager sets it only when the persona names `shareTools:`. So every paw agent WITHOUT

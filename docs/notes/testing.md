@@ -58,3 +58,9 @@ Moved verbatim from CLAUDE.md (2026-10-02 split). Index: [CLAUDE.md](../../CLAUD
   a space a running process names / a recently active space / a collision space, leaves a foreign
   stream alone, that executing deletes exactly the dead spaces' streams, that the CLI dry run deletes
   nothing, and `purgeTestSpace` (refuses paw and a busy space; deletes streams + registry entry).
+  `scripts/check-boot.ts` (`pnpm check:boot`) — a COLD local mesh boot on a PRIVATE port (temp
+  PAW_HOME, COTAL_HOME, PAW_COTAL_ROOT; its nats-servers are killed by temp-dir signature): `meshUpArgs`
+  carries `--no-manager`; a canary that the OLD argv still makes cotald's `up` exit 1 ("control plane
+  degraded"); `bootLocalMesh` from cold exits clean and adopts mesh.pid; two processes booting one
+  cold broker at once BOTH succeed (fails without the adopt fallback — `.cotal` EEXIST); the lifecycle
+  lock waits out a 90s-old LIVE holder, announces the wait once, and a timeout names the holder. ~20s.

@@ -113,6 +113,28 @@ Moved verbatim from CLAUDE.md (2026-10-02 split). Index: [CLAUDE.md](../../CLAUD
   with a custom `TMUX_TMPDIR` still lands `cotal-<space>` on the default socket (visible + `paw attach`
   select-window resolves it); the inherited custom socket has no server; `paw down` reaps it clean.
 
+- **Cold mesh boot: `cotal up --detach --no-manager`, and a non-zero `up` over a live broker is adopted
+  (2026-10-22, `bootLocalMesh`/`meshUpArgs`).** The 2026-10-20 reboot: the login fleet job (`paw start
+  evals`) exited 1 — `paw: mesh failed to start (cotal up exited 1)` followed by 25 lines of mesh.log
+  tail that read like success ("✓ running in the background: nats-server (pid 5452)") — while that
+  broker was up; the 60s `paw global` tick then found it and came up. Cause: `up` tries to start the
+  control plane, which re-execs `process.argv[1]`; under paw that is bin/cotald.ts, and cotal's #1629
+  self-exec guard (`@cotal-ai/cli` `dist/lib/self-exec.js` `selfArgv`/`runsCliEntry`: only the
+  `cotal-ai` package's own entry may be re-exec'd) refuses — "! control plane degraded: refusing to
+  re-exec this process as `cotal` …". Always printed, harmless through 0.81.1; **since 0.84.0 `up
+  --detach` sets exit code 1 when the control plane is degraded** (`commands/up.js`: `if (!authService
+  || !controlPlane) process.exitCode = 1`), so every COLD paw boot failed. paw starts its own manager
+  (`cotald supervise`), so it passes `--no-manager`: in the default open mode `up` then exits 0 and the
+  degraded line is gone. Under `PAW_AUTH=1` `up` still starts cotal's DELIVERY daemon through the same
+  guard, which still refuses — that one is a real gap (no durable delivery responder under auth), and a
+  cotal-side limit: an embedder's composition root can't be re-exec'd. Belt: when `up` exits non-zero
+  paw watches the broker for 15s (`MESH_ADOPT_WAIT_MS`) and adopts one that answers and accepts our auth
+  mode, saying so on stderr — also covers two `up`s racing one root (`.cotal` mkdir EEXIST / cotal's
+  maintenance lock fails the loser while the winner's broker comes up). A failed boot's error now ends
+  with a closing line after the tail, and bin/paw.ts's last line is never blank and, off a TTY, carries
+  a timestamp (`failureLine`). Test: `check:boot` (private port; includes a canary that the old argv
+  still exits 1).
+
 ## release discipline
 
 - `src/release.ts` + `src/commands/release.ts` — **OTP-style RELEASE DISCIPLINE: the daemons run from an
@@ -345,6 +367,15 @@ tool temp files from agents accumulate there. `check:spawn-env` covers it.
   foreground.ts): **ESRCH ⇒ break immediately, EPERM ⇒ alive (held), unreadable/pidless ⇒ fall back to
   the age test** (an older paw's empty locks still work). Timeouts are injectable (`LockOpts`) so the
   WAITING paths are testable without waiting 30s. Test: `check:commands`.
+
+- **The lifecycle lock waits out a cold boot (2026-10-22).** `withLock` (ensure/restart/stop) used its
+  own copy of the old protocol: 30s wait, and a lock older than 60s broken EVEN WITH A LIVE HOLDER. At
+  login three launchd jobs (fleet `paw start`, `paw global`, `paw web`) ensure() at once; a cold mesh +
+  manager boot on a loaded machine can outlast 30s (waiters failed "timed out acquiring lifecycle
+  lock") and 60s (a later waiter broke the live lock and booted a SECOND mesh/manager beside it). It now
+  rides `withFileLockAsync` with `LIFECYCLE_LOCK_OPTS` (wait 180s = `LIFECYCLE_LOCK_HOLD_MS`, age-out
+  only past that, for a pid recycled across a reboot); a dead holder still breaks at once. A waiter
+  says so once on stderr (`LockOpts.onWait`, after 2s); a timeout names the holder pid. Test: `check:boot`.
 
 ## src/lock.ts
 

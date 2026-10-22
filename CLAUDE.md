@@ -81,7 +81,8 @@ Each entry: what it is + the most load-bearing rule. Full notes behind the link.
   manager/mailbox ownership by COMMAND SIGNATURE (space-exact pgrep), never recorded pid; runtime =
   `PAW_RUNTIME` > sticky preference > pty, RUNNING runtime read from the live cmdline; rollback net on a
   failed switch; `restartManager` bounces manager + beacon and reaps old tmux/cmux UI; tmux pinned to the
-  default socket. → [lifecycle.md#srclifecyclets](docs/notes/lifecycle.md#srclifecyclets)
+  default socket. Mesh boot = `cotal up --detach --no-manager` (cotal 0.84 exits 1 on cotald's degraded
+  control plane — the reboot failure); lifecycle lock waits 180s for a live holder. → [lifecycle.md#srclifecyclets](docs/notes/lifecycle.md#srclifecyclets)
 - `src/release.ts` + `src/commands/release.ts` — content-hashed immutable snapshots, atomic rename flip,
   `cp -Rc` node_modules (never symlink/hardlink), prune never deletes current, `PAW_RELEASE=dev|<id>`. → [lifecycle.md#release-discipline](docs/notes/lifecycle.md#release-discipline)
 - `src/cotal-root.ts` — `pawCotalRoot(space)`: one root for a space from any cwd; every daemon spawns
