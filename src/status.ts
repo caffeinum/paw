@@ -18,13 +18,13 @@ import { withManagerControl, type ManagerControl } from "./control.ts";
 import { listForeground } from "./foreground.ts";
 import { ensure, ensureSpaceFor, formatHubLine, hubState, READY_PROBE_MS, readRuntimeMarker, resolveSpace, type HubState, type Runtime } from "./lifecycle.ts";
 import { writeJson } from "./stdout.ts";
-import { liveSessionProcsMany, nameForSession, readIndex as readSessionIndex, type LiveSessionProc } from "./named.ts";
+import { liveSessionProcs, liveSessionProcsMany, nameForSession, readIndex as readSessionIndex, type LiveSessionProc } from "./named.ts";
 import { KIT_AGENT } from "./kit.ts";
 import { HERMES_AGENT } from "./hermes-profile.ts";
 import { ACP_AGENT } from "./acp-agent.ts";
 import { claudeProjectsRoot, isClaudeHarness, personaTranscriptRoots, readAgentType, readResumeId, transcriptPath, transcriptPaths, writesClaudeTranscript } from "./session.ts";
 import { lastFailure, lastUsage, type ContextUsage } from "./transcript.ts";
-import { tailRead, turnState, type PendingTool, type TurnState } from "./transcript.ts";
+import { tailRead, turnOfProcess, turnState, type PendingTool, type TurnState } from "./transcript.ts";
 import { gitInfoMany, type GitInfo } from "./git.ts";
 import { isRemoteSpace, natsTls, pawServer } from "./server.ts";
 import { localManagerInstanceId } from "./hosted.ts";
@@ -134,15 +134,18 @@ const BUSY_WINDOW_MS = 10_000;
  * claude way: the turn ends right after the reply cotal_dm, leaving a tool_result as the last record and
  * no turn_duration, which every transcript reading above takes for a turn in flight (an idle kit agent
  * showed as busy forever). Its pending tool is still reported, but only inside a turn presence vouches for.
+ *
+ * `procStartedAt` is when the process holding the session started ({@link sessionStartedAt}): a turn whose
+ * newest message predates it died with an earlier process and is not in flight ({@link turnOfProcess}).
  */
-export function liveTurn(t: Pick<TranscriptRead, "turn" | "mtimeMs"> | undefined, mesh: string, harness?: string): { busy: boolean; tool?: PendingTool } {
+export function liveTurn(t: Pick<TranscriptRead, "turn" | "mtimeMs"> | undefined, mesh: string, harness?: string, procStartedAt?: number): { busy: boolean; tool?: PendingTool } {
   // hermes/acp: presence alone too — their seats set working/idle per turn, and paw reads no transcript.
   if (harness === KIT_AGENT || harness === HERMES_AGENT || harness === ACP_AGENT) {
     const busy = mesh === "working" || mesh === "waiting";
-    const state = busy ? t?.turn() : undefined;
+    const state = busy ? turnOfProcess(t?.turn(), procStartedAt) : undefined;
     return { busy, tool: state?.inFlight ? state.tool : undefined };
   }
-  const state = t?.turn();
+  const state = turnOfProcess(t?.turn(), procStartedAt);
   const tool = state?.inFlight ? state.tool : undefined;
   if (mesh === "working" || mesh === "waiting") return { busy: true, tool }; // what the agent said beats what we infer
   if (state?.inFlight !== undefined) return { busy: state.inFlight, tool };
@@ -234,7 +237,18 @@ function turnStateFrom(file: string, small: string): TurnState {
 }
 
 /**
- * The pinned transcript's turn state, read from its tail. 64KB first (cheap on a 50MB file); if that
+ * When the process holding a session started, for {@link turnOfProcess}: the EARLIEST start among its live
+ * holders (any of them may own a turn in flight). Undefined — no claim — when nothing holds it or any
+ * holder's start is unrecorded.
+ */
+export function sessionStartedAt(procs: Pick<LiveSessionProc, "startedAt">[]): number | undefined {
+  if (procs.length === 0 || procs.some((p) => p.startedAt === undefined)) return undefined;
+  return Math.min(...procs.map((p) => p.startedAt!));
+}
+
+/**
+ * The pinned transcript's turn state, read from its tail, as the process holding it now sees it
+ * ({@link turnOfProcess}: a turn left unanswered by an earlier process is not in flight). 64KB first (cheap on a 50MB file); if that
  * window holds NO message record at all, widen to 2MB — a tool hung for an hour buries its own
  * tool_use under `queue-operation` records (one per DM wake nudge, ~3/min in the queue-ea incident),
  * and a 64KB tail of only those would read as "cannot tell" exactly when it matters most.
@@ -244,7 +258,7 @@ export function readTurnState(pin: string, roots: string[] = [claudeProjectsRoot
   const file = transcriptPath(pin, roots);
   if (!file) return undefined;
   try {
-    return turnStateFrom(file, tailRead(file, TAIL_SMALL));
+    return turnOfProcess(turnStateFrom(file, tailRead(file, TAIL_SMALL)), sessionStartedAt(liveSessionProcs(pin)));
   } catch {
     return undefined; // unreadable → no claim either way
   }
@@ -1015,7 +1029,7 @@ export async function collectStatus(space: string, ctl?: ManagerControl, opts: C
       // Computed HERE, not at render time. It used to live only inside formatStatus, so `paw status`
       // printed "busy" while `--json` and the web UI — reading the very same rows — saw a plain "idle"
       // and drew a working agent as merely online. Every surface now gets the same answer.
-      ...(live ? liveTurn(t, mesh, harness) : { busy: false }),
+      ...(live ? liveTurn(t, mesh, harness, pin ? sessionStartedAt(procs.get(pin) ?? []) : undefined) : { busy: false }),
       // Local git only; the PR lookup is network and stays lazy. Read CONCURRENTLY above rather than
       // one folder at a time here — see gitInfoMany.
       git: gitByFolder.get(folder),

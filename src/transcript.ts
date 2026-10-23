@@ -646,6 +646,30 @@ export interface TurnState {
   inFlight: boolean | undefined;
   /** The OLDEST unanswered tool call of the running turn, if any — the one blocking it. */
   tool?: PendingTool;
+  /** The `timestamp` of the NEWEST real message (assistant, or a non-meta user record) the walk saw —
+   *  what {@link turnOfProcess} holds against the running process's start. Absent when that record has none. */
+  lastMsgMs?: number;
+}
+
+/**
+ * The turn state as seen by the process running NOW, which started at `startedAt` (ms epoch).
+ *
+ * A turn can only be in flight inside a live process. When the newest real message predates the process
+ * that holds the session, the turn it shows belonged to a process that is gone: claude was killed, restarted
+ * (`paw restart`) or hit a usage limit right after writing a prompt — typically a `<task-notification>` that
+ * a background shell "didn't finish before the previous session ended", or a DM nudge — and no assistant
+ * record ever followed. The resumed process sits idle at its prompt and appends only metadata
+ * (permission-mode, cost-state, bridge-session, pr-link …), so read alone the tail says "in flight" forever
+ * (queue/harbor, 2026-10-23: `busy` at 0% CPU while their presence said idle).
+ *
+ * Message timestamps and the process start are both claude's own wall clock on this machine, and a new
+ * turn in the current process always writes a fresh message record first, so the comparison is exact.
+ * The start is the claim's precondition: without it (or without a message timestamp) the state stands.
+ */
+export function turnOfProcess(state: TurnState | undefined, startedAt: number | undefined): TurnState | undefined {
+  if (!state?.inFlight || startedAt === undefined || state.lastMsgMs === undefined) return state;
+  if (state.lastMsgMs >= startedAt) return state;
+  return { inFlight: false, lastMsgMs: state.lastMsgMs };
 }
 
 type TurnRec = {
@@ -676,6 +700,15 @@ export function turnState(tailText: string): TurnState {
   let inFlight: boolean | undefined;
   const answered = new Set<string>();
   let tool: PendingTool | undefined;
+  let lastMsgMs: number | undefined;
+  let sawMsg = false;
+  const done = (inFlightNow: boolean | undefined): TurnState => ({ inFlight: inFlightNow, ...(tool ? { tool } : {}), ...(lastMsgMs !== undefined ? { lastMsgMs } : {}) });
+  const noteMsg = (rec: TurnRec) => {
+    if (sawMsg) return;
+    sawMsg = true;
+    const ts = rec.timestamp ? Date.parse(rec.timestamp) : NaN;
+    if (Number.isFinite(ts)) lastMsgMs = ts;
+  };
   for (let i = lines.length - 1; i >= 0; i--) {
     const line = lines[i];
     if (!line) continue;
@@ -686,14 +719,15 @@ export function turnState(tailText: string): TurnState {
       continue; // a truncated tail line proves nothing either way
     }
     if (rec.type === "system" && rec.subtype === "turn_duration") {
-      return { inFlight: inFlight ?? false, tool }; // closed — and if nothing followed, closed last
+      return done(inFlight ?? false); // closed — and if nothing followed, closed last
     }
     if (rec.type === "assistant") {
       // `stop_reason` decides, and it must: `turn_duration` is NOT always written. A real transcript
       // was found with a completed turn (`end_turn`) and no turn_duration anywhere in the file, and
       // relying on the marker alone reported that finished session as working forever.
+      noteMsg(rec);
       const stop = rec.message?.stop_reason;
-      if (stop === "end_turn" || stop === "stop_sequence") return { inFlight: inFlight ?? false, tool };
+      if (stop === "end_turn" || stop === "stop_sequence") return done(inFlight ?? false);
       inFlight ??= true; // tool_use (or an unknown reason) → a step is still in flight
       const content = Array.isArray(rec.message?.content) ? (rec.message!.content as Part[]) : [];
       for (const p of content) {
@@ -709,19 +743,20 @@ export function turnState(tailText: string): TurnState {
       // Harness-injected context, not a prompt: a resumed session gets a meta "Continue from where you left
       // off." that no turn answers. Read as a prompt, evals showed `busy` for 5h after its restart.
       if (rec.isMeta) continue;
+      noteMsg(rec);
       const content = rec.message?.content;
       // An Esc'd turn ends on claude's own "[Request interrupted by user…]" text record — no turn_duration,
       // no end_turn (measured in the paw unstick e2e). Read as running, an interrupted agent would show
       // `busy` until something else woke it.
       const interruptedTurn = Array.isArray(content) && (content as Part[]).some((p) => p?.type === "text" && p.text?.startsWith("[Request interrupted by user"));
-      if (interruptedTurn) return { inFlight: inFlight ?? false, tool };
+      if (interruptedTurn) return done(inFlight ?? false);
       inFlight ??= true; // a tool result or a new prompt — either way the turn continues
       const results = Array.isArray(content) ? (content as Part[]).filter((p) => p?.type === "tool_result") : [];
-      if (results.length === 0) return { inFlight, tool }; // a prompt opens this turn — nothing older is pending in it
+      if (results.length === 0) return done(inFlight); // a prompt opens this turn — nothing older is pending in it
       for (const r of results) if (r.tool_use_id) answered.add(r.tool_use_id);
     }
   }
-  return { inFlight, tool };
+  return done(inFlight);
 }
 
 /** Read the last `bytes` of a file as text, dropping a leading partial line. Cheap on huge transcripts. */
