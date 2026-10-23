@@ -9,9 +9,10 @@
  * so a transcript's `cwd` and its project slug need no rewriting.
  */
 import { spawnSync } from "node:child_process";
-import { closeSync, existsSync, openSync, readdirSync, readFileSync, readSync, statSync } from "node:fs";
+import { closeSync, existsSync, openSync, readdirSync, readFileSync, readSync, realpathSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, relative, sep } from "node:path";
+import { branchWorktreeDir, repoDirUnder } from "./repo-layout.ts";
 import {
   claudeProjectsRoot,
   isClaudeHarness,
@@ -46,7 +47,7 @@ export type TeleportArgs = {
 };
 
 export const TELEPORT_USAGE =
-  "teleport <agent> --to fly:<app>[/<machine>] | ssh:<host>  [--all | --session --repo --skills --memory --claude-md] [--dry-run] [--yes]\n" +
+  "teleport <agent> --to fly:<app>[/<machine>] | ssh:<host>  [--all | --session --repo --skills --memory --claude-md | --no-<one>…] [--dry-run] [--yes]\n" +
   "       teleport <agent> --back [--dry-run] [--yes]";
 
 export function parseTransport(raw: string): Transport {
@@ -64,6 +65,7 @@ export function transportLabel(t: Transport): string {
 export function parseTeleportArgs(argv: string[]): TeleportArgs {
   const out: TeleportArgs = { name: "", back: false, dryRun: false, yes: false };
   const what = new Set<What>();
+  const without = new Set<What>();
   let all = false;
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -78,6 +80,7 @@ export function parseTeleportArgs(argv: string[]): TeleportArgs {
     else if (a === "--dry-run") out.dryRun = true;
     else if (a === "--yes" || a === "-y") out.yes = true;
     else if (a.startsWith("--") && (WHAT as readonly string[]).includes(a.slice(2))) what.add(a.slice(2) as What);
+    else if (a.startsWith("--no-") && (WHAT as readonly string[]).includes(a.slice(5))) without.add(a.slice(5) as What);
     else if (a.startsWith("-")) throw new Error(`paw: unknown flag "${a}" — ${TELEPORT_USAGE}`);
     else if (!out.name) out.name = a;
     else throw new Error(`paw: unexpected argument "${a}" — teleport moves one agent`);
@@ -86,12 +89,16 @@ export function parseTeleportArgs(argv: string[]): TeleportArgs {
   if (!/^[A-Za-z0-9_-]+$/.test(out.name)) throw new Error(`paw: "${out.name}" is not an agent name`);
   if (out.back) {
     if (out.to) throw new Error("paw: --back returns over the transport recorded at teleport time — it takes no --to");
-    if (all || what.size) throw new Error("paw: --back brings back what was sent — it takes no --all/--session/… checkmarks");
+    if (all || what.size || without.size) throw new Error("paw: --back brings back what was sent — it takes no --all/--session/… checkmarks");
     return out;
   }
   if (!out.to) throw new Error(`paw: where to? — ${TELEPORT_USAGE}`);
   if (all && what.size) throw new Error("paw: --all already picks every checkmark — give --all or the ones you want, not both");
-  if (all) out.what = [...WHAT];
+  for (const w of without)
+    if (what.has(w)) throw new Error(`paw: --${w} and --no-${w} contradict each other`);
+  if (without.size && what.size) throw new Error("paw: --no-<one> trims --all (or the whole list) — give checkmarks or --no-<one>s, not both");
+  // `--no-repo` alone = everything but the repo, the same as `--all --no-repo`.
+  if (all || without.size) out.what = WHAT.filter((w) => !without.has(w));
   else if (what.size) out.what = WHAT.filter((w) => what.has(w));
   return out;
 }
@@ -230,6 +237,8 @@ export type RepoInfo = {
   head: string;
   /** commits on HEAD that no ref of `remote` has — they travel as a git bundle. */
   unpushed: number;
+  /** The agent's folder inside the repo ("" = the top itself). */
+  sub: string;
 };
 
 export type Manifest = {
@@ -244,6 +253,9 @@ export type Manifest = {
   groups: Partial<Record<Group, FileEntry[]>>;
   /** Session ids moved, oldest first (the pin's chain), per store. */
   chain: string[];
+  /** HOME-relative project dirs (`.claude/projects/<slug>`, kit's `.kit/sessions/<slug>`) the session and
+   *  memory files sit in — renamed to the destination folder's slug when the folder moves. */
+  projectDirs: string[];
   skills: Array<{ name: string; hash: string }>;
   claudeMdHash?: string;
   /** Enabled Claude Code plugins — listed, not moved (v1). */
@@ -292,10 +304,14 @@ export function teleportedRefusal(name: string, mark: { to: string; at?: string 
   return `paw: "${name}" was teleported to ${mark.to}${when} — it runs there now; \`paw teleport ${name} --back\` brings it back here`;
 }
 
+/** How many dirty paths a refusal lists before "… and N more". */
+export const DIRTY_SHOWN = 10;
+
 type Git = (args: string[], cwd: string) => { ok: boolean; out: string; err: string };
 const realGit: Git = (args, cwd) => {
   const r = spawnSync("git", args, { cwd, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
-  return { ok: r.status === 0, out: (r.stdout ?? "").trim(), err: (r.stderr ?? r.error?.message ?? "").trim() };
+  // trimEnd: `git status --porcelain` lines START with a status column that may be a space.
+  return { ok: r.status === 0, out: (r.stdout ?? "").trimEnd(), err: (r.stderr ?? r.error?.message ?? "").trim() };
 };
 
 /**
@@ -311,9 +327,10 @@ export function repoInfo(cwd: string, git: Git = realGit): RepoInfo {
   if (dirty.out) {
     const files = dirty.out.split("\n");
     throw new Error(
-      `paw: ${top.out} has uncommitted changes — commit, stash or remove them first (teleport moves commits, never loose files):\n` +
-        files.slice(0, 40).map((l) => `  ${l}`).join("\n") +
-        (files.length > 40 ? `\n  … and ${files.length - 40} more` : ""),
+      `paw: ${top.out} has ${files.length} uncommitted change(s) — teleport moves commits, never loose files:\n` +
+        files.slice(0, DIRTY_SHOWN).map((l) => `  ${l}`).join("\n") +
+        (files.length > DIRTY_SHOWN ? `\n  … and ${files.length - DIRTY_SHOWN} more (\`git -C ${top.out} status\`)` : "") +
+        `\n  commit or stash them, or teleport without the repo: --no-repo (or leave repo unchecked) — the agent then gets a fresh folder there`,
     );
   }
   const head = git(["rev-parse", "HEAD"], top.out);
@@ -328,11 +345,13 @@ export function repoInfo(cwd: string, git: Git = realGit): RepoInfo {
         ? `paw: ${top.out} has remotes ${remotes.join(", ")} and the branch tracks none — set one (\`git branch -u <remote>/<branch>\`), so the target knows what to clone`
         : `paw: ${top.out} has no git remote — the target clones the repo from its remote; push it somewhere first`,
     );
-  const url = git(["remote", "get-url", remote], top.out);
-  if (!url.ok) throw new Error(`paw: git remote get-url ${remote} failed in ${top.out}: ${url.err}`);
+  // Literal, not `git remote get-url` (which expands url.*.insteadOf): the target resolves it with ITS config.
+  const url = git(["config", "--get", `remote.${remote}.url`], top.out);
+  if (!url.ok) throw new Error(`paw: remote ${remote} in ${top.out} has no url: ${url.err}`);
   const ahead = git(["rev-list", "--count", "HEAD", "--not", `--remotes=${remote}`], top.out);
   if (!ahead.ok) throw new Error(`paw: git rev-list failed in ${top.out}: ${ahead.err}`);
-  return { top: top.out, remote, url: url.out, ...(branch.ok ? { branch: branch.out } : {}), head: head.out, unpushed: Number(ahead.out) };
+  const sub = relative(top.out, realpathSync(cwd));
+  return { top: top.out, remote, url: url.out, ...(branch.ok ? { branch: branch.out } : {}), head: head.out, unpushed: Number(ahead.out), sub };
 }
 
 /** Every regular file under `abs` (following symlinks), as entries relative to `home`. */
@@ -356,6 +375,131 @@ export function projectSlug(cwd: string): string {
   return cwd.replace(/[^A-Za-z0-9]/g, "-");
 }
 
+/** Where the agent's folder lands on the destination, and why there. `clone` = the repo's paw clone
+ *  there; `worktree` = the per-branch worktree it uses when the clone has another branch checked out. */
+export type DestFolder = { cwd: string; top?: string; clone?: string; worktree?: string; how: "agents" | "repo" | "worktree" | "original" };
+
+/** The folder paw owns for an agent that moved without its repo: `<PAW_HOME>/agents/<name>`. */
+export function agentsFolder(pawHome: string, name: string): string {
+  return join(pawHome, "agents", name);
+}
+
+/** owner/repo of a GitHub remote URL (https, git@ or ssh://). Anything else throws: teleport lays a repo
+ *  out as paw's github clones are, `<PAW_HOME>/repos/<owner>/<repo>`, and invents no path for others. */
+export function githubRepoOf(url: string): { owner: string; repo: string } {
+  const m = /^(?:https?:\/\/(?:www\.)?github\.com\/|git@github\.com:|ssh:\/\/git@github\.com\/)([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?\/?$/.exec(url);
+  if (!m)
+    throw new Error(
+      `paw: --repo puts the repo in the target's paw clones (<PAW_HOME>/repos/<owner>/<repo>), and ${url} is not a GitHub remote — ` +
+        `teleport without it (--no-repo), or give the repo a GitHub remote`,
+    );
+  return { owner: m[1], repo: m[2] };
+}
+
+/**
+ * The destination folder — never the source's absolute path. Without --repo: `<dest PAW_HOME>/agents/<name>`,
+ * which paw creates and treats as its own (src/cwd.ts). With --repo: the repo's paw clone there,
+ * `<dest PAW_HOME>/repos/<owner>/<repo>` (src/repo-layout.ts, as `github:` handles), the agent's folder at
+ * the same place inside it; {@link placeRepo} moves it to a branch worktree when the clone is on another
+ * branch. `--back` passes `original`: the folder it left from.
+ */
+export function destFolder(m: Manifest, what: What[], dest: { home: string; pawHome: string }, original?: string): DestFolder {
+  const repo = what.includes("repo") ? m.repo : undefined;
+  if (original !== undefined) {
+    const top = repo ? (repo.sub && original.endsWith(`/${repo.sub}`) ? original.slice(0, -repo.sub.length - 1) : original) : undefined;
+    return { cwd: original, ...(top ? { top, clone: top } : {}), how: "original" };
+  }
+  if (!repo) return { cwd: agentsFolder(dest.pawHome, m.name), how: "agents" };
+  const gh = githubRepoOf(repo.url);
+  const clone = repoDirUnder(dest.pawHome, gh.owner, gh.repo);
+  const worktree = repo.branch ? branchWorktreeDir(clone, gh.repo, repo.branch) : `${clone}.worktrees/${gh.repo}-${repo.head.slice(0, 12)}`;
+  return { cwd: repo.sub ? join(clone, repo.sub) : clone, top: clone, clone, worktree, how: "repo" };
+}
+
+/**
+ * Settle where the repo goes, from what the probe saw there. A fresh target clones; a clone already on the
+ * agent's branch is reused if nothing else is in the way; a clone on ANOTHER branch is left alone and the
+ * agent gets a worktree beside it (`<clone>.worktrees/<repo>-<branch>`, the layout `github.com/…/tree/…`
+ * addressing uses). Refused: a non-repo or another remote at that path, uncommitted changes in the folder
+ * it would use, another agent running in a clone this would move, a branch checked out in a third worktree.
+ */
+export function placeRepo(m: Manifest, what: What[], folder: DestFolder, d: DestFacts): { folder: DestFolder; blockers: string[] } {
+  const R = what.includes("repo") ? m.repo : undefined;
+  const r = d.repo;
+  if (!R || folder.how === "agents" || !r?.exists) return { folder, blockers: [] };
+  const there = d.label;
+  const at = folder.clone!;
+  const out: string[] = [];
+  const dirtyList = (fs: string[]) => fs.slice(0, DIRTY_SHOWN).map((l) => `    ${l}`).join("\n") + (fs.length > DIRTY_SHOWN ? `\n    … and ${fs.length - DIRTY_SHOWN} more` : "");
+  if (r.isRepo === false) return { folder, blockers: [`${at} exists on ${there} and is not a git repo — move it aside there first`] };
+  if (r.url !== undefined && r.url !== R.url) return { folder, blockers: [`${at} on ${there} is a clone of ${r.url}, not ${R.url} — move it aside there first`] };
+  const inside = (p: string, dir: string) => p === dir || p.startsWith(`${dir}/`);
+  const others = (dir: string) => d.agentCwds.filter((a) => a.who !== `${m.space}/${m.name}` && inside(a.cwd, dir)).map((a) => a.who);
+  const sameCheckout = R.branch ? r.branch === R.branch : r.branch === undefined && r.head === R.head;
+  if (folder.how === "original" || sameCheckout) {
+    if (r.dirty?.length) out.push(`${at} on ${there} has uncommitted changes — they would be in the way:\n${dirtyList(r.dirty)}`);
+    const busy = others(at);
+    if (busy.length && r.head !== R.head)
+      out.push(`${busy.join(", ")} run${busy.length === 1 ? "s" : ""} in ${at} on ${there}; moving its checkout to ${R.head.slice(0, 12)} would change their files — stop or move ${busy.length === 1 ? "it" : "them"} first`);
+    return { folder, blockers: out };
+  }
+  const top = folder.worktree!;
+  const held = R.branch ? r.worktrees.find((w) => w.branch === R.branch && w.path !== top) : undefined;
+  if (held) out.push(`branch ${R.branch} is checked out at ${held.path} on ${there} — git keeps a branch in one worktree; free it there first`);
+  if (r.wt?.exists && r.wt.dirty.length) out.push(`${top} on ${there} has uncommitted changes — they would be in the way:\n${dirtyList(r.wt.dirty)}`);
+  const busy = others(top);
+  if (r.wt?.exists && busy.length) out.push(`${busy.join(", ")} already run${busy.length === 1 ? "s" : ""} in ${top} on ${there} — stop or move ${busy.length === 1 ? "it" : "them"} first`);
+  return { folder: { ...folder, top, cwd: R.sub ? join(top, R.sub) : top, how: "worktree" }, blockers: out };
+}
+
+/** A moved file's HOME-relative path on the destination: session and memory files follow the folder
+ *  into ITS project dir (the slug of the new cwd); everything else keeps its path. */
+export function remapRel(rel: string, m: Pick<Manifest, "projectDirs">, destCwd: string): string {
+  for (const pd of m.projectDirs)
+    if (rel.startsWith(`${pd}/`)) return join(dirname(pd), projectSlug(destCwd), rel.slice(pd.length + 1));
+  return rel;
+}
+
+/** The transcripts (`.jsonl`) of a set of moved session files — the ones whose `cwd` fields follow the folder. */
+export function transcriptRels(files: FileEntry[], m: Pick<Manifest, "groups">): string[] {
+  const session = new Set((m.groups.session ?? []).map((f) => f.rel));
+  return files.filter((f) => session.has(f.rel) && f.rel.endsWith(".jsonl")).map((f) => f.rel);
+}
+
+/**
+ * Rewrite the `cwd` field of every line of a Claude Code transcript from `from` (or a folder under it) to
+ * the same place under `to`. The ONE field rewritten: claude finds a session by id in any project dir and
+ * stamps each new line with its own cwd (claude 2.1.309, checked 2026-10-23), so nothing else needs it —
+ * this keeps one folder per transcript, matching the project dir it now lives in. Byte-exact elsewhere;
+ * idempotent (a value already under `to` is left alone). Returns the number of lines changed.
+ */
+export function rewriteCwdText(text: string, from: string, to: string): { text: string; changed: number } {
+  let changed = 0;
+  const out = text.replace(/"cwd":("(?:[^"\\]|\\.)*")/g, (all, lit: string) => {
+    const v = JSON.parse(lit) as string;
+    if (v === to || v.startsWith(`${to}/`)) return all;
+    if (v !== from && !v.startsWith(`${from}/`)) return all;
+    changed++;
+    return `"cwd":${JSON.stringify(to + v.slice(from.length))}`;
+  });
+  return { text: out, changed };
+}
+
+/** {@link rewriteCwdText} over HOME-relative transcript files, each written back atomically when it changed. */
+export function rewriteCwdFiles(home: string, rels: string[], from: string, to: string): number {
+  let total = 0;
+  for (const rel of rels) {
+    const file = join(home, rel);
+    const r = rewriteCwdText(readFileSync(file, "utf8"), from, to);
+    if (!r.changed) continue;
+    const tmp = `${file}.teleport-${process.pid}`;
+    writeFileSync(tmp, r.text);
+    renameSync(tmp, file);
+    total += r.changed;
+  }
+  return total;
+}
+
 /** sha256 of a file or a directory tree — the same recipe as the probe script's `paw_hash`, so a hash
  *  computed here compares with one computed on the target. */
 export function contentHash(abs: string): string {
@@ -376,7 +520,8 @@ export type ManifestDeps = { home?: string; git?: Git; hash?: (abs: string) => s
  * paw runs this same function). The persona file always moves. Throws on what can't move at all.
  */
 export function buildManifest(o: { space: string; name: string; personaFile: string; what: What[] }, deps: ManifestDeps = {}): Manifest {
-  const home = deps.home ?? homedir();
+  // Real path: the repo top git reports is one, and the HOME-relative mirror compares the two.
+  const home = realpathSync(deps.home ?? homedir());
   const hash = deps.hash ?? contentHash;
   const { space, name, personaFile, what } = o;
   if (!existsSync(personaFile)) throw new Error(`paw: no agent "${name}" in space "${space}" (no persona at ${personaFile})`);
@@ -390,6 +535,7 @@ export function buildManifest(o: { space: string; name: string; personaFile: str
   const notes: string[] = [];
   const groups: Manifest["groups"] = {};
   let chain: string[] = [];
+  const projectDirs: string[] = [];
   const claudeDir = join(home, ".claude");
 
   if (what.includes("session")) {
@@ -402,6 +548,7 @@ export function buildManifest(o: { space: string; name: string; personaFile: str
       if (!at) continue;
       underHome(home, root, "the transcript store");
       const dir = dirname(at);
+      if (!projectDirs.includes(relative(home, dir))) projectDirs.push(relative(home, dir));
       const ids = sessionChain(dir, pin);
       for (const id of ids) {
         files.push(...filesUnder(home, join(dir, `${id}.jsonl`)));
@@ -420,6 +567,7 @@ export function buildManifest(o: { space: string; name: string; personaFile: str
   if (what.includes("memory")) {
     const slug = pin ? (transcriptPath(pin) ? basename(dirname(transcriptPath(pin)!)) : projectSlug(cwd)) : projectSlug(cwd);
     const dir = join(claudeProjectsRoot(), slug, "memory");
+    if (!projectDirs.includes(relative(home, dirname(dir)))) projectDirs.push(relative(home, dirname(dir)));
     groups.memory = existsSync(dir) ? filesUnder(home, dir) : [];
     if (!groups.memory.length) notes.push(`no memory dir at ${dir}`);
   }
@@ -471,6 +619,7 @@ export function buildManifest(o: { space: string; name: string; personaFile: str
     home,
     groups,
     chain,
+    projectDirs,
     skills,
     ...(claudeMdHash ? { claudeMdHash } : {}),
     plugins,
@@ -536,7 +685,22 @@ export type DestFacts = {
   kitAuth?: string[];
   acpCommand?: { path: string; executable: boolean };
   git?: string;
-  repo?: { exists: boolean; isRepo?: boolean; url?: string; dirty?: string[]; lsRemote?: { ok: boolean; err: string } };
+  repo?: {
+    exists: boolean;
+    isRepo?: boolean;
+    url?: string;
+    /** The clone's checked-out branch (undefined = detached) and HEAD. */
+    branch?: string;
+    head?: string;
+    dirty?: string[];
+    /** Every worktree of the clone and its branch. */
+    worktrees: Array<{ path: string; branch?: string }>;
+    /** The per-branch worktree teleport would use. */
+    wt?: { exists: boolean; dirty: string[] };
+    lsRemote?: { ok: boolean; err: string };
+  };
+  /** Every agent there (`space/name`) and its folder — who a moved checkout would disturb. */
+  agentCwds: Array<{ who: string; cwd: string }>;
   cwdExists: boolean;
   /** Mount point of the nearest existing parent of the repo/cwd path (`df -P`). */
   cwdMount?: string;
@@ -545,7 +709,7 @@ export type DestFacts = {
   freeKb?: number;
 };
 
-export type PlanCtx = { what: What[]; dest: DestFacts; transport?: Transport; sourceServer?: string; back: boolean };
+export type PlanCtx = { what: What[]; dest: DestFacts; folder: DestFolder; transport?: Transport; sourceServer?: string; back: boolean };
 
 /** What stops this teleport, each with the fix. Empty ⇒ go. Pure; check:teleport covers it. */
 export function teleportBlockers(m: Manifest, c: PlanCtx): string[] {
@@ -554,7 +718,7 @@ export function teleportBlockers(m: Manifest, c: PlanCtx): string[] {
   const there = d.label;
   if (!d.paw) out.push(`${there} has no \`paw\` on PATH — install paw there first`);
   else if (!d.teleportSupport)
-    out.push(`${there}'s paw predates \`paw teleport\` — it would not honour the teleported marker (or --back); update paw there (agents-host: redeploy)`);
+    out.push(`${there}'s paw predates this \`paw teleport\` (paw-teleport 2) — it would not honour the marker, take a moved folder, or serve --back; update paw there (agents-host: redeploy)`);
   if (!d.spaceRecord && !c.back)
     out.push(`${there}'s paw does not join space "${m.space}" (no ${d.pawHome}/spaces/${m.space}/remote-mesh.json) — \`paw mesh add ${m.space} --server … --root …\` there`);
   if (d.personaText !== undefined && !/^\s*teleported:/m.test(d.personaText.match(/^---\n([\s\S]*?)\n---/)?.[1] ?? ""))
@@ -576,10 +740,12 @@ export function teleportBlockers(m: Manifest, c: PlanCtx): string[] {
   if (m.agent === "acp" && d.acpCommand && !d.acpCommand.executable)
     out.push(`the acp agent's command ${d.acpCommand.path} is not an executable on ${there} — install it at that path`);
 
-  const folder = m.repo?.top ?? m.cwd;
-  if (d.pawRoot !== undefined && !d.allowAnyCwd && !insideDir(d.pawRoot, m.cwd))
+  const folder = c.folder.top ?? c.folder.cwd;
+  // `<PAW_HOME>/agents/<name>` is paw-managed (src/cwd.ts), allowed under any PAW_ROOT.
+  // Under `<PAW_HOME>/agents` and `<PAW_HOME>/repos` a folder is paw-managed (src/cwd.ts), allowed under any PAW_ROOT.
+  if (c.folder.how === "original" && d.pawRoot !== undefined && !d.allowAnyCwd && !insideDir(d.pawRoot, c.folder.cwd))
     out.push(
-      `${there} confines agents to PAW_ROOT=${d.pawRoot}, and the mirrored folder ${m.cwd} is outside it — ` +
+      `${there} confines agents to PAW_ROOT=${d.pawRoot}, and the folder ${c.folder.cwd} is outside it — ` +
         `set PAW_ROOT to a parent of it (or PAW_ALLOW_ANY_CWD=1) in the environment paw runs with there`,
     );
   if (c.transport?.kind === "fly" && d.cwdMount === "/")
@@ -590,17 +756,12 @@ export function teleportBlockers(m: Manifest, c: PlanCtx): string[] {
   if (c.what.includes("repo") && m.repo) {
     const r = d.repo;
     if (!d.git) out.push(`${there} has no \`git\``);
-    else if (r?.exists && r.isRepo === false) out.push(`${folder} exists on ${there} and is not a git repo — move it aside there first`);
-    else if (r?.exists && r.url !== undefined && r.url !== m.repo.url)
-      out.push(`${folder} on ${there} is a clone of ${r.url}, not ${m.repo.url} — move it aside there first`);
-    else if (r?.dirty?.length)
-      out.push(`${folder} on ${there} has uncommitted changes — they would be in the way:\n${r.dirty.slice(0, 20).map((l) => `    ${l}`).join("\n")}`);
     if (r?.lsRemote && !r.lsRemote.ok)
       out.push(
         `${there} can't read ${m.repo.url}: ${r.lsRemote.err.split("\n")[0] || "git ls-remote failed"}` +
           gitLoginHint(m.repo.url),
       );
-  } else if (!d.cwdExists) out.push(`${m.cwd} doesn't exist on ${there} — add --repo (or create it there)`);
+  } else if (c.folder.how === "original" && !d.cwdExists) out.push(`${c.folder.cwd}, the folder it left from, is gone on ${there} — recreate it first`);
 
   if (c.what.includes("claude-md") && m.claudeMdHash && d.claudeMdHash && d.claudeMdHash !== m.claudeMdHash)
     out.push(`${there} has a different ~/.claude/CLAUDE.md — teleport never overwrites it; reconcile the two by hand, or drop --claude-md`);
@@ -654,16 +815,33 @@ export function formatPlan(m: Manifest, c: PlanCtx & { from: string }): string[]
   const sum = (fs: FileEntry[] = []) => `${fs.length} file${fs.length === 1 ? "" : "s"}, ${fmtBytes(fs.reduce((n, f) => n + f.bytes, 0))}`;
   const lines = [`teleport ${m.name} (${m.agent}, space ${m.space}): ${c.from} → ${c.dest.label}`];
   lines.push(`  persona    ${m.space}/personas/${m.name}.md → ${c.dest.pawHome}/spaces/${m.space}/personas/${m.name}.md` + (m.pin ? `  (resume: ${m.pin})` : ""));
+  const f = c.folder;
+  const why = {
+    repo: "the repo's paw clone there",
+    worktree: `a worktree beside the repo's paw clone there (${f.clone} has ${c.dest.repo?.branch ?? "a detached HEAD"} checked out)`,
+    agents: `no --repo: a fresh folder paw owns there — nothing in ${m.cwd} moves`,
+    original: "back where it came from",
+  }[f.how];
+  lines.push(`  folder     ${m.cwd} → ${f.cwd}  (${why})`);
+  const moved = f.cwd !== m.cwd;
+  const destProject = (pd: string) => `${c.dest.home}/${join(dirname(pd), projectSlug(f.cwd))}/`;
+  const projects = moved && m.projectDirs.length ? `  → ${destProject(m.projectDirs[0])}, cwd fields rewritten` : "";
   const skip = (w: What) => !c.what.includes(w) && lines.push(`  ${w.padEnd(10)} — not moved`);
-  if (c.what.includes("session")) lines.push(`  session    ${m.chain.length ? m.chain.join(" → ") : "(none yet)"}  ${sum(m.groups.session)}`);
+  if (c.what.includes("session")) lines.push(`  session    ${m.chain.length ? m.chain.join(" → ") : "(none yet)"}  ${sum(m.groups.session)}${m.groups.session?.length ? projects : ""}`);
   else skip("session");
   if (c.what.includes("repo") && m.repo) {
     const r = m.repo;
-    const state = c.dest.repo?.exists ? `update the checkout at ${r.top}` : `clone into ${r.top}`;
+    const state =
+      f.how === "worktree"
+        ? `${c.dest.repo?.wt?.exists ? "update the worktree" : "add a worktree"} ${f.top} of ${f.clone}`
+        : c.dest.repo?.exists
+          ? `update the checkout at ${f.top}`
+          : `clone into ${f.top}`;
     lines.push(`  repo       ${r.url} ${r.branch ?? "(detached)"} @ ${r.head.slice(0, 12)} — ${state}` + (r.unpushed ? `; ${r.unpushed} unpushed commit(s) as a git bundle` : ""));
     lines.push(`             .gitignored files (.env, node_modules, …) do not move`);
   } else skip("repo");
-  if (c.what.includes("memory")) lines.push(`  memory     ${sum(m.groups.memory)}`);
+  if (c.what.includes("memory"))
+    lines.push(`  memory     ${sum(m.groups.memory)}${moved && m.groups.memory?.length ? `  → ${destProject(m.groups.memory[0].rel.slice(0, m.groups.memory[0].rel.indexOf("/memory/")))}memory/` : ""}`);
   else skip("memory");
   if (c.what.includes("skills")) {
     const same = m.skills.filter((s) => c.dest.skillHashes[s.name] === s.hash).map((s) => s.name);

@@ -38,8 +38,9 @@ function isInside(root: string, child: string): boolean {
   return child.startsWith(base);
 }
 
-/** The paw-MANAGED cwd islands: `~/.paw/repos` (clones + PR/branch worktrees) and `~/.paw/web`
- *  (website scratch) — the ONLY dirs paw itself creates and roots agents in, so they're always-allowed
+/** The paw-MANAGED cwd islands: `~/.paw/repos` (clones + PR/branch worktrees), `~/.paw/web`
+ *  (website scratch) and `~/.paw/agents` (the folder of an agent teleported without its repo,
+ *  src/teleport.ts) — the ONLY dirs paw itself creates and roots agents in, so they're always-allowed
  *  even under a PAW_ROOT pointed at a code tree (else `github:`/url agents break, the latent 2026-07
  *  bug). Deliberately NOT all of ~/.paw: state like spaces/ (personas, locks) is never an
  *  agent cwd, so widening the island to the whole home would needlessly weaken confinement. Tolerant:
@@ -47,7 +48,7 @@ function isInside(root: string, child: string): boolean {
 function pawManagedRoots(): string[] {
   const home = process.env.PAW_HOME?.trim() || join(homedir(), ".paw");
   const roots: string[] = [];
-  for (const sub of ["repos", "web"]) {
+  for (const sub of ["repos", "web", "agents"]) {
     try {
       roots.push(realpathSync(join(home, sub)));
     } catch {

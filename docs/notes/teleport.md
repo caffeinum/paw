@@ -5,7 +5,35 @@ paw teleport <agent> --to fly:<app>[/<machine-id>] | ssh:<host>  [--all | --sess
 paw teleport <agent> --back [--dry-run] [--yes]
 ```
 
-Moves an agent from this machine to another box, and back. v1 (2026-10-22). Code: `src/teleport.ts`
+`--no-<one>` trims the list: `--no-repo` alone = everything but the repo (= `--all --no-repo`).
+
+## Where the agent's folder lands (never the source path)
+
+- **without --repo** → `<target PAW_HOME>/agents/<name>`, created by teleport. Nothing from the source
+  folder moves; files the agent writes there stay there on `--back`.
+- **with --repo** → the repo's paw clone on the target, `<target PAW_HOME>/repos/<owner>/<repo>` — the
+  layout `github:` handles use (src/repo-layout.ts); owner/repo come from the remote URL, read literally
+  (`git config remote.<r>.url`, not `get-url`, which expands insteadOf). A non-GitHub remote fails loud
+  (no invented path). The agent's folder keeps its place inside the repo (`pkg/web` stays `pkg/web`).
+  An existing clone is reused when it is the same URL, on the agent's branch, clean, and no other agent
+  there would see its checkout move; if the clone has ANOTHER branch checked out, the agent gets a worktree
+  beside it, `<clone>.worktrees/<repo>-<branch slug>` (the layout `github.com/…/tree/<branch>` addressing
+  makes, src/address.ts). A branch already checked out in a third worktree blocks.
+- `<PAW_HOME>/agents` and `<PAW_HOME>/repos` are paw-managed (src/cwd.ts): allowed under any PAW_ROOT.
+- `--back` returns it to the folder it left from (this machine's persona keeps `cwd:` while marked).
+- The persona's `cwd:` on the destination names the new folder. Session and memory files move into THAT
+  folder's project dir (`.claude/projects/<slug of the new path>/`, kit's store likewise), and the `cwd`
+  field of every moved transcript line is rewritten (`rewriteCwdText`: the field only, `from` or a folder
+  under it; message text, a sibling prefix and other paths are untouched; idempotent), on the destination
+  by `paw __teleport rewrite-cwd`.
+- Why only `cwd`: claude 2.1.309 finds `--resume <id>` in ANY project dir, `-p` and the TUI alike, replays
+  the history with no cross-directory prompt, and appends new lines to the file where it found it, stamped
+  with its own cwd (scratch HOME, 2026-10-23; a bogus id says "No conversation found"). So nothing in the
+  transcript is needed to resume; the slug move is for memory, `--continue` and the picker, and the rewrite
+  keeps one folder per transcript. Verified on files this code produced: resumed from `~/.paw/agents/<name>`.
+- Absolute paths inside persona VALUES (`acpCommand`, `claudeArgs --add-dir`, kitArgs) are not rewritten.
+
+Moves an agent from this machine to another box, and back. v1 2026-10-22; the folder rules below 2026-10-23. Code: `src/teleport.ts`
 (the cutover + the command), `src/teleport-plan.ts` (pure: args, chain, manifest, blockers, plan),
 `src/teleport-shell.ts` (the transports and every script that runs on a side). Rule it follows: the
 operator's "a good API is as transparent as possible, no inventions" — literal transports, no host
@@ -39,11 +67,10 @@ name stays). Checkmarks (none given: a checklist on a tty, all preselected; a pi
   well as claude's, per `storage:`. acp agents refuse `--session` (their session lives inside the ACP agent).
   Without `--session` the target keeps the pin of a copy it ran before, or gets a fresh one — never the
   source's id with no transcript behind it (that would fork the session at the same id).
-- **repo** — same remote URL, same branch, same HEAD, at the SAME absolute path on the target, so a
-  transcript's `cwd` and its project slug need no rewriting. Unpushed commits (`HEAD --not
-  --remotes=<remote>`) go as a git bundle. A dirty tree (tracked changes or untracked files) is refused
-  with the list. On the target: clone if absent; an existing checkout must be the same URL and clean, and
-  its branch may only move forward to the source HEAD. `.gitignored` files (.env, node_modules) don't move.
+- **repo** — same remote URL, same branch, same HEAD, in the target's paw clone (above). Unpushed commits
+  (`HEAD --not --remotes=<remote>`) go as a git bundle. A dirty tree is refused with the first 10 paths,
+  "… and N more", and the way out (`--no-repo`). A checkout there may only move forward to the source HEAD.
+  `.gitignored` files (.env, node_modules) don't move.
 - **skills** — `~/.claude/skills/*` (dirs; a linked skill lands as a real dir; dot-dirs skipped). Enabled
   plugins are LISTED as not moved (v1). Project `.claude/skills` travel with the repo.
 - **memory** — `~/.claude/projects/<slug>/memory/`.
@@ -57,10 +84,11 @@ name stays). Checkmarks (none given: a checklist on a tty, all preselected; a pi
 
 1. Preflight — source: persona, folder, harness (claude/kit/acp), not foreground, not already teleported,
    the space is a REMOTE mesh (an agent on the local `paw` space is refused: only this Mac serves it), not
-   running on a third machine (roster + this machine's manager ps). Target (one probe script): paw on PATH,
-   `paw __teleport probe` answers `paw-teleport 1` (its paw honours the marker and serves `--back`), a
-   record for the space, no different agent of that name, logins, PAW_ROOT confinement of the mirrored
-   folder, fly root-fs (see below), the repo state there, CLAUDE.md/skill hashes, free disk.
+   running on a third machine (roster + this machine's manager ps). Target (its HOME/PAW_HOME first, which
+   fix the folder; then one probe script): paw on PATH, `paw __teleport probe` answers `paw-teleport 2`
+   (its paw honours the marker, takes a moved folder and serves `--back`), a
+   record for the space, no different agent of that name, logins, fly root-fs (see below), the repo's
+   clone/worktree state there and the agents in it, CLAUDE.md/skill hashes, free disk.
    Every blocker is listed at once, with its fix.
 2. The plan with sizes. `--dry-run` stops here (exit 1 when blocked).
 3. Confirm on a tty unless `--yes` (a pipe without `--yes` refuses).
@@ -87,20 +115,17 @@ A DM to a teleported agent that IS present reaches the copy on the target (no sp
 
 ## Fly specifics
 
-- Fly resets the root filesystem on every deploy: a mirrored path like `/Users/aleks/Github/x` would be
-  wiped. The probe reads `df -P` of the nearest existing parent; mount point `/` on a fly target blocks.
-  The fix is on the box (a bind mount from the volume, e.g. `/data/mirror/Users` onto `/Users`, done at
-  boot) — paw does not invent one. A symlink is NOT enough: claude's cwd (and so the project slug) would
-  resolve to the link target and the transcripts would not be found.
-- agents-host sets `PAW_ROOT=/data/repos`: a mirrored `/Users/...` folder is outside it and blocks until
-  PAW_ROOT is widened (or PAW_ALLOW_ANY_CWD=1) in the image ENV.
+- Fly resets the root filesystem on every deploy. Folders now land under the target's PAW_HOME
+  (`/data/home/.paw` on agents-host, the volume), but the probe still reads `df -P` of the nearest existing
+  parent and blocks on mount point `/`.
 
 ## Out of scope (v1)
 
 Harnesses other than claude/kit/acp (codex/opencode/hermes: their logins and state aren't named here);
 plugins; git submodules and LFS; ignored files; delta transfer (changed files re-sent whole); agents on a
 local-only space; a target on a different broker for the same space name (the presence wait times out and
-rolls back); rewriting paths in transcripts (the mirror makes it unnecessary).
+rolls back); paths inside persona values and message text are not rewritten; the source folder's files
+when moving without the repo.
 
 ## Tests
 
@@ -111,8 +136,15 @@ rolls back); rewriting paths in transcripts (the mirror makes it unnecessary).
   between two temp HOMEs (bundle → fresh clone at the unpushed HEAD; dirty or ahead target refused).
 - `COTAL_BIN=<cotal-ai@0.84.0>/dist/cotal.js node scripts/e2e-teleport.ts` — the real `ssh:` transport to a
   Docker container (sshd + this checkout's paw) on a private JWT+TLS broker, an acp agent with a scripted
-  ACP agent (no login anywhere): dry run, teleport (repo with an unpushed commit, memory, skill,
-  CLAUDE.md), the box runs it, a DM here reaches it there, with it down a DM here refuses, `--back`, the
-  box's own `paw start` refuses its copy, and a failing `paw start` there rolls back here. ~1 min with the image cached.
+  ACP agent (no login anywhere). HOME differs (a temp dir here, /root there). Repo case: a GitHub-URL remote
+  served by a bind-mounted bare repo via insteadOf → lands in `/root/.paw/repos/e2e/repo` with its unpushed
+  commit; memory in that clone's project dir; the box runs it, a DM here reaches it there, with it down a DM
+  here refuses, `--back` (back to its own path), the box's `paw start` refuses its copy, a failing `paw start`
+  there rolls back here. No-repo case: `/root/.paw/agents/tele2` created, nothing of the source folder
+  copied, memory in the new project dir, `--back` restores the folder and slug. A claude agent on a dirty
+  30-file repo: `--all` refused with 10 paths + "… and 20 more" + `--no-repo`; the no-repo dry run (a fake
+  `claude auth status` there) passes; its continued-in chain + subagent moved over ssh land in
+  `-root--paw-agents-intern/` with every `cwd` rewritten by `paw __teleport rewrite-cwd` there. 58 checks,
+  ~1.5 min with the image cached.
   It found the acp seat's missing private-CA env (src/acp.ts now adds `remoteTlsEnv` like the claude
   connector).

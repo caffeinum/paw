@@ -15,7 +15,9 @@
  * target's paw; a forward teleport calls the same functions in-process.
  */
 import { randomUUID } from "node:crypto";
-import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { registry, type Command, type CotalEndpoint } from "@cotal-ai/core";
 import { ensureAgentSpawned, personaFilePath, psRowAlive, setPersonaKeys, stopAgent, SESSION_RELEASE_MS, type PsRow } from "./addressing.ts";
@@ -26,11 +28,17 @@ import { hosting } from "./hosted.ts";
 import { ensureSpaceFor, resolveSpace, withEnsuredManager } from "./lifecycle.ts";
 import { liveSessionProcs } from "./named.ts";
 import { readRemoteMesh } from "./remote-mesh.ts";
-import { readResumeId } from "./session.ts";
+import { readCwd, readResumeId } from "./session.ts";
 import { pawServer } from "./server.ts";
 import {
   buildManifest,
   changedSince,
+  destFolder,
+  placeRepo,
+  remapRel,
+  rewriteCwdFiles,
+  transcriptRels,
+  type DestFolder,
   checklistKey,
   checklistLines,
   fmtBytes,
@@ -60,6 +68,7 @@ import {
   moveRepo,
   pawScript,
   probe,
+  probeEnv,
   remoteSide,
   run,
   said,
@@ -67,7 +76,8 @@ import {
   type Side,
 } from "./teleport-shell.ts";
 
-export const TELEPORT_PROTOCOL = "paw-teleport 1";
+/** 2: the agents folder, remapped project dirs, `rewrite-cwd` (a v1 target can't take a moved folder). */
+export const TELEPORT_PROTOCOL = "paw-teleport 2";
 const PRESENT_MS = 180_000;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const log = (s: string) => console.log(s);
@@ -143,6 +153,14 @@ export function startedLine(out: string, name: string): boolean {
   });
 }
 
+function fail(msg: string): never {
+  throw new Error(msg);
+}
+
+function pawHomeDir(): string {
+  return process.env.PAW_HOME?.trim() || join(homedir(), ".paw");
+}
+
 function writeFileAtomic(file: string, text: string): void {
   const tmp = `${file}.teleport-${process.pid}`;
   writeFileSync(tmp, text);
@@ -199,10 +217,11 @@ function destPersona(m: Manifest, what: What[], destPersonaText: string | undefi
   return { text: withPersonaKey(m.persona, "resume", pin), note: `resume: ${pin} (${theirs ? "the copy there kept its own session" : "a fresh session — --session not moved"})` };
 }
 
-/** One line per moved group: where it landed (the group's common dir), how many files, how big. */
-function groupLines(home: string, m: Manifest, sent: Set<string>): string[] {
+/** One line per moved group: where it landed (the group's common dir, at its destination path), how many
+ *  files, how big. */
+function groupLines(home: string, m: Manifest, sent: Set<string>, cwd: string): string[] {
   return Object.entries(m.groups)
-    .map(([group, fs]) => [group, fs.filter((f) => sent.has(f.rel))] as const)
+    .map(([group, fs]) => [group, fs.filter((f) => sent.has(f.rel)).map((f) => ({ ...f, rel: remapRel(f.rel, m, cwd) }))] as const)
     .filter(([, fs]) => fs.length)
     .map(([group, fs]) => {
       const parts = fs.map((f) => f.rel.split("/"));
@@ -261,9 +280,13 @@ function remoteSource(t: Transport, space: string, name: string): Source {
 
 type Dest = {
   side: Side;
-  facts(m: Manifest, what: What[]): Promise<DestFacts>;
-  writePersona(text: string): Promise<string>;
-  start(m: Manifest): Promise<void>;
+  env(): Promise<{ home: string; pawHome: string }>;
+  facts(m: Manifest, what: What[], folder: DestFolder): Promise<DestFacts>;
+  /** `mkdir` = the agents folder to create first. */
+  writePersona(text: string, mkdir?: string): Promise<string>;
+  /** Rewrite the `cwd` fields of these HOME-relative transcripts there; returns the lines changed. */
+  rewriteCwd(rels: string[], from: string, to: string): Promise<number>;
+  start(cwd: string): Promise<void>;
   /** Rollback: the copy there must not run (best effort, reported). */
   standDown(): Promise<string>;
 };
@@ -273,11 +296,17 @@ function remoteDest(t: Transport, space: string, name: string): Dest {
   const paw = (args: string[]) => run(side, pawScript(args));
   return {
     side,
-    facts: (m, what) => probe(side, m, what),
-    writePersona: async (text) => {
-      const r = await run(side, writePersonaScript(space, name), text);
+    env: () => probeEnv(side),
+    facts: (m, what, folder) => probe(side, m, what, folder),
+    writePersona: async (text, mkdir) => {
+      const r = await run(side, writePersonaScript(space, name, mkdir), text);
       if (r.code !== 0) throw new Error(`paw: writing the persona on ${side.label} failed: ${said(r) || `exit ${r.code}`}`);
       return r.stdout.toString("utf8").trim();
+    },
+    rewriteCwd: async (rels, from, to) => {
+      const r = await run(side, pawScript(["__teleport", "rewrite-cwd", "--from", from, "--to", to, "--space", space]), rels.join("\n") + "\n");
+      if (r.code !== 0) throw new Error(`paw: rewriting transcript cwds on ${side.label} failed: ${said(r) || `exit ${r.code}`}`);
+      return (JSON.parse(r.stdout.toString("utf8").trim().split("\n").pop()!) as { changed: number }).changed;
     },
     start: async () => {
       const r = await paw(["start", name, "--space", space]);
@@ -299,12 +328,15 @@ function localDest(space: string, name: string, label: string): Dest {
   const file = personaFilePath(space, name);
   return {
     side,
-    facts: async (m, what) => ({ ...(await probe(side, m, what)), paw: process.argv[1], teleportSupport: true }),
-    writePersona: async (text) => {
+    env: async () => ({ home: homedir(), pawHome: pawHomeDir() }),
+    facts: async (m, what, folder) => ({ ...(await probe(side, m, what, folder)), paw: process.argv[1], teleportSupport: true }),
+    writePersona: async (text, mkdir) => {
+      if (mkdir) mkdirSync(mkdir, { recursive: true });
       writeFileAtomic(file, text);
       return file;
     },
-    start: (m) => startHere(space, name, m.cwd),
+    rewriteCwd: async (rels, from, to) => rewriteCwdFiles(homedir(), rels, from, to),
+    start: (cwd) => startHere(space, name, cwd),
     standDown: async () => {
       const r = await stopHere(space, name, undefined);
       return `stop: ${r.wasLive ? "stopped" : "was not running"}`;
@@ -329,16 +361,29 @@ type Cutover = {
   yes: boolean;
   /** `--back`: put this machine's persona (and its marker) back if the start here fails. */
   restoreDestPersona?: () => void;
+  /** `--back`: the folder it left from (this persona's `cwd:`). */
+  original?: string;
 };
 
 async function cutover(c: Cutover, transport: Transport): Promise<void> {
   const { space, name, what } = c;
   const m = await c.source.manifest(what);
-  const facts = await c.dest.facts(m, what);
+  const proposed = destFolder(m, what, await c.dest.env(), c.original);
+  const facts = await c.dest.facts(m, what, proposed);
+  const placed = placeRepo(m, what, proposed, facts);
+  const folder = placed.folder;
+  const moved = folder.cwd !== m.cwd;
+  const pairs = (man: Manifest, fs: FileEntry[]) => fs.map((f) => ({ src: f.rel, dst: remapRel(f.rel, man, folder.cwd) }));
+  /** Send files, then point their transcripts' cwd at the new folder. */
+  const send = async (man: Manifest, fs: FileEntry[]) => {
+    await copyFiles(c.source.side, c.dest.side, pairs(man, fs));
+    const rels = transcriptRels(fs, man).map((r) => remapRel(r, man, folder.cwd));
+    if (moved && rels.length) log(`  rewrote ${await c.dest.rewriteCwd(rels, man.cwd, folder.cwd)} cwd field(s) in ${rels.length} transcript(s): ${man.cwd} → ${folder.cwd}`);
+  };
   const view = await meshView(space, name);
   try {
-    const ctx = { what, dest: facts, ...(c.back ? {} : { transport }), back: c.back, sourceServer: readRemoteMesh(space)?.server };
-    const blockers = [...teleportBlockers(m, ctx), ...(c.back ? [] : meshBlockers(space, name, view))];
+    const ctx = { what, dest: facts, folder, ...(c.back ? {} : { transport }), back: c.back, sourceServer: readRemoteMesh(space)?.server };
+    const blockers = [...placed.blockers, ...teleportBlockers(m, ctx), ...(c.back ? [] : meshBlockers(space, name, view))];
     const persona = destPersona(m, what, facts.personaText);
     for (const l of formatPlan(m, { ...ctx, from: c.source.side.label })) log(l);
     if (persona.note) log(`  pin        ${persona.note}`);
@@ -361,11 +406,11 @@ async function cutover(c: Cutover, transport: Transport): Promise<void> {
 
     const files = filesToSend(m, facts);
     log(`→ copying ${files.length} file(s), ${fmtBytes(files.reduce((n, f) => n + f.bytes, 0))} …`);
-    await copyFiles(c.source.side, c.dest.side, files);
+    await send(m, files);
     let repoLine: string | undefined;
     if (m.repo && what.includes("repo")) {
-      log(`→ mirroring ${m.repo.top} …`);
-      repoLine = await moveRepo(c.source.side, c.dest.side, m.repo);
+      log(`→ mirroring ${m.repo.top} to ${folder.top} …`);
+      repoLine = await moveRepo(c.source.side, c.dest.side, m.repo, folder);
     }
 
     log(`→ stopping ${name} on ${c.source.side.label} …`);
@@ -386,17 +431,18 @@ async function cutover(c: Cutover, transport: Transport): Promise<void> {
     const delta = changedSince(files, filesToSend(after, facts));
     if (delta.length) {
       log(`→ copying ${delta.length} file(s) written during the copy …`);
-      await copyFiles(c.source.side, c.dest.side, delta);
+      await send(after, delta);
     }
     if (after.repo && what.includes("repo") && after.repo.head !== m.repo?.head) {
       log(`→ ${name} committed during the copy — mirroring ${after.repo.head.slice(0, 12)} …`);
-      repoLine = await moveRepo(c.source.side, c.dest.side, after.repo);
+      repoLine = await moveRepo(c.source.side, c.dest.side, after.repo, folder);
     }
 
-    const written = await c.dest.writePersona(destPersona(after, what, facts.personaText).text);
-    log(`→ starting ${name} on ${c.dest.side.label} …`);
+    const text = withPersonaKey(destPersona(after, what, facts.personaText).text, "cwd", folder.cwd);
+    const written = await c.dest.writePersona(text, folder.how === "agents" ? folder.cwd : undefined);
+    log(`→ starting ${name} on ${c.dest.side.label} in ${folder.cwd} …`);
     try {
-      await c.dest.start(after);
+      await c.dest.start(folder.cwd);
     } catch (e) {
       await rollback(c, after, (e as Error).message, true);
       throw new Error(`paw: teleport ${name} failed at the start on ${c.dest.side.label} — it runs on ${c.source.side.label} again`);
@@ -412,9 +458,10 @@ async function cutover(c: Cutover, transport: Transport): Promise<void> {
     log("");
     log(`✓ teleported ${name}: ${c.source.side.label} → ${c.dest.side.label} (present on the mesh as ${id})`);
     log(`  written on ${c.dest.side.label}:`);
-    log(`    persona   ${written}`);
-    for (const l of groupLines(facts.home, after, new Set([...files, ...delta].map((f) => f.rel)))) log(l);
-    if (repoLine) log(`    repo      ${after.repo!.top}  ${after.repo!.url} → ${repoLine}`);
+    log(`    persona   ${written}${moved ? `  (cwd: ${folder.cwd})` : ""}`);
+    if (folder.how === "agents") log(`    folder    ${folder.cwd}  (created; ${m.cwd} stays here)`);
+    for (const l of groupLines(facts.home, after, new Set([...files, ...delta].map((f) => f.rel)), folder.cwd)) log(l);
+    if (repoLine) log(`    repo      ${folder.top}  ${after.repo!.url} → ${repoLine}`);
     log(`  written on ${c.source.side.label}:`);
     log(`    ${marked}`);
     log(`  stopped on ${c.source.side.label}: ${stopped.wasLive ? name : `${name} (it was not running)`} — its transcript and files there are left as they were`);
@@ -480,6 +527,7 @@ export async function teleport(a: TeleportArgs): Promise<void> {
         dryRun: a.dryRun,
         yes: a.yes,
         restoreDestPersona: () => writeFileAtomic(file, original),
+        original: readCwd(file) ?? fail(`paw: ${file} has no \`cwd:\` — where it came from is unknown, so --back has nowhere to put it`),
       },
       transport,
     );
@@ -517,13 +565,20 @@ export async function teleportRemoteOp(argv: string[]): Promise<void> {
   let space: string | undefined;
   let what: What[] = [];
   let to: string | undefined;
+  let from: string | undefined;
   for (let i = 0; i < rest.length; i++) {
     const x = rest[i];
     if (x === "--space") space = rest[++i];
     else if (x === "--what") what = (rest[++i] ?? "").split(",").filter((w): w is What => (WHAT as readonly string[]).includes(w));
     else if (x === "--to") to = rest[++i];
+    else if (x === "--from") from = rest[++i];
     else if (!x.startsWith("-") && !name) name = x;
     else throw new Error(`paw: __teleport ${op}: unexpected "${x}"`);
+  }
+  if (op === "rewrite-cwd") {
+    if (!from || !to) throw new Error("paw: __teleport rewrite-cwd needs --from and --to");
+    const rels = readFileSync(0, "utf8").split("\n").filter(Boolean);
+    return void console.log(JSON.stringify({ changed: rewriteCwdFiles(homedir(), rels, from, to) }));
   }
   if (!name) throw new Error(`paw: __teleport ${op} needs an agent name`);
   const sp = space?.trim() || resolveSpace();
@@ -558,7 +613,7 @@ const teleportOpCommand: Command = {
   group: "Lifecycle",
   hidden: true,
   summary: "teleport's source-side steps, run over the transport by the other machine's `paw teleport --back`",
-  usage: "__teleport probe | manifest <name> --what a,b | stop <name> | mark <name> --to <where>",
+  usage: "__teleport probe | manifest <name> --what a,b | stop <name> | mark <name> --to <where> | rewrite-cwd --from <dir> --to <dir> (HOME-relative transcripts on stdin)",
   run: (a) => teleportRemoteOp([...a.raw]),
 };
 
