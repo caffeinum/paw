@@ -200,7 +200,11 @@ try {
   const up = cotal(["up", "--detach", "--no-manager", "--space", R, "--server", `tls://127.0.0.1:${port}`, "--tls-cert", cert, "--tls-key", key, "--store-dir", join(work, "store", "data")]);
   ok("broker up (JWT + TLS)", up.status === 0, tail(out(up), 2));
   const signer = join(root, ".cotal", "auth", "auth.json");
-  ok("cotal mint --signer", cotal(["mint", "--signer", "--out", signer]).status === 0 && existsSync(signer));
+  // cotal 0.100: `auth signer` (was `mint --signer`), and it refuses an --out inside any `.cotal/` — export beside, copy in.
+  const exported = join(work, "signer.json");
+  ok("cotal auth signer", cotal(["auth", "signer", "--out", exported]).status === 0 && existsSync(exported));
+  mkdirSync(dirname(signer), { recursive: true });
+  cpSync(exported, signer);
   chmodSync(signer, 0o600);
   ok("this machine joins the space", paw(["mesh", "add", R, "--server", `tls://127.0.0.1:${port}`, "--root", root, "--as", "e2e-here"]).status === 0);
 

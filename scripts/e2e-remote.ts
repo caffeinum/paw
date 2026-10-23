@@ -2,7 +2,7 @@
  * e2e:remote — a paw space on a REMOTE JWT + TLS broker, end to end, fully isolated.
  *
  * Stands up the "remote" exactly as the Fly box runs it: cotal 0.84 `cotal up --no-manager` with a
- * self-signed TLS cert, then `cotal mint --signer` into a separate root. Everything paw does goes
+ * self-signed TLS cert, then `cotal auth signer` into a separate root. Everything paw does goes
  * through the CLI, with `--space <remote>` while PAW_SPACE names a DIFFERENT (decoy) space and
  * PAW_SERVER points at a dead port — so any path that ignored --space, or dialled the local broker,
  * fails here instead of touching the operator's live mesh.
@@ -28,14 +28,14 @@
  *      the agent, and is re-delivered (its reply lands in paw inbox);
  *   9. paw down --space R + cotal down: nothing left naming either space.
  *
- *   COTAL_BIN=<cotal-ai@0.84.0>/dist/cotal.js node scripts/e2e-remote.ts
+ *   COTAL_BIN=<cotal-ai@0.100.0>/dist/cotal.js node scripts/e2e-remote.ts
  *
  * E2E_HUMAN=<name> adds `--as <name>` to `paw mesh add`: the mailbox presence must then appear under
  * that name (never "you") and the agent's reply — briefed to cotal_dm that name — must reach the inbox.
  *
  * COTAL_BIN must be the `cotal-ai` package at the version of the repo's @cotal-ai/cli (it runs the
  * broker's delivery daemon, which @cotal-ai/cli alone cannot start). Install it OUTSIDE the repo,
- * e.g. `npm i --prefix /tmp/cotal084 --ignore-scripts cotal-ai@0.84.0`.
+ * e.g. `npm i --prefix /tmp/cotal100 --ignore-scripts cotal-ai@0.100.0`.
  */
 import { spawn as ptySpawn } from "@lydell/node-pty";
 import { execFileSync, spawn, spawnSync, type SpawnSyncReturns } from "node:child_process";
@@ -277,7 +277,8 @@ async function ptyAttach(args: string[], env: NodeJS.ProcessEnv, ms: number): Pr
   const tui = /bypass permissions|❯|for shortcuts/.test(after);
   if (code === undefined) p.write("\x1d");
   for (let i = 0; i < 30 && code === undefined; i++) await sleep(500);
-  const detached = code === 0 && /detached from /.test(plain());
+  // cotal ≤0.84 printed "detached from <name>"; 0.100 a "Detached" report naming the agent.
+  const detached = code === 0 && /detached from |Detached\s*$/m.test(plain());
   if (code === undefined) p.kill();
   return { attached, streamed, tui, detached, code, output: plain() };
 }
@@ -338,12 +339,17 @@ function startChat(args: string[]) {
 const tail = (s: string, n = 6) => s.trim().split("\n").slice(-n).join(" | ");
 
 try {
-  // ── the "remote": cotal 0.84, JWT auth + TLS, broker only ────────────────────────────────────────
+  // ── the "remote": JWT auth + TLS, broker only ────────────────────────────────────────
   const up = cotal(["up", "--detach", "--no-manager", "--space", R, "--server", server, "--tls-cert", cert, "--tls-key", key, "--store-dir", join(work, "store")]);
   ok("remote broker up (JWT + TLS, --no-manager, delivery daemon)", up.status === 0 && /delivery daemon/.test(out(up)), out(up).trim().split("\n").pop());
   const signer = join(localRoot, ".cotal", "auth", "auth.json");
-  const mint = cotal(["mint", "--signer", "--out", signer]);
-  ok("cotal mint --signer", mint.status === 0 && existsSync(signer));
+  // cotal 0.100 moved the signer export from `mint --signer` to `auth signer`, and refuses an `--out`
+  // inside any `.cotal/` (LIFECYCLE_BLOCKED) — export beside, then copy in, as an operator does.
+  const exported = join(work, "signer.json");
+  const mint = cotal(["auth", "signer", "--out", exported]);
+  ok("cotal auth signer", mint.status === 0 && existsSync(exported), out(mint).trim().split("\n").pop());
+  mkdirSync(dirname(signer), { recursive: true });
+  copyFileSync(exported, signer);
 
   // ── 1. the record ────────────────────────────────────────────────────────────────────────────────
   chmodSync(signer, 0o644);
@@ -404,7 +410,9 @@ try {
   ok("a second manager instance (machine B's root) serves the same space", /manager up/.test(mgrBOut), mgrBOut.trim().split("\n").slice(-2).join(" | "));
   await sleep(3000); // let it register its service before the scatter
   const psB = paw(["cotal", "ps", "--space", R], { ...withCaB, PAW_SPACE: R });
-  const headers = out(psB).replace(/\x1b\[[0-9;]*m/g, "").split("\n").filter((l) => /^manager \S+ /.test(l));
+  // One section per manager: cotal ≤0.84 put the count on the `manager <id>` line, 0.100 on the line under it.
+  const psLines = out(psB).replace(/\x1b\[[0-9;]*m/g, "").split("\n");
+  const headers = psLines.flatMap((l, i) => (/^manager \S+/.test(l) ? [`${l.trim()} ${psLines.slice(i + 1).find((n) => n.trim())?.trim() ?? ""}`] : []));
   ok(
     "paw cotal ps --space R (from B's root) sees two manager instances, the agent on one",
     headers.length === 2 && headers.some((l) => /1 agent/.test(l)) && headers.some((l) => /no agents/.test(l)),

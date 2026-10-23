@@ -10,7 +10,7 @@
  * SHARED broker every operator's mailbox would otherwise register as `you`; pick a distinct one.
  *
  * `--root` is a directory whose `.cotal/auth/auth.json` is the space's account signer — the file
- * `cotal mint --signer` writes on the box that runs the broker. It is a bearer secret: paw checks it
+ * `cotal auth signer --out` (before cotal 0.100: `cotal mint --signer`) writes on the box that runs the broker. It is a bearer secret: paw checks it
  * loads for this space and is private to you (0600), and never prints it. Local only: no broker is
  * dialled here — the first command that needs the space (ensure()) proves the link.
  */
@@ -82,7 +82,7 @@ export function checkSignerRoot(space: string, rootArg: string): string {
   const auth = loadSpaceAuth(dir, space);
   if (!auth)
     throw new Error(
-      `paw: no signer for space "${space}" under ${dir} — on the broker's box run \`cotal mint --signer --out signer.json\`, ` +
+      `paw: no signer for space "${space}" under ${dir} — on the broker's box run \`cotal auth signer --out signer.json\` (\`cotal mint --signer --out signer.json\` before cotal 0.100), ` +
         `copy it to ${join(dir, "auth.json")} (chmod 600)`,
     );
   if (!auth.account?.signingSeed) throw new Error(`paw: the auth under ${dir} for "${space}" carries no account signing seed — it cannot mint agent creds`);
