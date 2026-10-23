@@ -38,6 +38,11 @@ const {
   SPAWN_READY_MS,
   RETIREMENT_RETRY_MS,
   retirementRefusal,
+  cliRestartConsent,
+  quietFor,
+  restartQuestion,
+  restartRefusal,
+  unreachableHint,
 } = await import("../src/addressing.ts");
 const { readResumeId } = await import("../src/session.ts");
 const { withFileLockAsync } = await import("../src/lock.ts");
@@ -130,6 +135,7 @@ try {
       cwd: folder,
       probePresence: healthy,
       timing: fast,
+      restartLive: "allow",
     });
     assert(calls.join() === "despawn evals,spawn evals" && r.spawned && !r.starting, `absent + no progress: restarted as before (${calls.join()})`);
   }
@@ -181,7 +187,7 @@ try {
     transcriptAged("g7", "global", folder, 184_000);
     let n = 0;
     const rows = () => (n++ < 1 ? fleet(0, 6) : [{ name: "global", status: "running", mesh: "idle" }, ...fleet(0, 6).slice(1)]);
-    const r = await ensureAgentSpawned(fakeCtl(rows, calls), { space: "g7", name: "global", cwd: folder, probePresence: healthy, timing: fast });
+    const r = await ensureAgentSpawned(fakeCtl(rows, calls), { space: "g7", name: "global", cwd: folder, probePresence: healthy, timing: fast, restartLive: "allow" });
     assert(calls.join() === "despawn global,spawn global" && r.spawned, `lone offline seat in a live fleet: still restarted (${calls.join()})`);
   }
 
@@ -211,7 +217,7 @@ try {
     const rows = (): Row[] => [{ name, status: "running", mesh: isLive ? "idle" : "offline", id: "local.ACTORLONE" }, ...fleet(0, 6).slice(1)];
     const wake = async (calls: string[]) => {
       let err = "";
-      const r = await ensureAgentSpawned(fakeCtl(rows, calls), { space, name, cwd: folder, probePresence: healthy, timing: fast }).catch((e: Error) => {
+      const r = await ensureAgentSpawned(fakeCtl(rows, calls), { space, name, cwd: folder, probePresence: healthy, timing: fast, restartLive: "allow" }).catch((e: Error) => {
         err = e.message;
         return undefined;
       });
@@ -293,10 +299,10 @@ try {
     transcriptAged("g9", "mute", folder, undefined);
     const calls: string[] = [];
     const rows = () => [{ name: "mute", status: "running", mesh: "absent", id: "local.ACTORMUTE" }, ...fleet(0, 6).slice(1)];
-    await ensureAgentSpawned(fakeCtl(rows, calls), { space: "g9", name: "mute", cwd: folder, probePresence: healthy, timing: fast });
+    await ensureAgentSpawned(fakeCtl(rows, calls), { space: "g9", name: "mute", cwd: folder, probePresence: healthy, timing: fast, restartLive: "allow" });
     assert(calls.join() === "despawn mute,spawn mute" && R.readRestartHistory("g9", "mute")?.restarts.length === 1, `absent lone seat: first restart recorded (${calls.join()})`);
     const again: string[] = [];
-    const r = await ensureAgentSpawned(fakeCtl(rows, again), { space: "g9", name: "mute", cwd: folder, probePresence: healthy, timing: fast });
+    const r = await ensureAgentSpawned(fakeCtl(rows, again), { space: "g9", name: "mute", cwd: folder, probePresence: healthy, timing: fast, restartLive: "allow" });
     assert(again.length === 0 && r.starting === true, `absent lone seat: re-wake within the backoff → no restart (${again.join() || "no calls"})`);
   }
 
@@ -336,6 +342,7 @@ try {
         probePresence: healthy,
         timing: { ...fast, retireMs: 400, retireStepMs: 20 },
         progress: (l) => lines.push(l),
+        restartLive: "allow",
       }).catch((e: Error) => ((err = e.message), undefined));
       return { r, err, calls, lines };
     };
@@ -371,6 +378,76 @@ try {
       });
       assert(calls.filter((c) => c === "spawn zed").length === 1 && err.includes("failed to start agent \"zed\" (capacity exhausted)"), `retirement: other lifecycle refusals fail at once, verbatim (${err.split("\n")[0]})`);
     }
+  }
+
+  // --- fix 6: a LIVE process is never restarted without the operator's go ---------------------------
+  // 2026-10-22: `paw chat @2027-intern` judged a running seat a zombie and the gate killed it unasked.
+  {
+    const R = await import("../src/restart-history.ts");
+    assert(quietFor(3 * 3_600_000 + 22 * 60_000) === "3h22m" && quietFor(14 * 60_000) === "14m" && quietFor(40_000) === "40s" && quietFor(3 * 3_600_000) === "3h", "quietFor: 3h22m / 14m / 40s / 3h");
+    const quiet = 3 * 3_600_000 + 22 * 60_000;
+    const zombie = (space: string, status = "running") => {
+      transcriptAged(space, "2027-intern", folder, quiet);
+      let spawned = false;
+      const calls: string[] = [];
+      const ctl = fakeCtl(() => [{ name: "2027-intern", status: spawned ? "running" : status, mesh: spawned ? "idle" : "offline", id: "local.ACTORZ" }, ...fleet(0, 6).slice(1)], calls);
+      const spawn = (ctl as unknown as { spawn: (a: { name: string }) => Promise<unknown> }).spawn;
+      (ctl as unknown as { spawn: (a: { name: string }) => Promise<unknown> }).spawn = async (a) => {
+        spawned = true;
+        return spawn(a);
+      };
+      return { ctl, calls };
+    };
+    const why = "off the mesh, silent 3h22m";
+    {
+      const { ctl, calls } = zombie("g14");
+      const r = await ensureAgentSpawned(ctl, { space: "g14", name: "2027-intern", cwd: folder, probePresence: healthy, timing: fast });
+      console.log(`    refusal: ${r.stuck}`);
+      assert(calls.length === 0, `no consent: nothing stopped or started (${calls.join() || "no calls"})`);
+      assert(r.stuck === restartRefusal("2027-intern", "g14", why) && r.stuck.endsWith("NOT restarted without your go: `paw restart 2027-intern#g14`"), `no consent: refusal names the exact command (${r.stuck})`);
+      assert(r.starting === true && r.id === "local.ACTORZ", "no consent: still addressable — the message goes to its durable inbox");
+      assert(R.readRestartHistory("g14", "2027-intern") === undefined, "no consent: no restart recorded");
+      const errs: string[] = [];
+      const orig = console.error;
+      console.error = (...a: unknown[]) => void errs.push(a.join(" "));
+      const to = await readyId({} as Parameters<typeof readyId>[0], "2027-intern", r).finally(() => (console.error = orig));
+      assert(to === "local.ACTORZ" && errs.some((l) => l.includes("paw restart 2027-intern#g14") && l.includes("message queued")), `dm: refused restart → queued + loud (${errs.join(" | ")})`);
+    }
+    {
+      const { ctl, calls } = zombie("g15");
+      const asked: string[] = [];
+      const r = await ensureAgentSpawned(ctl, { space: "g15", name: "2027-intern", cwd: folder, probePresence: healthy, timing: fast, restartLive: async (q) => (asked.push(q), false) });
+      console.log(`    prompt: ${asked[0]}`);
+      assert(asked.length === 1 && asked[0] === restartQuestion("2027-intern", why) && asked[0] === "2027-intern looks stuck (off the mesh, silent 3h22m). restart it? [y/N] ", `tty: asks one line (${asked[0]})`);
+      assert(calls.length === 0 && !!r.stuck, `tty, answered no: nothing stopped (${calls.join() || "no calls"})`);
+    }
+    {
+      const { ctl, calls } = zombie("g16");
+      const r = await ensureAgentSpawned(ctl, { space: "g16", name: "2027-intern", cwd: folder, probePresence: healthy, timing: fast, restartLive: async () => true });
+      assert(calls.join() === "despawn 2027-intern,spawn 2027-intern" && r.spawned && !r.stuck, `tty, answered y: restarted (${calls.join()})`);
+    }
+    {
+      const { ctl, calls } = zombie("g17", "exited");
+      const r = await ensureAgentSpawned(ctl, { space: "g17", name: "2027-intern", cwd: folder, probePresence: healthy, timing: fast });
+      assert(calls.join() === "despawn 2027-intern,spawn 2027-intern" && r.spawned, `dead process: respawned without asking (${calls.join()})`);
+    }
+    assert(cliRestartConsent(true) === "allow", "--restart → allow");
+    if (!process.stdin.isTTY || !process.stderr.isTTY) assert(cliRestartConsent(false) === undefined, "no tty, no --restart → no consent (refuse)");
+  }
+
+  // --- the unreachable hint: never `paw down` (it tears down the whole space) -----------------------
+  {
+    const busy = unreachableHint("2027-intern", "team2027", true);
+    const plain = unreachableHint("2027-intern", "team2027", undefined);
+    console.log(`    hint (busy): ${busy}\n    hint: ${plain}`);
+    assert(!busy.includes("paw down") && !plain.includes("paw down"), "hint: no `paw down`");
+    assert(busy.includes("wait") && busy.endsWith("`paw restart 2027-intern#team2027`") && !busy.includes("\n"), "hint (busy): wait, or restart — one line");
+    assert(plain === 'paw: "2027-intern" isn\'t reachable on the mesh — `paw restart 2027-intern#team2027`', `hint: restart (${plain})`);
+    // The command it names is valid: `paw restart <name>#<space>` hoists to `restart <name> --space <space>`.
+    const { hoistAddressSpace } = await import("../src/dispatch.ts");
+    const deps = { knownSpaces: () => ["team2027"], isKnownSpace: (x: string) => x === "team2027", pathExists: () => false };
+    const argv = hoistAddressSpace("restart", ["2027-intern#team2027"], deps);
+    assert(argv.join(" ") === "2027-intern --space team2027", `hint: \`paw restart 2027-intern#team2027\` parses (${argv.join(" ")})`);
   }
 
   // --- fix 2: spawn-lock waiters outlast a legitimate holder ---------------------------------------

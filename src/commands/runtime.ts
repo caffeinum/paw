@@ -147,8 +147,9 @@ async function reviveAgents(space: string, names: string[]): Promise<{ revived: 
       });
       if (headroom === "gave-up") console.log(c.dim(`  still loaded after the wait cap — spawning ${name} anyway`));
       try {
-        await ensureAgentSpawned(ctl, { space, name, cwd: folder });
-        revived.push(name);
+        const r = await ensureAgentSpawned(ctl, { space, name, cwd: folder });
+        if (r.stuck) console.error(`paw: ${r.stuck}`);
+        (r.stuck ? skipped : revived).push(name);
       } catch {
         skipped.push(name); // a spawn failure (e.g. two-writer guard) — reported, not fatal to the rest
       }

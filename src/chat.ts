@@ -29,7 +29,9 @@ import {
   checkAgentSpec,
   assertUnambiguousTarget,
   canonicalDir,
+  cliRestartConsent,
   ensureAgentSpawned,
+  unreachableHint,
   stuckWarning,
   folderForName,
   folderToName,
@@ -284,9 +286,9 @@ export function completeMention(line: string, names: string[]): [string[], strin
   return [hits, `@${m[1]}`];
 }
 
-type ChatArgs = { space?: string; server?: string; target?: string; model?: string; name?: string; agent?: string; provider?: string; personality?: string; fresh: boolean; only: boolean; all: boolean };
+type ChatArgs = { space?: string; server?: string; target?: string; model?: string; name?: string; agent?: string; provider?: string; personality?: string; fresh: boolean; only: boolean; all: boolean; restart: boolean };
 export function parseArgs(argv: string[]): ChatArgs {
-  const out: ChatArgs = { fresh: false, only: false, all: false };
+  const out: ChatArgs = { fresh: false, only: false, all: false, restart: false };
   const value = (flag: string, v: string | undefined): string => {
     if (v === undefined || v.startsWith("-")) throw new Error(`paw: ${flag} needs a value`);
     return v;
@@ -303,6 +305,7 @@ export function parseArgs(argv: string[]): ChatArgs {
     else if (a === "--fresh") out.fresh = true; // birth a NEW agent (was `paw create`); fails loud if one exists
     else if (a === "--only") out.only = true; // FILTER to the target agent (the `@name` view, reached by folder/`.` instead of a name)
     else if (a === "--all") out.all = true; // every conversation, no agent preselected (what a bare `paw chat` used to mean)
+    else if (a === "--restart") out.restart = true; // consent in advance: the wake gate may restart a live-but-stuck agent
     else if (!a.startsWith("-") && out.target === undefined) out.target = a;
   }
   return out;
@@ -359,7 +362,7 @@ function freshTarget(space: string, target: string): { folder: string; name: str
 }
 
 async function chat(argv: string[]): Promise<void> {
-  const { space: spaceArg, server: serverArg, target: givenTarget, model, name: nameFlag, agent: agentFlag, provider, personality: personalityFlag, fresh, only, all } = parseArgs(argv);
+  const { space: spaceArg, server: serverArg, target: givenTarget, model, name: nameFlag, agent: agentFlag, provider, personality: personalityFlag, fresh, only, all, restart } = parseArgs(argv);
   // A personality is given at BIRTH; an existing agent's is changed with `paw persona <name> --reroll`.
   if (personalityFlag !== undefined && !fresh) throw new Error("paw: --personality is for a new agent (`paw chat --fresh <folder> --personality …`) — for an existing one use `paw persona <name> --reroll [seed]`");
   const personalityArg = personalityFlag !== undefined ? parsePersonalityArg(personalityFlag) : undefined; // validated before anything is registered
@@ -736,6 +739,7 @@ async function chat(argv: string[]): Promise<void> {
   // If a target was named, resolve it now: spawn the folder's agent, or focus a live agent by name.
   // With no target we skip straight to broadcast mode — nothing is spawned.
   let spawned = false;
+  let busy: true | undefined;
   if (name !== undefined) {
     // SAY something before the wait. Resolving a target can take tens of seconds — a cold claude boot,
     // or an agent already `starting` — and until now the terminal printed NOTHING for the whole time:
@@ -746,8 +750,9 @@ async function chat(argv: string[]): Promise<void> {
     process.stdout.write(c.dim(`  connecting to ${name}…\n`));
     try {
       if (folder) {
-        const r = await ensureAgentSpawned(startup, { space, name, cwd: folder, model, brief, kind });
+        const r = await ensureAgentSpawned(startup, { space, name, cwd: folder, model, brief, kind, restartLive: cliRestartConsent(restart) });
         spawned = r.spawned;
+        busy = r.busy;
         // A fresh spawn is the genuinely slow path (a cold claude, resuming a long session). Naming it
         // turns "it hung" into "it is doing the slow thing", which is the difference between waiting
         // and Ctrl-C — and a Ctrl-C here used to leave the spawn lock behind (see src/lock.ts).
@@ -767,7 +772,7 @@ async function chat(argv: string[]): Promise<void> {
       await ep.stop().catch(() => {});
       await releaseInbox();
       throw folder
-        ? new Error(`paw: agent "${name}" isn't reachable on the mesh — try \`paw down\` then retry`)
+        ? new Error(unreachableHint(name, space, busy))
         : new Error(`paw: no live agent named "${name}" — start one with \`paw chat <folder>\``);
     }
     curName = name;
@@ -2062,7 +2067,7 @@ async function chat(argv: string[]): Promise<void> {
             if (home && existsSync(home)) {
               emit(c.dim(`↻ ${to} is offline — respawning from ${home}…`));
               try {
-                const r = await withManagerControl(space, server, (ctl) => ensureAgentSpawned(ctl, { space, name: to, cwd: home, model }));
+                const r = await withManagerControl(space, server, (ctl) => ensureAgentSpawned(ctl, { space, name: to, cwd: home, model, ...(restart ? { restartLive: "allow" as const } : {}) }));
                 if (r.stuck) {
                   emit(c.yellow(stuckWarning(to, r.stuck, !!body && !!r.id)));
                   stuckId = r.id;
@@ -2154,7 +2159,7 @@ const chatCommand: Command = {
   name: "chat",
   group: "Mesh",
   summary: "chat with an EXISTING agent (by @name or folder; wakes it if offline); replies stream back live — --fresh creates a new one",
-  usage: 'chat [<folder>|<name>|@<name>|#<channel>][#<space>] [--only] [--all] [--name <n>] [--fresh [--personality <seed|"vibe"|none>]] [--agent kit|codex|opencode|hermes|claude [--provider codex|grok|<hermes provider>] [--model m]]   (default: "." — this folder\'s agent; --all = every conversation, nothing preselected; --name pins a 2nd+ EXTRA agent at the folder; --fresh births a NEW default agent, fails loud if one already exists; --agent creates the agent on that harness, or targets it if it already runs there)',
+  usage: 'chat [<folder>|<name>|@<name>|#<channel>][#<space>] [--only] [--all] [--restart] [--name <n>] [--fresh [--personality <seed|"vibe"|none>]] [--agent kit|codex|opencode|hermes|claude [--provider codex|grok|<hermes provider>] [--model m]]   (default: "." — this folder\'s agent; --all = every conversation, nothing preselected; --restart = may restart the agent if it looks stuck (else a tty asks); --name pins a 2nd+ EXTRA agent at the folder; --fresh births a NEW default agent, fails loud if one already exists; --agent creates the agent on that harness, or targets it if it already runs there)',
   run: (a) => chat([...a.raw]),
 };
 

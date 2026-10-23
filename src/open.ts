@@ -13,7 +13,7 @@ import { registry, type Command } from "@cotal-ai/core";
 import { attachTmux, tmuxSession, tmuxSplit, tmuxSplitAdvice, tmuxWindowExists } from "./native-attach.ts";
 import { liveSessionProcs } from "./named.ts";
 import { existsSync, readdirSync } from "node:fs";
-import { assertUnambiguousTarget, canonicalDir, ensureAgentSpawned, folderForName, personaFilePath, registerInstance, resolveFolderAgent, setFolderName, type Kind } from "./addressing.ts";
+import { assertUnambiguousTarget, canonicalDir, cliRestartConsent, ensureAgentSpawned, folderForName, personaFilePath, registerInstance, resolveFolderAgent, setFolderName, type Kind } from "./addressing.ts";
 import { KIT_AGENT, kitBinPath } from "./kit.ts";
 import { agentSummary } from "./agent-summary.ts";
 import { personaTranscriptRoots, readAgentType, readCwd, readHeadless, readKitStorage, readResumeId, transcriptPath } from "./session.ts";
@@ -144,7 +144,8 @@ export async function attachResolved(
     // Attaching to an offline agent starts it, and a boot can take a minute: say so, never a blank wait.
     // Only a real spawn prints (a live agent is reused silently).
     const progress = (line: string) => process.stderr.write(`paw: attach ${name}: ${line}\n`);
-    await withManagerControl(space, pawServer(space), (ctl) => ensureAgentSpawned(ctl, { space, name, cwd: folder, model, brief, kind, progress }));
+    const r = await withManagerControl(space, pawServer(space), (ctl) => ensureAgentSpawned(ctl, { space, name, cwd: folder, model, brief, kind, progress, restartLive: cliRestartConsent(false) }));
+    if (r.stuck) process.stderr.write(`paw: ${r.stuck}\n`);
   }
 
   // A HEADLESS agent (`claude -p`, docs/notes/headless.md) or a KIT agent (src/kit.ts) has no TUI

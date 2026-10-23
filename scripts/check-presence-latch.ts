@@ -120,7 +120,7 @@ try {
       resolve();
       return new Promise(() => {});
     };
-    void ensureAgentSpawned(ctl as unknown as Parameters<typeof ensureAgentSpawned>[0], { space: "healthy", name: "evals", cwd: "/x" }).catch((e: Error) => console.error("healthy gate threw:", e.message));
+    void ensureAgentSpawned(ctl as unknown as Parameters<typeof ensureAgentSpawned>[0], { space: "healthy", name: "evals", cwd: "/x", restartLive: "allow" }).catch((e: Error) => console.error("healthy gate threw:", e.message));
   });
   await Promise.race([reached, new Promise((r) => setTimeout(r, 5000))]);
   assert(calls.join() === "despawn evals", `gate (healthy store, real probe): still restarts a genuine zombie (${calls.join() || "no calls"})`);

@@ -131,7 +131,7 @@ export async function stopHere(space: string, name: string, pin: string | undefi
 }
 
 async function startHere(space: string, name: string, cwd: string): Promise<void> {
-  const r = await withEnsuredManager(space, (ctl) => ensureAgentSpawned(ctl, { space, name, cwd, reuseUnmanaged: false }), { ensureSpace: ensureSpaceFor(space) });
+  const r = await withEnsuredManager(space, (ctl) => ensureAgentSpawned(ctl, { space, name, cwd, reuseUnmanaged: false, restartLive: "allow" }), { ensureSpace: ensureSpaceFor(space) });
   if (r.stuck) throw new Error(`paw: "${name}" is stuck starting here: ${r.stuck}`);
 }
 
