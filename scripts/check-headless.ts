@@ -42,6 +42,7 @@ const tui = {
   env: { COTAL_NAME: "a" },
   confirm: "WARNING: Loading development channels",
   confirmBefore: [{ prompt: "❯ No, exit\nYes, I trust this folder", key: "Down" as const }],
+  confirmReady: ["? for shortcuts"],
   control: { path: "/c", token: "t" },
 };
 const hl = headlessLaunch(tui, "/d/a");
@@ -53,6 +54,8 @@ ok("keeps the dev-channels flag (named.ts mesh marker) and the resume pin", carg
 ok("drops confirm, keeps env + control", hl.confirm === undefined && hl.env?.COTAL_NAME === "a" && hl.control?.token === "t");
 // cotal ≥0.80: every runtime refuses startup choices without a final confirm, so both go together.
 ok("drops confirmBefore with it (cotal's runtimes refuse one without the other)", hl.confirmBefore === undefined);
+// cotal ≥0.85: `confirmReady` (the input-screen texts) is refused without a confirm too.
+ok("drops confirmReady with it (cotal ≥0.85 refuses it without a confirm)", hl.confirmReady === undefined);
 ok("refuses an initial prompt", throws(() => headlessLaunch({ ...tui, args: ["hello", ...tui.args] }, "/d"), /initial prompt/));
 ok("refuses a claudeArgs -p", throws(() => headlessLaunch({ ...tui, args: [...tui.args, "-p"] }, "/d"), /sets -p itself/));
 ok("refuses a launch without the mesh marker", throws(() => headlessLaunch({ ...tui, args: ["--model", "x"] }, "/d"), /dev-channels/));
