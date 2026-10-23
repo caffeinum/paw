@@ -11,7 +11,8 @@
  * command line base64-encoded, so neither fly's nor a remote login shell's quoting ever touches it.
  */
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import type { Readable } from "node:stream";
+import { once } from "node:events";
+import type { Readable, Writable } from "node:stream";
 import { HASH_SH, type DestFacts, type DestFolder, type Manifest, type RepoInfo, type Transport, type What, transportLabel } from "./teleport-plan.ts";
 
 /** The oldest target paw this one can drive: 2 = the agents folder and `__teleport rewrite-cwd`. */
@@ -78,9 +79,19 @@ export function collect(child: ChildProcess, input?: Buffer | string | Readable)
     child.stdin!.on("error", () => {}); // a script that exits early closes its stdin; the exit code says why
     if (input === undefined) child.stdin!.end();
     else if (typeof input === "string" || Buffer.isBuffer(input)) child.stdin!.end(input);
-    else input.pipe(child.stdin!);
+    else pump(input, child.stdin!).catch(() => {}); // a failed side shows in its exit code
     child.on("close", (code, signal) => resolve({ code: code ?? (signal ? 128 : 1), stdout: Buffer.concat(out), stderr: err }));
   });
+}
+
+/** Copy a stream into a child's stdin chunk by chunk, honouring backpressure. Not `pipe()`: under bun a
+ *  piped child stdout → child stdin cuts large streams short (a 50 MB transcript → "Truncated tar archive"). */
+async function pump(from: Readable, to: Writable): Promise<void> {
+  try {
+    for await (const chunk of from) if (!to.write(chunk)) await once(to, "drain");
+  } finally {
+    to.end();
+  }
 }
 
 export async function run(side: Side, script: string, input?: Buffer | string | Readable): Promise<RunResult> {
