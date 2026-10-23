@@ -111,6 +111,20 @@ writeFileSync(rejecting, `---\nname: fxbot\nagent: acp\nacpCommand: '["/usr/bin/
 ok("launch: a persona acpPermission wins", pawAcpConnector.buildLaunch(opts(rejecting)).env!.COTAL_ACP_PERMISSION === "reject");
 ok("launch: a spawn permission option wins", pawAcpConnector.buildLaunch(opts(born, { permission: "reject" })).env!.COTAL_ACP_PERMISSION === "reject");
 
+{
+  // A remote space on a private CA: the seat host dials the broker itself, so it needs the CA env too
+  // (found by e2e:teleport — the seat died on "self-signed certificate" while claude seats connected).
+  const { writeRemoteMesh, removeRemoteMesh } = await import("../src/remote-mesh.ts");
+  const ca = process.env.NODE_EXTRA_CA_CERTS;
+  process.env.NODE_EXTRA_CA_CERTS = join(home, "ca.pem");
+  writeRemoteMesh({ space: "s1", server: "tls://127.0.0.1:1", root: home, ts: new Date().toISOString() });
+  ok("launch: a remote space's seat inherits NODE_EXTRA_CA_CERTS", pawAcpConnector.buildLaunch(opts(born)).env!.NODE_EXTRA_CA_CERTS === join(home, "ca.pem"));
+  removeRemoteMesh("s1");
+  ok("launch: a local space's seat gets no CA env added", pawAcpConnector.buildLaunch(opts(born)).env!.NODE_EXTRA_CA_CERTS === undefined);
+  if (ca === undefined) delete process.env.NODE_EXTRA_CA_CERTS;
+  else process.env.NODE_EXTRA_CA_CERTS = ca;
+}
+
 for (const dir of temps) rmSync(dir, { recursive: true, force: true });
 console.log(fails ? `\n${fails} FAILED` : "\ncheck:acp passed");
 process.exit(fails ? 1 : 0);

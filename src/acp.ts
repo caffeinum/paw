@@ -19,7 +19,7 @@ import type { Connector, LaunchOpts, LaunchSpec } from "@cotal-ai/core";
 import { resolveAcpHost } from "./acp-host.ts";
 import { beadsDir } from "./beads-dir.ts";
 import { ADDRESSING_BRIEF, CHANNELS_BRIEF, OPERATOR_REQUESTS_BRIEF, TASKS_BRIEF, UNATTENDED_BRIEF, WAKE_BRIEF } from "./brief.ts";
-import { niced } from "./connector.ts";
+import { niced, remoteTlsEnv } from "./connector.ts";
 import { HUMAN_PEER, humanPeer } from "./names.ts";
 import { personaValue, readNice } from "./session.ts";
 
@@ -74,7 +74,8 @@ function launchOnHost(opts: LaunchOpts): LaunchSpec {
 export const pawAcpConnector: Connector = {
   ...acpConnector,
   buildLaunch(opts: LaunchOpts): LaunchSpec {
-    const spec = launchOnHost(withPawPermission(opts));
+    // A remote space on a private CA: the seat host must trust it too (the claude connector's same fix).
+    const spec = launchOnHost(withPawPermission({ ...opts, ...remoteTlsEnv(opts) }));
     return niced(
       {
         ...spec,
