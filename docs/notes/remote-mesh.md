@@ -10,7 +10,7 @@ untouched: a space with no record resolves exactly as before.
 
 - **Record** (`src/remote-mesh.ts`, `paw mesh add|rm|ls`): `$PAW_HOME/spaces/<space>/remote-mesh.json`
   = `{space, server: "tls://host:port", root, ts}`. `root` is a dir whose `.cotal/auth/auth.json` is the
-  space's account **signer** (`cotal mint --signer` on the box: `space` + `account.pub` +
+  space's account **signer** (`cotal auth signer --out <file>` on the box — `cotal mint --signer` before cotal 0.100: `space` + `account.pub` +
   `account.signingSeed`). Optional `human` = your mesh name there (below). The record holds the path,
   never the signer. `mesh add` refuses non-`tls://`
   servers, the default space, a signer for another space, and a signer readable by other users.
@@ -183,8 +183,8 @@ presence-latch detection (AUTH-GAP), and `paw spaces` (reads the local broker on
 ## Test
 
 `scripts/check-remote.ts` (`pnpm check:remote`, hermetic unit checks) and `scripts/e2e-remote.ts`
-(`COTAL_BIN=<cotal-ai@0.84.0>/dist/cotal.js node scripts/e2e-remote.ts`): a private `cotal up
---no-manager` JWT + TLS broker with a self-signed cert, `mint --signer`, `paw mesh add`, no-CA
+(`COTAL_BIN=<cotal-ai@0.100.0>/dist/cotal.js node scripts/e2e-remote.ts`): a private `cotal up
+--no-manager` JWT + TLS broker with a self-signed cert, `auth signer`, `paw mesh add`, no-CA
 refusal, a real haiku claude spawned by `paw dm --space` (its cotal MCP carries `COTAL_TLS=1`, read
 with `ps -E`), reply read by `paw inbox`, who/status (the TLS-required presence probe reaches the broker),
 `paw restart`, second DM. Step 4a/4b attaches under node-pty: `paw attach` (grant issued +

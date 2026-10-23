@@ -80,7 +80,8 @@ try {
   // `cotald --help` exercises the whole chain (absolute node → .ts entry → cotal's runCli) with zero
   // side effects: no mesh, no manager, no state touched.
   const out = execFileSync(runExec, [...runArgs, "--help"], { env: daemonEnv(), encoding: "utf8", timeout: 30_000 });
-  assert(/lateral agent coordination/.test(out), `the resolved daemon command RUNS under a stripped PATH (${out.split("\n")[0]})`);
+  // cotal 0.100's help leads with the space state, not a tagline; the usage line is the stable marker.
+  assert(/^\s*cotal <command> \[options\]$/m.test(out), `the resolved daemon command RUNS under a stripped PATH (${out.split("\n")[0]})`);
 } catch (e) {
   assert(false, `the resolved daemon command runs under a stripped PATH — ${(e as Error).message.split("\n")[0]}`);
 }

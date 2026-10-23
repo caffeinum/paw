@@ -32,18 +32,19 @@ This file is the INDEX. The full design notes, incident narratives and rationale
 - **`ensure()` never switches the manager runtime implicitly** — only `paw runtime <r>` / explicit
   `PAW_RUNTIME` (a switch despawns the whole fleet; 802ad0d).
 
-## cotal 0.84.0 (2026-10-16)
-Pinned **0.84.0** (all `@cotal-ai/*` exact; age-gate exemption in pnpm-workspace.yaml, delete after
-2026-10-24). ONE pnpm patch re-keyed every bump: the core meta-validator perf patch (the #2401 hub
-patch is gone — `serveClaudeSession` ships upstream since 0.82). Since 0.84 cotal loads claude's
-NATIVE MCP sources unless a launch is exclusive, so `pawConnector` always passes
-`mcpServersExclusive: true` (→ `--strict-mcp-config`; `check:launch` asserts it). Since 0.80 cotal's
-runtimes answer BOTH claude startup prompts (trust dialog via `confirmBefore`, then dev-channels) —
-paw never types at them; paw always passes its own `--permission-mode` (cotal defaults managed seats
-to bypass). The presence KV bucket is memory-backed (#1356). Since 0.49 a manager SIGTERM spares its
-agents, so `stopOwnedManager` despawns every agent first; `pawConnector` spreads `...claudeConnector`.
-→ [cotal-dependency.md#cotal-0840](docs/notes/cotal-dependency.md#cotal-0840), older bumps (0.81.1,
-0.72.1, 0.58…) in the same note; [sleep.md](docs/notes/sleep.md)
+## cotal 0.100.0 (2026-10-23)
+Pinned **0.100.0** (all `@cotal-ai/*` exact; age-gate exemption in pnpm-workspace.yaml, delete after
+2026-10-30). ONE pnpm patch re-keyed every bump: the core meta-validator perf patch (regenerated for
+0.100's dist — a stale hunk offset fails `pnpm install` with ERR_PNPM_PATCH_FAILED). Since 0.85 the claude
+launch carries `confirmReady` (input-screen texts), which runtimes refuse without `confirm` — headless
+launches drop `confirm`, `confirmBefore` AND `confirmReady`. Since 0.95 the embedded cotal CLI sends
+opt-out usage telemetry (`COTAL_TELEMETRY_DISABLED=1` turns it off; paw leaves it to the operator) and
+writes `~/.cotal/telemetry.json` even under a test `COTAL_HOME`. #1629's self-exec guard is unchanged, so
+under `PAW_AUTH=1` cotal's delivery daemon still can't start via cotald. Since 0.84 `pawConnector` passes
+`mcpServersExclusive: true`; since 0.80 cotal's runtimes answer both claude startup prompts; a manager
+SIGTERM spares its agents, so `stopOwnedManager` despawns every agent first.
+→ [cotal-dependency.md#cotal-01000](docs/notes/cotal-dependency.md#cotal-01000), older bumps (0.84.0,
+0.81.1, 0.72.1…) in the same note; [sleep.md](docs/notes/sleep.md)
 
 ## Layout
 Each entry: what it is + the most load-bearing rule. Full notes behind the link.
@@ -100,7 +101,7 @@ Each entry: what it is + the most load-bearing rule. Full notes behind the link.
 
 ### Remote meshes → [remote-mesh.md](docs/notes/remote-mesh.md)
 - `src/remote-mesh.ts` + `src/commands/mesh.ts` — `paw mesh add <space> --server tls://… --root <dir>`: a
-  space on a broker paw never starts; `root/.cotal/auth/auth.json` = the `cotal mint --signer` file
+  space on a broker paw never starts; `root/.cotal/auth/auth.json` = the `cotal auth signer` file (`mint --signer` before 0.100)
   (bearer secret, 0600, never printed). `pawServer(space)` routes; no record ⇒ local, unchanged.
   `--as <name>` / `paw mesh set <space> --as <name>` = your human name there (`humanPeer(space)`, default
   `you`; shared brokers need distinct ones). → [remote-mesh.md#human-name](docs/notes/remote-mesh.md#human-name)

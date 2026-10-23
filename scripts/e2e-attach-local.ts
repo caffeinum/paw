@@ -7,7 +7,7 @@
  * grant-based attach (open mesh ⇒ bare redemption, cotal #1205). Asserts cotal says "attached", the
  * claude TUI streams, Ctrl-] exits 0 with "detached", and the agent is still on the mesh afterwards.
  *
- *   COTAL_BIN=<cotal-ai@0.84.0>/dist/cotal.js node scripts/e2e-attach-local.ts
+ *   COTAL_BIN=<cotal-ai@0.100.0>/dist/cotal.js node scripts/e2e-attach-local.ts
  *
  * cotal-ai must be installed OUTSIDE the repo (see scripts/e2e-remote.ts).
  */
@@ -83,7 +83,7 @@ try {
   ok("…and it is claude's own chrome", /bypass permissions|❯|for shortcuts/.test(after));
   if (code === undefined) p.write("\x1d");
   for (let i = 0; i < 30 && code === undefined; i++) await sleep(500);
-  ok("Ctrl-] detaches cleanly", code === 0 && /detached from /.test(strip(output)), `exit ${code}`);
+  ok("Ctrl-] detaches cleanly", code === 0 && /detached from |Detached\s*$/m.test(strip(output)), `exit ${code}`); // 0.100: a "Detached" report
   if (code === undefined) p.kill();
   const who = paw(["who"]);
   ok("the agent is still on the mesh after the detach", who.status === 0 && /\bagent\b/.test(who.stdout), who.stdout.trim().replace(/\n/g, " | "));

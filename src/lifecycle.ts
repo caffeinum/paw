@@ -932,7 +932,7 @@ async function ensureRemoteMesh(space: string, server: string): Promise<void> {
   const r = await probeConnect(server, { creds, tls: true, timeoutMs: 10_000 });
   if (r.ok) return;
   const why: Record<typeof r.reason, string> = {
-    "auth-required": `the broker rejected creds minted from the signer under ${rec.root} — it is not this mesh's account signer (re-run \`cotal mint --signer\` on the box and copy it again)`,
+    "auth-required": `the broker rejected creds minted from the signer under ${rec.root} — it is not this mesh's account signer (re-run \`cotal auth signer --out …\` — \`cotal mint --signer\` before cotal 0.100 — on the box and copy it again)`,
     "stale-auth": `the minted creds read as expired — check this machine's clock`,
     unreachable: `nothing usable answered — the broker is down, the address is wrong, or its TLS certificate is not trusted here (a private CA needs NODE_EXTRA_CA_CERTS=<ca.pem> in the environment of every paw command)`,
     timeout: `the connect ran out of time — the link is slow or the broker is overloaded; retry`,

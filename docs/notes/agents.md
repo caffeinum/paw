@@ -347,5 +347,6 @@ then Enter — before its dev-channels Enter, each step once and in order. A paw
 races that sequence (a second Down, or a key that clears the step cotal is waiting for, and the seat is
 ended at 15s), so (b) above is now read-only: paw names the screen for `cause()` and still re-writes
 an erased trust entry (a). The 0.68 "Claude home does not trust" refusal is gone upstream, and with it
-`spawnPinned`'s retry. Headless launches drop `confirmBefore` with `confirm` (runtimes refuse one
-without the other). → [cotal-dependency.md#cotal-0811](cotal-dependency.md#cotal-0811)
+`spawnPinned`'s retry. Headless launches drop `confirmBefore` and (since cotal 0.85) `confirmReady`
+with `confirm` (runtimes refuse either without it). → [cotal-dependency.md#cotal-0811](cotal-dependency.md#cotal-0811),
+[cotal-dependency.md#cotal-01000](cotal-dependency.md#cotal-01000)
