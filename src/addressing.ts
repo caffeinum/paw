@@ -35,6 +35,7 @@ import { pawServer } from "./server.ts";
 import { readRemoteMesh } from "./remote-mesh.ts";
 import { withFileLock, withFileLockAsync, type LockOpts } from "./lock.ts";
 import { liveSessionProcs, meshAgentSession, meshIdentity, type LiveSessionProc } from "./named.ts";
+import { readTeleported, teleportedRefusal } from "./teleport-plan.ts";
 import { checkKitArgs, ensureKitBinary, isKitProvider, KIT_AGENT, preflightKitArgs, readKitPersona } from "./kit.ts";
 import { HERMES_AGENT } from "./hermes-profile.ts";
 import { ACP_AGENT } from "./acp-agent.ts";
@@ -862,6 +863,9 @@ export async function ensureAgentSpawned(
   // The caller addresses the live foreground agent through the roster instead (readyId/waitForPeerId).
   if (readForeground(opts.space, opts.name)) return { spawned: false };
   const ownPersona = personaFilePath(opts.space, opts.name);
+  // A teleported agent runs on another box now (src/teleport.ts): no wake path here may start a second copy.
+  const teleported = readTeleported(ownPersona);
+  if (teleported) throw new Error(teleportedRefusal(opts.name, teleported));
   if (existsSync(ownPersona)) assertOneSpace(opts.space, readResumeId(ownPersona));
   const lastWrite = (): number | undefined => {
     const file = personaFilePath(opts.space, opts.name);

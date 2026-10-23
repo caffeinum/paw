@@ -143,6 +143,10 @@ Each entry: what it is + the most load-bearing rule. Full notes behind the link.
 - `src/native-attach.ts` — `attachTmux`; default socket; `nudgeTmuxConfirm`. → [agents.md#native-attach](docs/notes/agents.md#native-attach)
 - `src/attach-client.ts` — ws pty attach client, now dead code. → [agents.md#attach-client](docs/notes/agents.md#attach-client)
 - Waking a sleeping agent: `cotal_dm("global", "wake <name>")`; the tty dev-channels prompt nudge. → [agents.md#waking-a-sleeping-agent-the-in-mesh-gap-and-the-tty-prompt](docs/notes/agents.md#waking-a-sleeping-agent-the-in-mesh-gap-and-the-tty-prompt)
+- `src/teleport.ts` (+ `-plan.ts`, `-shell.ts`) — `paw teleport <a> --to fly:<app>|ssh:<host> [checkmarks]` /
+  `--back`: moves persona + session chain (continued-in links) / repo (same path, bundle) / skills / memory /
+  CLAUDE.md; logins never copied; refuses on any blocker; persona `teleported:` makes every wake path refuse;
+  failed start there restarts it here. Target paw must answer `paw __teleport probe`. → [teleport.md](docs/notes/teleport.md)
 - `src/sleep.ts`, `src/sleep-host.ts`, `src/sleep-state.ts` — `paw sleep`: opt-in hibernation; the
   mailbox hosts a stand-in presence so a DM wakes the agent and the backlog is re-published. → [sleep.md](docs/notes/sleep.md)
 
@@ -248,6 +252,7 @@ Each entry: what it is + the most load-bearing rule. Full notes behind the link.
 | [docs/notes/cotal-dependency.md](docs/notes/cotal-dependency.md) | cotal 0.58, 0.48 bump, version history back to 0.9 |
 | [docs/notes/agents.md](docs/notes/agents.md) | connector, cwd, paw claude, foreground, open/attach, waking |
 | [docs/notes/sleep.md](docs/notes/sleep.md) | paw sleep / sleep host |
+| [docs/notes/teleport.md](docs/notes/teleport.md) | paw teleport: transports, what moves, the continued-in chain, cutover, marker, fly specifics, e2e |
 | [docs/notes/addressing.md](docs/notes/addressing.md) | registry, adopt, rename, rm, named sessions, github, worktrees |
 | [docs/notes/status.md](docs/notes/status.md) | paw status, failure, busy, unregistered rows |
 | [docs/notes/transcript-log.md](docs/notes/transcript-log.md) | paw sessions, paw log, transcript parser |

@@ -64,3 +64,9 @@ Moved verbatim from CLAUDE.md (2026-10-02 split). Index: [CLAUDE.md](../../CLAUD
   degraded"); `bootLocalMesh` from cold exits clean and adopts mesh.pid; two processes booting one
   cold broker at once BOTH succeed (fails without the adopt fallback — `.cotal` EEXIST); the lifecycle
   lock waits out a 90s-old LIVE holder, announces the wait once, and a timeout names the holder. ~20s.
+  `scripts/check-teleport.ts` (`pnpm check:teleport`) — hermetic (temp HOME + PAW_HOME): teleport's args,
+  transports, checklist, the continued-in chain on fixture transcripts, manifest, dirty-repo refusal, probe
+  parse + blockers, plan, persona marker + the wake-gate refusal, and its pack/unpack/repo scripts run for
+  real between two temp HOMEs. `scripts/e2e-teleport.ts` (`COTAL_BIN=… node scripts/e2e-teleport.ts`) —
+  the real `ssh:` transport into a Docker container running this checkout's paw on a private JWT+TLS broker;
+  see [teleport.md#tests](teleport.md#tests).

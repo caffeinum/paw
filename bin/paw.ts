@@ -54,6 +54,7 @@ const COMMAND_MODULES: Array<() => Promise<unknown>> = [
   () => import("../src/global.ts"), // self-registers the "global" command (bring up the always-on $HOME machine agent)
   () => import("../src/sleep.ts"), // self-registers "sleep" (opt-in hibernation of idle agents; self-ensures)
   () => import("../src/start.ts"), // self-registers the "start" command (cold-start the whole registered fleet)
+  () => import("../src/teleport.ts"), // self-registers "teleport" (move an agent to another box) + the hidden "__teleport" source-side steps
   () => import("../src/commands/optimize.ts"), // self-registers "optimize" (restart long-running idle agents, one at a time, verified)
   () => import("../src/commands/top.ts"), // self-registers "top" (per-agent memory/cpu/subprocesses + cleanup hints; read-only, self-ensures)
   () => import("../src/commands/tidy.ts"), // self-registers "tidy" (DM agents holding background processes: still using them?)

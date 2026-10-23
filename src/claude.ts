@@ -23,6 +23,7 @@ import {
   ensureAgentSpawned,
   ensurePersonaFile,
   folderToName,
+  personaFilePath,
   restartAgent,
   psRowAlive,
   resolveModel,
@@ -37,6 +38,7 @@ import { confineAndTrustCwd } from "./cwd.ts";
 import { ensureBypassConsent, launchesBypass } from "./bypass-consent.ts";
 import { attachResolved } from "./open.ts";
 import { readForeground, registerForeground, unregisterForeground } from "./foreground.ts";
+import { readTeleported, teleportedRefusal } from "./teleport-plan.ts";
 import { daemonEnv, resolveSpace, withEnsuredManager } from "./lifecycle.ts";
 import { withFileLockAsync } from "./lock.ts";
 import { resolveNamedSession } from "./named.ts";
@@ -214,6 +216,9 @@ export async function runClaude(argv: string[]): Promise<void> {
   const space = spaceArg ?? resolveSpace();
   const folder = canonicalDir("."); // always the operator's current directory — no folder positional
   const name = nameArg ?? folderToName(space, folder);
+  // `--fg` launches claude itself, past the wake gate's own teleported check (src/teleport.ts).
+  const teleported = readTeleported(personaFilePath(space, name));
+  if (teleported) throw new Error(teleportedRefusal(name, teleported));
 
   const intent = deriveSessionIntent(claudeArgs);
   const sessionId = deriveSessionId(folder, claudeArgs); // the operator's explicit pin (undefined = fresh/bare)
