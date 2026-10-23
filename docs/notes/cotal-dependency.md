@@ -2,6 +2,86 @@
 
 Moved verbatim from CLAUDE.md (2026-10-02 split). Index: [CLAUDE.md](../../CLAUDE.md)
 
+## cotal 0.100.0
+
+**Bumped 0.84.0 → 0.100.0 on 2026-10-23** (operator-approved, inside the 7-day min-release-age window:
+0.100.0 published 2026-10-23T16:16Z). `minimumReleaseAgeExclude` lists the eleven 0.100.0 packages (the ten
+direct ones + transitive `@cotal-ai/seat`) by EXACT version, replacing 0.84.0's — **delete it after
+2026-10-30**. Every package has a 0.100.0; nats-server (2.14.0) and the other deps are unchanged. Sixteen
+releases (0.85–0.100, ~1260 commits); read from the packages' changesets. What changed, and what paw did:
+- **0.85 `LaunchSpec.confirmReady`** (6e10d50): the claude connector now declares input-screen texts
+  (`? for shortcuts`, `(shift+tab to cycle)`) so a seat whose claude skips the dev-channels warning
+  (channels off by org policy) still starts. Every runtime REFUSES `confirmReady` without `confirm`
+  ("startup choices require a final confirmation prompt"), and `headlessLaunch` dropped only `confirm` +
+  `confirmBefore` — every headless agent would have been refused at spawn. It now drops `confirmReady`
+  too; `check:headless` asserts it, `e2e-headless` spawns one.
+- **0.100 signer export moved** (`cotal mint --signer` → `cotal auth signer --out <file>`), and the export
+  refuses an `--out` inside any `.cotal/` (LIFECYCLE_BLOCKED). paw's `mesh add` / auth-required hints
+  name both forms (the team2027 box still runs 0.84); `e2e-remote` and `e2e-teleport` export beside the
+  root and copy in. The file format is unchanged (`e2e-remote` loads it).
+- **0.9x CLI output**: `cotal --help` leads with the space state (the "lateral agent coordination" tagline
+  is gone — `check:spawn-env` now asserts the usage line); attach ends with a `Detached` report instead of
+  `detached from <name>`; multi-manager `cotal ps` puts the count under the `manager <id>` title.
+  `e2e-remote`/`e2e-attach-local` parse both forms. paw's own code parses none of these.
+- **0.95 opt-out usage telemetry** (b7acdcc, 6999190): `runCli` arms it for every command, so cotald's
+  `up` and every `paw cotal <verb>` POST one event to `https://cotal.ai/v1/telemetry` (level `regular`)
+  and create `~/.cotal/telemetry.json` in the OS user's dir — `COTAL_HOME` does NOT redirect it, so test
+  runs leak it into the real `~/.cotal`. The one-time notice prints only to a TTY stderr. **paw changes
+  nothing — operator's call**: `COTAL_TELEMETRY_DISABLED=1` (or `DO_NOT_TRACK=1`) in the daemon env, or
+  `paw cotal telemetry off`. Test runs should export `COTAL_TELEMETRY_DISABLED=1`.
+- **#1629 self-exec guard: unchanged.** `selfArgv`/`runsCliEntry` still admit only the `cotal-ai` package's
+  own entry; there is no hook for an embedder to name its entry. Under `PAW_AUTH=1` `cotal up` still
+  reports a degraded control plane, exits 1, and paw adopts the broker (re-verified on 0.84 and 0.100);
+  cotal's delivery daemon still doesn't start under paw. (0.100 runs it as the hidden `__daemon-deliver`;
+  `cotal deliver` is deprecated — paw invokes neither.)
+- **Core meta-validator patch re-keyed and REGENERATED**: 0.100's `dist/schema-profile.js` moved the hunks
+  ~70 lines, and pnpm's applier refused the 0.84 patch (`ERR_PNPM_PATCH_FAILED`; `patch -p1` applied it with
+  offsets). Same content; upstream still compiles a fresh `Ajv2020` per contract. The new build-time
+  `standaloneContractSource` also builds a fresh Ajv — left alone (never on a runtime path).
+- **0.91 `up` seeds a default persona** (5263954): `<root>/.cotal/agents/default.md`. For the live `paw`
+  space the root is `$HOME`, so the next cold boot writes `~/.cotal/agents/default.md`. paw's personas
+  live in `$PAW_HOME/spaces/<s>/personas`, so nothing reads it.
+- **0.87 seats outlive their manager on static-auth meshes** (aae54dd, 8fc9dca): the manager writes
+  `.cotal/seat-records/<space>/<name>.json`; a successor of the same instance adopts a surviving tmux seat
+  (or restarts a `supervise`d one) instead of retiring it. Open meshes record nothing (`!this.auth`), and
+  macOS pty seats carry no reference. paw still despawns every agent before stopping its manager, so this
+  matters only after a manager crash or a failed despawn — the seat is then taken back, not left
+  unmanaged. No change.
+- **0.87 history reads use per-connection `hist_<readerId>_<n>` consumers** (c06cf5b, breaking for static
+  observer/admin cred FILES minted before 0.87). paw mints a fresh admin/agent cred per command from the
+  current core, and its own remote readers (`chat-history`, `inbox-lag`) sign their own named consumers —
+  no change. A long-lived cred file minted by 0.84 must be reminted to read history with a 0.100 client.
+- Audited, no change needed: launch shape unchanged (`--mcp-config` with a `cotal` server, `--plugin-dir`,
+  dev-channels; paw's `--strict-mcp-config`, `--permission-mode`, nice wrapper all still land —
+  `check:launch`); 0.86 PreToolUse hook denies `cotal_*` tools from any MCP server but `cotal` /
+  `plugin_cotal_cotal` (hub mode rewrites the `cotal` entry in place, so the hub passes); 0.85 numbered
+  trust dialog (`check:trust` green); 0.86 spawn acceptances expire / a resubmitted ended goal is refused
+  (paw never resubmits); 0.86 `supervise` signal handling (paw runs its own supervise); 0.88 presence
+  `runtime` field, 0.100 manager host in presence, empty-bucket snapshots; 0.92.1 tmux `-u`; 0.92.2 bearer
+  command names the resolved entry; 0.100 `--creds` without `--server` dials the registered broker (paw
+  always passes `--server` for remote); 0.100 `up` refuses a group-writable root (`~` is 0750); 0.86–0.100
+  `cotal setup` now installs the cotal Claude plugin user-scope and a Claude Desktop entry (paw never runs
+  setup — don't run `paw cotal setup` casually either); no KV/stream config change or migration found.
+- Verified (isolated: temp PAW_HOME/COTAL_HOME/PAW_COTAL_ROOT, PAW_RELEASE=dev, own nats-server per run,
+  haiku): `pnpm typecheck`; all 48 `check:*` — green except `check:rename` (`bd close` fails) and
+  `check:web` (ECONNRESET), both failing identically on main; `check:presence-latch`/`check:prune` failed
+  once each on an ENOTEMPTY temp-dir cleanup race and passed on two reruns (and on main); `check:rail`;
+  `check:loop`; `check:boot` (cold boot, concurrent boot; the old-argv canary still exits 1). `e2e-headless`:
+  one failure ("paw open hl says it is headless") — identical on main. `e2e-hub` (tmux): three shim-count
+  failures — identical on main (its `shims()` filter also matches each claude, whose inline `--mcp-config`
+  names the shim). `e2e-remote` against a 0.100 broker: all 85 ok. **`e2e-remote` against a cotal 0.84
+  broker + delivery daemon (team2027's shape) with paw on 0.100: all 85 ok** (a temp copy with the version
+  pin relaxed and `mint --signer`). `e2e-attach-local`: ok. CLI smoke on pty: `paw dm .` cold-starts
+  manager + mailbox + agent, reply in 6s; `paw stop`, `paw down` (nothing left); cold `paw start <name>`
+  resumes it, second DM answered in 4s; `paw stop` + `paw down` → no process names the temp dir or space.
+  PAW_AUTH cold boot and three boot/kill/boot cycles in one root: adopted / clean.
+- Cutover (operator's call): `rm -rf node_modules && pnpm install` (the patch re-key — pnpm does not
+  re-apply a changed patch over an existing node_modules), `paw release`, `paw restart`. The restart
+  despawns every agent under the old manager and brings hub + manager + mailbox up from the new release,
+  so no 0.84 manager ever runs 0.100 seats locally; the broker isn't restarted and needs nothing. The
+  team2027 broker can stay on 0.84 (verified above); upgrade it at leisure with `auth signer` in mind.
+  NOT verified: a 0.84 paw machine and a 0.100 paw machine on one remote space at once.
+
 ## cotal 0.84.0
 
 **Bumped 0.81.1 → 0.84.0 on 2026-10-16** (operator-approved, inside the 7-day min-release-age window:
