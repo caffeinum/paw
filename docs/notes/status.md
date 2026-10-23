@@ -74,6 +74,16 @@ Moved verbatim from CLAUDE.md (2026-10-02 split). Index: [CLAUDE.md](../../CLAUD
   an offline agent is never busy, a missing mtime yields no inference rather than a fabricated one,
   and an mtime in the FUTURE (clock skew) is not evidence. Upstream fix would be cotal setting
   `working` when a channel-woken turn begins. Test: `check:status`.
+- **A turn never outlives its process (`turnOfProcess`, 2026-10-23).** The transcript turn reader
+  (`turnState`) also stamps `lastMsgMs`, the newest real message's timestamp. `liveTurn`/`readTurnState`
+  hold it against the start of the process holding the session (`startedAt` in `~/.claude/sessions/<pid>.json`,
+  earliest of several holders, no claim when any is unrecorded): a message older than the process means the
+  turn died with an earlier one. Incident: queue/harbor showed `busy` at 0% CPU for hours after `paw restart`
+  — their transcripts ended on a `<task-notification>` ("Background shell command didn't finish before the
+  previous session ended") written as the old process died, followed only by the resumed process's
+  metadata lines. Process start beats "metadata lines are a boundary": those record types are undocumented
+  and also appear mid-session. A dead process's `tool_use` is dropped too (no false `in tool Xm`; `paw
+  unstick` no longer Escs an idle prompt). Test: `check:status`.
 
 ## json output
 

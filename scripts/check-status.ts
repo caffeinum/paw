@@ -215,6 +215,61 @@ assert(!inferBusy("waiting", true, BUSY_NOW - 2_000, BUSY_NOW), "`waiting` (bloc
 assert(!inferBusy("idle", true, undefined, BUSY_NOW), "no transcript mtime → no inference, never a fabricated one");
 assert(!inferBusy("idle", true, BUSY_NOW + 5_000, BUSY_NOW), "an mtime in the FUTURE (clock skew) is not evidence — not busy");
 
+// ---- liveTurn vs the process holding the session: a turn never outlives its process ----
+{
+  const { liveTurn, sessionStartedAt } = await import("../src/status.ts");
+  const { turnState, turnOfProcess } = await import("../src/transcript.ts");
+  const j = (o: object) => JSON.stringify(o);
+  const OLD = "2026-10-23T16:39:17.431Z"; // the old process's last message
+  const START = Date.parse("2026-10-23T17:49:41.055Z"); // the resumed process's start (claude's session index)
+  const LATER = "2026-10-23T17:55:00.000Z";
+  const closed = [
+    j({ type: "user", timestamp: "2026-10-23T16:30:00.000Z", message: { role: "user", content: "do it" } }),
+    j({ type: "assistant", timestamp: "2026-10-23T16:31:00.000Z", message: { role: "assistant", stop_reason: "end_turn", content: [{ type: "text", text: "done" }] } }),
+    j({ type: "system", subtype: "turn_duration", timestamp: "2026-10-23T16:31:01.000Z" }),
+  ];
+  // The queue/harbor shape, measured 2026-10-23: a task-notification written as the old process died, never
+  // answered, then only the resumed process's metadata lines (no timestamps on most of them).
+  const notification = j({ type: "user", timestamp: OLD, message: { role: "user", content: "<task-notification>\n<status>stopped</status>\n<summary>Background shell command didn't finish before the previous session ended</summary>\n</task-notification>" } });
+  const resumedMeta = [
+    j({ type: "attachment", timestamp: "2026-10-23T16:39:17.482Z" }),
+    j({ type: "bridge-session" }), j({ type: "cost-state" }), j({ type: "last-prompt" }), j({ type: "permission-mode" }),
+    j({ type: "pr-link", timestamp: "2026-10-23T17:49:33.876Z" }), j({ type: "cost-state" }), j({ type: "bridge-session" }),
+  ];
+  const stale = [...closed, notification, ...resumedMeta].join("\n");
+  const readOf = (tail: string) => ({ mtimeMs: Date.now(), turn: () => turnState(tail) });
+
+  assert(turnState(stale).inFlight === true && turnState(stale).lastMsgMs === Date.parse(OLD), "turnState: the unanswered notification alone reads as in flight, stamped with its own time (the bug's cause)");
+  assert(liveTurn(readOf(stale), "idle", undefined, START).busy === false, "liveTurn: an unanswered turn from BEFORE the process started is not busy (stale-busy fix)");
+  assert(liveTurn(readOf(stale), "idle", undefined, undefined).busy === true, "liveTurn: no process start known → the transcript inference stands (no claim made up)");
+
+  const live = [...closed, j({ type: "user", timestamp: LATER, message: { role: "user", content: "new DM" } }), j({ type: "attachment", timestamp: LATER })].join("\n");
+  assert(liveTurn(readOf(live), "idle", undefined, START).busy === true, "liveTurn: a prompt written AFTER the process started is a real turn in flight → busy");
+
+  const hungTs = "2026-10-23T18:00:00.000Z";
+  const hung = [
+    ...closed,
+    j({ type: "user", timestamp: LATER, message: { role: "user", content: "run it" } }),
+    j({ type: "assistant", timestamp: hungTs, message: { role: "assistant", stop_reason: "tool_use", content: [{ type: "tool_use", id: "toolu_H", name: "Bash", input: { command: "sleep 9999" } }] } }),
+    j({ type: "queue-operation", operation: "enqueue", timestamp: "2026-10-23T18:30:00.000Z" }),
+  ].join("\n");
+  const hungTurn = liveTurn(readOf(hung), "idle", undefined, START);
+  assert(hungTurn.busy === true && hungTurn.tool?.id === "toolu_H" && hungTurn.tool.startedMs === Date.parse(hungTs), "liveTurn: a hung tool in the CURRENT process is still busy and reported with its start (in tool Xm)");
+
+  const deadTool = [...closed, j({ type: "user", timestamp: "2026-10-23T16:35:00.000Z", message: { role: "user", content: "run it" } }), j({ type: "assistant", timestamp: OLD, message: { role: "assistant", stop_reason: "tool_use", content: [{ type: "tool_use", id: "toolu_D", name: "Bash", input: { command: "sleep 9999" } }] } }), ...resumedMeta].join("\n");
+  const deadTurn = liveTurn(readOf(deadTool), "idle", undefined, START);
+  assert(deadTurn.busy === false && deadTurn.tool === undefined, "liveTurn: a tool_use left by a DEAD process is neither busy nor a hung tool");
+  assert(liveTurn(readOf(deadTool), "working", undefined, START).tool === undefined, "liveTurn: presence `working` still wins, but never with a dead process's tool attached");
+
+  assert(turnOfProcess({ inFlight: true }, START)?.inFlight === true, "turnOfProcess: no message timestamp → the state stands");
+  assert(turnOfProcess({ inFlight: false, lastMsgMs: 0 }, START)?.inFlight === false, "turnOfProcess: a closed turn stays closed");
+  assert(turnOfProcess(undefined, START) === undefined, "turnOfProcess: no state → no state");
+
+  assert(sessionStartedAt([]) === undefined, "sessionStartedAt: no live holder → no claim");
+  assert(sessionStartedAt([{ startedAt: 5 }, { startedAt: undefined }]) === undefined, "sessionStartedAt: a holder with no recorded start → no claim");
+  assert(sessionStartedAt([{ startedAt: 9 }, { startedAt: 5 }]) === 5, "sessionStartedAt: several holders → the EARLIEST (any of them may own the turn)");
+}
+
 // ---- hung tool: status rendering + the keeper's Esc decision ----
 {
   const { hungTool, toolLabel, HUNG_TOOL_SHOW_MS } = await import("../src/status.ts");
