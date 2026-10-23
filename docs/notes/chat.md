@@ -370,3 +370,36 @@ Moved verbatim from CLAUDE.md (2026-10-02 split). Index: [CLAUDE.md](../../CLAUD
   `mouse on`) has it; under tmux with `mouse off` the clicks never reach chat. Tests: `check:chat`
   (fold tree + hidden counts, scroll with folds reaching every row, hit map, SGR decode/strip, hint);
   live `scripts/lean/e2e-chat-tasks.ts` §5.
+
+## remote agents
+
+An agent can run on ANOTHER machine on the same mesh space: teleported away (its persona here keeps the
+`teleported:` marker, see [teleport.md#the-marker](teleport.md#the-marker)) or simply hosted elsewhere on a
+remote space (no persona here). `runsElsewhere(space, name, card?)` in src/hosted.ts is the ONE notion
+(`elsewhereOf` is the pure core): `{ how: teleported|hosted, where, cwd? }` — `where` is the marker's
+`teleported:` value (`origin` → "the machine it came from"), else the roster card's `meta.host`, else
+"another machine"; `cwd` is the marker's `teleportedCwd:` (never guessed — older markers have none, the
+header then shows the host alone). A same-host card is NOT elsewhere (its files are on this box).
+Messaging works over the mesh as usual (PR #31's wake gate returns the live peer id). Everything that would
+read this machine's frozen copy says where it runs instead (2026-10-23, operator: "do the remote version…
+or disable functions that don't make sense for remote agents"):
+
+| feature | remote agent |
+|---|---|
+| messages, `@name`, `/dm`, `#channel`, pastes (inline text) | work, over the mesh |
+| header | `agent: tracepaper  runs on ssh:mini · /Users/aleks/.paw/repos/caffeinum/tracepaper`, `status: live on the mesh`, no model/context lines (stale), one dim line `logs, ctx, !cmd and files are on ssh:mini — from here you message it over the mesh`; the help line drops `!cmd runs in its folder` |
+| `← logs` view | `(no logs for tracepaper — logs live on ssh:mini, where it runs — the transcript on this machine stopped when it left)` |
+| `paw log`, web trace | `paw: no logs for "tracepaper" here — logs live on ssh:mini, where it runs — …` (guard in `openAgentLog`, persona-present agents only) |
+| `!cmd` (chat + web) | `! !cmd runs on this machine, not on ssh:mini where tracepaper works` |
+| image/file attachment (chat) | staging warns `⚠ tracepaper runs on ssh:mini and can't open a file on this machine — /noimg drops it`; the send is refused (thrown in `flush`, nothing sent, still staged): `! not sent — tracepaper runs on ssh:mini and can't open [Image #1] (a file on this machine) — /noimg drops it` |
+| `paw dm` / web send with an attachment line | `sendAsYou` refuses: `paw: not sent — … (a file on this machine)` (`attachedPlaceholders` reads the `📷/📎 [Image #N] /abs` lines) |
+| `paw attach` / `paw open` | `paw: "tracepaper" runs on ssh:mini — attach to it there; from here \`paw chat @tracepaper\` messages it` |
+| `paw status` / tasks-view info | live + mesh from the roster, busy only from its own `working` claim; no ctx/failure/last-active/inbox/git; never "unmanaged — paw restart re-adopts it"; note `runs on ssh:mini · <cwd> — ctx, logs and folder are there` |
+
+Not done (follow-ups): logs over the mesh — claude seats publish AG-UI frames on `events.<owner>.<actor>`
+(cotal ≥0.84, on unless `events: false`), so a remote claude agent's trace could be rendered from that
+stream; kit/hermes/acp spawn with `events: false` (no event plane), so tracepaper (kit) would still have
+none. ctx % over the mesh needs the remote to publish it (card meta or an event). Files over the mesh
+(`#files` announces absolute paths — meaningless on another box; the agent's own `📷 /mini/path` replies
+404 in paw web here). Tests: `check:teleport` (marker cwd, runsElsewhere, log/attach refusals, status row),
+`check:remote` (elsewhereOf + strings), `check:images` (`attachedPlaceholders`).

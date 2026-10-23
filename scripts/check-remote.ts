@@ -338,6 +338,18 @@ assert(bangNoFolderReason({ name: "evals", remote: true, personaHere: false, loc
 assert(/runs on this host but not under this paw/.test(bangNoFolderReason({ name: "evals", remote: true, personaHere: false, host: "laptop", localHost: "laptop" })), "…never claims \"another machine\" when the card's host is this one");
 assert(/^no registered folder for "a"/.test(bangNoFolderReason({ name: "a", remote: false, personaHere: false, localHost: "laptop" })), "open mesh: the old message (every agent is hosted here)");
 assert(/^no registered folder for "a"/.test(bangNoFolderReason({ name: "a", remote: true, personaHere: true, localHost: "laptop" })), "remote, persona here but no folder: the registry message, not \"another machine\"");
+const { elsewhereOf, elsewhereBang, elsewhereFiles, elsewhereBanner, elsewhereLabel } = await import("../src/hosted.ts");
+const tele = elsewhereOf({ teleported: { to: "ssh:mini", cwd: "/Users/a/.paw/repos/o/tp" }, remote: true, personaHere: true, localHost: "laptop" });
+assert(tele?.how === "teleported" && elsewhereLabel(tele) === "ssh:mini · /Users/a/.paw/repos/o/tp", "teleported: where + the folder there");
+assert(elsewhereLabel(elsewhereOf({ teleported: { to: "ssh:mini" }, remote: true, personaHere: true, localHost: "laptop" })!) === "ssh:mini", "…the host alone when the folder there was never recorded");
+assert(elsewhereOf({ teleported: { to: "origin" }, remote: true, personaHere: true, localHost: "laptop" })?.where === "the machine it came from", "a brought-back copy names no fake host");
+assert(elsewhereOf({ remote: true, personaHere: false, host: "mini.local", localHost: "laptop" })?.where === "mini.local", "another machine's agent (no persona here): its card's host");
+assert(elsewhereOf({ remote: true, personaHere: false, localHost: "laptop" })?.where === "another machine", "…or 'another machine' when its card reports none");
+assert(elsewhereOf({ remote: true, personaHere: false, host: "laptop", localHost: "laptop" }) === undefined, "same host (another paw on this box): its files are here, not elsewhere");
+assert(elsewhereOf({ remote: true, personaHere: true, localHost: "laptop" }) === undefined && elsewhereOf({ remote: false, personaHere: false, localHost: "laptop" }) === undefined, "hosted here / open mesh: not elsewhere");
+assert(elsewhereBang("tracepaper", tele!) === "!cmd runs on this machine, not on ssh:mini where tracepaper works", "!cmd refusal names where it works");
+assert(elsewhereFiles("tracepaper", tele!, ["[Image #1]"]) === "not sent — tracepaper runs on ssh:mini and can't open [Image #1] (a file on this machine)", "a local path to a remote agent is refused");
+assert(elsewhereBanner(tele!) === "logs, ctx, !cmd and files are on ssh:mini — from here you message it over the mesh", "chat banner line");
 const sRec = { name: "a", folder: "/x", since: 0, cursorSeq: 1, reason: "", instanceId: LOCAL };
 assert(standInRefusal({ remote: true, rec: sRec, localInstanceId: LOCAL, personaHere: true }) === undefined, "the host stands in for a record slept by this machine");
 assert(/another machine/.test(standInRefusal({ remote: true, rec: { ...sRec, instanceId: "c".repeat(26) }, localInstanceId: LOCAL, personaHere: true }) ?? ""), "…never for one slept from another manager instance");

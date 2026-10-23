@@ -21,6 +21,7 @@ import { claudeProjectDir } from "./adopt.ts";
 import { dirname, join } from "node:path";
 import { withManagerControl } from "./control.ts";
 import { readForeground } from "./foreground.ts";
+import { elsewhereAttach, runsElsewhere } from "./hosted.ts";
 import { isAddressHandle, resolveAddress } from "./address.ts";
 import { cotaldViaNode, readRuntimeMarker, resolveSpace } from "./lifecycle.ts";
 import { findMesh } from "@cotal-ai/workspace";
@@ -120,6 +121,10 @@ export async function attachResolved(
         : `paw: no agent "${name}" in space ${space} (\`paw status\` lists them)`,
     );
   }
+
+  // Teleported: its terminal is on the other machine — attaching here could only start a second copy.
+  const away = existsSync(personaFilePath(space, name)) ? runsElsewhere(space, name) : undefined;
+  if (away) throw new Error(elsewhereAttach(name, away));
 
   const fg = readForeground(space, name);
   if (fg) {

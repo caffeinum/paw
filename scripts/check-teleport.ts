@@ -24,6 +24,10 @@ const plan = await import("../src/teleport-plan.ts");
 const shell = await import("../src/teleport-shell.ts");
 const { ensureAgentSpawned, personaFilePath, setPersonaKeys } = await import("../src/addressing.ts");
 const { startedLine } = await import("../src/teleport.ts");
+const { runsElsewhere } = await import("../src/hosted.ts");
+const { openAgentLog } = await import("../src/log.ts");
+const { attachResolved } = await import("../src/open.ts");
+const { collectStatus, formatStatus } = await import("../src/status.ts");
 
 let failures = 0;
 function assert(cond: boolean, msg: string): void {
@@ -316,6 +320,24 @@ console.log("persona keys + wake gate");
   setPersonaKeys(space, name, { teleported: "fly:2027-agents", teleportedAt: "2026-10-22T00:00:00Z", teleportedWhat: "session,repo" });
   const mark = plan.readTeleported(personaFile);
   assert(mark?.to === "fly:2027-agents" && mark.what.join() === "session,repo", "the marker reads back (where, when, what)");
+  assert(mark?.cwd === undefined, "an older marker has no folder there — none is invented");
+  setPersonaKeys(space, name, { teleportedCwd: "/data/home/.paw/repos/o/proj" });
+  assert(plan.readTeleported(personaFile)?.cwd === "/data/home/.paw/repos/o/proj", "teleportedCwd reads back as the folder it runs in there");
+  assert(!/teleportedCwd/.test(plan.stripTeleportKeys(readFileSync(personaFile, "utf8"))), "teleportedCwd never travels with the persona");
+
+  console.log("a teleported agent, seen from here");
+  const away = runsElsewhere(space, name);
+  assert(away?.how === "teleported" && away.where === "fly:2027-agents" && away.cwd === "/data/home/.paw/repos/o/proj", "runsElsewhere: where + the folder there");
+  throws(() => openAgentLog(space, name, cwd), /no logs for "proj" here — logs live on fly:2027-agents, where it runs — the transcript on this machine stopped when it left/, "paw log / web trace / chat logs refuse the frozen transcript");
+  await rejects(attachResolved(space, name, { folder: cwd }), /"proj" runs on fly:2027-agents — attach to it there; from here `paw chat @proj` messages it/, "attach refuses, pointing at chat");
+  const now = Date.now();
+  const { rows } = await collectStatus(space, undefined, { git: false, ps: new Map(), roster: () => [{ card: { id: "peer-proj", name }, status: "working", ts: now } as never] });
+  const row = rows.find((r) => r.name === name)!;
+  assert(!!row?.elsewhere && row.live && row.mesh === "working" && !row.unmanaged, "status: live from the roster, never 'unmanaged — paw restart re-adopts it'");
+  assert(row?.context === undefined && row.failure === undefined && row.activeMs === undefined && row.inbox.kind === "none", "status: no ctx / failure / last-active / inbox read from this machine");
+  assert(row?.busy === true, "status: busy only from the agent's own `working` claim");
+  assert(/runs on fly:2027-agents · \/data\/home\/\.paw\/repos\/o\/proj — ctx, logs and folder are there/.test(formatStatus(rows, now, 400)), "status note says where it runs");
+  setPersonaKeys(space, name, { teleportedCwd: undefined });
   const calls: string[] = [];
   const ctl = { ps: async () => (calls.push("ps"), { ok: true, data: [] }), spawn: async () => (calls.push("spawn"), { ok: true }) } as unknown as Parameters<typeof ensureAgentSpawned>[0];
   await rejects(ensureAgentSpawned(ctl, { space, name, cwd }), /teleported to fly:2027-agents at 2026-10-22.*paw teleport proj --back/, "the wake gate refuses a teleported agent and points at --back");

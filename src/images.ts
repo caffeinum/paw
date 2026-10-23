@@ -283,6 +283,12 @@ export function composeMessage(body: string, attachments: Attachment[]): string 
   return body ? `${body}\n${lines.join("\n")}` : lines.join("\n");
 }
 
+/** The placeholders of the attachment lines {@link composeMessage} wrote into `text` (the web composer
+ *  writes the same `📷 [Image #N] /abs` lines) — what a message hands its recipient as LOCAL paths. */
+export function attachedPlaceholders(text: string): string[] {
+  return [...text.matchAll(/^(?:📷|📎) (\[(?:Image|File) #\d+\]) \//gmu)].map((m) => m[1]);
+}
+
 /** Human-readable byte size; "?" when unknown — never a fabricated 0. (Mirrors files.ts.) */
 export function formatBytes(n?: number): string {
   if (n === undefined || !Number.isFinite(n)) return "?";

@@ -19,6 +19,7 @@ import { assertUnambiguousTarget, canonicalDir, folderForName, lookupFolderName,
 import { claudeProjectDir, latestSession } from "./adopt.ts";
 import { CodexParser, findCodexSessionFile, resolveCodexRoots } from "./codex-log.ts";
 import { HERMES_AGENT, hermesHomeFor, hermesVenv } from "./hermes-profile.ts";
+import { elsewhereLogs, runsElsewhere } from "./hosted.ts";
 import { meshAgentSession } from "./named.ts";
 import { labelPeer } from "./peer-ledger.ts";
 import { latestOpencodeSession, opencodeBlocks, resolveOpencodeDb } from "./opencode-log.ts";
@@ -170,6 +171,10 @@ export type AgentLog = {
 /** Open the harness-native session for this agent. Claude path stays the jsonl pin/latest walk. */
 export function openAgentLog(space: string, name: string, folder: string, bytes = TAIL_BYTES, sessionId?: string): AgentLog {
   const persona = personaFilePath(space, name);
+  // Teleported: the transcript here is the frozen copy from before it left — never pass it off as its logs.
+  // (No persona = an unregistered peer whose live LOCAL process named the session: not elsewhere.)
+  const away = existsSync(persona) ? runsElsewhere(space, name) : undefined;
+  if (away) throw new Error(`paw: no logs for "${name}" here — ${elsewhereLogs(away)}`);
   const agentType = existsSync(persona) ? readAgentType(persona) : undefined;
   if (writesClaudeTranscript(agentType)) return namedReplies(space, openClaudeLog(space, name, folder, bytes, sessionId));
   if (agentType === "opencode") return namedReplies(space, openOpencodeLog(space, name, folder));

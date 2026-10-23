@@ -97,7 +97,8 @@ name stays). Checkmarks (none given: a checklist on a tty, all preselected; a pi
 6. Re-read the manifest and send what changed during the copy (whole files; a big transcript is re-sent).
 7. Write the persona there, run the target's own `paw start <name>`, wait (≤180s) until a present peer of
    that name with a NEW id is on the mesh (the old seat's lingering presence never counts).
-8. Mark this persona `teleported: <transport>`, `teleportedAt:`, `teleportedWhat:`.
+8. Mark this persona `teleported: <transport>`, `teleportedAt:`, `teleportedWhat:`, `teleportedCwd:` (the
+   folder it runs in THERE — since 2026-10-23; older markers and `--back`'s `origin` have none).
 
 A failed step 7 rolls back loudly: `paw stop` there + mark that copy `teleported: origin`, restart here.
 The end prints everything written on both sides and the undo (`paw teleport <name> --back`).
@@ -112,6 +113,12 @@ marked `teleported: origin`.
 every wake path (dm, chat, start, restart revival, sleep wake) funnels through it:
 `"<name>" was teleported to <to> at <t> — it runs there now; paw teleport <name> --back brings it back`.
 A DM to a teleported agent that IS present reaches the copy on the target (no spawn here) — correct.
+
+Everything else here is the FROZEN copy from before it left (persona cwd, transcript, folder), so every
+local-only feature asks `runsElsewhere` (src/hosted.ts) first and says where it runs instead: chat's
+header/logs/`!cmd`/attachments, `paw log` + the web trace, web `!cmd`, `paw dm` with a file, `paw attach`,
+and `paw status` (live/mesh from the roster, no ctx/failure/last-active/inbox/git, never "unmanaged").
+Strings and the feature table: [chat.md#remote-agents](chat.md#remote-agents).
 
 ## Fly specifics
 

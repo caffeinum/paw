@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   attachKind,
+  attachedPlaceholders,
   attachmentsRide,
   composeMessage,
   formatBytes,
@@ -216,6 +217,9 @@ writeFileSync(bigish, "z".repeat(2048));
   assert(!bodyless.startsWith("\n"), "an empty body doesn't leave a leading newline");
   const f = stageAttachment(SPACE, notImage, 2);
   assert(composeMessage("", [f]).includes("📎 [File #2]"), "a non-image uses the 📎 marker");
+  const placeholders = attachedPlaceholders(composeMessage("look", [a, f]));
+  assert(placeholders.join(" ") === "[Image #1] [File #2]", `attachedPlaceholders reads back what composeMessage wrote — ${placeholders.join(" ")}`);
+  assert(attachedPlaceholders("I mean [Image #1] from before").length === 0, "…and nothing from prose that merely mentions a placeholder");
 }
 
 // ── formatBytes ─────────────────────────────────────────────────────────────────────────────────
