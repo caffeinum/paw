@@ -12,6 +12,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
+import { createInterface } from "node:readline/promises";
 import {
   CotalEndpoint,
   DEV_OWNER,
@@ -853,6 +854,8 @@ export async function ensureAgentSpawned(
     timing?: { graceMs?: number; readyMs?: number; retireMs?: number; retireStepMs?: number };
     /** Progress lines for an interactive caller (`paw restart <agent>`): what is being waited on, and for how long. */
     progress?: (line: string) => void;
+    /** Who approves restarting a seat whose PROCESS IS ALIVE (the zombie restart). Absent = nobody: refuse. */
+    restartLive?: RestartConsent;
   },
 ): Promise<SpawnOutcome> {
   const graceMs = opts.timing?.graceMs ?? STARTING_GRACE_MS;
@@ -950,7 +953,7 @@ export async function ensureAgentSpawned(
         console.error(
           `paw: "${opts.name}" reads ${row?.mesh ?? "?"} on the mesh but wrote its transcript ${Math.round((Date.now() - (activeMs as number)) / 1000)}s ago — busy, not a zombie; NOT restarting (the message waits in its inbox)`,
         );
-        return { spawned: false };
+        return { spawned: false, busy: true };
       }
       // A running process that merely reads offline is a stale-PRESENCE judgement. When most of the fleet
       // reads offline with it, the presence plane is what's sick, and the new seat couldn't register either.
@@ -988,6 +991,12 @@ export async function ensureAgentSpawned(
           );
           return { spawned: false, starting: true, stuck, ...(row.id ? { id: wirePrincipal(row.id) } : {}) };
         }
+        // A live process is never killed without the operator's go (the repo rule). Ask on a tty; refuse
+        // anywhere else, and leave the message in its durable inbox like the stuck cap above.
+        const reason = stuckReason(row, activeMs, now);
+        const consent = opts.restartLive;
+        const go = consent === "allow" || (typeof consent === "function" && (await consent(restartQuestion(opts.name, reason))));
+        if (!go) return { spawned: false, starting: true, stuck: restartRefusal(opts.name, opts.space, reason), ...(row.id ? { id: wirePrincipal(row.id) } : {}) };
         recordRestart(opts.space, opts.name, now);
       }
       console.error(
@@ -1246,9 +1255,59 @@ function healSleep(space: string, name: string): { spawned: false } {
 /** What {@link ensureAgentSpawned} did. `unmanaged`: the agent was already running outside the current
  *  manager (a manager restart spares its agents) and paw is talking to it as is. `starting`: its process
  *  runs but it isn't on the mesh yet — not a failure; DMs to `id` wait in its durable inbox. */
-/** `stuck`: the gate gave up restarting this seat (src/restart-history.ts) — the "⚠ … needs a human"
- *  headline; `starting` is set too, so messages still go to its durable inbox. */
-export type SpawnOutcome = { spawned: boolean; id?: string; unmanaged?: true; starting?: true; stuck?: string };
+/** `stuck`: the gate left a non-live seat as is and it needs a human — the restart cap gave up
+ *  (src/restart-history.ts), or nobody approved restarting its live process (`restartLive`). The "⚠ …"
+ *  headline; `starting` is set too, so messages still go to its durable inbox. `busy`: offline on the
+ *  mesh but its transcript is fresh — left alone, it will drain its inbox when its turn ends. */
+export type SpawnOutcome = { spawned: boolean; id?: string; unmanaged?: true; starting?: true; stuck?: string; busy?: true };
+
+/** Who may approve the wake gate restarting a seat whose process is alive: `allow` (an explicit operator
+ *  verb or `--restart`), or a question asked on a tty. Absent ⇒ nobody (daemons, web, scripts) ⇒ refuse. */
+export type RestartConsent = "allow" | ((question: string) => Promise<boolean>);
+
+/** `3h22m`, `14m`, `40s`, `2d` — how long a seat has been quiet. */
+export function quietFor(ms: number): string {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  if (s < 120) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m / 60);
+  if (h < 48) return `${h}h${m % 60 ? `${m % 60}m` : ""}`;
+  return `${Math.floor(h / 24)}d`;
+}
+
+/** Why the gate judges a running seat stuck, in a few words: `off the mesh, silent 3h22m`. */
+export function stuckReason(row: PsRow, activeMs: number | undefined, now: number): string {
+  const where = row.mesh === "absent" ? "never reached the mesh" : "off the mesh";
+  return `${where}, ${activeMs === undefined ? "no transcript" : `silent ${quietFor(now - activeMs)}`}`;
+}
+
+export const restartQuestion = (name: string, reason: string): string => `${name} looks stuck (${reason}). restart it? [y/N] `;
+
+export const restartRefusal = (name: string, space: string, reason: string): string =>
+  `⚠ ${name} looks stuck (${reason}) — NOT restarted without your go: \`paw restart ${name}#${space}\``;
+
+/** One line for a wake that found the agent but couldn't reach it on the mesh. Never `paw down`: that
+ *  tears down the whole space's mesh + manager for one agent. */
+export function unreachableHint(name: string, space: string, busy: boolean | undefined): string {
+  return busy
+    ? `paw: "${name}" is busy and off the mesh — wait for its turn to end (messages wait in its inbox), or \`paw restart ${name}#${space}\``
+    : `paw: "${name}" isn't reachable on the mesh — \`paw restart ${name}#${space}\``;
+}
+
+/** The consent a CLI wake path passes the gate: `--restart` ⇒ allow; stdin+stderr on a tty ⇒ ask; else none. */
+export function cliRestartConsent(restartFlag: boolean): RestartConsent | undefined {
+  if (restartFlag) return "allow";
+  if (!process.stdin.isTTY || !process.stderr.isTTY) return undefined;
+  return async (question) => {
+    const rl = createInterface({ input: process.stdin, output: process.stderr });
+    try {
+      return /^y(es)?$/i.test((await rl.question(question)).trim());
+    } finally {
+      rl.close();
+    }
+  };
+}
 
 /** The warning a wake caller prints for a stuck seat; `queued` when its message went to the inbox. */
 export function stuckWarning(name: string, stuck: string, queued: boolean): string {
@@ -1495,7 +1554,7 @@ export async function restartAgent(
       }
     }
   }
-  const r = await ensureAgentSpawned(ctl, { ...opts, reuseUnmanaged: false });
+  const r = await ensureAgentSpawned(ctl, { ...opts, reuseUnmanaged: false, restartLive: "allow" });
   return { ...r, restarted: live || stray.length > 0 };
 }
 

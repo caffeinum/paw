@@ -184,6 +184,24 @@ zombie restart, `paw restart`) is refused with a structured `ai.cotal.ep.lifecyc
 one `paw start <name> --space <s>`, cotal's raw facts on one dim line. Any other refusal is not retried.
 CLI-side only (ensureAgentSpawned runs in the caller) — live without a release. check:wake-gate fix 5.
 
+## restarting a live process needs consent (2026-10-23)
+- The gate's zombie restart (running process, off the mesh, transcript stale) killed live agents with
+  nobody's go (`paw chat @2027-intern --space team2027`), against the repo rule. Now, right before that
+  despawn, `ensureAgentSpawned` asks `opts.restartLive` (`RestartConsent`): `"allow"` restarts; a function
+  is asked ONE line — `2027-intern looks stuck (off the mesh, silent 3h22m). restart it? [y/N] ` — and
+  restarts only on y; absent = refuse. A refusal returns the stuck-shaped outcome (`{starting, stuck, id}`):
+  nothing stopped, the message goes to its durable inbox, and the headline names the command —
+  `⚠ 2027-intern looks stuck (…) — NOT restarted without your go: \`paw restart 2027-intern#team2027\``.
+  No restart is recorded in the backoff history. A dead/exited process or an absent agent respawns as before.
+- Who passes what: `cliRestartConsent(flag)` = `--restart` ⇒ allow, else stdin+stderr on a tty ⇒ ask,
+  else none. chat (startup; REPL `@name` only with `--restart` — readline owns the tty there), dm (via
+  `sendAsYou`'s `restartLive`), open/attach (tty ask). Refuse: web, tidy, sleep host (mailbox), `paw global`
+  keeper, `paw start`, runtime revive (now lists a refused agent as skipped). Allow: `restartAgent`
+  (`paw restart`/optimize/adopt — the explicit verb) and teleport's start-here.
+- `busy` outcome: the busy guard's NOT-restarting return now says `busy: true`; chat's unreachable error
+  (`unreachableHint`) suggests waiting or `paw restart <name>#<space>` — never `paw down`, which tears down
+  the whole space's mesh + manager for one agent. Test: `check:wake-gate` fix 6 + hint.
+
 ## unmanaged agents
 
 - **An agent alive outside the current manager is REUSED, never duplicated (2026-10-05).** cotal ≥0.49

@@ -23,8 +23,10 @@ import {
   assertUnambiguousTarget,
   canonicalDir,
   humanEndpointAuth,
+  cliRestartConsent,
   ensureAgentSpawned,
   stuckWarning,
+  type RestartConsent,
   folderForName,
   registerInstance,
   resolveFolderAgent,
@@ -52,10 +54,11 @@ interface Args {
   server?: string;
   model?: string;
   name?: string;
+  restart: boolean;
 }
 
 function parseArgs(argv: string[]): Args {
-  const out: Args = { words: [] };
+  const out: Args = { words: [], restart: false };
   const words: string[] = [];
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -63,8 +66,9 @@ function parseArgs(argv: string[]): Args {
     else if (a === "--server") out.server = argv[++i];
     else if (a === "--model") out.model = argv[++i];
     else if (a === "--name") out.name = argv[++i];
+    else if (a === "--restart") out.restart = true;
     else if (a.startsWith("--"))
-      throw new Error(`paw: unknown flag "${a}" — dm <name|folder|repo@branch> "<message>" [--name n] [--model m] [--space s]`);
+      throw new Error(`paw: unknown flag "${a}" — dm <name|folder|repo@branch> "<message>" [--name n] [--model m] [--restart] [--space s]`);
     else words.push(a);
   }
   out.target = words.shift();
@@ -109,6 +113,7 @@ async function resolveTarget(
   target: string,
   model: string | undefined,
   nameFlag: string | undefined,
+  restartLive: RestartConsent | undefined,
 ): Promise<{ id: string; name: string }> {
   if (target.startsWith("@")) target = target.slice(1); // `@name` = that agent, like everywhere else
   const me = ep.card.id;
@@ -127,7 +132,7 @@ async function resolveTarget(
       : addr.name
         ? setFolderName(space, addr.cwd, addr.name).name
         : resolveFolderAgent(space, addr.cwd);
-    const r = await withManagerControl(space, server, (ctl) => ensureAgentSpawned(ctl, { space, name, cwd: addr.cwd, model, brief: addr.brief, kind: addr.kind }));
+    const r = await withManagerControl(space, server, (ctl) => ensureAgentSpawned(ctl, { space, name, cwd: addr.cwd, model, brief: addr.brief, kind: addr.kind, restartLive }));
     return { id: await readyId(ep, name, r), name };
   }
   let folder: string | undefined;
@@ -140,7 +145,7 @@ async function resolveTarget(
     // With --name, address (registering it if new) an EXTRA instance at this folder instead of the
     // folder's default agent; registerInstance fails loud if the name collides with any known agent.
     const name = nameFlag ? registerInstance(space, folder, nameFlag) : resolveFolderAgent(space, folder);
-    const r = await withManagerControl(space, server, (ctl) => ensureAgentSpawned(ctl, { space, name, cwd: folder, model }));
+    const r = await withManagerControl(space, server, (ctl) => ensureAgentSpawned(ctl, { space, name, cwd: folder, model, restartLive }));
     return { id: await readyId(ep, name, r), name };
   }
 
@@ -156,7 +161,7 @@ async function resolveTarget(
   if (present) return { id: present.card.id, name: present.card.name };
   const home = folderForName(space, target);
   if (home) {
-    const r = await withManagerControl(space, server, (ctl) => ensureAgentSpawned(ctl, { space, name: target, cwd: home, model }));
+    const r = await withManagerControl(space, server, (ctl) => ensureAgentSpawned(ctl, { space, name: target, cwd: home, model, restartLive }));
     return { id: await readyId(ep, target, r), name: target };
   }
   throw new Error(`paw: no agent "${target}" present or known (\`paw ps\` for live names)`);
@@ -202,8 +207,10 @@ export async function sendAsYou(opts: {
   text: string;
   model?: string;
   name?: string;
+  /** Who approves the wake gate restarting a live-but-stuck agent; absent (web, tidy) ⇒ refused. */
+  restartLive?: RestartConsent;
 }): Promise<{ name: string }> {
-  const { space, server, target, text, model, name: nameFlag } = opts;
+  const { space, server, target, text, model, name: nameFlag, restartLive } = opts;
   assertUnambiguousTarget(space, target); // a bare token that's BOTH a known name and a folder here → fail loud
 
   // Pure sender: watch the roster to resolve/spawn the target, but don't register presence (the mailbox
@@ -217,7 +224,7 @@ export async function sendAsYou(opts: {
   ep.on("error", (e: Error) => console.error(c.red("! " + e.message)));
   await ep.start();
   try {
-    const tgt = await resolveTarget(ep, space, server, target, model, nameFlag);
+    const tgt = await resolveTarget(ep, space, server, target, model, nameFlag, restartLive);
     await unicastResilient(ep, tgt.id, text);
     return { name: tgt.name };
   } finally {
@@ -233,7 +240,7 @@ async function readStdin(): Promise<string> {
 }
 
 async function dm(argv: string[]): Promise<void> {
-  const { target, words, space: spaceArg, server: serverArg, model, name: nameFlag } = parseArgs(argv);
+  const { target, words, space: spaceArg, server: serverArg, model, name: nameFlag, restart } = parseArgs(argv);
   const space = spaceArg ?? resolveSpace();
   const server = serverArg ?? pawServer(space);
 
@@ -274,7 +281,7 @@ async function dm(argv: string[]): Promise<void> {
 
   // Send AS the stable "you" so the reply is addressed to your durable inbox — through the SHARED
   // sender, so the web composer and this command cannot drift apart.
-  const { name } = await sendAsYou({ space, server, target, text, model, name: nameFlag });
+  const { name } = await sendAsYou({ space, server, target, text, model, name: nameFlag, restartLive: cliRestartConsent(restart) });
   console.log(`${c.cyan("→ " + name)}${c.dim(":")} ${text}`);
   console.log(c.dim("sent → read replies with `paw inbox`"));
 }
@@ -284,7 +291,7 @@ const dmCommand: Command = {
   name: "dm",
   group: "Mesh",
   summary: "fire-and-forget DM to an agent — read replies with `paw inbox` (use `paw chat` for a live conversation)",
-  usage: 'dm <name|folder|repo@branch>[#space] "<message>"|- [--name n] [--model m] [--space s]   (x#space = x --space space)',
+  usage: 'dm <name|folder|repo@branch>[#space] "<message>"|- [--name n] [--model m] [--restart] [--space s]   (x#space = x --space space; --restart = may restart it if it looks stuck, else a tty asks)',
   run: (a) => dm([...a.raw]),
 };
 

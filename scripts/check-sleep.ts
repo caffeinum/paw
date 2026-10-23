@@ -217,12 +217,12 @@ const booted = await ensureAgentSpawned(bootCtl(3), { space: "s", name: "w", cwd
 ok("B a waking agent's stand-in-offline row is given time, not restarted", !booted.spawned && calls.length === 0, calls.join() || "no calls");
 ok("B the wake stays handed to the host", readWakingRecord("s", "w")?.cursorSeq === 7);
 const t0 = Date.now();
-await ensureAgentSpawned(bootCtl(Infinity), { space: "s", name: "w", cwd: "/x", probePresence: async () => ok1 }).catch((e: Error) => console.log("   (gate threw:", e.message.split("\n")[0], ")"));
+await ensureAgentSpawned(bootCtl(Infinity), { space: "s", name: "w", cwd: "/x", probePresence: async () => ok1, restartLive: "allow" }).catch((e: Error) => console.log("   (gate threw:", e.message.split("\n")[0], ")"));
 ok("B a seat that never comes up is still restarted after the grace", calls[0] === "despawn w" && Date.now() - t0 >= 14_000, `${calls.join()} after ${Date.now() - t0}ms`);
 clearSleep("s", "w");
 clearRestartHistory("s", "w"); // the case above restarted "w"; its backoff must not leak into this one
 calls.length = 0;
-await ensureAgentSpawned(bootCtl(Infinity), { space: "s", name: "w", cwd: "/x", probePresence: async () => ok1 }).catch((e: Error) => console.log("   (gate threw:", e.message.split("\n")[0], ")"));
+await ensureAgentSpawned(bootCtl(Infinity), { space: "s", name: "w", cwd: "/x", probePresence: async () => ok1, restartLive: "allow" }).catch((e: Error) => console.log("   (gate threw:", e.message.split("\n")[0], ")"));
 ok("B an agent with no sleep record keeps the immediate zombie restart", calls[0] === "despawn w", calls.join());
 
 // B: `paw sleep` proves the seat is gone before it records the agent asleep.
