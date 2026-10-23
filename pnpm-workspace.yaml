@@ -27,21 +27,21 @@ allowBuilds:
 #   full manager resolve (66 compiles) went 441ms → 113ms. Re-key on every cotal bump; drop it when
 #   upstream ships the same fix. → docs/notes/cotal-dependency.md#core-meta-validator-patch
 verifyDepsBeforeRun: false
-# minimumReleaseAgeExclude — the operator explicitly approved cotal 0.84.0 on 2026-10-16, inside
+# minimumReleaseAgeExclude — the operator explicitly approved cotal 0.100.0 on 2026-10-23, inside
 #   the global 7-day minimum-release-age window. Exempted by EXACT version only (every other package
-#   and any other @cotal-ai version still waits out the gate). Safe to delete after 2026-10-24
-#   (0.84.0 published 2026-10-16T19:38Z, + 7d).
+#   and any other @cotal-ai version still waits out the gate). Safe to delete after 2026-10-30
+#   (0.100.0 published 2026-10-23T16:16Z, + 7d).
 minimumReleaseAgeExclude:
-  - '@cotal-ai/cli@0.84.0'
-  - '@cotal-ai/cmux@0.84.0'
-  - '@cotal-ai/connector-claude-code@0.84.0'
-  - '@cotal-ai/connector-codex@0.84.0'
-  - '@cotal-ai/connector-hermes@0.84.0'
-  - '@cotal-ai/connector-opencode@0.84.0'
-  - '@cotal-ai/core@0.84.0'
-  - '@cotal-ai/manager@0.84.0'
-  - '@cotal-ai/seat@0.84.0'
-  - '@cotal-ai/tmux@0.84.0'
-  - '@cotal-ai/workspace@0.84.0'
+  - '@cotal-ai/cli@0.100.0'
+  - '@cotal-ai/cmux@0.100.0'
+  - '@cotal-ai/connector-claude-code@0.100.0'
+  - '@cotal-ai/connector-codex@0.100.0'
+  - '@cotal-ai/connector-hermes@0.100.0'
+  - '@cotal-ai/connector-opencode@0.100.0'
+  - '@cotal-ai/core@0.100.0'
+  - '@cotal-ai/manager@0.100.0'
+  - '@cotal-ai/seat@0.100.0'
+  - '@cotal-ai/tmux@0.100.0'
+  - '@cotal-ai/workspace@0.100.0'
 patchedDependencies:
-  '@cotal-ai/core@0.84.0': patches/@cotal-ai__core@0.84.0.patch
+  '@cotal-ai/core@0.100.0': patches/@cotal-ai__core@0.100.0.patch
