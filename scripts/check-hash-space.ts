@@ -189,6 +189,7 @@ const CLI_ADDRESS: Record<string, string[]> = {
   unstick: ["x#nosuch"], type: ["@x#nosuch", "hi"], nice: ["x#nosuch", "5"], persona: ["x#nosuch"], optimize: ["x#nosuch"],
   top: ["x#nosuch"], tidy: ["x#nosuch"], launchd: ["install", "x#nosuch"], ask: ["role#nosuch", "q"],
   msg: ["#ops#nosuch", "hi"], history: ["#ops#nosuch"], claude: ["--name", "x#nosuch"],
+  teleport: ["x#nosuch", "--to", "ssh:box", "--dry-run"],
 };
 assert(eq(Object.keys(CLI_ADDRESS).sort(), Object.keys(ADDRESS_ARGS).sort()), "the CLI pass covers every address-aware command");
 
