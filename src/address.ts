@@ -19,6 +19,7 @@ import { dirname, join, resolve } from "node:path";
 import { canonicalDir, registeredAgentFor, type Kind } from "./addressing.ts";
 import { resolveSpace } from "./lifecycle.ts";
 import { listBranches, repoDir, resolveGithubTarget, parseGithubHandle } from "./github.ts";
+import { branchWorktreeDir } from "./repo-layout.ts";
 import { canonicalizeWebUrl, HOST_RE, routeUrl, type UrlPlan } from "./url.ts";
 import { resolveWorktreeFolder } from "./worktree.ts";
 
@@ -151,10 +152,6 @@ function git(cwd: string, args: string[]): void {
 }
 
 /** A branch name reduced to a safe single path/name segment (`feature/foo` → `feature-foo`). */
-function branchSlug(branch: string): string {
-  return branch.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "branch";
-}
-
 /**
  * Resolve a URL-derived ref CANDIDATE (`main`, or the greedy `feature/foo/src/x.ts` from a /blob/ URL)
  * to an ACTUAL branch of the clone. A URL can't unambiguously split "<ref>/<path>", so we match the
@@ -185,7 +182,7 @@ export function resolveBranchTarget(owner: string, repo: string, refCandidate: s
   const clone = repoDir(owner, repo);
   resolveGithubTarget(`github:${owner}/${repo}`); // ensure the base clone exists (idempotent), no checkout
   const branch = resolveUrlBranch(clone, refCandidate); // verify → real branch, or fail loud
-  const wt = `${clone}.worktrees/${repo}-${branchSlug(branch)}`; // sibling of the clone → distinct cwd/agent
+  const wt = branchWorktreeDir(clone, repo, branch); // sibling of the clone → distinct cwd/agent
 
   if (!existsSync(wt)) {
     mkdirSync(dirname(wt), { recursive: true });

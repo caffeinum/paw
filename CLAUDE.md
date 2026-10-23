@@ -143,10 +143,12 @@ Each entry: what it is + the most load-bearing rule. Full notes behind the link.
 - `src/native-attach.ts` — `attachTmux`; default socket; `nudgeTmuxConfirm`. → [agents.md#native-attach](docs/notes/agents.md#native-attach)
 - `src/attach-client.ts` — ws pty attach client, now dead code. → [agents.md#attach-client](docs/notes/agents.md#attach-client)
 - Waking a sleeping agent: `cotal_dm("global", "wake <name>")`; the tty dev-channels prompt nudge. → [agents.md#waking-a-sleeping-agent-the-in-mesh-gap-and-the-tty-prompt](docs/notes/agents.md#waking-a-sleeping-agent-the-in-mesh-gap-and-the-tty-prompt)
-- `src/teleport.ts` (+ `-plan.ts`, `-shell.ts`) — `paw teleport <a> --to fly:<app>|ssh:<host> [checkmarks]` /
-  `--back`: moves persona + session chain (continued-in links) / repo (same path, bundle) / skills / memory /
+- `src/teleport.ts` (+ `-plan.ts`, `-shell.ts`, `repo-layout.ts`) — `paw teleport <a> --to fly:<app>|ssh:<host> [checkmarks]` /
+  `--back`: moves persona + session chain (continued-in links) / repo (bundle) / skills / memory /
   CLAUDE.md; logins never copied; refuses on any blocker; persona `teleported:` makes every wake path refuse;
-  failed start there restarts it here. Target paw must answer `paw __teleport probe`. → [teleport.md](docs/notes/teleport.md)
+  failed start there restarts it here. Folder there: `<PAW_HOME>/agents/<name>` (no repo) or the paw clone
+  `<PAW_HOME>/repos/<owner>/<repo>` (+ branch worktree); sessions move to its slug, `cwd` rewritten.
+  Target paw must answer `paw __teleport probe` = `paw-teleport 2`. → [teleport.md](docs/notes/teleport.md)
 - `src/sleep.ts`, `src/sleep-host.ts`, `src/sleep-state.ts` — `paw sleep`: opt-in hibernation; the
   mailbox hosts a stand-in presence so a DM wakes the agent and the backlog is re-published. → [sleep.md](docs/notes/sleep.md)
 

@@ -31,6 +31,26 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const REPO = fileURLToPath(new URL("..", import.meta.url));
+// Helper mode (run with this machine's env): a claude agent's session + memory moved over the real ssh
+// transport the way the cutover's copy step does it — remapped into the target folder's project dir, then
+// `paw __teleport rewrite-cwd` THERE. (A claude seat can't start in the container: no login.)
+if (process.argv[2] === "--relocate") {
+  const [, , , host, space, name] = process.argv;
+  const plan = await import("../src/teleport-plan.ts");
+  const shell = await import("../src/teleport-shell.ts");
+  const { personaFilePath } = await import("../src/addressing.ts");
+  const what: Array<"session" | "memory"> = ["session", "memory"];
+  const m = plan.buildManifest({ space: space!, name: name!, personaFile: personaFilePath(space!, name!), what });
+  const side = shell.remoteSide({ kind: "ssh", host: host! });
+  const folder = plan.destFolder(m, what, await shell.probeEnv(side));
+  const files = plan.manifestFiles(m);
+  await shell.copyFiles(shell.localSide(), side, files.map((f) => ({ src: f.rel, dst: plan.remapRel(f.rel, m, folder.cwd) })));
+  const rels = plan.transcriptRels(files, m).map((r) => plan.remapRel(r, m, folder.cwd));
+  const r = await shell.run(side, shell.pawScript(["__teleport", "rewrite-cwd", "--from", m.cwd, "--to", folder.cwd, "--space", space!]), rels.join("\n") + "\n");
+  console.log(JSON.stringify({ folder: folder.cwd, chain: m.chain, rels, code: r.code, out: r.stdout.toString("utf8").trim(), err: shell.said(r) }));
+  process.exit(0);
+}
+
 const COTAL = process.env.COTAL_BIN ?? "";
 if (!COTAL || !existsSync(COTAL)) throw new Error("e2e:teleport needs COTAL_BIN=<cotal-ai package>/dist/cotal.js (see the header)");
 
@@ -41,12 +61,18 @@ const work = realpathSync(mkdtempSync("/tmp/pt-"));
 const pawHome = join(work, "p");
 const home = join(work, "home");
 const root = join(work, "root");
-const repo = join(work, "repo");
+// Its remote is a GitHub URL (teleport places a repo by owner/repo: <PAW_HOME>/repos/e2e/repo there),
+// served on both machines by the bind-mounted bare repo through url.insteadOf.
+const repo = join(home, "Github", "repo");
+const repoUrl = "https://github.com/e2e/repo.git";
+const repoThere = "/root/.paw/repos/e2e/repo";
+const slugOf = (p: string) => p.replace(/[^A-Za-z0-9]/g, "-");
+const agentBin = join(work, "agentbin"); // the scripted ACP agent, bind-mounted at the same path there
 const bare = join(work, "remote.git");
 const ctr = `paw-e2e-teleport-${tag}`;
 const host = `paw-e2e-${tag}`;
 const image = "paw-e2e-teleport:dev";
-for (const d of [pawHome, join(root, ".cotal", "auth"), join(work, "cotalhome"), join(work, "xdg"), join(work, "bin"), join(work, "certs"), join(work, "store")]) mkdirSync(d, { recursive: true });
+for (const d of [pawHome, agentBin, join(root, ".cotal", "auth"), join(work, "cotalhome"), join(work, "xdg"), join(work, "bin"), join(work, "certs"), join(work, "store")]) mkdirSync(d, { recursive: true });
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 let fails = 0;
@@ -132,6 +158,11 @@ export PAW_HOME=/root/.paw PAW_SPACE=${DECOY} PAW_SERVER=nats://127.0.0.1:9 PAW_
 export NODE_EXTRA_CA_CERTS=/certs/cert.pem COTAL_SKIP_CONNECTOR_SEED=1 COTAL_HOME=/root/.cotalhome
 export GIT_AUTHOR_NAME=e2e GIT_AUTHOR_EMAIL=e2e@example.invalid GIT_COMMITTER_NAME=e2e GIT_COMMITTER_EMAIL=e2e@example.invalid
 `;
+/** `claude` there: a login check that says yes, and nothing else — enough for a claude agent's preflight. */
+const FAKE_CLAUDE = `#!/bin/sh
+if [ "$1" = auth ] && [ "$2" = status ]; then echo '{"loggedIn": true, "authMethod": "e2e-fake"}'; exit 0; fi
+echo "e2e fake claude: there is no model here" >&2; exit 1
+`;
 const LAUNCHER = `#!/bin/sh
 if [ "$1" = start ] && [ -f /root/fail-start ]; then echo "e2e fixture: paw start refused on this box" >&2; exit 1; fi
 exec /usr/local/bin/node /opt/paw/bin/paw.mjs "$@"
@@ -174,18 +205,21 @@ try {
   ok("this machine joins the space", paw(["mesh", "add", R, "--server", `tls://127.0.0.1:${port}`, "--root", root, "--as", "e2e-here"]).status === 0);
 
   // ── fixtures: HOME, the repo (one unpushed commit), the agent ────────────────────────────────────
-  const slug = repo.replace(/[^A-Za-z0-9]/g, "-");
+  const slug = slugOf(repo);
   mkdirSync(join(home, ".claude", "projects", slug, "memory"), { recursive: true });
   writeFileSync(join(home, ".claude", "projects", slug, "memory", "MEMORY.md"), "- e2e memory\n");
   mkdirSync(join(home, ".claude", "skills", "e2e-skill"), { recursive: true });
   writeFileSync(join(home, ".claude", "skills", "e2e-skill", "SKILL.md"), "---\nname: e2e-skill\n---\nhello\n");
   writeFileSync(join(home, ".claude", "CLAUDE.md"), "# e2e global instructions\n");
+  const gitconfig = `[url "${bare}"]\n\tinsteadOf = ${repoUrl}\n`;
+  writeFileSync(join(home, ".gitconfig"), gitconfig);
   execFileSync("git", ["init", "-q", "--bare", "-b", "main", bare]);
-  mkdirSync(repo);
+  mkdirSync(repo, { recursive: true });
   git(["init", "-q", "-b", "main"], repo);
-  git(["remote", "add", "origin", bare], repo);
-  writeFileSync(join(repo, "fake-acp-agent.mjs"), FAKE_ACP);
-  chmodSync(join(repo, "fake-acp-agent.mjs"), 0o755);
+  git(["remote", "add", "origin", repoUrl], repo);
+  writeFileSync(join(repo, "README.md"), "fixture\n");
+  writeFileSync(join(agentBin, "fake-acp-agent.mjs"), FAKE_ACP);
+  chmodSync(join(agentBin, "fake-acp-agent.mjs"), 0o755);
   git(["add", "."], repo);
   git(["commit", "-q", "-m", "fixture"], repo);
   git(["push", "-q", "-u", "origin", "main"], repo);
@@ -201,7 +235,7 @@ try {
       "name: tele",
       `cwd: ${repo}`,
       "agent: acp",
-      `acpCommand: '["/usr/bin/env","node","${repo}/fake-acp-agent.mjs"]'`,
+      `acpCommand: '["/usr/bin/env","node","${agentBin}/fake-acp-agent.mjs"]'`,
       "acpHost: ts",
       "shareTools: none",
       "subscribe: [general]",
@@ -222,7 +256,7 @@ try {
   const build = docker(["build", "-q", "-t", image, ctx]);
   ok("target image builds (node + git + sshd + paw's deps)", build.status === 0, build.status === 0 ? "" : tail(out(build), 12));
   execFileSync("ssh-keygen", ["-q", "-t", "ed25519", "-N", "", "-f", join(work, "id")]);
-  const runC = docker(["run", "-d", "--name", ctr, "-p", "127.0.0.1::22", "-v", `${bare}:${bare}`, "-v", `${join(work, "certs")}:/certs:ro`, image]);
+  const runC = docker(["run", "-d", "--name", ctr, "-p", "127.0.0.1::22", "-v", `${bare}:${bare}`, "-v", `${agentBin}:${agentBin}:ro`, "-v", `${join(work, "certs")}:/certs:ro`, image]);
   ok("target container up", runC.status === 0, tail(out(runC), 2));
   const sshPort = /:(\d+)\s*$/.exec(docker(["port", ctr, "22/tcp"]).stdout.trim().split("\n")[0])?.[1];
   const files = execFileSync("git", ["ls-files", "-co", "--exclude-standard"], { cwd: REPO, encoding: "utf8" }).split("\n").filter((f) => f && existsSync(join(REPO, f)) && !f.startsWith("node_modules"));
@@ -231,6 +265,8 @@ try {
   docker(["exec", "-i", ctr, "sh", "-c", "cat > /root/.ssh/authorized_keys && chmod 600 /root/.ssh/authorized_keys"], readFileSync(join(work, "id.pub"), "utf8"));
   docker(["exec", "-i", ctr, "sh", "-c", "cat > /root/.profile"], PROFILE);
   docker(["exec", "-i", ctr, "sh", "-c", "cat > /usr/local/bin/paw && chmod 755 /usr/local/bin/paw"], LAUNCHER);
+  docker(["exec", "-i", ctr, "sh", "-c", "cat > /usr/local/bin/claude && chmod 755 /usr/local/bin/claude"], FAKE_CLAUDE);
+  docker(["exec", "-i", ctr, "sh", "-c", "cat > /root/.gitconfig"], gitconfig);
   docker(["exec", "-i", ctr, "sh", "-c", "mkdir -p /root/cotal-root/.cotal/auth && cat > /root/cotal-root/.cotal/auth/auth.json && chmod 600 /root/cotal-root/.cotal/auth/auth.json"], readFileSync(signer, "utf8"));
   const addThere = there(`paw mesh add ${R} --server tls://host.docker.internal:${port} --root /root/cotal-root --as e2e-there`);
   ok("the target joins the same space (its own root + signer copy)", addThere.status === 0, tail(out(addThere), 2));
@@ -242,7 +278,7 @@ try {
   writeFileSync(join(work, "bin", "ssh"), `#!/bin/sh\nexec /usr/bin/ssh -F ${join(work, "ssh_config")} "$@"\n`);
   chmodSync(join(work, "bin", "ssh"), 0o755);
   const hello = run("ssh", ["-o", "BatchMode=yes", host, "paw __teleport probe"], base);
-  ok("ssh reaches the target's paw", /paw-teleport 1/.test(hello.stdout), tail(out(hello), 3));
+  ok("ssh reaches the target's paw", /paw-teleport 2/.test(hello.stdout), tail(out(hello), 3));
 
   // ── 1. the agent runs here; a dry run ────────────────────────────────────────────────────────────
   const start = paw(["start", "tele", "--space", R]);
@@ -251,7 +287,7 @@ try {
   const what = ["--repo", "--memory", "--skills", "--claude-md"];
   const dry = paw(["teleport", "tele", "--to", `ssh:${host}`, ...what, "--dry-run", "--space", R]);
   console.log(`    ${out(dry).trim().split("\n").join("\n    ")}`);
-  ok("dry run passes preflight and copies nothing", dry.status === 0 && /preflight passed; nothing was copied/.test(out(dry)) && there(`test -e ${repo}`).status !== 0);
+  ok("dry run passes preflight and copies nothing", dry.status === 0 && /preflight passed; nothing was copied/.test(out(dry)) && there(`test -e ${repoThere}`).status !== 0);
   ok("the plan names the unpushed commit's bundle", /1 unpushed commit\(s\) as a git bundle/.test(out(dry)));
 
   // ── 2. the teleport ──────────────────────────────────────────────────────────────────────────────
@@ -259,9 +295,10 @@ try {
   const tele = paw(["teleport", "tele", "--to", `ssh:${host}`, ...what, "--yes", "--space", R]);
   console.log(`    ${out(tele).trim().split("\n").join("\n    ")}`);
   ok(`teleport succeeds (${Math.round((Date.now() - t0) / 1000)}s)`, tele.status === 0 && /✓ teleported tele: this machine → ssh:/.test(out(tele)));
-  ok("the repo is mirrored at the same path, same branch + HEAD (the unpushed commit came as a bundle)", there(`git -C ${repo} rev-parse HEAD`).stdout.trim() === head && there(`git -C ${repo} symbolic-ref --short HEAD`).stdout.trim() === "main");
-  ok("…clean, tracking origin/main", there(`git -C ${repo} status --porcelain`).stdout.trim() === "" && there(`git -C ${repo} rev-parse --abbrev-ref main@{upstream}`).stdout.trim() === "origin/main");
-  ok("memory, skill and CLAUDE.md landed under the target's HOME", /e2e memory/.test(thereText(`/root/.claude/projects/${slug}/memory/MEMORY.md`)) && /hello/.test(thereText("/root/.claude/skills/e2e-skill/SKILL.md")) && /e2e global/.test(thereText("/root/.claude/CLAUDE.md")));
+  ok("the repo lands in the target's paw clone (repos/e2e/repo, not the source path), same branch + HEAD (the unpushed commit came as a bundle)", there(`git -C ${repoThere} rev-parse HEAD`).stdout.trim() === head && there(`git -C ${repoThere} symbolic-ref --short HEAD`).stdout.trim() === "main");
+  ok("…clean, tracking origin/main", there(`git -C ${repoThere} status --porcelain`).stdout.trim() === "" && there(`git -C ${repoThere} rev-parse --abbrev-ref main@{upstream}`).stdout.trim() === "origin/main");
+  ok("the persona there points at the paw clone", new RegExp(`^cwd: ${repoThere}$`, "m").test(remotePersona()));
+  ok("memory (in the clone's project dir), skill and CLAUDE.md landed under the target's HOME", /e2e memory/.test(thereText(`/root/.claude/projects/${slugOf(repoThere)}/memory/MEMORY.md`)) && /hello/.test(thereText("/root/.claude/skills/e2e-skill/SKILL.md")) && /e2e global/.test(thereText("/root/.claude/CLAUDE.md")));
   ok("the persona there carries no teleport marker", /^agent: acp$/m.test(remotePersona()) && !/teleported/.test(remotePersona()));
   ok("this persona is marked teleported (where, when, what)", new RegExp(`^teleported: ssh:${host}$`, "m").test(persona()) && /^teleportedAt: \d{4}-/m.test(persona()) && /^teleportedWhat: repo,skills,memory,claude-md$/m.test(persona()));
   ok("it is present on the mesh", /\btele\b/.test(await present(true, 30_000)));
@@ -293,7 +330,7 @@ try {
   console.log(`    ${out(back).trim().split("\n").join("\n    ")}`);
   ok("--back succeeds", back.status === 0 && /✓ teleported tele: ssh:.* → this machine/.test(out(back)));
   ok("it runs here again", whereHere() === "here", whereHere());
-  ok("this persona lost the marker", !/teleported/.test(persona()) && /^agent: acp$/m.test(persona()));
+  ok("this persona lost the marker and is back in its own folder", !/teleported/.test(persona()) && /^agent: acp$/m.test(persona()) && new RegExp(`^cwd: ${repo}$`, "m").test(persona()));
   ok("the target's copy is marked teleported: origin", /^teleported: origin$/m.test(remotePersona()));
   const startThere = there(`paw start tele --space ${R}`);
   ok("the target's own paw start refuses its copy", /skipped:.*tele \(paw: "tele" was teleported back to the machine it came from/.test(out(startThere)), tail(out(startThere), 2));
@@ -307,6 +344,83 @@ try {
   ok("it runs here", whereHere() === "here" && /\btele\b/.test(await present(true, 30_000)), whereHere());
   ok("this persona is not marked", !/teleported/.test(persona()));
   ok("the target's copy stood down (marked origin)", /^teleported: origin$/m.test(remotePersona()));
+
+  // ── 5. without --repo: the agent gets <PAW_HOME>/agents/<name> there ──────────────────────────────
+  there("rm -f /root/fail-start");
+  const big = join(home, "Github", "big");
+  mkdirSync(big, { recursive: true });
+  writeFileSync(join(big, "data.bin"), "stays here\n");
+  mkdirSync(join(home, ".claude", "projects", slugOf(big), "memory"), { recursive: true });
+  writeFileSync(join(home, ".claude", "projects", slugOf(big), "memory", "MEMORY.md"), "- tele2 memory\n");
+  const p2 = join(pawHome, "spaces", R, "personas", "tele2.md");
+  writeFileSync(p2, readFileSync(personaPath, "utf8").replace(/^name: tele$/m, "name: tele2").replace(/^cwd: .*$/m, `cwd: ${big}`).replace("You are tele,", "You are tele2,"));
+  const persona2 = () => readFileSync(p2, "utf8");
+  const remote2 = () => thereText(`/root/.paw/spaces/${R}/personas/tele2.md`);
+  const agentsThere = "/root/.paw/agents/tele2";
+  ok("tele2 starts here", /started:.*tele2/.test(out(paw(["start", "tele2", "--space", R]))));
+  const what2 = ["--memory", "--skills", "--claude-md"];
+  const dry2 = paw(["teleport", "tele2", "--to", `ssh:${host}`, ...what2, "--dry-run", "--space", R]);
+  console.log(`    ${out(dry2).trim().split("\n").join("\n    ")}`);
+  ok("no-repo dry run: passes, names the agents folder there", dry2.status === 0 && out(dry2).includes(`folder     ${big} → ${agentsThere}  (no --repo: a fresh folder paw owns there`));
+  ok("…and memory going to that folder's project dir", out(dry2).includes(`→ /root/.claude/projects/${slugOf(agentsThere)}/memory/`));
+  const tele2 = paw(["teleport", "tele2", "--to", `ssh:${host}`, ...what2, "--yes", "--space", R]);
+  console.log(`    ${out(tele2).trim().split("\n").join("\n    ")}`);
+  ok("no-repo teleport succeeds", tele2.status === 0 && /✓ teleported tele2/.test(out(tele2)));
+  ok("the agents folder exists there, and nothing of the source folder came along", there(`test -d ${agentsThere} && ! test -e ${agentsThere}/data.bin`).status === 0);
+  ok("the persona there points at it", new RegExp(`^cwd: ${agentsThere}$`, "m").test(remote2()));
+  ok("memory is in its project dir there (not the source slug)", /tele2 memory/.test(thereText(`/root/.claude/projects/${slugOf(agentsThere)}/memory/MEMORY.md`)) && there(`test -e /root/.claude/projects/${slugOf(big)}`).status !== 0);
+  ok("this persona keeps its own folder, marked", new RegExp(`^cwd: ${big}$`, "m").test(persona2()) && /^teleported: ssh:/m.test(persona2()));
+  const st2 = there(`paw status --space ${R} --json`);
+  ok("the target runs it (paw-managed folder, under any PAW_ROOT)", (() => {
+    try {
+      return (JSON.parse(st2.stdout) as { rows: Row[] }).rows.find((r) => r.name === "tele2")?.live === true;
+    } catch {
+      return false;
+    }
+  })());
+  const back2 = paw(["teleport", "tele2", "--back", "--yes", "--space", R]);
+  console.log(`    ${out(back2).trim().split("\n").join("\n    ")}`);
+  ok("no-repo --back succeeds, back in the folder it left from", back2.status === 0 && new RegExp(`^cwd: ${big}$`, "m").test(persona2()) && !/teleported/.test(persona2()));
+  ok("…its memory back in the original project dir", /tele2 memory/.test(readFileSync(join(home, ".claude", "projects", slugOf(big), "memory", "MEMORY.md"), "utf8")) && !existsSync(join(home, ".claude", "projects", slugOf(agentsThere))));
+  ok("the folder it left is untouched", readFileSync(join(big, "data.bin"), "utf8") === "stays here\n");
+  paw(["stop", "tele2", "--space", R]);
+
+  // ── 6. a claude agent on a big dirty repo (the 2027-intern case): dry runs + its session over ssh ──
+  const t27 = join(home, "Github", "team2027");
+  mkdirSync(t27, { recursive: true });
+  git(["init", "-q", "-b", "main"], t27);
+  for (let i = 0; i < 30; i++) writeFileSync(join(t27, `untracked-${String(i).padStart(2, "0")}.txt`), "x");
+  const pd = join(home, ".claude", "projects", slugOf(t27));
+  const P = "aaaaaaaa-1111-4111-8111-000000000001";
+  const Q = "bbbbbbbb-2222-4222-8222-000000000002";
+  mkdirSync(join(pd, Q, "subagents"), { recursive: true });
+  mkdirSync(join(pd, "memory"), { recursive: true });
+  const jl = (o: object) => JSON.stringify(o) + "\n";
+  writeFileSync(join(pd, `${P}.jsonl`), jl({ type: "user", sessionId: P, cwd: t27, message: { role: "user", content: "start" } }) + jl({ type: "continued-in", sessionId: P, continuedInSessionId: Q }));
+  writeFileSync(join(pd, `${Q}.jsonl`), jl({ type: "user", sessionId: Q, cwd: t27, message: { role: "user", content: "go on" } }) + jl({ type: "assistant", sessionId: Q, cwd: `${t27}/evals`, message: { role: "assistant", content: "ok" } }));
+  writeFileSync(join(pd, Q, "subagents", "agent-1.jsonl"), jl({ type: "user", sessionId: Q, cwd: t27 }));
+  writeFileSync(join(pd, "memory", "MEMORY.md"), "- intern memory\n");
+  writeFileSync(join(pawHome, "spaces", R, "personas", "intern.md"), ["---", "name: intern", `cwd: ${t27}`, `resume: ${Q}`, "subscribe: [general]", 'allowSubscribe: [">"]', 'allowPublish: [">"]', "---", "You are intern.", ""].join("\n"));
+  const dirty = paw(["teleport", "intern", "--to", `ssh:${host}`, "--all", "--dry-run", "--space", R]);
+  console.log(`    ${out(dirty).trim().split("\n").join("\n    ")}`);
+  const listed = out(dirty).split("\n").filter((l) => /^  \?\? /.test(l)).length;
+  ok("--all on a dirty repo: refused with 10 paths, '… and 20 more', and --no-repo", dirty.status !== 0 && listed === 10 && /… and 20 more/.test(out(dirty)) && /--no-repo/.test(out(dirty)), `listed ${listed}`);
+  const dry3 = paw(["teleport", "intern", "--to", `ssh:${host}`, "--session", "--skills", "--memory", "--claude-md", "--dry-run", "--space", R]);
+  console.log(`    ${out(dry3).trim().split("\n").join("\n    ")}`);
+  ok("no-repo dry run of a claude agent passes (its login checked there)", dry3.status === 0 && /preflight passed/.test(out(dry3)));
+  ok("…the chain, into the agents folder's project dir, cwd fields rewritten", out(dry3).includes(`session    ${P} → ${Q}`) && out(dry3).includes(`→ /root/.claude/projects/${slugOf("/root/.paw/agents/intern")}/, cwd fields rewritten`));
+  const rel = run(process.execPath, [join(REPO, "scripts/e2e-teleport.ts"), "--relocate", host, R, "intern"], base);
+  let moved: { folder?: string; chain?: string[]; code?: number; out?: string; err?: string } = {};
+  try {
+    moved = JSON.parse(rel.stdout.trim().split("\n").pop()!);
+  } catch {
+    moved = { err: tail(out(rel), 6) };
+  }
+  ok("the session moves over ssh and `paw __teleport rewrite-cwd` runs there", moved.code === 0 && moved.folder === "/root/.paw/agents/intern", JSON.stringify(moved));
+  const newPd = `/root/.claude/projects/${slugOf("/root/.paw/agents/intern")}`;
+  const cwdsThere = there(`cat ${newPd}/${P}.jsonl ${newPd}/${Q}.jsonl ${newPd}/${Q}/subagents/agent-1.jsonl | grep -o '"cwd":"[^"]*"' | sort | uniq -c`).stdout.trim();
+  ok("every transcript there names the new folder (or a folder under it)", /3 "cwd":"\/root\/\.paw\/agents\/intern"/.test(cwdsThere) && /1 "cwd":"\/root\/\.paw\/agents\/intern\/evals"/.test(cwdsThere) && !cwdsThere.includes(t27), cwdsThere.replace(/\n/g, " | "));
+  ok("…and memory went with it", /intern memory/.test(thereText(`${newPd}/memory/MEMORY.md`)));
 } finally {
   // ── 5. teardown ──────────────────────────────────────────────────────────────────────────────────
   console.log(tail(out(paw(["down", "--space", R])), 3));
