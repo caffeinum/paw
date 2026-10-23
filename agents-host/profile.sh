@@ -1,6 +1,6 @@
 # login shells (`fly ssh console`): the same env the boot gives the daemons
 export PATH=/opt/node/bin:/usr/local/bin:/usr/bin:/bin
 export HOME=/data/home IS_SANDBOX=1
-export LANG=en_US.UTF-8 PAW_HOME=/data/home/.paw PAW_SPACE=team2027 PAW_RUNTIME=pty PAW_ROOT=/data/repos
+export LANG=en_US.UTF-8 PAW_HOME=/data/home/.paw PAW_SPACE=team2027 PAW_RUNTIME=pty PAW_ALLOW_ANY_CWD=1
 export KIT_BIN=/usr/local/bin/kit DISABLE_AUTOUPDATER=1
 cd /data/home 2>/dev/null || true
