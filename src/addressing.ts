@@ -867,8 +867,13 @@ export async function ensureAgentSpawned(
   if (readForeground(opts.space, opts.name)) return { spawned: false };
   const ownPersona = personaFilePath(opts.space, opts.name);
   // A teleported agent runs on another box now (src/teleport.ts): no wake path here may start a second copy.
+  // On the same mesh it's still reachable from here — talk to it like any peer; only a START is refused.
   const teleported = readTeleported(ownPersona);
-  if (teleported) throw new Error(teleportedRefusal(opts.name, teleported));
+  if (teleported) {
+    const id = await presentPeerId(opts.space, opts.name);
+    if (id) return { spawned: false, id };
+    throw new Error(`${teleportedRefusal(opts.name, teleported)} — and it isn't on the mesh right now (start it there)`);
+  }
   if (existsSync(ownPersona)) assertOneSpace(opts.space, readResumeId(ownPersona));
   const lastWrite = (): number | undefined => {
     const file = personaFilePath(opts.space, opts.name);
@@ -1338,9 +1343,14 @@ function ownMeshHolders(space: string, name: string, pin: string | undefined): L
 export async function findUnmanagedAgent(space: string, name: string): Promise<UnmanagedAgent | undefined> {
   const file = personaFilePath(space, name);
   const pids = ownMeshHolders(space, name, existsSync(file) ? readResumeId(file) : undefined).map((p) => p.pid);
-  const roster = (await readMeshRoster(space, pawServer(space), (await humanEndpointAuth(space, "operator")).creds, new Set([name]))).get(name);
-  const id = roster && presenceLive(roster, Date.now()) ? roster.id : undefined;
+  const id = await presentPeerId(space, name);
   return id || pids.length ? { id, pids } : undefined;
+}
+
+/** `name`'s principal when it is live on the space's mesh, whoever hosts it. */
+async function presentPeerId(space: string, name: string): Promise<string | undefined> {
+  const roster = (await readMeshRoster(space, pawServer(space), (await humanEndpointAuth(space, "operator")).creds, new Set([name]))).get(name);
+  return roster && presenceLive(roster, Date.now()) ? roster.id : undefined;
 }
 
 /** The note shown when paw talks to an agent the current manager doesn't manage. */
