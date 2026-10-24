@@ -17,59 +17,12 @@ import { registry, type Command } from "@cotal-ai/core";
 import { spawnSync } from "node:child_process";
 import { downSpace, explicitSpace, expandEqFlags, expandShortForm, failureLine, hoistAddressSpace, oneShotReplyNote, remoteCotalArgv, SHORT_FORMS, stripCotalNamespace, withDefaultSpace } from "../src/dispatch.ts";
 import { cotaldViaNode, ensure, resolveSpace, stop } from "../src/lifecycle.ts";
+import { loadAllCommands, loadCommandsFor } from "../src/command-modules.ts";
 import { readRemoteMesh } from "../src/remote-mesh.ts";
 import { isRemoteSpace } from "../src/server.ts";
 
-/** Every command module, in the order they always registered — each self-registers into the registry
- *  on import. Loaded on demand rather than as static imports so a command can skip the ones it doesn't
- *  need (see LONE_MODULE). */
-const COMMAND_MODULES: Array<() => Promise<unknown>> = [
-  () => import("../src/claude.ts"), // self-registers "claude" (real claude in this terminal, mesh-wired) + the runner bin routes to early
-  () => import("../src/chat.ts"), // self-registers the "chat" command (message it — REPL; --fresh births a new agent)
-  () => import("../src/open.ts"), // self-registers the "open" command (attach its terminal)
-  () => import("../src/adopt.ts"), // self-registers the "adopt" command (resume a past claude session)
-  () => import("../src/rename.ts"), // self-registers the "rename" command (relabel an agent, keep its session)
-  () => import("../src/rm.ts"), // self-registers the "rm" command (forget an agent; always keeps its transcript)
-  () => import("../src/persona.ts"), // self-registers "persona" (show/reroll/backfill personalities); LOCAL — persona frontmatter only, never restarts
-  () => import("../src/status.ts"), // self-registers the "status" command (durability + two-writer health view)
-  () => import("../src/sessions.ts"), // self-registers the "sessions" command (local: lists a folder's transcripts)
-  () => import("../src/log.ts"), // self-registers the "log" command (local: read an agent's transcript directly)
-  () => import("../src/inbox.ts"), // self-registers the "inbox" command (read your DM inbox; --history for all)
-  () => import("../src/dm.ts"), // self-registers the "dm" command (fire-and-forget DM as "you")
-  () => import("../src/mailbox.ts"), // self-registers the "mailbox" daemon (persistent "you" presence beacon)
-  () => import("../src/commands/stop.ts"), // self-registers the "stop" command (folder-aware control-plane stop)
-  () => import("../src/commands/unstick.ts"), // self-registers "unstick" (Esc into a tmux agent stuck inside a tool; self-resolves the manager)
-  () => import("../src/commands/type.ts"), // self-registers "type" (type a line / keys into a tmux agent's terminal without attaching; self-resolves the manager)
-  () => import("../src/commands/msg.ts"), // self-registers the "msg" command (one-shot channel broadcast)
-  () => import("../src/commands/ask.ts"), // self-registers the "ask" command (one-shot role anycast)
-  () => import("../src/commands/who.ts"), // self-registers the "who" command (live roster)
-  () => import("../src/commands/history.ts"), // self-registers the "history" command (channel/DM backlog)
-  () => import("../src/commands/bind.ts"), // self-registers the "bind" command (mint a code to authorize a new Telegram chat)
-  () => import("../src/commands/files.ts"), // self-registers the "files" command (list files endpoints shared on #files)
-  () => import("../src/commands/watch.ts"), // self-registers the "watch" command (live tap of the space)
-  () => import("../src/commands/runtime.ts"), // self-registers "runtime" + "restart" (manager runtime preference/bounce)
-  () => import("../src/commands/hub.ts"), // self-registers "hub" (sticky cotal-hub mode: one MCP process for every agent; self-ensures)
-  () => import("../src/commands/release.ts"), // self-registers "release" (snapshot the checkout the daemons run from); LOCAL — files + a symlink, no mesh
-  () => import("../src/commands/mcp.ts"), // self-registers "mcp" (which MCP servers agents get); LOCAL — reads config + personas, no mesh
-  () => import("../src/commands/launchd.ts"), // self-registers "launchd" (fleet + web at login); LOCAL — plists + launchctl, self-resolves the manager only to capture the live list
-  () => import("../src/global.ts"), // self-registers the "global" command (bring up the always-on $HOME machine agent)
-  () => import("../src/sleep.ts"), // self-registers "sleep" (opt-in hibernation of idle agents; self-ensures)
-  () => import("../src/start.ts"), // self-registers the "start" command (cold-start the whole registered fleet)
-  () => import("../src/teleport.ts"), // self-registers "teleport" (move an agent to another box) + the hidden "__teleport" source-side steps
-  () => import("../src/commands/optimize.ts"), // self-registers "optimize" (restart long-running idle agents, one at a time, verified)
-  () => import("../src/commands/top.ts"), // self-registers "top" (per-agent memory/cpu/subprocesses + cleanup hints; read-only, self-ensures)
-  () => import("../src/commands/tidy.ts"), // self-registers "tidy" (DM agents holding background processes: still using them?)
-  () => import("../src/commands/nice.ts"), // self-registers "nice" (per-agent CPU priority; renice live, never restarts)
-  () => import("../src/commands/acp-host.ts"), // self-registers "acp-host" (show/install the Rust ACP seat host); LOCAL — cargo + files, no mesh
-  () => import("../src/commands/mesh.ts"), // self-registers "mesh" (which spaces live on a remote broker); LOCAL — records only, no mesh
-  () => import("../src/commands/spaces.ts"), // self-registers "spaces" (broker streams per space; `prune` deletes dead spaces, dry run unless --yes)
-  () => import("../src/web.ts"), // self-registers the "web" command (local http+ws UI over feed/transcript/status)
-  () => import("../src/commands/complete.ts"), // self-registers "completion" + the hidden "__complete" dispatcher (shell-completion)
-];
-/** Commands that need ONLY their own module. `paw status` is the read the operator runs all day, and
- *  evaluating every command module first (the claude connector among them) was ~0.15s of its startup —
- *  more on a loaded machine. Everything else (help, completion, unknown-word errors) still loads all. */
-const LONE_MODULE: Record<string, () => Promise<unknown>> = { status: () => import("../src/status.ts") };
+/** Verbs bin/paw.ts answers itself without any registry Command — they load no command module. */
+const INLINE_VERBS = new Set(["cotal", "down", "create", "send"]);
 
 /** Commands that talk to the mesh — they need NATS reachable before they run. */
 const NEEDS_MESH = new Set(["inbox", "msg", "ask", "who", "history", "watch", "files", "bind"]);
@@ -114,9 +67,9 @@ function help(): string {
 const raw = [...process.argv.slice(2)];
 if (raw.length) raw[0] = expandShortForm(raw[0]) as string;
 const cmd = raw[0];
-const lone = cmd !== undefined && Object.hasOwn(LONE_MODULE, cmd) ? LONE_MODULE[cmd] : undefined;
-if (lone) await lone();
-else for (const load of COMMAND_MODULES) await load();
+// Only the verb's own module is evaluated (src/command-modules.ts) — loading all ~43 was most of a
+// short command's startup. help, completion and an unknown word still load every one.
+if (cmd === undefined || !INLINE_VERBS.has(cmd)) await loadCommandsFor(cmd);
 
 try {
   if (cmd === "cotal") {
@@ -202,7 +155,9 @@ try {
     process.exit(0);
   }
 
-  const command = registry.all<Command>("command").find((c) => c.name === cmd);
+  const find = () => registry.all<Command>("command").find((c) => c.name === cmd);
+  // A verb whose src/command-modules.ts entry is missing or stale still resolves (check:dispatch catches the map).
+  const command = find() ?? (await loadAllCommands(), find());
   if (!command) {
     // No silent fallthrough to cotal: an unknown word is an error, with the passthrough as the way out.
     throw new Error(`paw: unknown command "${cmd}" — run \`paw\` for the list, or \`paw cotal ${cmd} …\` for a raw cotal verb.`);

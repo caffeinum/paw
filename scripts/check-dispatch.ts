@@ -4,9 +4,11 @@
  * helpers left are default-space injection and the `paw cotal` namespace strip. Unknown-command
  * handling lives in bin/paw.ts (not unit-testable here). Pure; no daemons. Run: pnpm check:dispatch
  */
+import { execFile } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 import { registry, type Command } from "@cotal-ai/core";
 import { downSpace, expandEqFlags, failureLine, oneShotReplyNote, stripCotalNamespace, withDefaultSpace } from "../src/dispatch.ts";
@@ -246,6 +248,43 @@ assert(oneShotReplyNote(["join", "--name", "mini"]) === undefined && oneShotRepl
     stamped === "paw: mesh failed\n[2026-10-20T02:39:21.000Z] paw start failed (exit 1)",
     "failure line: off a terminal (launchd log) it closes with a timestamped `paw <cmd> failed` line",
   );
+}
+
+// Lazy command loading (src/command-modules.ts): bin/paw.ts evaluates ONLY the verb's mapped module,
+// so each entry must register its verb ALONE, in a fresh process (no sibling already loaded it), and the
+// map must name every verb the full module set registers.
+{
+  const root = join(import.meta.dirname, "..");
+  const modules = pathToFileURL(join(root, "src", "command-modules.ts")).href;
+  const names = (body: string): Promise<string[]> =>
+    new Promise((resolve, reject) => {
+      const script = `const { registry } = await import("@cotal-ai/core"); const m = await import(${JSON.stringify(modules)}); ${body}; process.stdout.write(JSON.stringify(registry.all("command").map((c) => c.name)));`;
+      execFile(process.execPath, ["--input-type=module", "-e", script], { cwd: root, env: { ...process.env, NODE_OPTIONS: "" } }, (err, out, errOut) =>
+        err ? reject(new Error(`${body}: ${errOut || err.message}`)) : resolve(JSON.parse(out) as string[]),
+      );
+    });
+  const { COMMAND_LOADERS } = await import("../src/command-modules.ts");
+  const all = await names("await m.loadAllCommands()");
+  const mapped = Object.keys(COMMAND_LOADERS);
+  const unmapped = all.filter((n) => !mapped.includes(n));
+  const phantom = mapped.filter((n) => !all.includes(n));
+  assert(unmapped.length === 0, `command-modules: every registered verb has a loader${unmapped.length ? ` (missing: ${unmapped.join(", ")})` : ""}`);
+  assert(phantom.length === 0, `command-modules: every loader names a registered verb${phantom.length ? ` (unknown: ${phantom.join(", ")})` : ""}`);
+  const wrong: string[] = [];
+  const queue = [...mapped];
+  await Promise.all(
+    Array.from({ length: 8 }, async () => {
+      for (let verb = queue.shift(); verb !== undefined; verb = queue.shift())
+        if (!(await names(`await m.COMMAND_LOADERS[${JSON.stringify(verb)}]()`)).includes(verb)) wrong.push(verb);
+    }),
+  );
+  assert(wrong.length === 0, `command-modules: each verb's loader registers it on its own${wrong.length ? ` (not: ${wrong.join(", ")})` : ""}`);
+  const lone = await names(`await m.loadCommandsFor("who")`);
+  assert(lone.includes("who") && lone.length < all.length, `command-modules: \`paw who\` loads ${lone.length} of ${all.length} commands, not all`);
+  const full = await names(`await m.loadCommandsFor("__complete")`);
+  assert(full.length === all.length, "command-modules: completion loads every command (it lists the whole registry)");
+  const unknown = await names(`await m.loadCommandsFor("no-such-verb")`);
+  assert(unknown.length === all.length, "command-modules: an unknown verb loads every command before failing loud");
 }
 
 if (failures > 0) {

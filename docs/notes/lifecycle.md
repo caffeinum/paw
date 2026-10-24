@@ -506,8 +506,9 @@ hub.log was already stamped by the hub itself. Readers that match line STARTS go
 ## Dev
 - ESM, run TS directly with tsx — no build step for dev: `pnpm paw <cmd>` (= `tsx bin/paw.ts`).
 - **The CLI may run under bun; the DAEMONS must be node+tsx.** The CLI startup tax is real — tsx
-  ~0.82s vs bun ~0.21s (~4×) on every `paw` invocation — so the launcher (`~/.local/bin/paw`) MAY
-  exec bun for speed. What previously made bun fatal: cotal's `ensureManager`/`startMeshDetached`
+  ~0.82s vs bun ~0.21s (~4×) on every `paw` invocation (2026-10-24 at load ~17: tsx 4–5s, native
+  node `bin/paw.mjs` ~0.6s, bun ~0.35s) — so the launcher (`~/.local/bin/paw`) MAY exec bun for
+  speed, and its no-bun fallback must be `node bin/paw.mjs`, never tsx ([cli.md#binpawmjs](cli.md#binpawmjs)). What previously made bun fatal: cotal's `ensureManager`/`startMeshDetached`
   re-exec the *current* runtime (`selfArgv()`), so a bun CLI spawned the manager under bun, where
   `@lydell/node-pty`'s native ioctl fails (`ioctl(2) failed`) → pty stubs stuck `starting…`, no agents
   (2026-06-26: bricked all 5 agents). FIXED by `cotalViaTsx` (src/lifecycle.ts): paw now spawns the
