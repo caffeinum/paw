@@ -21,8 +21,34 @@ rm -f /data/cotal/.cotal/*.pid /data/cotal/.cotal/*.pid.identity
   done ) &
 
 # No manager runs here, so nothing else renews the daemon creds (delivery, membership-rw: 24h TTL).
-# doctor --fix re-signs them past 75% of their life; the daemons re-read them from disk.
-( while sleep 3600; do
+# doctor --fix re-signs a cred only once it is past 75% of its life, and the daemons re-read the file at
+# that same 75% point (then every 60s until it changes). A fixed cadence must stay well under 25% of the
+# TTL (6h) or a renewal can land at expiry, and each pass is a ~100MB node process. So wake just past
+# the earliest renewal point, read from the JWTs on disk: about two passes a day, each a minute after due.
+CREDS_DIR=/data/cotal/.cotal/space.$(printf %s "$COTAL_SPACE" | od -An -tx1 | tr -d ' \n')
+renew_at() {
+  jwt=$(sed -n '/BEGIN NATS USER JWT/{n;p;q;}' "$1")
+  p=$(printf %s "$jwt" | cut -d. -f2 | tr '_-' '/+')
+  while [ $(( ${#p} % 4 )) -ne 0 ]; do p="$p="; done
+  claims=$(printf %s "$p" | base64 -d 2>/dev/null)
+  iat=$(printf %s "$claims" | sed -n 's/.*"iat":\([0-9]*\).*/\1/p')
+  exp=$(printf %s "$claims" | sed -n 's/.*"exp":\([0-9]*\).*/\1/p')
+  [ -n "$iat" ] && [ -n "$exp" ] || { echo "start: can't read iat/exp from $1" >&2; return 1; }
+  echo $(( iat + (exp - iat) * 3 / 4 ))
+}
+next_renewal() {
+  a=$(renew_at "$CREDS_DIR/delivery.creds") && b=$(renew_at "$CREDS_DIR/membership-rw.creds") || return 1
+  [ "$a" -lt "$b" ] && echo "$a" || echo "$b"
+}
+( while :; do
+    if due=$(next_renewal); then
+      wait_s=$(( due - $(date +%s) + 30 ))
+      [ "$wait_s" -ge 300 ] || wait_s=300   # a pass that did not renew must not respawn node every minute
+    else
+      echo "start: can't place the next daemon creds renewal - checking again in 1h" >&2
+      wait_s=3600
+    fi
+    sleep "$wait_s"
     ( cd /data/cotal && cotal doctor auth --space "$COTAL_SPACE" --fix ) >/dev/null 2>&1 \
       || echo "start: daemon creds renewal failed" >&2
   done ) &
