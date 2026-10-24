@@ -518,6 +518,10 @@ export class TranscriptParser {
       // a partial one. Skipping is right; a lenient parse here would invent a turn that never happened.
       return [];
     }
+    // Only `user`/`assistant` records are turns. Claude Code also writes `api-request-blob` records: a
+    // COPY of a message (with `message.role`) as it was sent to the API. Read by role, every one of them
+    // replayed its turn — goat-film's one DM to "you" showed as two `↩ you` lines (2026-10-24).
+    if (rec.type !== undefined && rec.type !== "user" && rec.type !== "assistant") return [];
     const msg: { role?: string; content?: unknown; model?: string } = rec.message ?? (rec as { role?: string; content?: unknown });
     const role = msg.role ?? rec.type;
     const content = msg.content;

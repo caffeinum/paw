@@ -113,6 +113,45 @@ ok("forward keeps sender, body and replyTo", (env.from as { id: string }).id ===
 ok("forward is re-addressed with a fresh id", env.to === NEW && env.id === F.forwardId("m1", NEW));
 ok("forward is marked, naming the old instance", parts[0].text.includes("forwarded") && parts[0].text.includes(OLD));
 
+// ── label: two ids of one name living side by side are not "old" ─────────────────────────────────
+{
+  // 2026-10-24: the stable "you" (f415…) and a second "you" (8b2c…, first seen later) both heartbeating.
+  // Picking the newest `first` called the LIVE stable id "you (old instance)".
+  const two: Record<string, { name: string; first: number; last: number }> = {
+    "local.f415": { name: "you", first: 1_000, last: 900_000 },
+    "local.8b2c": { name: "you", first: 500_000, last: 900_500 },
+  };
+  ok("label: concurrent ids of one name → neither is an old instance", !L.isOldInstance(two, "local.f415") && !L.isOldInstance(two, "local.8b2c"));
+  ok("label: the live stable 'you' renders plain 'you'", L.peerLabel(two, "local.f415") === "you");
+  const restart = { a: { name: "evals", first: 1_000, last: 100_000 }, b: { name: "evals", first: 100_000 + 5_000, last: 200_000 } };
+  ok("label: a successor starting after the last sighting → old instance", L.isOldInstance(restart, "a") && !L.isOldInstance(restart, "b"));
+  const lag = { a: { name: "evals", first: 1_000, last: 100_000 }, b: { name: "evals", first: 100_000 - 30_000, last: 200_000 } };
+  ok("label: the file's up-to-60s `last` lag still reads as a restart", L.isOldInstance(lag, "a"));
+}
+
+// ── a forward and its original are ONE message to every reader ──────────────────────────────────
+{
+  const FM = await import("../src/forward-mark.ts");
+  const { conversationEntries, dmRow } = await import("../src/feed.ts");
+  const ME = "local.you";
+  const orig = { id: "o1", ts: 7000, space: "s1", from: { id: ME, name: "you" }, to: OLD, parts: [{ kind: "text", text: "hi evals" }] };
+  const fwd = F.forwardEnvelope(orig, "o1", OLD, NEW) as typeof orig;
+  ok("forwardedFrom reads the dead id off the note", FM.forwardedFrom(fwd.parts) === OLD && FM.forwardedFrom(orig.parts) === undefined);
+  ok("withoutForwardNote leaves what the sender wrote", JSON.stringify(FM.withoutForwardNote(fwd.parts)) === JSON.stringify(orig.parts));
+  const fr = dmRow(fwd as never, ME), or = dmRow(orig as never, ME);
+  ok("isForwardOf pairs by id, not text", FM.isForwardOf(fr, or) && !FM.isForwardOf(fr, { ...or, id: "o2" }) && !FM.isForwardOf(fr, { ...or, to: "local.ELSE" }));
+  const both = conversationEntries([or, fr], ME, "s1", { withSent: true });
+  ok("your DM to a dead id + its forward → one entry, the original", both.length === 1 && both[0].text === "hi evals" && both[0].to === "evals" && both[0].forwardedFrom === undefined, JSON.stringify(both));
+  const lonely = conversationEntries([or], ME, "s1", { withSent: true });
+  ok("a DM to a dead id that was NOT forwarded stays visible", lonely.length === 1 && lonely[0].text === "hi evals");
+  const spoof = { ...fwd, id: "not-the-forward-id" };
+  ok("a note-shaped message that isn't the forward's id is not dropped", conversationEntries([or, dmRow(spoof as never, ME)], ME, "s1", { withSent: true }).length === 2);
+  const inbound = F.forwardEnvelope({ id: "i1", ts: 7100, space: "s1", from: { id: NEW, name: "evals" }, to: "local.youold", parts: [{ kind: "text", text: "result" }] }, "i1", "local.youold", ME);
+  const inbox = conversationEntries([dmRow(inbound as never, ME)], ME, "s1");
+  ok("an agent's DM to your old id, forwarded: shown once, sender's words, marked", inbox.length === 1 && inbox[0].text === "result" && inbox[0].forwardedFrom === "local.youold", JSON.stringify(inbox));
+  ok("…at the original's ts, so the unread cursor counts one message", inbox[0].ts === 7100 && both[0].ts === 7000 && fr.ts === or.ts);
+}
+
 // ── brief ───────────────────────────────────────────────────────────────────────────────────────
 const line = ADDRESSING_BRIEF.join(" ");
 ok("brief: address by name, ids change on restart (one sentence)", ADDRESSING_BRIEF.length === 1 && /by NAME/.test(line) && /change on every restart/.test(line));

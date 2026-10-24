@@ -126,6 +126,8 @@ try {
   const sent = (JSON.parse(paw("inbox", "--sent", "--json", "--history")) as { messages: Array<{ dir?: string; to?: string; text: string }> }).messages;
   const out = sent.find((e) => e.dir === "out" && e.text.includes("STALE-2"));
   ok("paw inbox --sent keys the old-id DM to 'evals' (the conversation key, no suffix)", out?.to === "evals", JSON.stringify(out));
+  const copies = sent.filter((e) => e.dir === "out" && e.text.includes("STALE-2"));
+  ok("…ONCE: the forward is paired with its original and dropped", copies.length === 1 && !copies[0].text.includes("[paw: forwarded"), JSON.stringify(copies));
   ok("no forward loop: one forward line per original", (mailboxLog().match(/re-sent to/g) ?? []).length === 2, mailboxLog().split("\n").filter((l) => l.includes("re-sent")).join(" | "));
 } finally {
   for (const ep of seats) await ep.stop().catch(() => {});

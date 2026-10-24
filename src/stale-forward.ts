@@ -22,7 +22,6 @@
  * same thing: an OPEN mesh. Under PAW_AUTH the broker forbids it, so the forwarder does not start there
  * (said loudly) — the ledger-based NAMING still works for every reader.
  */
-import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -33,6 +32,9 @@ import { dmSender } from "./sleep-host.ts";
 import { isAsleep, readWakingRecord } from "./sleep-state.ts";
 import { isStandIn, presenceLive } from "./roster.ts";
 import { ledgerName, observe, pruneLedger, readLedger, writeLedger, type Ledger } from "./peer-ledger.ts";
+import { forwardId, forwardNote } from "./forward-mark.ts";
+
+export { forwardId, forwardNote };
 
 /** How long a DM to a dead id waits for its agent's next incarnation before it is given up on. */
 export const PENDING_MS = 30 * 60_000;
@@ -80,18 +82,6 @@ export function decideForward(a: {
 /** Pure: the live, non-stand-in peers on a roster snapshot. */
 export function livePeers(space: string, roster: Presence[], now: number): LivePeer[] {
   return roster.filter((p) => presenceLive(p, now) && !isStandIn(space, p.card.name, p.card.id)).map((p) => ({ id: p.card.id, name: p.card.name }));
-}
-
-/** Pure: a deterministic message id for the forward of `origId` to `to` — a retried forward carries the
- *  SAME msgID, so JetStream's duplicate window drops it even if the done-set write was lost. */
-export function forwardId(origId: string, to: string): string {
-  const h = createHash("sha256").update(`paw-stale-forward\0${origId}\0${to}`).digest("hex");
-  return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20, 32)}`;
-}
-
-/** The note a forwarded DM leads with, so the agent knows why it arrived and where to reply. */
-export function forwardNote(oldId: string): string {
-  return `[paw: forwarded — this DM was sent to your previous instance (${oldId}); reply to the sender as usual]`;
 }
 
 /** Pure: the forwarded envelope — original sender/body/replyTo kept, new id, new recipient, note first. */

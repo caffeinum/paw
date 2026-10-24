@@ -61,6 +61,8 @@ export function searchEntries(entries: Entry[], q: string, limit = 200): Message
 export function recordText(record: unknown): { role: string; text: string; ts: number | undefined } {
   const r = record as { type?: string; timestamp?: string; message?: { role?: string; content?: unknown } } | null;
   if (!r || typeof r !== "object") return { role: "", text: "", ts: undefined };
+  // An `api-request-blob` is a COPY of a message as sent to the API — not a turn (see TranscriptParser.feed).
+  if (r.type !== undefined && r.type !== "user" && r.type !== "assistant") return { role: "", text: "", ts: undefined };
   const role = r.message?.role ?? r.type ?? "";
   const ts = r.timestamp ? Date.parse(r.timestamp) : undefined;
   const c = r.message?.content;

@@ -331,6 +331,24 @@ assert(tailRead(file, 10_000).split("\n")[0] === "AAAAAAAAAA", "a window larger 
   console.log("✓ context window fill");
 }
 
+// ── api-request-blob: a COPY of a message, never a second turn ──────────────────────────────────
+{
+  // Claude Code writes the assistant turn, then an `api-request-blob` record holding the same message
+  // (with `message.role`). Read by role, goat-film's one DM to "you" rendered as two `↩ you` lines.
+  const dm = { type: "tool_use", id: "t9", name: "mcp__cotal__cotal_dm", input: { to: "local.f415", text: "first seedance result" } };
+  const out = feedAll([
+    rec({ type: "assistant", message: { role: "assistant", content: [dm] } }),
+    rec({ type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: "t9", content: "DM stored as seq 1" }] } }),
+    rec({ type: "api-request-blob", hash: "ce24", message: { role: "assistant", content: [dm] } }),
+    rec({ type: "api-request-blob", hash: "8465", message: { role: "user", content: "a prompt, copied" } }),
+  ]);
+  assert(out.filter((b) => b.kind === "reply").length === 1, "one cotal_dm is ONE ↩ reply — the api-request-blob copy is not replayed");
+  assert(!out.some((b) => b.kind === "user"), "a blob's copied user message is not a prompt either");
+  const { recordText } = await import("../src/search.ts");
+  assert(recordText({ type: "api-request-blob", message: { role: "assistant", content: [{ type: "text", text: "hit" }] } }).text === "", "search skips the blob copy too (no duplicate hits)");
+  console.log("✓ api-request-blob");
+}
+
 if (failures > 0) {
   console.error(`\n${failures} paw transcript check(s) failed`);
   process.exit(1);

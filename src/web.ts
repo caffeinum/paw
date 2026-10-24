@@ -82,6 +82,7 @@ function webCursor(space: string): number {
   return shared;
 }
 import { sendAsYou } from "./dm.ts";
+import { forwardedFrom, isForwardOf, withoutForwardNote } from "./forward-mark.ts";
 import { DmWindow, FETCH_CAP, conversationEntries, messageText, observerEndpoint, pausableLoop, type Entry, type PausableLoop } from "./feed.ts";
 import { ensure, resolveSpace, reexecUnderNode } from "./lifecycle.ts";
 import { agentTranscriptFile, blocksForAgent, chooseTranscriptId } from "./log.ts";
@@ -298,6 +299,8 @@ export class Conversation {
   private history: Entry[] = [];
   private live: Entry[] = [];
   private liveIds = new Set<string>();
+  /** The tapped messages' envelopes by id — what a later stale-id forward is paired against. */
+  private liveRows = new Map<string, { id: string; to?: string; from: { id?: string } }>();
   /** keyOf(entry) → the tapped message id, so `liveIds` can be pruned when a reconcile absorbs an entry. */
   private idByKey = new Map<string, string>();
   /** Learned id→name, so an OUTGOING DM renders with the recipient's name rather than its raw id. The
@@ -347,6 +350,7 @@ export class Conversation {
       if (!stillLive.has(key)) {
         this.idByKey.delete(key);
         this.liveIds.delete(id);
+        this.liveRows.delete(id);
       }
     }
   }
@@ -368,10 +372,20 @@ export class Conversation {
     if (typeof m.id !== "string" || !m.id || this.liveIds.has(m.id)) return undefined;
 
     const me = this.ep.card.id;
+    // A stale-id forward (src/forward-mark.ts) repeats a DM already in the stream: if its original is
+    // here, it is the same message — drop it, exactly as conversationEntries does on the next reconcile.
+    const forwardOf = forwardedFrom(m.parts);
+    if (forwardOf !== undefined) {
+      const fwd = { id: m.id, to: m.to, from: { id: m.from.id }, forwardOf };
+      const originals = [...(this.window?.all() ?? []), ...this.liveRows.values()];
+      if (originals.some((o) => isForwardOf(fwd, o))) return undefined;
+    }
+    const text = forwardOf === undefined ? messageText(m) : messageText({ ...m, parts: withoutForwardNote(m.parts) });
+    const mark = forwardOf !== undefined ? { forwardedFrom: forwardOf } : {};
     let entry: Entry | undefined;
-    if (m.to === me) entry = { from: m.from.name, text: messageText(m), ts: m.ts, dir: "in" };
+    if (m.to === me) entry = { from: m.from.name, text, ts: m.ts, dir: "in", ...mark };
     else if (m.from.id === me && m.to) {
-      entry = { from: HUMAN_PEER, text: messageText(m), ts: m.ts, dir: "out", to: this.nameFor(m.to) };
+      entry = { from: HUMAN_PEER, text, ts: m.ts, dir: "out", to: this.nameFor(m.to), ...mark };
       if (entry.to === m.to) this.unnamed.set(entry, m.to);
     } else return undefined; // channel traffic, or a DM between two agents — not the human's conversation
 
@@ -379,6 +393,7 @@ export class Conversation {
     if (this.history.some((h) => keyOf(h) === key)) return undefined; // the tap and the last reconcile overlap
 
     this.liveIds.add(m.id);
+    this.liveRows.set(m.id, { id: m.id, to: m.to, from: { id: m.from.id } });
     this.idByKey.set(key, m.id);
     this.live.push(entry);
     return entry;

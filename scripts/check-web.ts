@@ -149,6 +149,26 @@ assert(lateHist.entries()[0]?.to === "local.newvibe", "a reconciled history entr
 lateHist.accept({ id: "h10", from: { id: "local.newvibe", name: "vibeos-landing" }, to: ME, ts: 700, parts: parts("yo") } as never);
 assert(lateHist.entries()[0]?.to === "vibeos-landing", "a reconciled history entry is re-resolved too, not only the live tail");
 
+/* ── a stale-id forward of a DM already held is the same message ─────────────────────────────── */
+{
+  const { forwardId, forwardNote } = await import("../src/forward-mark.ts");
+  const OLD = "local.olddev", NEW = "local.devweb";
+  const fwdParts = (s: string) => [{ kind: "text", text: forwardNote(OLD) }, ...parts(s)];
+  const c1 = new Conversation(fakeEp());
+  c1.accept({ id: "o1", from: { id: ME, name: "you" }, to: OLD, ts: 900, parts: parts("still there?") } as never);
+  const dup = c1.accept({ id: forwardId("o1", NEW), from: { id: ME, name: "you" }, to: NEW, ts: 900, parts: fwdParts("still there?") } as never);
+  assert(dup === undefined && c1.entries().length === 1, "the forward of a live-tapped DM is dropped — one message, the original kept");
+  const c2 = new Conversation(fakeEp([{ id: "o2", from: { id: ME, name: "you" }, to: OLD, ts: 950, parts: parts("ping") }]));
+  await c2.reconcile();
+  assert(
+    c2.accept({ id: forwardId("o2", NEW), from: { id: ME, name: "you" }, to: NEW, ts: 950, parts: fwdParts("ping") } as never) === undefined && c2.entries().length === 1,
+    "the forward of a reconciled-history DM is dropped too",
+  );
+  const c3 = new Conversation(fakeEp());
+  const lone = c3.accept({ id: forwardId("o3", ME), from: { id: NEW, name: "dev-web" }, to: ME, ts: 960, parts: fwdParts("done") } as never);
+  assert(lone?.text === "done" && lone.forwardedFrom === OLD, "a forward whose original isn't held shows once: the sender's words, marked forwarded, no note");
+}
+
 /* ── the Village tracker: DM edges + last-spoken lines from the whole-space tap ─────────────────── */
 {
   const ME = "local.humanid";

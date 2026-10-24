@@ -38,7 +38,8 @@ function agoTag(ts: number): string {
 }
 
 function render(e: Entry): string {
-  return `${c.magenta("(DM)")} ${c.bold(e.from)}${agoTag(e.ts)} ${c.dim("→ you:")} ${e.text}`;
+  const fwd = e.forwardedFrom ? c.dim(" · forwarded from an old id") : "";
+  return `${c.magenta("(DM)")} ${c.bold(e.from)}${agoTag(e.ts)}${fwd} ${c.dim("→ you:")} ${e.text}`;
 }
 
 type InboxArgs = { space?: string; server?: string; history: boolean; limit: number; watch: boolean; json: boolean; markRead: boolean; sent: boolean; agents: string[] };
