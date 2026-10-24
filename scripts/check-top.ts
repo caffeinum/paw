@@ -119,6 +119,18 @@ ok(hint(row(), quiet)?.cmd === "paw optimize queue", "idle >24h, nothing else �
 ok(verdict(row(), q).act === "skip" && (verdict(row(), q) as { reason: string }).reason.includes(":3000"), "optimize skips an agent holding a live server");
 ok(f.verdictText(verdict(row(), quiet)) === "→ restart (idle 1d)", "verdict text");
 
+// ---- a claude seat whose cotal MCP server died: present on the roster, but every cotal_* call is gone ----
+ok(q.cotalMcp === true, "queue's claude has its cotal mcp.cjs child");
+const P = (pid: number, ppid: number, argv: string) => f.parsePs(`${pid} ${ppid} ${pid} 01:00:00 0:01.00 ${argv} COTAL_NAME=x ${S}`)[0];
+ok(f.hasCotalMcp([P(1, 0, "/u/.local/bin/claude --resume a")], [P(2, 1, "node /h/.build/cotal-shim /s/hub.sock")]) === true, "the hub shim counts as the cotal MCP server");
+ok(f.hasCotalMcp([P(1, 0, "/u/.local/bin/claude --resume a")], [P(2, 1, "/u/.local/bin/artil internal claude-channel")]) === false, "another MCP child (artil) is not cotal's");
+ok(f.hasCotalMcp([P(1, 0, "/u/.paw/bin/kit run --name k")], []) === undefined, "a kit seat has no cotal MCP child to miss");
+const deaf = { ...q, cotalMcp: false };
+ok(f.stateText(row(), deaf, now) === "⚠ no cotal mcp", "claude alive, cotal mcp gone → flagged in STATE");
+ok(f.stateText(row(), { ...deaf, ageMs: f.MCP_GRACE_MS - 1 }, now) === "idle", "…but not while the seat is still booting its MCP");
+ok(hint(row(), deaf)?.cmd === "paw restart queue" && /can't send/.test(hint(row(), deaf)!.text), "…and the hint is a restart (printed for the operator, never run)");
+ok(hint(row({ unregistered: { agent: "claude" } }), deaf)?.cmd === undefined, "…an unregistered peer gets the note only");
+
 // ---- the table ----
 const older = row({ tool: { id: "t", name: "Bash", summary: "fly", startedMs: now - 2 * H } });
 ok(f.toolItem(older, q.items, now) === undefined, "a tool is matched only to a task that started when the tool_use did");

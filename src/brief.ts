@@ -122,3 +122,24 @@ export const BACKGROUND_BASH_BRIEF: readonly string[] = [
     `watcher — use the Monitor tool (session-scoped, survives turns), or run it detached (a tmux`,
     `session, nohup) and poll the log. Never leave a deploy on a background Bash task.`,
 ];
+
+/** Claude Code's "MCP server disconnected" tool notice is about a few cotal tools, not the mesh — a
+ *  claude harness fact. */
+export const COTAL_TOOLS_NOTICE_BRIEF: readonly string[] = [
+    // 2026-10-24, team2027: mcp-intern (after `paw teleport` + resume) and evals-intern (after resuming
+    // from a usage limit) both told the operator "the cotal tools disconnected" and stopped replying.
+    // Their cotal MCP servers were up the whole time (connected, cotal_dm later succeeded in ms). Both
+    // sessions came from the open `paw` space, where cotal offers cotal_spawn/run/persona/personas; on
+    // the authed team2027 mesh those four are gated by capability, so on the new process's first turn
+    // Claude Code said "45 deferred tools are no longer available (MCP server disconnected):
+    // mcp__cotal__* (4), …" — and the agents read the glob as ALL their cotal tools.
+    `A CLAUDE CODE NOTICE THAT MISLEADS: after a resume, a compaction or a move to another machine or`,
+    `space, a system reminder may say some mcp__cotal__* tools are "no longer available (MCP server`,
+    `disconnected)". That means only THOSE tools left your tool list — cotal_spawn, cotal_run,`,
+    `cotal_persona and cotal_personas are granted per capability, so a session moved onto an authed`,
+    `mesh loses them. Your cotal connection is fine and cotal_dm, cotal_inbox and cotal_roster still`,
+    `work: keep replying with cotal_dm, and never tell anyone your cotal tools are gone because of that`,
+    `notice — try the call. Only a cotal_* call that itself fails "not connected" means the mesh is`,
+    `unreachable; cotal reconnects on its own, so check cotal_connection_status (cotal_reconnect forces`,
+    `it) and retry the send.`,
+];
