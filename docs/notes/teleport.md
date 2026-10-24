@@ -1,7 +1,7 @@
 # paw teleport
 
 ```
-paw teleport <agent> --to fly:<app>[/<machine-id>] | ssh:<host>  [--all | --session --repo --skills --memory --claude-md] [--dry-run] [--yes]
+paw teleport <agent> --to fly:<app>[/<machine-id>] | ssh:<host>  [--all | --session --repo --skills --memory --claude-md --beads] [--dry-run] [--yes]
 paw teleport <agent> --back [--dry-run] [--yes]
 ```
 
@@ -75,6 +75,7 @@ name stays). Checkmarks (none given: a checklist on a tty, all preselected; a pi
   plugins are LISTED as not moved (v1). Project `.claude/skills` travel with the repo.
 - **memory** — `~/.claude/projects/<slug>/memory/`.
 - **claude-md** — `~/.claude/CLAUDE.md`.
+- **beads** — its open beads; see [Beads](#beads).
 - A different CLAUDE.md or skill already on the target is a blocker, never an overwrite; an identical one
   is skipped (`filesToSend`). Paths land under the target's HOME at the same HOME-relative path.
 - **Logins are never copied** (claude, kit, gh, ssh keys). The probe checks `claude auth status`
@@ -95,16 +96,49 @@ name stays). Checkmarks (none given: a checklist on a tty, all preselected; a pi
 4. Copy (tar stream), mirror the repo.
 5. Stop it here; wait (≤30s) for its claude to release the session file.
 6. Re-read the manifest and send what changed during the copy (whole files; a big transcript is re-sent).
+   `--beads`: import its beads there and verify them ([Beads](#beads)).
 7. Write the persona there, run the target's own `paw start <name>`, wait (≤180s) until a present peer of
    that name with a NEW id is on the mesh (the old seat's lingering presence never counts).
-8. Mark this persona `teleported: <transport>`, `teleportedAt:`, `teleportedWhat:`.
+8. Mark this persona `teleported: <transport>`, `teleportedAt:`, `teleportedWhat:`; close the moved beads here.
 
-A failed step 7 rolls back loudly: `paw stop` there + mark that copy `teleported: origin`, restart here.
+A failed step 7 rolls back loudly: `paw stop` there + mark that copy `teleported: origin` (+ close its imported beads), restart here.
 The end prints everything written on both sides and the undo (`paw teleport <name> --back`).
 
 `--back` is the same cutover with the sides swapped: source steps run on the target's paw through the
 hidden `paw __teleport manifest|stop|mark`, the destination probe runs here. The target's copy ends
 marked `teleported: origin`.
+
+## Beads
+
+Every agent files into ONE machine-wide beads db (`BEADS_DIR=~/.beads`, `PAW_BEADS_DIR` overrides it;
+src/beads-dir.ts), and each machine has its own, so without `--beads` a teleported agent loses its work
+list. src/teleport-beads.ts.
+
+- **What moves:** the non-closed beads ASSIGNED to the agent (`assignee == <name>`). Beads it only
+  created (`created_by`, from `BEADS_ACTOR`) and that someone else (or no one) holds stay: they are fleet
+  backlog. The plan shows both: `beads      172 open, assigned to evals → ssh:mini's /Users/x/.beads · 17
+  it created (assigned elsewhere) stay here`, plus the dependency links that won't carry.
+- **How:** bd's own JSONL round-trip, run through the same transport as everything else. `bd export` on the
+  source (the whole db, each line an issue with its labels, dependencies and comments; filtered in paw, no
+  child-to-child pipe) → those lines on stdin of `bd import - --json` on the target. Ids are kept (also
+  across a different db prefix); dependencies between moved beads survive; a dependency on a bead that
+  stays is skipped by bd (`skipped_dependencies`) and listed in the plan. Then the target is exported again
+  and every moved id must be there, open, assigned to the agent — or the teleport rolls back.
+  Checked on bd 1.2.2; the target's bd needs `bd import --allow-stale` (probed from `bd import --help`)
+  only when it holds earlier teleported copies.
+- **Ownership — one open copy:** the import runs after the stop and before the target's `paw start`; the
+  source copies are closed only after the presence wait, with `bd close --force --reason "teleported to
+  <transport>"` (`--force`: bd refuses to close a bead an open bead still blocks) and verified by export.
+  Never deleted. `--back` closes the target's copies with `teleported to origin`. A failed import leaves
+  the source untouched; an import followed by a failed start closes the target's copies again (`teleported
+  to origin (rolled back)`). A source bead changed after the export is closed anyway and named loudly.
+  A failed close at the very end prints the `bd close …` to run by hand and exits non-zero.
+- **Preflight:** bd on PATH there and `bd export` of its db works (else the fix: `bd init` or
+  `--no-beads`); any moved id already in the target's db is a collision and blocks, unless it is a closed
+  bead whose reason starts `teleported to ` — its own earlier copy, which the import reopens with
+  `--allow-stale` (bd's import otherwise keeps the newer local row, and the closed copy is newer).
+- Closing the source copy unblocks beads here that depended on it — a bd close is the closest idiom bd has
+  for "moved"; there is no status for it.
 
 ## The marker
 
@@ -134,6 +168,10 @@ when moving without the repo.
   manifest, the dirty-repo refusal, the probe parse and every blocker, the plan, persona keys, the
   wake-gate refusal (before any manager call), and the pack/unpack/repo/persona scripts run for real
   between two temp HOMEs (bundle → fresh clone at the unpushed HEAD; dirty or ahead target refused).
+  Beads run for real against two temp bd dbs (`bd init` in temp dirs, `PAW_BEADS_DIR` — never `~/.beads`):
+  what moves vs stays, the plan lines, every beads blocker (no bd, no db, a collision, a missing
+  `--allow-stale`), a failed import leaving the source open, import → verify → close with the marker, and
+  `--back` reopening the closed copies with what was written on the target.
 - `COTAL_BIN=<cotal-ai@0.84.0>/dist/cotal.js node scripts/e2e-teleport.ts` — the real `ssh:` transport to a
   Docker container (sshd + this checkout's paw) on a private JWT+TLS broker, an acp agent with a scripted
   ACP agent (no login anywhere). HOME differs (a temp dir here, /root there). Repo case: a GitHub-URL remote

@@ -3,9 +3,11 @@
  * src/addressing.ts): argument and transport parsing, the checklist reducer, the continued-in chain on
  * fixture transcripts, the manifest (session sidecars, memory, skills, CLAUDE.md, repo), the dirty-repo
  * refusal, the probe parse, the blockers, the plan, the persona keys, and that a teleported persona is
- * refused by every wake path. The pack/unpack and repo scripts run for real between two temp HOMEs.
+ * refused by every wake path. The pack/unpack and repo scripts run for real between two temp HOMEs, and
+ * the beads move for real (bd export → bd import → bd close) between two temp beads dbs.
  *
- * Isolated: HOME and PAW_HOME are temp dirs. No mesh, no manager, no network.
+ * Isolated: HOME, PAW_HOME and PAW_BEADS_DIR are temp dirs — never the real ~/.beads. No mesh, no
+ * manager, no network.
  * Run: pnpm check:teleport
  */
 import { execFileSync, spawnSync } from "node:child_process";
@@ -23,7 +25,29 @@ delete process.env.KIT_HOME;
 const plan = await import("../src/teleport-plan.ts");
 const shell = await import("../src/teleport-shell.ts");
 const { ensureAgentSpawned, personaFilePath, setPersonaKeys } = await import("../src/addressing.ts");
-const { startedLine } = await import("../src/teleport.ts");
+const { startedLine, beadsOn, importBeads, closeBeads, importedOpen } = await import("../src/teleport.ts");
+const beads = await import("../src/teleport-beads.ts");
+
+/** A fresh beads db in its own temp dir (bd init writes editor files next to .beads — never in HOME). */
+function bdDb(prefix: string): string {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), `paw-teleport-bd-${prefix}-`)));
+  execFileSync("bd", ["init", "--non-interactive", "-p", prefix, "-q"], { cwd: dir, stdio: "ignore", env: { ...process.env, BEADS_DIR: join(dir, ".beads") } });
+  return join(dir, ".beads");
+}
+const bd = (db: string, args: string[], actor = "aleks") =>
+  execFileSync("bd", args, { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], env: { ...process.env, BEADS_DIR: db, BEADS_ACTOR: actor } }).trim();
+const srcBeads = bdDb("src");
+process.env.PAW_BEADS_DIR = srcBeads;
+const blocker = bd(srcBeads, ["create", "blocker", "-a", "other", "--silent"]);
+const mine1 = bd(srcBeads, ["create", "mine one", "-a", "proj", "-d", "body", "--silent"]);
+const mine2 = bd(srcBeads, ["create", "mine two", "-a", "proj", "--silent"]);
+bd(srcBeads, ["dep", "add", mine2, blocker]);
+bd(srcBeads, ["dep", "add", mine1, mine2]);
+bd(srcBeads, ["comment", mine1, "a comment that travels"]);
+const done = bd(srcBeads, ["create", "mine done", "-a", "proj", "--silent"]);
+bd(srcBeads, ["close", done, "--reason", "done"]);
+bd(srcBeads, ["create", "filed for someone", "-a", "other", "--silent"], "proj");
+bd(srcBeads, ["create", "filed for no one", "--silent"], "proj");
 
 let failures = 0;
 function assert(cond: boolean, msg: string): void {
@@ -64,8 +88,11 @@ console.log("args");
   throws(() => plan.parseTeleportArgs(["x", "--all", "--repo", "--to", "ssh:b"]), /not both/, "--all with a checkmark refused");
   throws(() => plan.parseTeleportArgs(["x"]), /where to/, "no --to refused");
   const noRepo = plan.parseTeleportArgs(["x", "--to", "ssh:mini", "--no-repo"]).what!;
-  assert(noRepo.join() === "session,skills,memory,claude-md", "--no-repo alone = everything but the repo");
-  assert(plan.parseTeleportArgs(["x", "--to", "ssh:mini", "--all", "--no-repo", "--no-skills"]).what!.join() === "session,memory,claude-md", "--all --no-repo --no-skills");
+  assert(noRepo.join() === "session,skills,memory,claude-md,beads", "--no-repo alone = everything but the repo");
+  assert(plan.parseTeleportArgs(["x", "--to", "ssh:mini", "--all", "--no-repo", "--no-skills"]).what!.join() === "session,memory,claude-md,beads", "--all --no-repo --no-skills");
+  assert(plan.parseTeleportArgs(["x", "--to", "ssh:mini", "--all"]).what!.includes("beads"), "--all includes beads");
+  assert(!plan.parseTeleportArgs(["x", "--to", "ssh:mini", "--no-beads"]).what!.includes("beads"), "--no-beads turns it off");
+  assert(plan.parseTeleportArgs(["x", "--to", "ssh:mini", "--beads"]).what!.join() === "beads", "--beads alone");
   throws(() => plan.parseTeleportArgs(["x", "--to", "ssh:b", "--repo", "--no-repo"]), /contradict/, "--repo with --no-repo refused");
   throws(() => plan.parseTeleportArgs(["x", "--to", "ssh:b", "--session", "--no-repo"]), /not both/, "checkmarks with --no-<one> refused");
   throws(() => plan.parseTeleportArgs(["x", "--back", "--no-repo"]), /no --all/, "--back refuses --no-<one>");
@@ -198,6 +225,13 @@ const m = plan.buildManifest({ space, name, personaFile, what: [...plan.WHAT] })
   const noSession = plan.buildManifest({ space, name, personaFile, what: ["memory"] });
   assert(noSession.groups.session === undefined && noSession.repo === undefined, "unchecked groups are absent");
   assert(plan.contentHash(skillSrc) === m.skills[0].hash, "a dir hash is stable through the symlink");
+  const b = m.beads!;
+  assert(b.dir === srcBeads && b.ids.length === 2 && b.ids.includes(mine1) && b.ids.includes(mine2), `beads: the 2 open ones assigned to proj (${b.ids.join()})`);
+  assert(!b.ids.includes(done), "…not its closed one");
+  assert(b.createdStaying === 2, `beads it created for someone else / no one stay (${b.createdStaying})`);
+  assert(b.outsideDeps.length === 1 && b.outsideDeps[0] === `${mine2} -> ${blocker}`, `a dependency on a bead that stays is listed, one inside the move is not (${b.outsideDeps.join()})`);
+  assert(b.lines.some((l) => l.includes("a comment that travels")), "the export lines carry the comments");
+  assert(noSession.beads === undefined, "no --beads, no bd call");
 }
 
 console.log("dirty repo");
@@ -251,6 +285,8 @@ const probeOut = (extra: string[]) =>
   ].join("\n");
 {
   const ok = shell.parseProbe("box", probeOut([]));
+  const emptyBeads = "dir\t/data/home/.beads\nbd\t/usr/bin/bd\nallowstale\t1\nend\t1\n--export--\n";
+  ok.beads = beads.parseBeadsSide("box", emptyBeads);
   assert(ok.teleportSupport && ok.claudeLogin?.loggedIn === true && ok.spaceRecord?.server === "tls://h:4222", "parsed: protocol, login, record");
   const fullFolder = plan.destFolder(m, [...plan.WHAT], { home: "/data/home", pawHome: "/data/home/.paw" });
   assert(
@@ -306,6 +342,30 @@ const probeOut = (extra: string[]) =>
   assert(/repo .* main @ [0-9a-f]{12} — clone into .*1 unpushed commit\(s\) as a git bundle/.test(lines), "the plan shows the repo move");
   assert(/plugins NOT moved \(v1\): slack@official/.test(lines), "the plan lists plugins it does not move");
   assert(/logins     never copied/.test(lines), "the plan says logins are not copied");
+  assert(
+    lines.includes("  beads      2 open, assigned to proj → box's /data/home/.beads · 2 it created (assigned elsewhere) stay here"),
+    `the plan's beads line: count, where, what stays (${lines.split("\n").find((l) => l.includes("beads  "))})`,
+  );
+  assert(lines.includes(`closed here after the cutover, reason "teleported to fly:a"`), "…the ownership marker it will leave here");
+  assert(lines.includes(`1 dependency link(s) to beads that stay here are not carried: ${mine2} -> ${blocker}`), "…and the links bd drops");
+  const noBeads = plan.formatPlan(m, { ...ctx(ok), what: ["session"], from: "this machine" }).join("\n");
+  assert(/  beads      — not moved/.test(noBeads), "--no-beads: the plan says so");
+
+  const bx = (rows: object[], extra = "allowstale\t1\n") =>
+    beads.parseBeadsSide("box", `dir\t/b\nbd\t/usr/bin/bd\n${extra}end\t1\n--export--\n${rows.map((r) => JSON.stringify({ _type: "issue", ...r })).join("\n")}\n`);
+  const bb = (d: ReturnType<typeof bx> | undefined) => beads.beadsBlockers(m.beads!, d, "box").join("\n");
+  assert(/no `bd` on PATH/.test(bb(beads.parseBeadsSide("box", "dir\t/b\nend\t1\n"))), "no bd there blocks");
+  assert(/not readable: Error: no beads database found.*bd init/.test(bb(beads.parseBeadsSide("box", "dir\t/b\nbd\t/x/bd\nerr\tError: no beads database found \nend\t1\n"))), "an unreachable db there blocks, with the fix");
+  assert(/1 bead id\(s\) already exist .*not teleported copies: .*overwrite/.test(bb(bx([{ id: mine1, title: "x", status: "open" }]))), "an id already there (live) is a collision — refused, never overwritten");
+  assert(/already exist/.test(bb(bx([{ id: mine1, title: "x", status: "closed", close_reason: "done" }]))), "…a closed one that is not a teleported copy too");
+  const copy = bx([{ id: mine1, title: "x", status: "closed", close_reason: "teleported to origin" }]);
+  assert(bb(copy) === "", "its own earlier teleported copy may be reopened");
+  assert(beads.staleIds(m.beads!, copy).join() === mine1, "…via --allow-stale");
+  assert(/--allow-stale/.test(bb(bx([{ id: mine1, title: "x", status: "closed", close_reason: "teleported to ssh:mini" }], ""))), "a bd there without --allow-stale can't reopen it: blocks");
+  assert(/was not probed/.test(bb(undefined)), "an unprobed target blocks (never assumed fine)");
+  assert(plan.teleportBlockers({ ...m, beads: undefined }, ctx(ok)).some((x) => /predates teleporting beads/.test(x)), "a source paw that read no beads (old --back target) blocks");
+  throws(() => beads.parseBeadsSide("box", "dir\t/b\n"), /did not finish/, "a beads probe cut short throws");
+  throws(() => beads.parseBeadsSide("box", "dir\t/b\nend\t1\n--export--\nnot json\n"), /not JSON/, "a garbled export line throws");
 }
 
 console.log("persona keys + wake gate");
@@ -389,6 +449,53 @@ console.log("scripts, for real between two HOMEs");
   git(["checkout", "-q", "main"], cwd);
   throws(() => plan.destFolder({ ...m, repo: { ...m.repo!, url: "git@gitlab.com:o/r.git" } }, ["repo"], dstEnv), /not a GitHub remote.*--no-repo/, "a non-GitHub remote fails loud (no invented path)");
   assert(plan.githubRepoOf("git@github.com:caffeinum/paw.git").repo === "paw" && plan.githubRepoOf("https://github.com/caffeinum/paw").owner === "caffeinum", "owner/repo from git@ and https remotes");
+  // beads: export → import → verify → close, then --back the same way round
+  const dstBeads = bdDb("dst");
+  const withDb = (side: typeof src, db: string) => ({ ...side, spawn: (script: string) => side.spawn(`PAW_BEADS_DIR=${shell.sq(db)}; export PAW_BEADS_DIR\n${script}`) });
+  const bsrc = withDb(src, srcBeads);
+  const bdst = withDb(dst, dstBeads);
+  const bm = beads.beadsManifest(await beadsOn(bsrc), name);
+  const rowsOf = async (side: typeof src) => new Map((await beadsOn(side)).rows.map((r) => [r.id, r]));
+  const brokenDst = withDb(dst, join(dstHome, "no-such-db", ".beads"));
+  await rejects(importBeads(brokenDst, bm, name, await beadsOn(bdst)), /bd import.* failed|did not verify/, "an import that fails rejects");
+  const untouched = await rowsOf(bsrc);
+  assert(bm.ids.every((id) => untouched.get(id)?.status === "open"), "…and the source copies stay open (nothing closed before a verified import)");
+  const before = await beadsOn(bdst);
+  assert(beads.beadsBlockers(bm, before, "dst").length === 0, "an empty db there: no blockers");
+  const summary = await importBeads(bdst, bm, name, before);
+  const there = await rowsOf(bdst);
+  assert(/^2 imported, 1 dependency link\(s\) dropped$/.test(summary), `the import summary (${summary})`);
+  assert(bm.ids.every((id) => there.get(id)?.status === "open" && there.get(id)?.assignee === name), "the beads are there, same ids, open, assigned");
+  assert(there.get(mine1)?.dependencies?.some((d) => d.depends_on_id === mine2) === true, "a dependency inside the move survives");
+  assert((JSON.parse(bd(dstBeads, ["show", mine1, "--json"])) as Array<{ description?: string }>)[0].description === "body" && bd(dstBeads, ["comments", mine1]).includes("a comment that travels"), "description and comments survive");
+  const partialDb = bdDb("partial");
+  const partial = await importedOpen(withDb(dst, partialDb), bm);
+  rmSync(join(partialDb, ".."), { recursive: true, force: true });
+  assert(partial.ids.length === 0, "a rollback after an import that landed nothing closes nothing there");
+  assert((await importedOpen(bdst, bm)).ids.length === 2, "…after a full import it closes every imported bead");
+  const stillOpen = await rowsOf(bsrc);
+  assert(bm.ids.every((id) => stillOpen.get(id)?.status === "open"), "the import alone closes nothing here (the close waits for the cutover)");
+  assert(beads.beadsBlockers(bm, await beadsOn(bdst), "dst").some((x) => /already exist/.test(x)), "a second teleport onto the live copies is a collision");
+  bd(srcBeads, ["comment", mine2, "late note here"]);
+  const closed = await closeBeads(bsrc, bm, beads.teleportedReason("ssh:mini"));
+  const after = await rowsOf(bsrc);
+  assert(bm.ids.every((id) => after.get(id)?.status === "closed" && after.get(id)?.close_reason === "teleported to ssh:mini"), "the source copies are closed with reason \"teleported to ssh:mini\" (kept, not deleted)");
+  assert(closed.changed.join() === mine2, `a bead changed here after the export is reported (${closed.changed.join()})`);
+  assert(after.get(blocker)?.status === "open", "a bead that stayed is untouched");
+  // --back: the target's open copies come home and reopen the closed ones
+  bd(dstBeads, ["comment", mine1, "written on the target"], name);
+  const back = beads.beadsManifest(await beadsOn(bdst), name);
+  const home0 = await beadsOn(bsrc);
+  assert(beads.beadsBlockers(back, home0, "here").length === 0 && beads.staleIds(back, home0).length === 2, "--back: its teleported copies here are no collision; they reopen");
+  await importBeads(bsrc, back, name, home0);
+  const reopened = await rowsOf(bsrc);
+  assert(back.ids.every((id) => reopened.get(id)?.status === "open"), "--back: open here again");
+  assert(bd(srcBeads, ["comments", mine1]).includes("written on the target"), "--back: what was written there comes along");
+  await closeBeads(bdst, back, beads.teleportedReason(plan.ORIGIN));
+  const left = await rowsOf(bdst);
+  assert(back.ids.every((id) => left.get(id)?.status === "closed" && left.get(id)?.close_reason === "teleported to origin"), "--back: the target's copies close as \"teleported to origin\"");
+  rmSync(join(dstBeads, ".."), { recursive: true, force: true });
+
   const written = await shell.run(dst, shell.writePersonaScript(space, name), m.persona);
   assert(written.code === 0 && readFileSync(written.stdout.toString().trim(), "utf8") === m.persona, "the persona is written atomically under the target's PAW_HOME");
   rmSync(dstHome, { recursive: true, force: true });
@@ -464,6 +571,7 @@ console.log("remote argv");
 }
 
 rmSync(home, { recursive: true, force: true });
+rmSync(join(srcBeads, ".."), { recursive: true, force: true });
 if (failures) {
   console.error(`\n${failures} check(s) failed`);
   process.exit(1);

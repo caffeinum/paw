@@ -1,7 +1,7 @@
 /**
  * `paw teleport <agent> --to fly:<app> | ssh:<host> [what] [--dry-run] [--yes]` — move an agent to
- * another box: its persona (always), and by checkmark its session chain, repo, skills, memory and
- * ~/.claude/CLAUDE.md. `paw teleport <agent> --back` returns it over the transport recorded at the time.
+ * another box: its persona (always), and by checkmark its session chain, repo, skills, memory,
+ * ~/.claude/CLAUDE.md and its open beads (src/teleport-beads.ts). `paw teleport <agent> --back` returns it over the transport recorded at the time.
  * docs/notes/teleport.md has the design; the pure half is src/teleport-plan.ts, the shell half
  * src/teleport-shell.ts.
  *
@@ -30,6 +30,22 @@ import { liveSessionProcs } from "./named.ts";
 import { readRemoteMesh } from "./remote-mesh.ts";
 import { readCwd, readResumeId } from "./session.ts";
 import { pawServer } from "./server.ts";
+import {
+  BEADS_SIDE_SH,
+  beadsBlockers,
+  beadsCloseScript,
+  beadsImportScript,
+  changedAfterExport,
+  importSummary,
+  isTeleportedCopy,
+  parseBeadsSide,
+  staleIds,
+  teleportedReason,
+  verifyClosed,
+  verifyImported,
+  type BeadsManifest,
+  type BeadsSide,
+} from "./teleport-beads.ts";
 import {
   buildManifest,
   changedSince,
@@ -151,6 +167,39 @@ export function startedLine(out: string, name: string): boolean {
     const m = /^\s*(started|already live):\s+(.*)$/.exec(l);
     return m !== null && m[2].split(/,\s*/).some((n) => n.split(" ")[0] === name);
   });
+}
+
+/** One side's beads db (the same script on either end). */
+export async function beadsOn(side: Side): Promise<BeadsSide> {
+  const r = await run(side, BEADS_SIDE_SH);
+  if (r.code !== 0) throw new Error(`paw: reading the beads db on ${side.label} failed: ${said(r) || `exit ${r.code}`}`);
+  return parseBeadsSide(side.label, r.stdout.toString("utf8"));
+}
+
+/** Import the moved beads on `to`, then read them back: every one there, open, assigned to `name`. */
+export async function importBeads(to: Side, b: BeadsManifest, name: string, before: BeadsSide): Promise<string> {
+  const r = await run(to, beadsImportScript(staleIds(b, before).length > 0), b.lines.join("\n") + "\n");
+  if (r.code !== 0) throw new Error(`paw: \`bd import\` on ${to.label} failed: ${said(r) || `exit ${r.code}`}`);
+  const wrong = verifyImported(b, await beadsOn(to), name);
+  if (wrong.length) throw new Error(`paw: the beads import on ${to.label} did not verify — ${wrong.join("; ")}`);
+  return importSummary(r.stdout.toString("utf8"));
+}
+
+/** Close `b`'s copies on `side` as teleported; returns the ids someone changed there after the export. */
+export async function closeBeads(side: Side, b: BeadsManifest, reason: string): Promise<{ changed: string[] }> {
+  const changed = changedAfterExport(b, await beadsOn(side));
+  const r = await run(side, beadsCloseScript(b.ids, reason));
+  if (r.code !== 0) throw new Error(`paw: \`bd close\` on ${side.label} failed: ${said(r) || `exit ${r.code}`}`);
+  const open = verifyClosed(b, await beadsOn(side));
+  if (open.length) throw new Error(`paw: closing the moved beads on ${side.label} did not verify — ${open.join("; ")}${said(r) ? `\n${said(r)}` : ""}`);
+  return { changed };
+}
+
+/** The part of `b` an import (perhaps a partial one) left open on `side` — what a rollback closes. */
+export async function importedOpen(side: Side, b: BeadsManifest): Promise<BeadsManifest> {
+  const now = new Map((await beadsOn(side)).rows.map((r) => [r.id, r]));
+  const keep = b.ids.map((id, i) => [id, b.lines[i]] as const).filter(([id]) => now.has(id) && !isTeleportedCopy(now.get(id)!));
+  return { ...b, ids: keep.map(([id]) => id), lines: keep.map(([, l]) => l) };
 }
 
 function fail(msg: string): never {
@@ -354,6 +403,8 @@ type Cutover = {
   dest: Dest;
   /** Where the agent goes, as the source's marker says it (a transport, or `origin`). */
   markTo: string;
+  /** How the destination names the source, for a rolled-back import's close reason. */
+  sourceAs: string;
   /** Printed as the way back. */
   undo: string;
   back: boolean;
@@ -370,6 +421,7 @@ async function cutover(c: Cutover, transport: Transport): Promise<void> {
   const m = await c.source.manifest(what);
   const proposed = destFolder(m, what, await c.dest.env(), c.original);
   const facts = await c.dest.facts(m, what, proposed);
+  if (what.includes("beads")) facts.beads = await beadsOn(c.dest.side);
   const placed = placeRepo(m, what, proposed, facts);
   const folder = placed.folder;
   const moved = folder.cwd !== m.cwd;
@@ -438,22 +490,55 @@ async function cutover(c: Cutover, transport: Transport): Promise<void> {
       repoLine = await moveRepo(c.source.side, c.dest.side, after.repo, folder);
     }
 
+    let beadsLine: string | undefined;
+    const beads = what.includes("beads") ? (after.beads ?? fail(`paw: the manifest of ${name} after the stop carries no beads`)) : undefined;
+    if (beads?.ids.length) {
+      log(`→ importing ${beads.ids.length} bead(s) into ${c.dest.side.label}'s beads db …`);
+      let before: BeadsSide;
+      try {
+        before = await beadsOn(c.dest.side);
+        const bl = beadsBlockers(beads, before, c.dest.side.label);
+        if (bl.length) throw new Error(bl.join("; "));
+      } catch (e) {
+        await rollback(c, after, `the beads on ${c.dest.side.label}: ${(e as Error).message}`, false);
+        throw new Error(`paw: teleport ${name} failed before the beads import on ${c.dest.side.label} — nothing imported; it runs on ${c.source.side.label} again`);
+      }
+      try {
+        beadsLine = `${await importBeads(c.dest.side, beads, name, before)} into ${before.dir}`;
+      } catch (e) {
+        await rollback(c, after, (e as Error).message, false, beads);
+        throw new Error(`paw: teleport ${name} failed at the beads import on ${c.dest.side.label} — its beads on ${c.source.side.label} are untouched; it runs there again`);
+      }
+    }
+
     const text = withPersonaKey(destPersona(after, what, facts.personaText).text, "cwd", folder.cwd);
     const written = await c.dest.writePersona(text, folder.how === "agents" ? folder.cwd : undefined);
     log(`→ starting ${name} on ${c.dest.side.label} in ${folder.cwd} …`);
     try {
       await c.dest.start(folder.cwd);
     } catch (e) {
-      await rollback(c, after, (e as Error).message, true);
+      await rollback(c, after, (e as Error).message, true, beads);
       throw new Error(`paw: teleport ${name} failed at the start on ${c.dest.side.label} — it runs on ${c.source.side.label} again`);
     }
     log(`→ waiting until ${name} is present on the mesh (up to ${PRESENT_MS / 1000}s) …`);
     const id = await waitPresent(view.ep, name, view.peerId, PRESENT_MS);
     if (!id) {
-      await rollback(c, after, `${name} did not appear on the mesh within ${PRESENT_MS / 1000}s`, true);
+      await rollback(c, after, `${name} did not appear on the mesh within ${PRESENT_MS / 1000}s`, true, beads);
       throw new Error(`paw: teleport ${name} failed — it never came up on ${c.dest.side.label}; it runs on ${c.source.side.label} again`);
     }
     const marked = await c.source.markGone(c.markTo, what);
+    let beadsClosed: string | undefined;
+    let beadsFailed: string | undefined;
+    if (beads?.ids.length) {
+      const reason = teleportedReason(c.markTo);
+      try {
+        const { changed } = await closeBeads(c.source.side, beads, reason);
+        beadsClosed = `${beads.ids.length} bead(s) closed in ${beads.dir}, reason "${reason}"`;
+        if (changed.length) loud(`  ${changed.length} moved bead(s) changed on ${c.source.side.label} after the copy (closed anyway — compare them with ${c.dest.side.label}'s): ${changed.join(", ")}`);
+      } catch (e) {
+        beadsFailed = (e as Error).message;
+      }
+    }
 
     log("");
     log(`✓ teleported ${name}: ${c.source.side.label} → ${c.dest.side.label} (present on the mesh as ${id})`);
@@ -462,18 +547,36 @@ async function cutover(c: Cutover, transport: Transport): Promise<void> {
     if (folder.how === "agents") log(`    folder    ${folder.cwd}  (created; ${m.cwd} stays here)`);
     for (const l of groupLines(facts.home, after, new Set([...files, ...delta].map((f) => f.rel)), folder.cwd)) log(l);
     if (repoLine) log(`    repo      ${folder.top}  ${after.repo!.url} → ${repoLine}`);
+    if (beadsLine) log(`    beads     ${beadsLine}`);
     log(`  written on ${c.source.side.label}:`);
     log(`    ${marked}`);
+    if (beadsClosed) log(`    beads     ${beadsClosed}`);
     log(`  stopped on ${c.source.side.label}: ${stopped.wasLive ? name : `${name} (it was not running)`} — its transcript and files there are left as they were`);
     log(`  undo: ${c.undo}`);
+    if (beadsFailed) {
+      loud(`✗ ${name} runs on ${c.dest.side.label} with its beads, but the copies on ${c.source.side.label} are still open: ${beadsFailed}`);
+      loud(`  close them there by hand: bd close ${beads!.ids.join(" ")} --force --reason "${teleportedReason(c.markTo)}"`);
+      throw new Error(`paw: teleport ${name}: two open copies of ${beads!.ids.length} bead(s) until the ones on ${c.source.side.label} are closed`);
+    }
   } finally {
     await view.ep.stop().catch(() => {});
   }
 }
 
 /** A start or presence wait failed: the destination copy stands down, the source copy comes back. */
-async function rollback(c: Cutover, m: Manifest, why: string, destTouched: boolean): Promise<void> {
+async function rollback(c: Cutover, m: Manifest, why: string, destTouched: boolean, beadsThere?: BeadsManifest): Promise<void> {
   loud(`✗ teleport ${c.name}: ${why}`);
+  if (beadsThere?.ids.length) {
+    const reason = `${teleportedReason(c.sourceAs)} (rolled back)`;
+    const r = await importedOpen(c.dest.side, beadsThere)
+      .then(async (open) => {
+        if (!open.ids.length) return "no imported bead is open there";
+        await closeBeads(c.dest.side, open, reason);
+        return `closed the ${open.ids.length} imported bead(s) there, reason "${reason}"`;
+      })
+      .catch((e: Error) => `closing the imported beads FAILED: ${e.message} — close them there by hand (bd close ${beadsThere.ids.join(" ")} --force)`);
+    loud(`  ${c.dest.side.label}: ${r}`);
+  }
   if (destTouched) {
     const r = await c.dest.standDown().catch((e: Error) => `failed: ${e.message}`);
     loud(`  ${c.dest.side.label}: ${r}`);
@@ -522,6 +625,7 @@ export async function teleport(a: TeleportArgs): Promise<void> {
         source: remoteSource(transport, space, name),
         dest: localDest(space, name, "this machine"),
         markTo: ORIGIN,
+        sourceAs: mark.to,
         undo: `paw teleport ${name} --to ${mark.to}${what.length ? ` ${whatFlags(what)}` : ""}`,
         back: true,
         dryRun: a.dryRun,
@@ -547,6 +651,7 @@ export async function teleport(a: TeleportArgs): Promise<void> {
       source: localSource(space, name, "this machine"),
       dest: remoteDest(transport, space, name),
       markTo: label,
+      sourceAs: ORIGIN,
       undo: `paw teleport ${name} --back`,
       back: false,
       dryRun: a.dryRun,
@@ -602,7 +707,7 @@ const teleportCommand: Command = {
   kind: "command",
   name: "teleport",
   group: "Lifecycle",
-  summary: "move an agent to another box (fly:<app> | ssh:<host>) — persona + chosen session/repo/skills/memory/CLAUDE.md; --back returns it",
+  summary: "move an agent to another box (fly:<app> | ssh:<host>) — persona + chosen session/repo/skills/memory/CLAUDE.md/beads; --back returns it",
   usage: TELEPORT_USAGE,
   run: (a) => teleport(parseTeleportArgs([...a.raw])),
 };

@@ -149,7 +149,8 @@ Each entry: what it is + the most load-bearing rule. Full notes behind the link.
   CLAUDE.md; logins never copied; refuses on any blocker; persona `teleported:` makes every wake path refuse;
   failed start there restarts it here. Folder there: `<PAW_HOME>/agents/<name>` (no repo) or the paw clone
   `<PAW_HOME>/repos/<owner>/<repo>` (+ branch worktree); sessions move to its slug, `cwd` rewritten.
-  Target paw must answer `paw __teleport probe` = `paw-teleport 2`. → [teleport.md](docs/notes/teleport.md)
+  Target paw must answer `paw __teleport probe` = `paw-teleport 2`. `--beads` moves its ASSIGNED open beads (bd export→import, ids kept,
+  collisions refused), source copies closed "teleported to <where>" only after the cutover. → [teleport.md](docs/notes/teleport.md)
 - `src/sleep.ts`, `src/sleep-host.ts`, `src/sleep-state.ts` — `paw sleep`: opt-in hibernation; the
   mailbox hosts a stand-in presence so a DM wakes the agent and the backlog is re-published. → [sleep.md](docs/notes/sleep.md)
 
