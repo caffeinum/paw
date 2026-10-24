@@ -19,6 +19,7 @@
  * connector-claude-code SELF-REGISTERS its vanilla `claude` connector; we drop that and register paw's
  * OPINIONATED connector under "claude" (+ a "cotal" alias for any explicit 0.11-era `--agent cotal`).
  */
+import "../src/log-stamp-boot.ts"; // first: timestamps a log-redirected daemon's lines (src/log-stamp.ts)
 import { runCli } from "@cotal-ai/cli";
 import { Manager } from "@cotal-ai/manager"; // named import also runs the module → registers up/ps/start/stop/attach
 import "@cotal-ai/tmux"; // self-registers the `tmux` runtime (manager ships only `pty`)
