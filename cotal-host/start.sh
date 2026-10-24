@@ -40,12 +40,13 @@ next_renewal() {
   a=$(renew_at "$CREDS_DIR/delivery.creds") && b=$(renew_at "$CREDS_DIR/membership-rw.creds") || return 1
   [ "$a" -lt "$b" ] && echo "$a" || echo "$b"
 }
-( while :; do
+( sleep 120   # at boot the creds are read before cotal up has rewritten delivery.creds
+  while :; do
     if due=$(next_renewal); then
       wait_s=$(( due - $(date +%s) + 30 ))
       [ "$wait_s" -ge 300 ] || wait_s=300   # a pass that did not renew must not respawn node every minute
     else
-      echo "start: can't place the next daemon creds renewal - checking again in 1h" >&2
+      echo "start: can't place the next daemon creds renewal - renewing hourly until it can" >&2
       wait_s=3600
     fi
     sleep "$wait_s"
