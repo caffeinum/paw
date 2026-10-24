@@ -15,6 +15,7 @@
 import { CotalEndpoint, type CotalMessage } from "@cotal-ai/core";
 import { humanEndpointAuth, stableHumanId } from "./addressing.ts";
 import { HUMAN_PEER, humanPeer } from "./names.ts";
+import { forwardedFrom, isForwardOf, withoutForwardNote } from "./forward-mark.ts";
 import { cachedLedger } from "./peer-ledger.ts";
 
 /** How deep to read a backlog. cotal's dmHistory returns the OLDEST N, so to surface the NEWEST we
@@ -82,6 +83,10 @@ export interface Entry {
   /** For an OUTGOING message, who it went to — the agent's NAME when the stream reveals it, else its
    *  raw id. Never a guess: an id you can still match on is honest, a wrong name is not. */
   to?: string;
+  /** Set when this copy is the stale-id forwarder's re-send (src/stale-forward.ts) and the original it
+   *  repeats is not in the same read — the dead id it was first addressed to. `text` is what the sender
+   *  wrote, without the forwarder's note. A forward whose original IS in the read is dropped instead. */
+  forwardedFrom?: string;
 }
 
 /**
@@ -107,21 +112,46 @@ export interface DmRow {
   to?: string;
   from: { id?: string; name: string };
   text: string;
+  /** A stale-id forward: the dead id the original went to (src/forward-mark.ts). */
+  forwardOf?: string;
 }
 
 export function dmRow(m: CotalMessage, me: string): DmRow {
   const mine = m.to === me || m.from.id === me;
-  return { id: m.id, ts: m.ts, to: m.to, from: { id: m.from.id, name: m.from.name }, text: mine ? messageText(m) : "" };
+  const forwardOf = forwardedFrom(m.parts);
+  const text = !mine ? "" : forwardOf === undefined ? messageText(m) : messageText({ ...m, parts: withoutForwardNote(m.parts) });
+  return { id: m.id, ts: m.ts, to: m.to, from: { id: m.from.id, name: m.from.name }, text, ...(forwardOf !== undefined ? { forwardOf } : {}) };
+}
+
+/**
+ * Drop each stale-id forward whose ORIGINAL is in `rows` — one message, not two (paw chat/web/inbox
+ * showed "you → evals" twice: your DM to evals' dead id, then the forwarder's copy to the live one).
+ * The ORIGINAL is kept: it is what you actually sent, at its real place in the stream. A DM to a dead id
+ * that was never forwarded has no forward to pair with and stays, so nothing undelivered is hidden.
+ * Paired exactly by id ({@link isForwardOf}), never by text.
+ */
+export function dropPairedForwards(rows: DmRow[]): DmRow[] {
+  const fwds = rows.filter((r) => r.forwardOf !== undefined);
+  if (!fwds.length) return rows;
+  const byTo = new Map<string, DmRow[]>();
+  for (const r of rows) if (r.to && r.forwardOf === undefined) byTo.set(r.to, [...(byTo.get(r.to) ?? []), r]);
+  const paired = new Set(fwds.filter((f) => (byTo.get(f.forwardOf!) ?? []).some((o) => isForwardOf(f, o))));
+  return paired.size ? rows.filter((r) => !paired.has(r)) : rows;
+}
+
+function forwardMark(m: DmRow): Pick<Entry, "forwardedFrom"> {
+  return m.forwardOf !== undefined ? { forwardedFrom: m.forwardOf } : {};
 }
 
 /** The human's conversation from DM rows — THE mapping {@link readConversation} and {@link DmWindow}
  *  share, so an incremental read cannot drift from a full one. */
-export function conversationEntries(all: DmRow[], me: string, space: string, opts: { withSent?: boolean } = {}): Entry[] {
+export function conversationEntries(rows: DmRow[], me: string, space: string, opts: { withSent?: boolean } = {}): Entry[] {
+  const all = dropPairedForwards(rows);
   if (!opts.withSent) {
     return all
       .filter((m) => m.to === me)
       .sort((a, b) => a.ts - b.ts)
-      .map((m): Entry => ({ from: m.from.name, text: m.text, ts: m.ts }));
+      .map((m): Entry => ({ from: m.from.name, text: m.text, ts: m.ts, ...forwardMark(m) }));
   }
   // The stream's own senders first, then paw's peer ledger (src/peer-ledger.ts), which also knows ids
   // that only ever RECEIVED — a restarted agent's previous incarnation, say. The plain name, no
@@ -135,8 +165,8 @@ export function conversationEntries(all: DmRow[], me: string, space: string, opt
     .sort((a, b) => a.ts - b.ts)
     .map((m): Entry =>
       m.from.id === me
-        ? { from: HUMAN_PEER, text: m.text, ts: m.ts, dir: "out", to: (m.to && nameById.get(m.to)) ?? m.to }
-        : { from: m.from.name, text: m.text, ts: m.ts, dir: "in" },
+        ? { from: HUMAN_PEER, text: m.text, ts: m.ts, dir: "out", to: (m.to && nameById.get(m.to)) ?? m.to, ...forwardMark(m) }
+        : { from: m.from.name, text: m.text, ts: m.ts, dir: "in", ...forwardMark(m) },
     );
 }
 

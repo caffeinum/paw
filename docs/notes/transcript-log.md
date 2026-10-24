@@ -76,3 +76,12 @@ Moved verbatim from CLAUDE.md (2026-10-02 split). Index: [CLAUDE.md](../../CLAUD
   The sessions command flags a pinned
   session that's ALSO open in a standalone `claude` outside paw (⚠ pid …, via `liveSessionProcs`) — the
   reverse two-writer case paw can't block. Read-only (uses `lookupFolderName`, never registers).
+
+## api-request-blob records (2026-10-24)
+
+Claude Code now writes `{"type":"api-request-blob", "message":{"role":…}}` records: a COPY of a
+message as sent to the API (348 in goat-film's session). `TranscriptParser.feed` read the role off
+`message.role ?? type`, so every blob replayed its turn — one `cotal_dm` showed as two `↩ you` lines in
+`paw chat @goat-film`. Only `type: user|assistant` records are turns now (a record without `type`, as
+the codex/opencode adapters feed, still reads by role); `search.ts recordText` skips them too.
+`check:transcript` covers it.

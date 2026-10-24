@@ -75,6 +75,7 @@ import {
 } from "./images.ts";
 import { FRESH_SPAWN_MS, LIVE_AGENT_MS } from "./dm.ts";
 import { messageText as textOf, type Entry as FeedEntry } from "./feed.ts";
+import { forwardedFrom, isForwardOf, withoutForwardNote } from "./forward-mark.ts";
 import { readOwnConversation, tapOwnSends } from "./chat-own.ts";
 import { dedupeRoster } from "./commands/who.ts";
 import { isContinueKey, joinLines, peelContinuation } from "./multiline.ts";
@@ -960,7 +961,10 @@ async function chat(argv: string[]): Promise<void> {
   };
 
   ep.on("message", (m: CotalMessage, d: Delivery, meta: MessageMeta) => {
-    const text = textOf(m);
+    // A stale-id forward (src/stale-forward.ts): the sender DM'd one of "you"'s old ids and paw re-sent
+    // it here. Show what the sender wrote, marked — the forwarder's note is addressed to agents.
+    const fwdMark = forwardedFrom(m.parts) !== undefined ? c.dim(" · forwarded from an old id") : "";
+    const text = textOf(fwdMark ? { ...m, parts: withoutForwardNote(m.parts) } : m);
     // meta.historical marks messages replayed from a channel's backlog on join (e.g. #general
     // catch-up) — tag them so they don't read as live chatter.
     const tag = meta.historical ? c.dim("(catch-up) ") : "";
@@ -1002,8 +1006,8 @@ async function chat(argv: string[]): Promise<void> {
       pumpLogs();
       // `from` tags it as inbound mail: the logs view keeps another agent's DM visible, and shows the
       // target's as the transcript's `↩ you` block instead (entryVisible).
-      if (curName && from.toLowerCase() === curName.toLowerCase()) emit(said(`${tag}${agentTag(from)}${age}${took}${c.dim(":")}`, text), "peer", false, from);
-      else emit(said(`${tag}${c.magenta("(DM)")} ${agentTag(from, c.bold)}${age}${took}${c.dim(":")}`, text), "peer", false, from);
+      if (curName && from.toLowerCase() === curName.toLowerCase()) emit(said(`${tag}${agentTag(from)}${fwdMark}${age}${took}${c.dim(":")}`, text), "peer", false, from);
+      else emit(said(`${tag}${c.magenta("(DM)")} ${agentTag(from, c.bold)}${fwdMark}${age}${took}${c.dim(":")}`, text), "peer", false, from);
       if (stillPending) emit(c.dim(`⏳ still waiting for ${from} on ${stillPending} more message${stillPending === 1 ? "" : "s"}`), "you");
       advanceCursor(space, m.ts); // shown here = seen, so `paw inbox` won't re-surface it as new
       // Follow the conversation: an empty input means you have not started a reply to anyone else, so
@@ -1032,6 +1036,17 @@ async function chat(argv: string[]): Promise<void> {
     d.ack(); // surfaced = recorded
   });
 
+  // Declared before the tap starts (a frame can arrive the moment it does — a TDZ throw in a tap
+  // handler kills the feed for good).
+  /** Every "you" send this chat has SHOWN (typed here, or echoed from another session), by id with its
+   *  recipient — what a later stale-id forward of it is paired against. Bounded, oldest out. */
+  const shownSends = new Map<string, { id: string; to?: string; from: { id?: string } }>();
+  const noteShownSend = (m: { id?: string; to?: string }): void => {
+    if (!m?.id) return;
+    shownSends.set(m.id, { id: m.id, to: m.to, from: { id: me } });
+    if (shownSends.size > 2000) shownSends.delete(shownSends.keys().next().value!);
+  };
+
   /**
    * Every `paw chat` runs as the SAME peer ("you"), so a message one session sends is addressed to the
    * agent, not to "you" — the other open sessions never receive it and their transcripts silently
@@ -1050,6 +1065,14 @@ async function chat(argv: string[]): Promise<void> {
     const msg = m as CotalMessage & { to?: string; channel?: string };
     if (!msg || typeof msg !== "object" || !msg.from || !msg.id) return;
     if (msg.from.id !== me) return; // another peer entirely — the normal message handler owns that
+    // Your DM to an agent's OLD id, re-sent by the stale-id forwarder to its live one: the same message.
+    // When this chat already showed the original (you typed it here, or echoed it from another
+    // session), the forward is not a second line. Paired exactly (src/forward-mark.ts), never by text.
+    const forwardOf = forwardedFrom(msg.parts);
+    if (forwardOf !== undefined) {
+      const fwd = { id: msg.id, to: msg.to, from: { id: msg.from.id }, forwardOf };
+      for (const o of shownSends.values()) if (isForwardOf(fwd, o)) return;
+    }
     // NOT-in-ownIds is not yet proof it came from elsewhere: the broker echoes a publish back to our
     // own tap before `unicast` has returned the id we record. Wait out any in-flight send (plus a
     // short grace for the resolve itself) and re-check. Deciding immediately is what made a session
@@ -1061,7 +1084,7 @@ async function chat(argv: string[]): Promise<void> {
         return;
       }
       try {
-        const body = textOf(msg);
+        const body = textOf(forwardOf !== undefined ? { ...msg, parts: withoutForwardNote(msg.parts) } : msg);
         if (!body) return;
         const toName = msg.channel ? undefined : rosterName(msg.to);
         // A FILTERED session must filter this too. The cross-session echo comes through `ep.tap`, not
@@ -1075,7 +1098,9 @@ async function chat(argv: string[]): Promise<void> {
         const label = msg.channel
           ? c.dim(`#${msg.channel}`)
           : toName ? agentTag(toName) : c.cyan(msg.to ? msg.to.slice(0, 8) : "?");
-        emit(said(`${c.dim("↗ you →")} ${label}${c.dim(" (other session):")}`, body), "you");
+        noteShownSend(msg);
+        const fwdMark = forwardOf !== undefined ? " · forwarded from an old id" : "";
+        emit(said(`${c.dim("↗ you →")} ${label}${c.dim(` (other session${fwdMark}):`)}`, body), "you");
       } catch {
         /* a render failure must never abort the tap iterator */
       }
@@ -1193,6 +1218,7 @@ async function chat(argv: string[]): Promise<void> {
   let sending = 0;
   const mine = <T extends { id?: string }>(m: T): T => {
     if (m?.id) ownIds.add(m.id);
+    noteShownSend(m as { id?: string; to?: string });
     return m;
   };
   /** Wrap a send so the in-flight window is visible to the tap. */

@@ -151,7 +151,10 @@ Three layers, cheapest first:
   subject; the receive path drops a mismatching `from.id`). Sleep stand-ins are never recorded. Pruned
   at 30 days / 5000 ids; a corrupt file throws. Readers: transcript `↩` replies (`openAgentLog` →
   `nameReplyTargets`, so paw log, chat's logs view and the web trace) render `evals (old instance)` when
-  the name has a newer id on record; `paw history` / `paw watch` label never-sent ids the same way;
+  another id of that name STARTED after this one was last seen (`isOldInstance`, 60s slack for the
+  file's lagging `last`) — a newer `first` alone is not succession: two ids of one name can live side by
+  side (2026-10-24: the stable "you" `f415…` plus a second "you" `8b2c…` from some other process, and
+  goat-film's DM to the LIVE you rendered `↩ you (old instance)`); `paw history` / `paw watch` label never-sent ids the same way;
   `Entry.to` (inbox `--sent`, web conversation) and chat's `rosterName` get the PLAIN name, because
   `to` is the conversation key surfaces group and filter on. An id the ledger never saw stays the id.
 - **Delivery: the stale-id forwarder** — `src/stale-forward.ts`, hosted by the mailbox (open mesh only).
@@ -166,9 +169,23 @@ Three layers, cheapest first:
   (done-set + broker msgID dedup); a forward targets a LIVE id so it is never re-forwarded. Under
   `PAW_AUTH` the broker forbids publishing as another sender, so the mailbox says the forwarder is OFF.
   Checks: `pnpm check:stale-forward` (hermetic), `scripts/e2e-stale-forward.ts` (own nats-server:
-  restart → DM old id → delivered once; mailbox restart re-forwards nothing; history/inbox naming).
+  restart → DM old id → delivered once; mailbox restart re-forwards nothing; history/inbox naming;
+  `inbox --sent` shows the forwarded "you" DM once).
+- **Reading: one message, not two** — the original stays in `DM_<space>` next to its forward, and both
+  are "from you" when YOU DM'd the dead id, so `paw inbox --sent`, paw web and chat's cross-session echo
+  showed it twice. `src/forward-mark.ts` (leaf) pairs them EXACTLY: the forward's first part is
+  `forwardNote(<dead id>)` and its id is `forwardId(original.id, forward.to)`, so a forward pairs with
+  the row whose id hashes to it, sent by the same sender to the note's dead id — never a text match.
+  `dropPairedForwards` (feed.ts `conversationEntries`; web `Conversation.accept`; chat's `onOwnSend`
+  against `shownSends`) drops the FORWARD and keeps the original (what you actually typed, at its place).
+  A forward with no original in the read (an agent DM'd one of your old ids: the original went to that
+  id, not to you) shows once with the note stripped and `Entry.forwardedFrom = <dead id>`, rendered
+  `· forwarded from an old id` (chat header, inbox, web tag). A DM to a dead id that was never
+  forwarded has nothing to pair with and stays. Same `ts` as the original, so the unread cursor counts
+  one message. `paw history` (raw god-view log) still lists both copies.
 
-**Upstream ask (for the operator to file via cotal_feedback, AI-disclosed):** `cotal_dm` / `unicast`
+**Upstream ask — filed 2026-10-24 via `paw cotal feedback`, AI-disclosed, record
+`f4d992ea-aff9-4afe-bf3e-458488456cf6`:** `cotal_dm` / `unicast`
 to an exact instance id whose presence is not live should not silently store onto a dead subject.
 Either (a) resolve it by the card NAME the id last carried, when exactly one live peer holds that name
 now ("id X is offline; delivered to its successor Y under the same name"), or (b) fail loud: "peer

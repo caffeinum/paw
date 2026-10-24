@@ -573,6 +573,8 @@ function renderMessages(now) {
           ? `<span class="tag who" data-open="${esc(m.to ?? sentTo)}">→ ${esc(sentTo)}</span>`
           : ""
         : `<span class="tag">agent</span>`;
+      // Re-sent by paw's stale-id forwarder: the sender addressed an old id, the live peer got this copy.
+      const fwd = m.forwardedFrom ? `<span class="tag" title="sent to an old id (${esc(m.forwardedFrom)}); paw forwarded it">forwarded from an old id</span>` : "";
       const { body, images } = peelAttachments(m.text);
       // A pending send says what it is doing ON THE ROW, not in an ambient hint line: the row is what
       // you look at. paw's Raycast notes reached the same place — `sending…`, then a ticking wait, then
@@ -590,7 +592,7 @@ function renderMessages(now) {
       return divider + `<div class="m${cont}${m.ts === state.flashTs ? " flash" : ""}" data-ts="${m.ts}" data-convo="${esc(convo)}"${m.state === "failed" ? ` data-retry="${m.id}"` : ""}${m.state ? ' style="opacity:.7"' : ""}>
         <div class="av" style="background:${avatarColor(who)}">${avatarGlyph(who)}</div>
         <div>
-          <div class="hdr"><span class="name${m.dir === "out" ? "" : " who"}"${m.dir === "out" ? "" : ` data-open="${esc(who)}"`}>${who}</span>${tag}${stamp}</div>
+          <div class="hdr"><span class="name${m.dir === "out" ? "" : " who"}"${m.dir === "out" ? "" : ` data-open="${esc(who)}"`}>${who}</span>${tag}${fwd}${stamp}</div>
           <div class="txt">${md(body)}${images.map((p) => `<a href="/api/file?path=${encodeURIComponent(p)}" target="_blank" rel="noreferrer"><img class="att" src="/api/file?path=${encodeURIComponent(p)}" alt="${p.split("/").pop()}" loading="lazy"></a>`).join("")}</div>
         </div>
       </div>`;

@@ -101,10 +101,21 @@ export function newestIdFor(ledger: Ledger, name: string): string | undefined {
   return best;
 }
 
-/** Is `id` a superseded incarnation — its name has a NEWER id on record? Pure. */
+/** How far a successor's first sighting may precede its predecessor's last one and still read as a
+ *  restart: the file's `last` lags the truth by up to a minute (it is flushed on a 60s move). */
+export const SUCCESSION_SLACK_MS = 60_000;
+
+/**
+ * Is `id` a superseded incarnation — did another id of the same name START after this one was last
+ * seen? Pure. A newer `first` alone is not enough: two ids of one name can live side by side (the
+ * human peer "you" has a stable id, and a second "you" from another process showed up next to it), and
+ * calling the still-live one "(old instance)" was a lie — paw chat labelled goat-film's DM to the live
+ * "you" `↩ you (old instance)` (2026-10-24).
+ */
 export function isOldInstance(ledger: Ledger, id: string): boolean {
   const e = ledger[id];
-  return !!e && newestIdFor(ledger, e.name) !== id;
+  if (!e) return false;
+  return Object.entries(ledger).some(([other, o]) => other !== id && o.name === e.name && o.first > e.first && o.first >= e.last - SUCCESSION_SLACK_MS);
 }
 
 /**
