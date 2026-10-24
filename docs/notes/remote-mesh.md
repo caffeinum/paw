@@ -30,6 +30,16 @@ untouched: a space with no record resolves exactly as before.
   stripped signer through its SecretStore seam (`validateSpaceAuthForRead` accepts it) and mints +
   renews per-agent creds itself. cotal 0.84 allows several managers per space (per-instance leases,
   "a second manager in a second workspace root coexists"), so this works beside a manager elsewhere.
+- **Which step stalled (`src/connect-diag.ts`, 2026-10-24).** cotal's `probeConnect` reports only
+  `timeout`/`unreachable`. On those two, paw re-walks the connect on its own sockets (DNS lookup, TCP,
+  the plaintext NATS INFO greeting, the TLS upgrade, a TLS-first try if no INFO; 3s per step), times
+  each, and names the first that failed: e.g. `TCP 26ms; then no NATS INFO greeting within 3s: …the
+  broker is not serving them — stalled (overloaded or out of memory) — check \`fly status -a 2027-cotal\``,
+  `the DNS lookup of … failed on this machine (getaddrinfo ENOTFOUND …)`, a refused port, an
+  untrusted cert (with its code). Every step answering = the stall was past TLS (the creds' CONNECT,
+  which paw can't time) or it recovered, and the text says both. Why: the team2027 outage (fly box
+  out of memory, TCP fine, CONNECT silent for minutes) read as "the link is slow or the broker is
+  overloaded". The 10s probe stays 10s: a stalled broker stays stalled. `check:connect-diag`.
 - **"you"** on a remote space (`humanEndpointAuth`, src/addressing.ts): under auth an endpoint's id is
   its cred's nkey, so paw persists ONE human nkey (`spaces/<s>/human.nkey.json`, 0600) and mints it per
   role, mirroring cotal: `agent` (+ a fresh lifecycle uid) for the mailbox presence, `operator` to send

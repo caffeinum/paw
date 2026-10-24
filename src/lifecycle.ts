@@ -56,6 +56,8 @@ import { withFileLock, withFileLockAsync, type LockOpts } from "./lock.ts";
 import { customServer, isRemoteSpace, pawServer } from "./server.ts";
 import { readRemoteMesh } from "./remote-mesh.ts";
 import { ensureShim, hubEnabled, hubModeFile, hubSocketPath } from "./hub/paths.ts";
+import { STAMP_ENV } from "./log-stamp.ts";
+import { diagnoseConnect, explainConnectFailure } from "./connect-diag.ts";
 
 export interface EnsureOpts {
   /** Bring up (or adopt) the NATS mesh. Commands that talk to the mesh need this. */
@@ -467,7 +469,7 @@ export function spawnDetachedRestart(space: string, runtime: Runtime | undefined
   const out = openSync(restartLogPath(space), "a");
   try {
     const [cmd, args] = pawViaNode(["restart", ...(runtime ? [runtime] : []), "--space", space]);
-    const env = daemonEnv({ PAW_WAKE_AGENT: wakeAgent });
+    const env = loggedDaemonEnv({ PAW_WAKE_AGENT: wakeAgent });
     for (const k of Object.keys(env)) if (k.startsWith("COTAL_")) delete env[k]; // not an agent → don't re-detach
     const child = spawn(cmd, args, { detached: true, stdio: ["ignore", out, out], env });
     child.unref();
@@ -527,7 +529,7 @@ export function spawnDetachedAdopt(space: string, folder: string, sessionId: str
       const sub = ["adopt", folder, "--resume", sessionId, "--force", "--no-attach", "--space", space];
       if (name) sub.push("--name", name);
       const [cmd, args] = pawViaNode(sub);
-      const env = daemonEnv({ PAW_ADOPT_INFLIGHT: "1" });
+      const env = loggedDaemonEnv({ PAW_ADOPT_INFLIGHT: "1" });
       for (const k of Object.keys(env)) if (k.startsWith("COTAL_")) delete env[k]; // child isn't an agent
       const child = spawn(cmd, args, { detached: true, stdio: ["ignore", out, out], env });
       child.unref();
@@ -729,6 +731,12 @@ export function daemonEnv(extra?: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   return withToolPath(env);
 }
 
+/** {@link daemonEnv} for a daemon whose stdout/stderr go to a paw log file: it timestamps its own
+ *  lines (src/log-stamp.ts) and drops the flag, so its children don't inherit it. */
+export function loggedDaemonEnv(extra?: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  return daemonEnv({ ...extra, [STAMP_ENV]: "1" });
+}
+
 /** Ephemeral privileged creds for a control-plane probe, mirroring cotal up's authSetup: ensure
  *  the space's trust material exists, then mint a one-shot "manager"-profile creds. Returns
  *  undefined when no auth material is on disk (open/dev mesh — probes connect bare). */
@@ -881,7 +889,7 @@ export async function bootLocalMesh(space: string, server: string, o: { open: bo
     stdio: ["ignore", meshFd, meshFd],
     timeout: MESH_UP_TIMEOUT_MS,
     cwd: pawCotalRoot(space),
-    env: daemonEnv(),
+    env: loggedDaemonEnv(),
   });
   closeSync(meshFd);
   const natsPid = readPid(cotalNatsPidPath(space)); // `up --detach` recorded the server pid here
@@ -917,6 +925,8 @@ async function meshComesUp(space: string, server: string, creds: string | undefi
   }
 }
 
+const REMOTE_CONNECT_MS = 10_000;
+
 /**
  * The REMOTE counterpart of {@link ensureMesh}: a space with a record (src/remote-mesh.ts) lives on a
  * broker paw does not run, so there is nothing to start — only to prove. One credentialed connect with
@@ -929,15 +939,17 @@ async function ensureRemoteMesh(space: string, server: string): Promise<void> {
   const creds = await probeCreds(space);
   if (!creds)
     throw new Error(`paw: space "${space}" is remote but no signer loads under ${authDir(rec.root)} — \`paw mesh add ${space} --force …\` with the right --root`);
-  const r = await probeConnect(server, { creds, tls: true, timeoutMs: 10_000 });
+  // 10s and no more: a stalled broker stays stalled for minutes, so a longer wait only hides the
+  // cause. On failure the diagnosis below names the step that stalled instead.
+  const r = await probeConnect(server, { creds, tls: true, timeoutMs: REMOTE_CONNECT_MS });
   if (r.ok) return;
-  const why: Record<typeof r.reason, string> = {
-    "auth-required": `the broker rejected creds minted from the signer under ${rec.root} — it is not this mesh's account signer (re-run \`cotal auth signer --out …\` — \`cotal mint --signer\` before cotal 0.100 — on the box and copy it again)`,
-    "stale-auth": `the minted creds read as expired — check this machine's clock`,
-    unreachable: `nothing usable answered — the broker is down, the address is wrong, or its TLS certificate is not trusted here (a private CA needs NODE_EXTRA_CA_CERTS=<ca.pem> in the environment of every paw command)`,
-    timeout: `the connect ran out of time — the link is slow or the broker is overloaded; retry`,
-  };
-  throw new Error(`paw: remote mesh "${space}" at ${server}: ${why[r.reason]}. paw never starts a remote broker.`);
+  const why =
+    r.reason === "auth-required"
+      ? `the broker rejected creds minted from the signer under ${rec.root} — it is not this mesh's account signer (re-run \`cotal auth signer --out …\` — \`cotal mint --signer\` before cotal 0.100 — on the box and copy it again)`
+      : r.reason === "stale-auth"
+        ? `the minted creds read as expired — check this machine's clock`
+        : explainConnectFailure(r.reason, await diagnoseConnect(server), REMOTE_CONNECT_MS);
+  throw new Error(`paw: remote mesh "${space}" at ${server}: ${why}. paw never starts a remote broker.`);
 }
 
 /** The mesh step of ensure()/restartManager: prove a remote broker, or start/adopt the local one. */
@@ -1012,7 +1024,7 @@ function startManagerDaemon(space: string, server: string, runtime: Runtime): vo
     server,
     ...(runtime === "pty" ? [] : ["--runtime", runtime]),
   ]);
-  let env = daemonEnv();
+  let env = loggedDaemonEnv();
   if (runtime === "tmux") {
     // Pin the manager's tmux to the standard default socket (see defaultTmuxEnv) so its
     // `cotal-<space>` session is visible to the operator's plain shell + `paw attach`, not stranded
@@ -1571,7 +1583,7 @@ function ensureMailbox(space: string): void {
       const child = spawn(cmd, args, {
         detached: true,
         stdio: ["ignore", out, out],
-        env: daemonEnv(),
+        env: loggedDaemonEnv(),
         cwd: pawCotalRoot(space),
       });
       child.unref();

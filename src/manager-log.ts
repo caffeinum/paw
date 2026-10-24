@@ -9,6 +9,7 @@
  * of the same name is never reported as this one's.
  */
 import { closeSync, openSync, readSync, statSync } from "node:fs";
+import { stripStamp } from "./log-stamp.ts";
 
 /** Bytes read back at most — a seat's lines land within seconds of the spawn, the log is huge. */
 const MAX_READ = 1 << 20;
@@ -52,5 +53,5 @@ function seatLines(path: string, name: string, from: number): string[] {
     closeSync(fd);
   }
   const ours = (line: string) => line.startsWith(`seat reaped: ${name} (`) || line.startsWith(`${name} exited on launch`) || line.includes(` ${name} exited on launch`);
-  return buf.toString("utf8").split("\n").filter(ours);
+  return buf.toString("utf8").split("\n").map(stripStamp).filter(ours);
 }

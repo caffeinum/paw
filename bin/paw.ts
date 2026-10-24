@@ -12,6 +12,7 @@
  * the manager) up before the command runs, routes `down` through paw's own teardown, and injects
  * the machine-wide default --space so the operator never types it.
  */
+import "../src/log-stamp-boot.ts"; // first: timestamps a log-redirected daemon's lines (src/log-stamp.ts)
 import { registry, type Command } from "@cotal-ai/core";
 import { spawnSync } from "node:child_process";
 import { downSpace, explicitSpace, expandEqFlags, expandShortForm, failureLine, hoistAddressSpace, oneShotReplyNote, remoteCotalArgv, SHORT_FORMS, stripCotalNamespace, withDefaultSpace } from "../src/dispatch.ts";

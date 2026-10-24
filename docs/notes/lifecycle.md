@@ -355,6 +355,18 @@ falls back to `/tmp/paw-<uid>/<hash>`. Agents keep the durable dir too: without 
 own MCP process reads the material and checks it sits in ITS tmpdir. Cost: nothing purges it, so
 tool temp files from agents accumulate there. `check:spawn-env` covers it.
 
+**Timestamped daemon logs (2026-10-24, `src/log-stamp.ts`).** manager.log, mailbox.log, mesh.log
+(paw's side; nats-server stamps its own), restart.log and adopt.log lines start with an ISO time, so a
+failure can be lined up with the broker's metrics (the team2027 outage couldn't be). The spawn passes
+`loggedDaemonEnv()` (= `daemonEnv` + `PAW_LOG_STAMP=1`); the daemon's entry (bin/cotald.ts,
+bin/paw.ts) imports `src/log-stamp-boot.ts` FIRST, which consumes the flag (children, agents and
+`paw cotal` passthroughs never inherit it) and wraps its own process.stdout/stderr.write to insert
+the stamp at each line start. In-process on purpose: the logs are file fds and stay synchronous, so
+there's no pipe to fill, no extra process to die, nothing buffered. Not stamped: bytes written straight to the fd
+(node's fatal trace, preceded by a stamped `uncaught exception` line) and a child's inherited stdio.
+hub.log was already stamped by the hub itself. Readers that match line STARTS go through `stripStamp`
+(src/manager-log.ts). `check:log-stamp`.
+
 ## pid-stamped locks
 
 - **Locks are PID-STAMPED and break on a dead holder (`src/lock.ts`, 2026-08-20)** — the lock file used
