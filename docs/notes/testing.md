@@ -70,3 +70,7 @@ Moved verbatim from CLAUDE.md (2026-10-02 split). Index: [CLAUDE.md](../../CLAUD
   real between two temp HOMEs. `scripts/e2e-teleport.ts` (`COTAL_BIN=… node scripts/e2e-teleport.ts`) —
   the real `ssh:` transport into a Docker container running this checkout's paw on a private JWT+TLS broker;
   see [teleport.md#tests](teleport.md#tests).
+  `scripts/e2e-mcp-reconnect.ts` (`NATS_SERVER=<nats-server> OUTAGE_S=90 node scripts/e2e-mcp-reconnect.ts`)
+  — cotal's real `mcp.cjs` over stdio on a PRIVATE broker that it SIGKILLs and restarts: the server survives
+  the outage with its tool set intact and rejoins by itself (open mesh — not JWT renewal); see
+  [agents.md](agents.md#the-cotal-tools-disconnected-2026-10-24--the-mcp-server-was-fine). ~2min.
