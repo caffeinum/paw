@@ -13,6 +13,7 @@ import { closeSync, existsSync, openSync, readdirSync, readFileSync, readSync, r
 import { homedir } from "node:os";
 import { basename, dirname, join, relative, sep } from "node:path";
 import { branchWorktreeDir, repoDirUnder } from "./repo-layout.ts";
+import { beadsBlockers, beadsHere, beadsPlanLines, type BeadsManifest, type BeadsSide } from "./teleport-beads.ts";
 import {
   claudeProjectsRoot,
   isClaudeHarness,
@@ -27,7 +28,7 @@ import {
   transcriptRoots,
 } from "./session.ts";
 
-export const WHAT = ["session", "repo", "skills", "memory", "claude-md"] as const;
+export const WHAT = ["session", "repo", "skills", "memory", "claude-md", "beads"] as const;
 export type What = (typeof WHAT)[number];
 
 /** Harnesses whose agent paw can move: their persona says everything a launch needs. */
@@ -47,7 +48,7 @@ export type TeleportArgs = {
 };
 
 export const TELEPORT_USAGE =
-  "teleport <agent> --to fly:<app>[/<machine>] | ssh:<host>  [--all | --session --repo --skills --memory --claude-md | --no-<one>…] [--dry-run] [--yes]\n" +
+  "teleport <agent> --to fly:<app>[/<machine>] | ssh:<host>  [--all | --session --repo --skills --memory --claude-md --beads | --no-<one>…] [--dry-run] [--yes]\n" +
   "       teleport <agent> --back [--dry-run] [--yes]";
 
 export function parseTransport(raw: string): Transport {
@@ -139,6 +140,7 @@ const WHAT_HINT: Record<What, string> = {
   skills: "~/.claude/skills/*",
   memory: "~/.claude/projects/<slug>/memory/",
   "claude-md": "~/.claude/CLAUDE.md (never overwrites a different one)",
+  beads: "its open beads (assigned to it) into the target's beads db; the copies here close as teleported",
 };
 
 // ── the compaction chain ───────────────────────────────────────────────────────────────────────────
@@ -261,6 +263,8 @@ export type Manifest = {
   /** Enabled Claude Code plugins — listed, not moved (v1). */
   plugins: string[];
   repo?: RepoInfo;
+  /** The open beads assigned to it, in this machine's beads db (src/teleport-beads.ts). */
+  beads?: BeadsManifest;
   notes: string[];
 };
 
@@ -604,6 +608,7 @@ export function buildManifest(o: { space: string; name: string; personaFile: str
 
   const plugins = what.includes("skills") ? enabledPlugins(claudeDir) : [];
   const repo = what.includes("repo") ? repoInfo(cwd, deps.git) : undefined;
+  const beads = what.includes("beads") ? beadsHere(name) : undefined;
   if (agent === "kit") {
     const kitRoot = kitSessionsRoot(deps.env);
     if (what.includes("session")) underHome(home, kitRoot, "kit's session store");
@@ -624,6 +629,7 @@ export function buildManifest(o: { space: string; name: string; personaFile: str
     ...(claudeMdHash ? { claudeMdHash } : {}),
     plugins,
     ...(repo ? { repo } : {}),
+    ...(beads ? { beads } : {}),
     notes,
   };
 }
@@ -707,6 +713,8 @@ export type DestFacts = {
   claudeMdHash?: string;
   skillHashes: Record<string, string>;
   freeKb?: number;
+  /** Its beads db — probed apart from the rest (src/teleport-beads.ts), only for --beads. */
+  beads?: BeadsSide;
 };
 
 export type PlanCtx = { what: What[]; dest: DestFacts; folder: DestFolder; transport?: Transport; sourceServer?: string; back: boolean };
@@ -769,6 +777,10 @@ export function teleportBlockers(m: Manifest, c: PlanCtx): string[] {
     for (const s of m.skills)
       if (d.skillHashes[s.name] && d.skillHashes[s.name] !== s.hash)
         out.push(`${there} has a different skill "${s.name}" (~/.claude/skills/${s.name}) — teleport never overwrites it; reconcile it by hand, or drop --skills`);
+  if (c.what.includes("beads")) {
+    if (!m.beads) out.push(`the source's paw read no beads for --beads — it predates teleporting beads; update paw there, or --no-beads`);
+    else out.push(...beadsBlockers(m.beads, d.beads, there));
+  }
   const bytes = manifestFiles(m).reduce((n, f) => n + f.bytes, 0);
   if (d.freeKb !== undefined && d.freeKb * 1024 < bytes * 1.1) out.push(`${there} has ${fmtBytes(d.freeKb * 1024)} free under ${d.home}, and this moves ${fmtBytes(bytes)}`);
   return out;
@@ -808,6 +820,13 @@ export function fmtBytes(n: number): string {
   if (n < 1024 ** 2) return `${(n / 1024).toFixed(1)} KB`;
   if (n < 1024 ** 3) return `${(n / 1024 ** 2).toFixed(1)} MB`;
   return `${(n / 1024 ** 3).toFixed(2)} GB`;
+}
+
+/** Where the source's beads say the agent went: the transport, or `origin` on --back. */
+export function beadsMarkTo(c: Pick<PlanCtx, "back" | "transport" | "dest">): string {
+  if (c.back) return ORIGIN;
+  if (!c.transport) throw new Error(`paw: a forward teleport to ${c.dest.label} has no transport — can't name where its beads went`);
+  return transportLabel(c.transport);
 }
 
 /** The plan, as printed before anything is copied. */
@@ -853,6 +872,8 @@ export function formatPlan(m: Manifest, c: PlanCtx & { from: string }): string[]
   if (c.what.includes("claude-md"))
     lines.push(`  claude-md  ${m.claudeMdHash ? (c.dest.claudeMdHash === m.claudeMdHash ? "identical there — skipped" : sum(m.groups["claude-md"])) : "(none here)"}`);
   else skip("claude-md");
+  if (c.what.includes("beads") && m.beads) lines.push(...beadsPlanLines(m.beads, m.name, c.dest.beads, c.dest.label, beadsMarkTo(c)));
+  else skip("beads");
   lines.push(`  logins     never copied — checked on ${c.dest.label}`);
   if (c.sourceServer && c.dest.spaceRecord && c.dest.spaceRecord.server !== c.sourceServer)
     lines.push(`  mesh       ${m.space} is ${c.sourceServer} here and ${c.dest.spaceRecord.server} there — the presence wait proves it is one broker`);
