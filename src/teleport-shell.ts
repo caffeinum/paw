@@ -13,6 +13,8 @@
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
 import type { Readable, Writable } from "node:stream";
+import { depsProbeScript, parseDestDeps } from "./teleport-deps.ts";
+import { memoryProbeScript, parseDestMemory } from "./teleport-memory.ts";
 import { HASH_SH, type DestFacts, type DestFolder, type Manifest, type RepoInfo, type Transport, type What, transportLabel } from "./teleport-plan.ts";
 
 /** The oldest target paw this one can drive: 2 = the agents folder and `__teleport rewrite-cwd`. */
@@ -178,12 +180,22 @@ P=$(command -v paw 2>/dev/null) && out paw "$P" && out teleport "$(paw __telepor
 [ "\${PAW_ROOT+set}" = set ] && out pawroot "$PAW_ROOT"
 out allowany "\${PAW_ALLOW_ANY_CWD:-}"
 [ -f "$PH/spaces/$S/remote-mesh.json" ] && out record "$(b64 < "$PH/spaces/$S/remote-mesh.json")"
-[ -f "$PH/spaces/$S/personas/$N.md" ] && out persona "$(b64 < "$PH/spaces/$S/personas/$N.md")"
+if [ -f "$PH/spaces/$S/personas/$N.md" ]; then
+  out persona "$(b64 < "$PH/spaces/$S/personas/$N.md")"
+  # Its pinned session held by a live claude there (Claude Code's per-process index, ~/.claude/sessions/<pid>.json).
+  pin=$(sed -n 's/^resume:[[:space:]]*//p' "$PH/spaces/$S/personas/$N.md" | head -n 1 | tr -d "\\"' ")
+  if [ -n "$pin" ]; then for f in "$HOME"/.claude/sessions/*.json; do
+    [ -f "$f" ] || continue
+    grep -q "\\"sessionId\\":\\"$pin\\"" "$f" || continue
+    p=$(basename "$f" .json); kill -0 "$p" 2>/dev/null && out livepid "$p"
+  done; fi
+fi
 if [ "$AGENT" = claude ] && command -v claude >/dev/null 2>&1; then out claude "$(claude auth status 2>&1 | b64)"; fi
 if [ "$AGENT" = kit ] && command -v kit >/dev/null 2>&1; then out kit "$(kit auth status 2>&1 | b64)"; fi
 if [ -n "$ACP" ]; then if [ -x "$ACP" ]; then out acp 1; else out acp 0; fi; fi
 command -v git >/dev/null 2>&1 && out git "$(command -v git)"
 [ -d "$CWD" ] && out cwdexists 1
+[ -d "$CWD" ] && [ -n "$(ls -A "$CWD" 2>/dev/null)" ] && out cwdnonempty 1
 p="$TOP"; while [ ! -e "$p" ]; do p=$(dirname "$p"); done
 out mount "$(df -P "$p" 2>/dev/null | tail -n 1 | awk '{print $NF}')"
 out freekb "$(df -Pk "$HOME" 2>/dev/null | tail -n 1 | awk '{print $4}')"
@@ -213,6 +225,8 @@ if [ -n "$REPO" ]; then
 fi
 [ -f "$HOME/.claude/CLAUDE.md" ] && out claudemd "$(paw_hash "$HOME/.claude/CLAUDE.md")"
 for s in $SKILLS; do [ -d "$HOME/.claude/skills/$s" ] && out skill "$s $(paw_hash "$HOME/.claude/skills/$s")"; done
+${m.hostDeps ? `${depsProbeScript(m.hostDeps, folder.cwd)}\nout depsprobed 1` : ""}
+${what.includes("memory") ? memoryProbeScript(folder.cwd, folder.how === "repo" || folder.how === "worktree" ? folder.clone : undefined) : ""}
 out end 1
 `;
 }
@@ -253,11 +267,14 @@ export function parseProbe(label: string, stdout: string): DestFacts {
     ...(kit !== undefined ? { kitAuth: kit.split("\n").filter(Boolean) } : {}),
     ...(one("git") ? { git: one("git") } : {}),
     cwdExists: one("cwdexists") === "1",
+    cwdNonEmpty: one("cwdnonempty") === "1",
+    ...(one("depsprobed") === "1" ? { deps: parseDestDeps(lines) } : {}),
     ...(one("mount") ? { cwdMount: one("mount") } : {}),
     ...(one("claudemd") ? { claudeMdHash: one("claudemd") } : {}),
     agentCwds: all("agentcwd").map((v) => ({ who: v.slice(0, v.indexOf("\t")), cwd: v.slice(v.indexOf("\t") + 1) })),
     skillHashes: Object.fromEntries(all("skill").map((v) => [v.slice(0, v.lastIndexOf(" ")), v.slice(v.lastIndexOf(" ") + 1)])),
     ...(one("freekb") && /^\d+$/.test(one("freekb")!) ? { freeKb: Number(one("freekb")) } : {}),
+    livePids: all("livepid").map(Number),
   };
   if (one("acp") !== undefined) facts.acpCommand = { path: "", executable: one("acp") === "1" };
   if (one("repoexists") || lsRemote) {
@@ -277,6 +294,8 @@ export function parseProbe(label: string, stdout: string): DestFacts {
       ...(lsRemote ? { lsRemote: lsRemote === "ok" ? { ok: true, err: "" } : { ok: false, err: unb64(lsRemote)!.trim() } } : {}),
     };
   }
+  const memory = parseDestMemory(lines);
+  if (memory) facts.memory = memory;
   return facts;
 }
 
@@ -319,7 +338,7 @@ cd "$st" || exit 1
 if tar --version 2>/dev/null | grep -q bsdtar; then tar --no-mac-metadata --no-xattrs -h -c -f - -T .paw-list; else tar -h -c -f - -T .paw-list; fi`;
 
 /** Destination: unpack a tar from stdin under HOME. */
-export const UNPACK_SH = `mkdir -p "$HOME" && cd "$HOME" && exec tar -x -f - --no-same-owner`;
+export const UNPACK_SH = `mkdir -p "$HOME" && cd "$HOME" && exec tar -x -p -f - --no-same-owner`;
 
 /** Copy files from one side's HOME to the other's (`src` → `dst`, both HOME-relative): pack | unpack, streamed. */
 export async function copyFiles(from: Side, to: Side, files: Array<{ src: string; dst: string }>): Promise<void> {
@@ -350,10 +369,29 @@ export function repoApplyScript(r: RepoInfo, folder: DestFolder, withBundle: boo
 set -e
 fail() { echo "$*" >&2; exit 1; }
 clean() { [ -z "$(git status --porcelain=v1 --untracked-files=all)" ] || fail "$PWD has uncommitted changes"; }
-forward() { if [ -n "$BR" ] && git rev-parse -q --verify "refs/heads/$BR" >/dev/null; then git merge-base --is-ancestor "refs/heads/$BR" "$HEAD_SHA" || fail "branch $BR there has commits the source HEAD $HEAD_SHA lacks — refusing to drop them"; fi; }
+forward() {
+  [ -n "$BR" ] && git rev-parse -q --verify "refs/heads/$BR" >/dev/null || return 0
+  git merge-base --is-ancestor "refs/heads/$BR" "$HEAD_SHA" && return 0
+  if git merge-base --is-ancestor "$HEAD_SHA" "refs/heads/$BR"; then
+    fail "the source HEAD $HEAD_SHA is BEHIND branch $BR there ($(git rev-parse "refs/heads/$BR")) — the source checkout is stale, not ahead; fast-forward it (git merge --ff-only $REMOTE/$BR in the source repo) and teleport again"
+  fi
+  fail "branch $BR there has commits the source HEAD $HEAD_SHA lacks — refusing to drop them"
+}
 export GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND='ssh -o BatchMode=yes'
+# What THIS run creates, it removes again if the run fails — never a folder that was there before.
 FRESH=
-if [ ! -e "$CLONE" ]; then mkdir -p "$(dirname "$CLONE")"; git clone -q --no-checkout --origin "$REMOTE" "$URL" "$CLONE"; FRESH=1; fi
+WTNEW=
+undo() {
+  rc=$?
+  [ "$rc" -eq 0 ] && return 0
+  cd /
+  if [ -n "$FRESH" ]; then rm -rf "$CLONE" && echo "removed $CLONE (cloned by this run)" >&2
+  elif [ -n "$WTNEW" ]; then { git -C "$CLONE" worktree remove --force "$TOP" >/dev/null 2>&1 || rm -rf "$TOP"; } && git -C "$CLONE" worktree prune && echo "removed the worktree $TOP (added by this run)" >&2
+  fi
+  exit "$rc"
+}
+trap undo EXIT
+if [ ! -e "$CLONE" ]; then mkdir -p "$(dirname "$CLONE")"; FRESH=1; git clone -q --no-checkout --origin "$REMOTE" "$URL" "$CLONE"; fi
 cd "$CLONE"
 [ "$(git config --get "remote.$REMOTE.url")" = "$URL" ] || fail "$CLONE: remote $REMOTE is not $URL"
 git fetch -q "$REMOTE"
@@ -367,6 +405,7 @@ git cat-file -e "$HEAD_SHA^{commit}" 2>/dev/null || fail "$HEAD_SHA is not on $U
 if [ -n "$WT" ] && [ ! -e "$TOP" ]; then
   forward
   mkdir -p "$(dirname "$TOP")"
+  WTNEW=1
   if [ -n "$BR" ]; then git worktree add -q -B "$BR" "$TOP" "$HEAD_SHA"; else git worktree add -q --detach "$TOP" "$HEAD_SHA"; fi
   cd "$TOP"
 else
@@ -377,24 +416,67 @@ else
 fi
 if [ -n "$BR" ] && git rev-parse -q --verify "refs/remotes/$REMOTE/$BR" >/dev/null; then git branch -q --set-upstream-to="$REMOTE/$BR" "$BR"; fi
 git update-ref -d "refs/paw-teleport/\${BR:-HEAD}" 2>/dev/null || true
+if [ -n "$FRESH" ]; then echo "created clone $CLONE"; elif [ -n "$WTNEW" ]; then echo "created worktree $TOP"; fi
 printf '%s %s\\n' "$(git rev-parse HEAD)" "$(git symbolic-ref -q --short HEAD || echo detached)"`;
 }
 
-/** Mirror the repo from one side to the other; returns the destination's `<HEAD> <branch>` line. */
-export async function moveRepo(from: Side, to: Side, r: RepoInfo, folder: DestFolder): Promise<string> {
+/** What a mirror made on the destination this run (absent = it reused what was there). */
+export type RepoCreated = { kind: "clone" | "worktree"; path: string; clone: string };
+export type RepoMoved = { line: string; created?: RepoCreated };
+
+function repoMoved(stdout: string, folder: DestFolder): RepoMoved {
+  const lines = stdout.trim().split("\n");
+  const made = /^created (clone|worktree) (.+)$/.exec(lines.find((l) => l.startsWith("created ")) ?? "");
+  return { line: lines[lines.length - 1], ...(made ? { created: { kind: made[1] as RepoCreated["kind"], path: made[2], clone: folder.clone ?? folder.top! } } : {}) };
+}
+
+/** Mirror the repo from one side to the other: the destination's `<HEAD> <branch>` line, and the clone or
+ *  worktree it created (a failed mirror removes what it created itself, inside the script). */
+export async function moveRepo(from: Side, to: Side, r: RepoInfo, folder: DestFolder): Promise<RepoMoved> {
   const withBundle = r.unpushed > 0;
   const top = folder.top!;
   const dst = to.spawn(repoApplyScript(r, folder, withBundle));
   if (!withBundle) {
     const d = await collect(dst);
     if (d.code !== 0) throw new Error(`paw: mirroring ${r.top} to ${top} on ${to.label} failed: ${said(d) || `exit ${d.code}`}`);
-    return d.stdout.toString("utf8").trim();
+    return repoMoved(d.stdout.toString("utf8"), folder);
   }
   const src = from.spawn(bundleScript(r));
   const [s, d] = await Promise.all([collect(src), collect(dst, src.stdout!)]);
   if (s.code !== 0) throw new Error(`paw: bundling ${r.top} on ${from.label} failed: ${said(s) || `exit ${s.code}`}`);
   if (d.code !== 0) throw new Error(`paw: mirroring ${r.top} to ${top} on ${to.label} failed: ${said(d) || `exit ${d.code}`}`);
-  return d.stdout.toString("utf8").trim();
+  return repoMoved(d.stdout.toString("utf8"), folder);
+}
+
+/** Destination: remove a clone or worktree this teleport created, after the run failed later on. Refuses a
+ *  path that isn't the git checkout it made. */
+export function removeCreatedScript(c: RepoCreated): string {
+  return `${vars({ P: c.path, CLONE: c.clone, KIND: c.kind })}
+set -e
+[ -e "$P" ] || { echo "already gone"; exit 0; }
+git -C "$P" rev-parse --git-dir >/dev/null 2>&1 || { echo "$P is not a git checkout — left alone" >&2; exit 1; }
+if [ "$KIND" = worktree ]; then git -C "$CLONE" worktree remove --force "$P" && git -C "$CLONE" worktree prune; else rm -rf "$P"; fi
+echo "removed $P"`;
+}
+
+/** Destination, --force: stop its own agent of this name, then move its persona aside (never deleted).
+ *  Prints `stopped <0|1>` and the backup path. */
+export function replaceScript(space: string, name: string, backup: string): string {
+  return `${vars({ S: space, N: name, B: backup })}
+D="\${PAW_HOME:-$HOME/.paw}/spaces/$S/personas"
+[ -f "$D/$N.md" ] || { echo "no persona $D/$N.md to replace" >&2; exit 1; }
+[ -e "$B" ] && { echo "$B already exists — refusing to overwrite a backup" >&2; exit 1; }
+o=$(paw stop "$N" --space "$S" 2>&1) || { echo "paw stop $N there failed: $o" >&2; exit 1; }
+case "$o" in *"stopped $N"*) echo "stopped 1";; *) echo "stopped 0";; esac
+mkdir -p "$(dirname "$B")" && mv "$D/$N.md" "$B" && echo "$B"`;
+}
+
+/** Destination: undo {@link replaceScript} — its persona back in place (over the one teleport wrote). */
+export function restoreReplacedScript(space: string, name: string, backup: string): string {
+  return `${vars({ S: space, N: name, B: backup })}
+D="\${PAW_HOME:-$HOME/.paw}/spaces/$S/personas"
+[ -f "$B" ] || { echo "no backup at $B" >&2; exit 1; }
+mv -f "$B" "$D/$N.md" && echo "$D/$N.md"`;
 }
 
 /** Destination: write the persona file (atomically) from stdin; `folder` (the agents folder) is created first. */
@@ -407,4 +489,41 @@ D="\${PAW_HOME:-$HOME/.paw}/spaces/$S/personas"
 /** A paw verb on a side: `paw <args…>` (the target's own paw, on its own PATH). */
 export function pawScript(args: string[]): string {
   return `exec paw ${args.map(sq).join(" ")}`;
+}
+
+/** Source: a tar of absolute paths listed on stdin, stored as `0`, `1`, … (their order), modes kept. */
+export const PACK_ABS_SH = `st=$(mktemp -d) || exit 1
+trap 'rm -rf "$st"' EXIT
+i=0
+while IFS= read -r src; do [ -n "$src" ] || continue; ln -s "$src" "$st/$i" || exit 1; printf '%s\\n' "$i" >> "$st/.paw-list"; i=$((i + 1)); done
+COPYFILE_DISABLE=1; export COPYFILE_DISABLE
+cd "$st" || exit 1
+if tar --version 2>/dev/null | grep -q bsdtar; then tar --no-mac-metadata --no-xattrs -h -c -f - -T .paw-list; else tar -h -c -f - -T .paw-list; fi`;
+
+/** Destination: unpack {@link PACK_ABS_SH}'s tar and move entry N to `dsts[N]` (`$HOME/…` expanded there),
+ *  keeping its mode. Never overwrites a different file that is there (the preflight compared them too). */
+export function unpackAbsScript(dsts: string[]): string {
+  return `${vars({ L: dsts.join("\n") })}
+t=$(mktemp -d) || exit 1
+trap 'rm -rf "$t"' EXIT
+(cd "$t" && tar -x -p -f - --no-same-owner) || exit 1
+i=0
+printf '%s\\n' "$L" | { while IFS= read -r d; do
+  case "$d" in '$HOME/'*) d="$HOME/\${d#\\$HOME/}";; esac
+  if [ -e "$d" ]; then cmp -s "$t/$i" "$d" || { echo "$d exists there and differs — not overwritten" >&2; exit 1; }
+  else mkdir -p "$(dirname "$d")" && mv "$t/$i" "$d" || exit 1; fi
+  printf '%s\\n' "$d"
+  i=$((i + 1))
+done; }`;
+}
+
+/** Copy absolute files from one side to destinations on the other (`$HOME/…` = that side's HOME). */
+export async function copyAbsFiles(from: Side, to: Side, files: Array<{ src: string; dst: string }>): Promise<string[]> {
+  if (!files.length) return [];
+  const src = from.spawn(PACK_ABS_SH);
+  const dst = to.spawn(unpackAbsScript(files.map((f) => f.dst)));
+  const [s, d] = await Promise.all([collect(src, files.map((f) => f.src).join("\n") + "\n"), collect(dst, src.stdout!)]);
+  if (s.code !== 0) throw new Error(`paw: packing the --env files on ${from.label} failed: ${said(s) || `exit ${s.code}`}`);
+  if (d.code !== 0) throw new Error(`paw: placing the --env files on ${to.label} failed: ${said(d) || `exit ${d.code}`}`);
+  return d.stdout.toString("utf8").split("\n").filter(Boolean);
 }

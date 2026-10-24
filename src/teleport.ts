@@ -15,6 +15,8 @@
  * target's paw; a forward teleport calls the same functions in-process.
  */
 import { randomUUID } from "node:crypto";
+import { envDest } from "./teleport-deps.ts";
+import { copyFolder, folderChanged } from "./teleport-folder.ts";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -24,7 +26,7 @@ import { ensureAgentSpawned, personaFilePath, psRowAlive, setPersonaKeys, stopAg
 import { withManagerControl } from "./control.ts";
 import { observerEndpoint } from "./feed.ts";
 import { readForeground } from "./foreground.ts";
-import { hosting } from "./hosted.ts";
+import { hosting, type Hosting } from "./hosted.ts";
 import { ensureSpaceFor, resolveSpace, withEnsuredManager } from "./lifecycle.ts";
 import { liveSessionProcs } from "./named.ts";
 import { readRemoteMesh } from "./remote-mesh.ts";
@@ -70,6 +72,11 @@ import {
   transportLabel,
   withPersonaKey,
   WHAT,
+  OPT_IN,
+  destHasOwnAgent,
+  replacementOf,
+  replaceStamp,
+  type Replacement,
   type DestFacts,
   type FileEntry,
   type Manifest,
@@ -79,7 +86,10 @@ import {
 } from "./teleport-plan.ts";
 import {
   checkFlyMachines,
+  collect,
+  copyAbsFiles,
   copyFiles,
+  sq,
   localSide,
   moveRepo,
   pawScript,
@@ -89,6 +99,10 @@ import {
   run,
   said,
   writePersonaScript,
+  removeCreatedScript,
+  replaceScript,
+  restoreReplacedScript,
+  type RepoCreated,
   type Side,
 } from "./teleport-shell.ts";
 
@@ -100,7 +114,7 @@ const log = (s: string) => console.log(s);
 const loud = (s: string) => console.error(process.stderr.isTTY ? `\x1b[1;31m${s}\x1b[0m` : s);
 
 /** Who carries the agent's name on the mesh right now, as this machine sees it. */
-type MeshView = { ep: CotalEndpoint; peerId?: string; hereRow?: PsRow; hereAnswered: boolean };
+type MeshView = { ep: CotalEndpoint; peerIds: string[]; hereRow?: PsRow; hereAnswered: boolean };
 
 async function meshView(space: string, name: string): Promise<MeshView> {
   const ep = await observerEndpoint(space, pawServer(space), { watchPresence: true });
@@ -108,7 +122,7 @@ async function meshView(space: string, name: string): Promise<MeshView> {
   await ep.start();
   const deadline = Date.now() + 3000;
   while (ep.getRoster().length === 0 && Date.now() < deadline) await sleep(100);
-  const peerId = presentId(ep, name);
+  const peerIds = presentIds(ep, name);
   let hereRow: PsRow | undefined;
   let hereAnswered = false;
   try {
@@ -118,32 +132,63 @@ async function meshView(space: string, name: string): Promise<MeshView> {
   } catch {
     hereAnswered = false;
   }
-  return { ep, ...(peerId ? { peerId } : {}), ...(hereRow ? { hereRow } : {}), hereAnswered };
+  return { ep, peerIds, ...(hereRow ? { hereRow } : {}), hereAnswered };
 }
 
-function presentId(ep: CotalEndpoint, name: string, not?: string): string | undefined {
+function presentIds(ep: CotalEndpoint, name: string, not: ReadonlySet<string> = new Set()): string[] {
   const want = name.toLowerCase();
-  return ep.getRoster().find((p) => p.card.name.toLowerCase() === want && p.status !== "offline" && p.card.id !== not)?.card.id;
+  return ep.getRoster().filter((p) => p.card.name.toLowerCase() === want && p.status !== "offline" && !not.has(p.card.id)).map((p) => p.card.id);
 }
 
-/** The mesh half of preflight: an agent another machine runs is that machine's to move. */
-function meshBlockers(space: string, name: string, v: MeshView): string[] {
+/** The destination's own agent of this name, as the probe saw it (undefined = none of its own there). */
+export type TargetOwn = { label: string; livePids: number[]; force: boolean };
+
+/**
+ * The mesh half of preflight, pure: an agent another machine runs is that machine's to move. Every peer
+ * present under the name must be accounted for — this machine's seat (when it runs it), and with --force
+ * the destination's own agent being replaced (only when a live claude there holds its session). Anything
+ * more runs on a third machine.
+ */
+export function meshBlockersOf(o: { name: string; runningHere: boolean; hosted?: Hosting; peerIds: string[]; hereAnswered: boolean; target?: TargetOwn }): string[] {
+  const { name, peerIds } = o;
+  if (o.runningHere && o.hosted && !o.hosted.here) return [`"${name}" is not this machine's to move (${o.hosted.why})`];
+  const targetLive = o.target !== undefined && o.target.livePids.length > 0;
+  const replaced = targetLive && o.target!.force;
+  const expected = (o.runningHere ? 1 : 0) + (replaced ? 1 : 0);
+  if (peerIds.length <= expected) return [];
+  const ids = peerIds.join(", ");
+  const hint = targetLive && !o.target!.force ? ` — one may be ${o.target!.label}'s own "${name}" (pid ${o.target!.livePids.join(", ")} holds its session there): --force replaces it` : "";
+  if (o.runningHere)
+    return [`"${name}" is present on the mesh ${peerIds.length} times (${ids}) and this machine accounts for ${expected} — another copy runs elsewhere${hint}`];
+  if (!o.hereAnswered) return [`"${name}" is present on the mesh (${ids}) and this machine's manager isn't answering — can't tell where it runs`];
+  return [
+    `"${name}" is present on the mesh (${ids}) but this machine's manager does not run it` +
+      (replaced ? `, and ${o.target!.label}'s own copy accounts for one at most — another runs elsewhere` : ` — it runs elsewhere; teleport it from there`) +
+      hint,
+  ];
+}
+
+function meshBlockers(space: string, name: string, v: MeshView, target?: TargetOwn): string[] {
   const runningHere = v.hereRow !== undefined && psRowAlive(v.hereRow);
-  if (runningHere) {
-    const h = hosting(space, name, v.hereRow);
-    return h.here ? [] : [`"${name}" is not this machine's to move (${h.why})`];
-  }
-  if (v.peerId && v.hereAnswered) return [`"${name}" is present on the mesh (${v.peerId}) but this machine's manager does not run it — it runs elsewhere; teleport it from there`];
-  if (v.peerId) return [`"${name}" is present on the mesh (${v.peerId}) and this machine's manager isn't answering — can't tell where it runs`];
-  return [];
+  return meshBlockersOf({ name, runningHere, ...(runningHere ? { hosted: hosting(space, name, v.hereRow) } : {}), peerIds: v.peerIds, hereAnswered: v.hereAnswered, ...(target ? { target } : {}) });
 }
 
-async function waitPresent(ep: CotalEndpoint, name: string, oldId: string | undefined, ms: number): Promise<string | undefined> {
+async function waitPresent(ep: CotalEndpoint, name: string, old: ReadonlySet<string>, ms: number): Promise<string | undefined> {
   const deadline = Date.now() + ms;
   for (;;) {
-    const id = presentId(ep, name, oldId);
+    const id = presentIds(ep, name, old)[0];
     if (id) return id;
     if (Date.now() >= deadline) return undefined;
+    await sleep(500);
+  }
+}
+
+/** Wait until at most `keep` peers under the name are present — the replaced copy there has left. */
+async function waitDown(ep: CotalEndpoint, name: string, keep: number, ms: number): Promise<boolean> {
+  const deadline = Date.now() + ms;
+  for (;;) {
+    if (presentIds(ep, name).length <= keep) return true;
+    if (Date.now() >= deadline) return false;
     await sleep(500);
   }
 }
@@ -257,20 +302,22 @@ async function confirm(question: string): Promise<boolean> {
   return /^y(es)?$/i.test(answer.trim());
 }
 
-/** The persona text that lands on the destination. Without --session the destination keeps ITS pin
- *  (a copy it ran before) or gets a fresh one — never the source's id with no transcript behind it. */
-function destPersona(m: Manifest, what: What[], destPersonaText: string | undefined): { text: string; note?: string } {
+/** The persona text that lands on the destination. Without --session the destination keeps the pin of a
+ *  copy THIS agent ran there before, or gets a fresh one — never the source's id with no transcript behind
+ *  it, nor the pin of an agent --force replaces there (that is another agent's session). */
+function destPersona(m: Manifest, what: What[], d: Pick<DestFacts, "personaText">): { text: string; note?: string } {
   if (what.includes("session") || !m.pin) return { text: m.persona };
-  const theirs = destPersonaText?.match(/^---\n[\s\S]*?^resume:\s*(\S+)/m)?.[1]?.replace(/^["']|["']$/g, "");
+  const ownCopy = d.personaText !== undefined && !destHasOwnAgent(d);
+  const theirs = ownCopy ? d.personaText!.match(/^---\n[\s\S]*?^resume:\s*(\S+)/m)?.[1]?.replace(/^["']|["']$/g, "") : undefined;
   const pin = theirs ?? randomUUID();
   return { text: withPersonaKey(m.persona, "resume", pin), note: `resume: ${pin} (${theirs ? "the copy there kept its own session" : "a fresh session — --session not moved"})` };
 }
 
 /** One line per moved group: where it landed (the group's common dir, at its destination path), how many
  *  files, how big. */
-function groupLines(home: string, m: Manifest, sent: Set<string>, cwd: string): string[] {
+function groupLines(home: string, m: Manifest, sent: Set<string>, cwd: string, memorySlug: string | undefined): string[] {
   return Object.entries(m.groups)
-    .map(([group, fs]) => [group, fs.filter((f) => sent.has(f.rel)).map((f) => ({ ...f, rel: remapRel(f.rel, m, cwd) }))] as const)
+    .map(([group, fs]) => [group, fs.filter((f) => sent.has(f.rel)).map((f) => ({ ...f, rel: remapRel(f.rel, m, cwd, memorySlug) }))] as const)
     .filter(([, fs]) => fs.length)
     .map(([group, fs]) => {
       const parts = fs.map((f) => f.rel.split("/"));
@@ -410,11 +457,28 @@ type Cutover = {
   back: boolean;
   dryRun: boolean;
   yes: boolean;
+  /** --force: replace the destination's own agent of this name. */
+  force: boolean;
+  /** What this run did on the destination that a failure must undo there (filled as it goes). */
+  there: ThereState;
   /** `--back`: put this machine's persona (and its marker) back if the start here fails. */
   restoreDestPersona?: () => void;
   /** `--back`: the folder it left from (this persona's `cwd:`). */
   original?: string;
 };
+
+/** What a run did on the destination that a failure must undo there — and only that. */
+type ThereState = {
+  /** A clone or worktree this run created (a failed mirror already removed its own inside the script). */
+  created?: RepoCreated;
+  /** --force: the destination's own agent this run stopped and moved aside. */
+  replaced?: { r: Replacement; wasLive: boolean };
+  /** The agent's folder there, absent before this run copied its files into it. */
+  folder?: string;
+};
+
+/** How long the replaced copy there may take to leave the mesh after its stop. */
+const REPLACED_GONE_MS = 30_000;
 
 async function cutover(c: Cutover, transport: Transport): Promise<void> {
   const { space, name, what } = c;
@@ -425,21 +489,32 @@ async function cutover(c: Cutover, transport: Transport): Promise<void> {
   const placed = placeRepo(m, what, proposed, facts);
   const folder = placed.folder;
   const moved = folder.cwd !== m.cwd;
-  const pairs = (man: Manifest, fs: FileEntry[]) => fs.map((f) => ({ src: f.rel, dst: remapRel(f.rel, man, folder.cwd) }));
+  const memSlug = facts.memory?.slug;
+  const pairs = (man: Manifest, fs: FileEntry[]) => fs.map((f) => ({ src: f.rel, dst: remapRel(f.rel, man, folder.cwd, memSlug) }));
   /** Send files, then point their transcripts' cwd at the new folder. */
   const send = async (man: Manifest, fs: FileEntry[]) => {
     await copyFiles(c.source.side, c.dest.side, pairs(man, fs));
-    const rels = transcriptRels(fs, man).map((r) => remapRel(r, man, folder.cwd));
+    const rels = transcriptRels(fs, man).map((r) => remapRel(r, man, folder.cwd, memSlug));
     if (moved && rels.length) log(`  rewrote ${await c.dest.rewriteCwd(rels, man.cwd, folder.cwd)} cwd field(s) in ${rels.length} transcript(s): ${man.cwd} → ${folder.cwd}`);
   };
+  const mirror = async (r: NonNullable<Manifest["repo"]>) => {
+    const done = await moveRepo(c.source.side, c.dest.side, r, folder);
+    if (done.created) c.there.created = done.created;
+    return done.line;
+  };
   const view = await meshView(space, name);
+  const runningHere = view.hereRow !== undefined && psRowAlive(view.hereRow);
   try {
-    const ctx = { what, dest: facts, folder, ...(c.back ? {} : { transport }), back: c.back, sourceServer: readRemoteMesh(space)?.server };
-    const blockers = [...placed.blockers, ...teleportBlockers(m, ctx), ...(c.back ? [] : meshBlockers(space, name, view))];
-    const persona = destPersona(m, what, facts.personaText);
+    const replace = c.force ? replacementOf(m, facts, replaceStamp()) : undefined;
+    const own = destHasOwnAgent(facts) ? { label: c.dest.side.label, livePids: facts.livePids, force: c.force } : undefined;
+    const ctx = { what, dest: facts, folder, ...(c.back ? {} : { transport }), back: c.back, sourceServer: readRemoteMesh(space)?.server, force: c.force, ...(replace ? { replace } : {}) };
+    const blockers = [...placed.blockers, ...teleportBlockers(m, ctx), ...(c.back ? [] : meshBlockers(space, name, view, own))];
+    const persona = destPersona(m, what, facts);
     for (const l of formatPlan(m, { ...ctx, from: c.source.side.label })) log(l);
     if (persona.note) log(`  pin        ${persona.note}`);
-    log(`  cutover    stop ${name} on ${c.source.side.label} → \`paw start ${name}\` on ${c.dest.side.label} → wait until present → mark ${c.source.side.label}'s persona teleported`);
+    log(
+      `  cutover    ${replace ? `stop + set aside ${c.dest.side.label}'s own ${name} → ` : ""}stop ${name} on ${c.source.side.label} → \`paw start ${name}\` on ${c.dest.side.label} → wait until present → mark ${c.source.side.label}'s persona teleported`,
+    );
     if (blockers.length) {
       log("");
       log(`blocked — ${blockers.length} thing(s) to fix first:`);
@@ -453,22 +528,45 @@ async function cutover(c: Cutover, transport: Transport): Promise<void> {
     }
     if (!c.yes) {
       if (!process.stdin.isTTY) throw new Error("paw: no terminal to confirm on — pass --yes to teleport unattended");
-      if (!(await confirm(`teleport ${name} to ${c.dest.side.label}? [y/N] `))) throw new Error("paw: teleport cancelled — nothing was copied");
+      if (!(await confirm(`teleport ${name} to ${c.dest.side.label}${replace ? `, replacing its own ${name} there` : ""}? [y/N] `))) throw new Error("paw: teleport cancelled — nothing was copied");
     }
 
-    const files = filesToSend(m, facts);
-    log(`→ copying ${files.length} file(s), ${fmtBytes(files.reduce((n, f) => n + f.bytes, 0))} …`);
-    await send(m, files);
+    let files: FileEntry[];
     let repoLine: string | undefined;
-    if (m.repo && what.includes("repo")) {
-      log(`→ mirroring ${m.repo.top} to ${folder.top} …`);
-      repoLine = await moveRepo(c.source.side, c.dest.side, m.repo, folder);
+    try {
+      if (replace) {
+        log(`→ replacing ${c.dest.side.label}'s own ${name}: stopping it there, moving its persona to ${replace.backup} …`);
+        const r = await run(c.dest.side, replaceScript(space, name, replace.backup));
+        if (r.code !== 0) throw new Error(`paw: replacing ${name} on ${c.dest.side.label} failed: ${said(r) || `exit ${r.code}`}`);
+        c.there.replaced = { r: replace, wasLive: /^stopped 1$/m.test(r.stdout.toString("utf8")) || replace.livePids.length > 0 };
+        if (replace.livePids.length && !(await waitDown(view.ep, name, runningHere ? 1 : 0, REPLACED_GONE_MS)))
+          throw new Error(
+            `paw: a "${name}" stayed present on the mesh ${REPLACED_GONE_MS / 1000}s after stopping ${c.dest.side.label}'s own — it runs on a third machine; teleport it from there`,
+          );
+      }
+      files = filesToSend(m, facts);
+      log(`→ copying ${files.length} file(s), ${fmtBytes(files.reduce((n, f) => n + f.bytes, 0))} …`);
+      await send(m, files);
+      if (m.repo && what.includes("repo")) {
+        log(`→ mirroring ${m.repo.top} to ${folder.top} …`);
+        repoLine = await mirror(m.repo);
+      }
+      if (m.folder && what.includes("folder")) {
+        log(`→ copying its folder ${m.cwd} (${m.folder.files.length} file(s), ${fmtBytes(m.folder.bytes)}) to ${folder.cwd} …`);
+        if (!facts.cwdExists) c.there.folder = folder.cwd;
+        await copyFolder(c.source.side, c.dest.side, m.cwd, folder.cwd, undefined, collect);
+      }
+    } catch (e) {
+      loud(`✗ teleport ${name}: ${(e as Error).message}`);
+      await undoThere(c);
+      throw new Error(`paw: teleport ${name} failed before the stop — ${name} still runs on ${c.source.side.label}`);
     }
 
     log(`→ stopping ${name} on ${c.source.side.label} …`);
     const stopped = await c.source.stop(m.pin);
     if (!stopped.released) {
       await c.source.restart(m).catch((e: Error) => loud(`  and restarting it there failed too: ${e.message}`));
+      await undoThere(c);
       throw new Error(`paw: ${name}'s claude on ${c.source.side.label} still held session ${m.pin} ${SESSION_RELEASE_MS / 1000}s after the stop — restarted it there; nothing moved over`);
     }
 
@@ -481,13 +579,28 @@ async function cutover(c: Cutover, transport: Transport): Promise<void> {
       throw e;
     }
     const delta = changedSince(files, filesToSend(after, facts));
-    if (delta.length) {
-      log(`→ copying ${delta.length} file(s) written during the copy …`);
-      await send(after, delta);
-    }
-    if (after.repo && what.includes("repo") && after.repo.head !== m.repo?.head) {
-      log(`→ ${name} committed during the copy — mirroring ${after.repo.head.slice(0, 12)} …`);
-      repoLine = await moveRepo(c.source.side, c.dest.side, after.repo, folder);
+    let envPlaced: string[] = [];
+    try {
+      if (delta.length) {
+        log(`→ copying ${delta.length} file(s) written during the copy …`);
+        await send(after, delta);
+      }
+      if (after.repo && what.includes("repo") && after.repo.head !== m.repo?.head) {
+        log(`→ ${name} committed during the copy — mirroring ${after.repo.head.slice(0, 12)} …`);
+        repoLine = await mirror(after.repo);
+      }
+      const fdelta = m.folder && after.folder && what.includes("folder") ? folderChanged(m.folder.files, after.folder.files) : [];
+      if (fdelta.length) {
+        log(`→ copying ${fdelta.length} file(s) of its folder written during the copy …`);
+        await copyFolder(c.source.side, c.dest.side, m.cwd, folder.cwd, fdelta.map((f) => f.rel), collect);
+      }
+      if (after.env?.length) {
+        log(`→ placing ${after.env.length} --env file(s) (names only): ${after.env.map((e) => e.there.replace(/^@\//, "<folder>/")).join(", ")} …`);
+        envPlaced = await copyAbsFiles(c.source.side, c.dest.side, after.env.map((e) => ({ src: e.src, dst: envDest(e, folder.cwd) })));
+      }
+    } catch (e) {
+      await rollback(c, after, `the final copy failed: ${(e as Error).message}`, false);
+      throw new Error(`paw: teleport ${name} failed at the final copy — it runs on ${c.source.side.label} again`);
     }
 
     let beadsLine: string | undefined;
@@ -511,7 +624,7 @@ async function cutover(c: Cutover, transport: Transport): Promise<void> {
       }
     }
 
-    const text = withPersonaKey(destPersona(after, what, facts.personaText).text, "cwd", folder.cwd);
+    const text = withPersonaKey(destPersona(after, what, facts).text, "cwd", folder.cwd);
     const written = await c.dest.writePersona(text, folder.how === "agents" ? folder.cwd : undefined);
     log(`→ starting ${name} on ${c.dest.side.label} in ${folder.cwd} …`);
     try {
@@ -521,7 +634,7 @@ async function cutover(c: Cutover, transport: Transport): Promise<void> {
       throw new Error(`paw: teleport ${name} failed at the start on ${c.dest.side.label} — it runs on ${c.source.side.label} again`);
     }
     log(`→ waiting until ${name} is present on the mesh (up to ${PRESENT_MS / 1000}s) …`);
-    const id = await waitPresent(view.ep, name, view.peerId, PRESENT_MS);
+    const id = await waitPresent(view.ep, name, new Set(view.peerIds), PRESENT_MS);
     if (!id) {
       await rollback(c, after, `${name} did not appear on the mesh within ${PRESENT_MS / 1000}s`, true, beads);
       throw new Error(`paw: teleport ${name} failed — it never came up on ${c.dest.side.label}; it runs on ${c.source.side.label} again`);
@@ -544,15 +657,24 @@ async function cutover(c: Cutover, transport: Transport): Promise<void> {
     log(`✓ teleported ${name}: ${c.source.side.label} → ${c.dest.side.label} (present on the mesh as ${id})`);
     log(`  written on ${c.dest.side.label}:`);
     log(`    persona   ${written}${moved ? `  (cwd: ${folder.cwd})` : ""}`);
+    const rep = c.there.replaced;
+    if (rep)
+      log(
+        `    replaced  its own ${name} there (${rep.wasLive ? "stopped" : "was not running"}): persona moved to ${rep.r.backup}` +
+          `${rep.r.pin ? `; its transcript (resume: ${rep.r.pin}) stays where it was` : ""}`,
+      );
     if (folder.how === "agents") log(`    folder    ${folder.cwd}  (created; ${m.cwd} stays here)`);
-    for (const l of groupLines(facts.home, after, new Set([...files, ...delta].map((f) => f.rel)), folder.cwd)) log(l);
-    if (repoLine) log(`    repo      ${folder.top}  ${after.repo!.url} → ${repoLine}`);
+    for (const l of groupLines(facts.home, after, new Set([...files, ...delta].map((f) => f.rel)), folder.cwd, memSlug)) log(l);
+    if (repoLine) log(`    repo      ${folder.top}  ${after.repo!.url} → ${repoLine}${c.there.created ? `  (${c.there.created.kind} created by this run)` : ""}`);
     if (beadsLine) log(`    beads     ${beadsLine}`);
+    if (after.folder && what.includes("folder")) log(`    folder    ${folder.cwd}  ${after.folder.files.length} file(s), ${fmtBytes(after.folder.bytes)}, modes kept`);
+    if (envPlaced.length) log(`    env       ${envPlaced.join(", ")}  (secrets — names only)`);
     log(`  written on ${c.source.side.label}:`);
     log(`    ${marked}`);
     if (beadsClosed) log(`    beads     ${beadsClosed}`);
     log(`  stopped on ${c.source.side.label}: ${stopped.wasLive ? name : `${name} (it was not running)`} — its transcript and files there are left as they were`);
     log(`  undo: ${c.undo}`);
+    if (rep) log(`        then, to bring back ${c.dest.side.label}'s own ${name}: mv ${rep.r.backup} ${rep.r.persona} there (and \`paw start ${name}\` there)`);
     if (beadsFailed) {
       loud(`✗ ${name} runs on ${c.dest.side.label} with its beads, but the copies on ${c.source.side.label} are still open: ${beadsFailed}`);
       loud(`  close them there by hand: bd close ${beads!.ids.join(" ")} --force --reason "${teleportedReason(c.markTo)}"`);
@@ -560,6 +682,36 @@ async function cutover(c: Cutover, transport: Transport): Promise<void> {
     }
   } finally {
     await view.ep.stop().catch(() => {});
+  }
+}
+
+/** Undo what this run made on the destination: the clone/worktree it created (never one that was there
+ *  before), and --force's replacement (its persona back in place, restarted if it ran). Reported, loud. */
+async function undoThere(c: Cutover): Promise<void> {
+  const { created, replaced, folder } = c.there;
+  if (folder) {
+    const r = await run(c.dest.side, `F=${sq(folder)}\n[ -e "$F" ] || { echo "already gone"; exit 0; }\nrm -rf "$F" && echo "removed $F (its folder's copy, made by this run)"`).catch(
+      (e: Error) => ({ code: 1, stdout: Buffer.alloc(0), stderr: e.message }),
+    );
+    loud(`  ${c.dest.side.label}: ${r.code === 0 ? r.stdout.toString("utf8").trim() : `removing ${folder} FAILED: ${said(r) || `exit ${r.code}`} — remove it there by hand`}`);
+    c.there.folder = undefined;
+  }
+  if (created) {
+    const r = await run(c.dest.side, removeCreatedScript(created)).catch((e: Error) => ({ code: 1, stdout: Buffer.alloc(0), stderr: e.message }));
+    loud(`  ${c.dest.side.label}: ${r.code === 0 ? r.stdout.toString("utf8").trim() : `removing the ${created.kind} ${created.path} this run created FAILED: ${said(r) || `exit ${r.code}`} — remove it there by hand`}`);
+    c.there.created = undefined;
+  }
+  if (replaced) {
+    const r = await run(c.dest.side, restoreReplacedScript(c.space, c.name, replaced.r.backup)).catch((e: Error) => ({ code: 1, stdout: Buffer.alloc(0), stderr: e.message }));
+    if (r.code !== 0) loud(`  ${c.dest.side.label}: putting its own ${c.name} back FAILED: ${said(r) || `exit ${r.code}`} — mv ${replaced.r.backup} ${replaced.r.persona} there by hand`);
+    else {
+      loud(`  ${c.dest.side.label}: its own ${c.name} is back at ${replaced.r.persona}`);
+      if (replaced.wasLive) {
+        const s = await run(c.dest.side, pawScript(["start", c.name, "--space", c.space])).catch((e: Error) => ({ code: 1, stdout: Buffer.alloc(0), stderr: e.message }));
+        loud(`  ${c.dest.side.label}: ${s.code === 0 ? `restarted its own ${c.name}` : `restarting its own ${c.name} FAILED: ${said(s) || `exit ${s.code}`} — paw start ${c.name} there by hand`}`);
+      }
+    }
+    c.there.replaced = undefined;
   }
 }
 
@@ -581,6 +733,7 @@ async function rollback(c: Cutover, m: Manifest, why: string, destTouched: boole
     const r = await c.dest.standDown().catch((e: Error) => `failed: ${e.message}`);
     loud(`  ${c.dest.side.label}: ${r}`);
   }
+  await undoThere(c);
   c.restoreDestPersona?.();
   try {
     await c.source.restart(m);
@@ -589,9 +742,10 @@ async function rollback(c: Cutover, m: Manifest, why: string, destTouched: boole
     loud(`  restarting ${c.name} on ${c.source.side.label} FAILED: ${(e as Error).message} — start it by hand: paw start ${c.name} --space ${c.space}`);
   }
 }
-
 function whatFlags(what: What[]): string {
-  return what.length === WHAT.length ? "--all" : what.map((w) => `--${w}`).join(" ");
+  const base = WHAT.filter((w) => !OPT_IN.includes(w));
+  if (base.every((w) => what.includes(w))) return ["--all", ...what.filter((w) => OPT_IN.includes(w)).map((w) => `--${w}`)].join(" ");
+  return what.map((w) => `--${w}`).join(" ");
 }
 
 export async function teleport(a: TeleportArgs): Promise<void> {
@@ -630,6 +784,8 @@ export async function teleport(a: TeleportArgs): Promise<void> {
         back: true,
         dryRun: a.dryRun,
         yes: a.yes,
+        force: false,
+        there: {},
         restoreDestPersona: () => writeFileAtomic(file, original),
         original: readCwd(file) ?? fail(`paw: ${file} has no \`cwd:\` — where it came from is unknown, so --back has nowhere to put it`),
       },
@@ -656,6 +812,8 @@ export async function teleport(a: TeleportArgs): Promise<void> {
       back: false,
       dryRun: a.dryRun,
       yes: a.yes,
+      force: a.force,
+      there: {},
     },
     transport,
   );
@@ -707,7 +865,7 @@ const teleportCommand: Command = {
   kind: "command",
   name: "teleport",
   group: "Lifecycle",
-  summary: "move an agent to another box (fly:<app> | ssh:<host>) — persona + chosen session/repo/skills/memory/CLAUDE.md/beads; --back returns it",
+  summary: "move an agent to another box (fly:<app> | ssh:<host>) — persona + chosen session/repo/folder/skills/memory/CLAUDE.md/beads (+ opt-in env secrets); --back returns it",
   usage: TELEPORT_USAGE,
   run: (a) => teleport(parseTeleportArgs([...a.raw])),
 };

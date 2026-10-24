@@ -1,16 +1,18 @@
 # paw teleport
 
 ```
-paw teleport <agent> --to fly:<app>[/<machine-id>] | ssh:<host>  [--all | --session --repo --skills --memory --claude-md --beads] [--dry-run] [--yes]
+paw teleport <agent> --to fly:<app>[/<machine-id>] | ssh:<host>  [--all | --session --repo --folder --skills --memory --claude-md --beads] [--env] [--force] [--dry-run] [--yes]
 paw teleport <agent> --back [--dry-run] [--yes]
 ```
 
-`--no-<one>` trims the list: `--no-repo` alone = everything but the repo (= `--all --no-repo`).
+`--no-<one>` trims the list: `--no-repo` alone = everything but the repo (= `--all --no-repo`). `--env` is
+OPT-IN: `--all`, `--no-<one>` and the checklist's preselection leave it out (`--all --env` adds it).
 
 ## Where the agent's folder lands (never the source path)
 
 - **without --repo** → `<target PAW_HOME>/agents/<name>`, created by teleport. Nothing from the source
-  folder moves; files the agent writes there stay there on `--back`.
+  folder moves (unless it is not a git checkout and `--folder` is on: [Folder](#folder)); files the agent
+  writes there stay there on `--back`.
 - **with --repo** → the repo's paw clone on the target, `<target PAW_HOME>/repos/<owner>/<repo>` — the
   layout `github:` handles use (src/repo-layout.ts); owner/repo come from the remote URL, read literally
   (`git config remote.<r>.url`, not `get-url`, which expands insteadOf). A non-GitHub remote fails loud
@@ -71,15 +73,130 @@ name stays). Checkmarks (none given: a checklist on a tty, all preselected; a pi
   (`HEAD --not --remotes=<remote>`) go as a git bundle. A dirty tree is refused with the first 10 paths,
   "… and N more", and the way out (`--no-repo`). A checkout there may only move forward to the source HEAD.
   `.gitignored` files (.env, node_modules) don't move.
-- **skills** — `~/.claude/skills/*` (dirs; a linked skill lands as a real dir; dot-dirs skipped). Enabled
-  plugins are LISTED as not moved (v1). Project `.claude/skills` travel with the repo.
-- **memory** — `~/.claude/projects/<slug>/memory/`.
+- **skills** — `~/.claude/skills/*` (dirs; a linked skill lands as a real dir; dot-dirs skipped). Not
+  `~/.claude/skills/synced/`: Claude Code's claude.ai skill-sync state for this machine's login
+  (`<org>_<account>` bucket dirs, `.bucket-*` markers, `manifest.json`, `.last-complete-round`; 2.1.310 loads
+  it as `loadedFrom: "syncedSkills"`) — neither moved nor compared (it was a false "different skill"
+  blocker); the target's Claude Code syncs its own. Plugins don't move; the ones enabled here and missing
+  there are plan warnings. Project `.claude/skills` travel with the repo.
+- **memory** — every memory dir that is the agent's, merged into the one the target's Claude Code reads:
+  [Memory](#memory).
+- **folder** — a cwd that is not a git checkout, as a tree: [Folder](#folder). In `--all`; a git cwd moves
+  with `--repo` instead (`--all` on a non-git cwd skips the repo with a note; `--repo` alone still refuses).
+- **env** (opt-in) — the secret files its files name: [What it needs there](#what-it-needs-there).
 - **claude-md** — `~/.claude/CLAUDE.md`.
 - **beads** — its open beads; see [Beads](#beads).
 - A different CLAUDE.md or skill already on the target is a blocker, never an overwrite; an identical one
   is skipped (`filesToSend`). Paths land under the target's HOME at the same HOME-relative path.
 - **Logins are never copied** (claude, kit, gh, ssh keys). The probe checks `claude auth status`
   (`loggedIn`), `kit auth status` (the persona's provider), and `git ls-remote <url>` from the target.
+
+## Memory
+
+How Claude Code keys auto-memory (2.1.310 binary, `getAutoMemPath` → `resolveEntry`/`defaultKey`, read
+2026-10-23): `CLAUDE_COWORK_MEMORY_PATH_OVERRIDE`, else the `autoMemoryDirectory` setting, else
+`<CLAUDE_CODE_REMOTE_MEMORY_DIR | ~/.claude>/projects/<sanitized base>/memory/`. The base is the CANONICAL
+git root: walk up to the first `.git`; a `.git` FILE (linked worktree) is followed through `gitdir:` →
+`commondir` to the main checkout (`Qn()`); outside git, the folder. Sanitized = non-alphanumerics → `-`,
+cut at 200 chars + a hash paw can't reproduce (refused). So worktrees share the repo root's memory. On
+this Mac: `-Users-aleks-Github-team2027-evals/memory` has 269 entries and none of its 7 `--claude-worktrees-*`
+slugs has a memory dir; the old code took the pinned transcript's slug (a worktree's) and found nothing.
+
+Dream (`~/.claude/skills/dream`, `.dream-config` = `native`) consolidates every `projects/*/memory/` and keeps
+per-project state beside it: `memory/.last-dream` (unix seconds; 49 on this Mac) and a first-run backup
+`memory-backup-<YYYYMMDD>/`. Both move. `~/.claude/.dream-pending` is a machine-wide flag: it stays.
+
+What moves (src/teleport-memory.ts): the canonical dir, plus memory under the folder's own slug, the pinned
+session's project dir, the repo's worktrees (`git worktree list`) and Claude Code's `<repo>/.claude/worktrees/*`
+slugs (removed ones too) — older Claude Codes keyed memory per folder. Merged by path inside the dir:
+identical = one file, `.last-dream` = the newest stamp, anything else different = a clash that blocks. It
+lands in the dir the TARGET keys the folder by: the probe runs the same walk there (the repo's paw clone
+for `--repo`, which is also every worktree's key). A different file already there blocks (never
+overwritten) unless it is this agent's own older copy (`--back`, or a `teleported:` persona there);
+identical files aren't re-sent. An `autoMemoryDirectory`/env override refuses `--memory`. Plan:
+
+```
+  memory     5 files, 40 B  → /data/home/.claude/projects/-data-home--paw-repos-x-evals/  (keyed by /data/home/.paw/repos/x/evals)
+             4 file(s)  ~/.claude/projects/-Users-aleks-Github-evals/  (the repo root — Claude Code's key)
+             3 file(s)  ~/.claude/projects/-Users-aleks-Github-evals--claude-worktrees-feat-x/  (its session's project dir)
+```
+
+## Folder
+
+A cwd that is not a git checkout (mcp-intern: `~/.cache/firegoat-ideas/mcp-arena`, 103M of scripts and
+state with 0600 `state/secret_*`) used to get an empty `<PAW_HOME>/agents/<name>`. With `--folder` its
+whole tree moves there (src/teleport-folder.ts): one `tar` of `.` from the cwd, unpacked with `tar -x -p`,
+so file AND directory modes stay (0600 stays 0600, a 0700 dir stays 0700) and symlinks stay links. Then the
+final pass after the stop re-sends what changed (size, mtime or mode). Destination: `<PAW_HOME>/agents/<name>`
+there, not the same absolute path — HOME differs between boxes, and that folder is paw-managed under any
+PAW_ROOT; transcripts' `cwd` fields are rewritten as for any moved folder. Files that name the old absolute
+path are listed (`note … still point there`). A destination that exists and isn't empty refuses, unless it
+is this agent's own earlier copy; a folder this run created is removed again if the run fails. A HOME or
+`/` cwd refuses. The plan:
+
+```
+  files      1234 file(s), 103.0 MB — the whole folder, modes kept (0600 stays 0600)
+             3 secret-looking (names only, contents never shown): .env, keys/a.key, state/secret_openai
+```
+
+Secret-looking = `secret*`, `*.key`, `.env*`, or mode without group/other bits.
+
+## What it needs there
+
+Host dependencies, from evidence only (src/teleport-deps.ts), checked by the probe, printed as WARNINGS:
+
+- commands: the binaries its Bash tool calls ran (every `tool_use` named Bash in its session chain; a light
+  shell tokenizer: past `VAR=` and `sudo`/`env`/`timeout N`, split on `; && || | ( ) $(`, quoted words and
+  heredoc bodies are arguments, builtins skipped), kept only when `command -v` resolves them HERE;
+- files: `~/…`, `$HOME/…`, `${HOME}/…`, `<HOME>/…` paths outside its folder named by its own files (the
+  tree for a non-git folder, the tracked files in it for a repo), kept only when they exist here;
+- plugins: enabled here (`settings.json` enabledPlugins), missing there (unreadable there = "unknown").
+
+```
+  needs on ssh:mini: psql (missing), search (missing), ~/.config/cotal/config.json (missing), plugin team2027-skills@… (missing)  — warnings: it used these here
+  env        1 secret file(s) its files name are NOT moved (opt in with --env; names only): ~/Github/team2027/evals/.env.prod
+```
+
+Warnings, not blockers: the agent still runs and fails only where it uses them, and paw can't install a
+CLI. The secret ones among the files (`.env*`, `secret*`, `*.key`, 0600) and the gitignored files in a repo
+folder that its files name (`.env.prod`) move only with `--env` — to the same HOME-relative path, or the same
+place inside the agent's folder there; names only in every line, modes kept, and a different file already
+there blocks (never overwritten; also re-checked with `cmp` when placing).
+
+## --force
+
+`ssh:mini already has an agent "x" … not a teleported copy` used to be final. `--force` replaces it:
+
+```
+  replace    --force: ssh:mini's own "firegoat-cli" (claude, not a teleported copy) is replaced:
+             persona  /Users/x/.paw/spaces/team2027/personas/firegoat-cli.md → moved to /Users/x/.paw/spaces/team2027/personas/replaced-by-teleport/firegoat-cli.20261023T221500Z.md (never deleted)
+             session  resume: <id> — its transcript stays where it is there
+             folder   /Users/x/.paw/repos/team2027/firegoat-cli
+             live     yes — pid 4242 holds its session there; stopped there first
+```
+
+Live = a live pid in Claude Code's per-process index there (`~/.claude/sessions/<pid>.json` with its pinned
+`sessionId`). After the confirm, before any copy: `paw stop <name>` there, then the persona is MOVED to the
+backup (a subdir, so out of the persona listing; an existing backup refuses). Then the normal cutover. The new
+copy never inherits the replaced agent's `resume:` pin (that is another agent's session): without `--session`
+it gets a fresh one. Mesh: every present peer under the name must be accounted for — this machine's seat, and
+with `--force` the target's copy only when a live claude there holds its session; after its stop teleport waits
+≤30s for that presence to leave, else (a third machine) it aborts. Without `--force`, both refusals name it.
+A failure anywhere after the replace puts its persona back over teleport's and restarts it if it ran.
+`--force` bypasses nothing else: logins, CLAUDE.md/skill/memory/secret differences, bead collisions, a dirty
+or stale repo all still block. `--back --force` is refused.
+
+## Repo: a stale source, a failed mirror
+
+- A clean source that is BEHIND its upstream (`<remote>/<branch>` as last fetched) blocks in preflight: a
+  fresh clone there starts from that newer branch, and teleport never moves the agent to another commit
+  silently — `git -C <top> merge --ff-only origin/main` first (diverged: rebase/merge). The apply script says
+  the same when the target's branch turns out ahead because the source's tracking ref was stale (the source
+  HEAD is an ancestor there): "the source checkout is stale, not ahead; fast-forward it".
+- A clone or worktree the mirror creates is removed again when the same run fails — inside the script (an
+  EXIT trap: the half-made no-checkout clone with every file staged-deleted, which blocked the retry), and by
+  the rollback for a failure later on (`removeCreatedScript`, only a git checkout this run recorded). A clone
+  or folder that was there before is never removed.
 
 ## Cutover (never two writers)
 
@@ -93,9 +210,10 @@ name stays). Checkmarks (none given: a checklist on a tty, all preselected; a pi
    Every blocker is listed at once, with its fix.
 2. The plan with sizes. `--dry-run` stops here (exit 1 when blocked).
 3. Confirm on a tty unless `--yes` (a pipe without `--yes` refuses).
-4. Copy (tar stream), mirror the repo.
+4. `--force`: stop + set aside the target's own agent. Copy (tar stream), mirror the repo, the folder.
 5. Stop it here; wait (≤30s) for its claude to release the session file.
-6. Re-read the manifest and send what changed during the copy (whole files; a big transcript is re-sent).
+6. Re-read the manifest and send what changed during the copy (whole files; a big transcript is re-sent);
+   `--env` files are placed now.
    `--beads`: import its beads there and verify them ([Beads](#beads)).
 7. Write the persona there, run the target's own `paw start <name>`, wait (≤180s) until a present peer of
    that name with a NEW id is on the mesh (the old seat's lingering presence never counts).
@@ -163,7 +281,14 @@ when moving without the repo.
 
 ## Tests
 
-- `pnpm check:teleport` — hermetic: args/transport parsing, fly machine count, the checklist reducer, the
+- `pnpm check:teleport` — hermetic: `--force` (the plan's replace lines, the refusal naming it, the mesh
+  accounting, the replace/restore scripts with a stub `paw` and the backup byte for byte, the live pid from a
+  fixture session index, and logins/CLAUDE.md/skills/beads/memory/dirty repo still blocking under it); memory
+  (a worktree keyed by the main checkout, the merge with dream's `.last-dream` + `memory-backup-*`, a clash,
+  a different file there, the sh walk there); folder (a non-git tree with a 0600 secret, a 0700 dir, a symlink
+  moved for real with modes kept, the delta pass, the non-empty refusal); host deps (the tokenizer, home refs,
+  commands/files/plugins missing there, `--env` placed 0600 and never overwriting); the stale-source blocker
+  and the self-cleaning clone; plus args/transport parsing, fly machine count, the checklist reducer, the
   chain on fixture transcripts (a record past the 1 MB scan chunk, an escaped one in message text), the
   manifest, the dirty-repo refusal, the probe parse and every blocker, the plan, persona keys, the
   wake-gate refusal (before any manager call), and the pack/unpack/repo/persona scripts run for real
