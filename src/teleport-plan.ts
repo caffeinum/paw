@@ -13,6 +13,19 @@ import { closeSync, existsSync, openSync, readdirSync, readFileSync, readSync, r
 import { homedir } from "node:os";
 import { basename, dirname, join, relative, sep } from "node:path";
 import { branchWorktreeDir, repoDirUnder } from "./repo-layout.ts";
+import { depsPlanLines, envBlockers, hostDeps, trackedFiles, type DestDeps, type EnvFile, type HostDeps } from "./teleport-deps.ts";
+import { folderManifest, folderPlanLines, type FolderManifest } from "./teleport-folder.ts";
+import { beadsBlockers, beadsHere, beadsPlanLines, type BeadsManifest, type BeadsSide } from "./teleport-beads.ts";
+import {
+  memoryAlreadyThere,
+  memoryBlockers,
+  memoryManifest,
+  memoryOverride,
+  memoryPathOf,
+  memoryPlanLines,
+  type DestMemory,
+  type MemoryManifest,
+} from "./teleport-memory.ts";
 import {
   claudeProjectsRoot,
   isClaudeHarness,
@@ -27,8 +40,11 @@ import {
   transcriptRoots,
 } from "./session.ts";
 
-export const WHAT = ["session", "repo", "skills", "memory", "claude-md"] as const;
+export const WHAT = ["session", "repo", "folder", "skills", "memory", "claude-md", "beads", "env"] as const;
 export type What = (typeof WHAT)[number];
+/** Secrets never move by default: `--all`, the checklist's preselection and `--no-<one>` leave `env` out. */
+export const OPT_IN: readonly What[] = ["env"];
+const DEFAULT_WHAT = WHAT.filter((w) => !OPT_IN.includes(w));
 
 /** Harnesses whose agent paw can move: their persona says everything a launch needs. */
 export const TELEPORT_AGENTS = ["claude", "kit", "acp"] as const;
@@ -44,10 +60,12 @@ export type TeleportArgs = {
   what?: What[];
   dryRun: boolean;
   yes: boolean;
+  /** Replace an agent of the same name on the target (stopped there, its persona backed up there). */
+  force: boolean;
 };
 
 export const TELEPORT_USAGE =
-  "teleport <agent> --to fly:<app>[/<machine>] | ssh:<host>  [--all | --session --repo --skills --memory --claude-md | --no-<one>…] [--dry-run] [--yes]\n" +
+  "teleport <agent> --to fly:<app>[/<machine>] | ssh:<host>  [--all | --session --repo --folder --skills --memory --claude-md --beads | --no-<one>…] [--env] [--force] [--dry-run] [--yes]\n" +
   "       teleport <agent> --back [--dry-run] [--yes]";
 
 export function parseTransport(raw: string): Transport {
@@ -63,7 +81,7 @@ export function transportLabel(t: Transport): string {
 }
 
 export function parseTeleportArgs(argv: string[]): TeleportArgs {
-  const out: TeleportArgs = { name: "", back: false, dryRun: false, yes: false };
+  const out: TeleportArgs = { name: "", back: false, dryRun: false, yes: false, force: false };
   const what = new Set<What>();
   const without = new Set<What>();
   let all = false;
@@ -79,6 +97,7 @@ export function parseTeleportArgs(argv: string[]): TeleportArgs {
     else if (a === "--all") all = true;
     else if (a === "--dry-run") out.dryRun = true;
     else if (a === "--yes" || a === "-y") out.yes = true;
+    else if (a === "--force") out.force = true;
     else if (a.startsWith("--") && (WHAT as readonly string[]).includes(a.slice(2))) what.add(a.slice(2) as What);
     else if (a.startsWith("--no-") && (WHAT as readonly string[]).includes(a.slice(5))) without.add(a.slice(5) as What);
     else if (a.startsWith("-")) throw new Error(`paw: unknown flag "${a}" — ${TELEPORT_USAGE}`);
@@ -90,15 +109,17 @@ export function parseTeleportArgs(argv: string[]): TeleportArgs {
   if (out.back) {
     if (out.to) throw new Error("paw: --back returns over the transport recorded at teleport time — it takes no --to");
     if (all || what.size || without.size) throw new Error("paw: --back brings back what was sent — it takes no --all/--session/… checkmarks");
+    if (out.force) throw new Error("paw: --back replaces only its own marked copy here — it takes no --force");
     return out;
   }
   if (!out.to) throw new Error(`paw: where to? — ${TELEPORT_USAGE}`);
-  if (all && what.size) throw new Error("paw: --all already picks every checkmark — give --all or the ones you want, not both");
+  const optIn = [...what].filter((w) => OPT_IN.includes(w));
+  if (all && what.size > optIn.length) throw new Error("paw: --all already picks every checkmark — give --all or the ones you want, not both");
   for (const w of without)
     if (what.has(w)) throw new Error(`paw: --${w} and --no-${w} contradict each other`);
-  if (without.size && what.size) throw new Error("paw: --no-<one> trims --all (or the whole list) — give checkmarks or --no-<one>s, not both");
+  if (without.size && what.size > optIn.length) throw new Error("paw: --no-<one> trims --all (or the whole list) — give checkmarks or --no-<one>s, not both");
   // `--no-repo` alone = everything but the repo, the same as `--all --no-repo`.
-  if (all || without.size) out.what = WHAT.filter((w) => !without.has(w));
+  if (all || without.size) out.what = WHAT.filter((w) => (DEFAULT_WHAT.includes(w) && !without.has(w)) || what.has(w));
   else if (what.size) out.what = WHAT.filter((w) => what.has(w));
   return out;
 }
@@ -108,7 +129,7 @@ export function parseTeleportArgs(argv: string[]): TeleportArgs {
 export type Checklist = { cursor: number; on: Record<What, boolean>; done: boolean; cancelled: boolean };
 
 export function newChecklist(): Checklist {
-  return { cursor: 0, on: Object.fromEntries(WHAT.map((w) => [w, true])) as Record<What, boolean>, done: false, cancelled: false };
+  return { cursor: 0, on: Object.fromEntries(WHAT.map((w) => [w, !OPT_IN.includes(w)])) as Record<What, boolean>, done: false, cancelled: false };
 }
 
 /** One keypress: ↑/k ↓/j move, space toggles, a toggles all, enter confirms, q/esc/ctrl-c cancel. */
@@ -137,8 +158,11 @@ const WHAT_HINT: Record<What, string> = {
   session: "the pinned transcript, the sessions it was continued from, subagents + tool results",
   repo: "same remote, branch and HEAD; unpushed commits as a git bundle",
   skills: "~/.claude/skills/*",
-  memory: "~/.claude/projects/<slug>/memory/",
+  memory: "its Claude Code memory: the repo root's dir, plus its sessions' and worktrees' (+ dream state)",
   "claude-md": "~/.claude/CLAUDE.md (never overwrites a different one)",
+  folder: "a folder that is not a git checkout: its whole tree, modes kept",
+  env: "OPT-IN: the secret files its files name (.env*, secret*, *.key, 0600) — names shown, never contents",
+  beads: "its open beads (assigned to it) into the target's beads db; the copies here close as teleported",
 };
 
 // ── the compaction chain ───────────────────────────────────────────────────────────────────────────
@@ -237,6 +261,9 @@ export type RepoInfo = {
   head: string;
   /** commits on HEAD that no ref of `remote` has — they travel as a git bundle. */
   unpushed: number;
+  /** Commits the remote's branch (`<remote>/<branch>` as this checkout last fetched it) has and HEAD lacks:
+   *  a fresh clone there lands on that newer branch, which the mirror never moves back. */
+  behind?: { ref: string; count: number };
   /** The agent's folder inside the repo ("" = the top itself). */
   sub: string;
 };
@@ -261,6 +288,16 @@ export type Manifest = {
   /** Enabled Claude Code plugins — listed, not moved (v1). */
   plugins: string[];
   repo?: RepoInfo;
+  /** The open beads assigned to it, in this machine's beads db (src/teleport-beads.ts). */
+  beads?: BeadsManifest;
+  /** Every memory dir that is its, merged (src/teleport-memory.ts); `groups.memory` holds its files. */
+  memory?: MemoryManifest;
+  /** --folder: its whole (non-git) folder (src/teleport-folder.ts). */
+  folder?: FolderManifest;
+  /** What it uses on this machine, from evidence (src/teleport-deps.ts) — the plan's warnings. */
+  hostDeps?: HostDeps;
+  /** --env: the secret files that move (names only in any output). */
+  env?: EnvFile[];
   notes: string[];
 };
 
@@ -353,7 +390,14 @@ export function repoInfo(cwd: string, git: Git = realGit): RepoInfo {
   const ahead = git(["rev-list", "--count", "HEAD", "--not", `--remotes=${remote}`], top.out);
   if (!ahead.ok) throw new Error(`paw: git rev-list failed in ${top.out}: ${ahead.err}`);
   const sub = relative(top.out, realpathSync(cwd));
-  return { top: top.out, remote, url: url.out, ...(branch.ok ? { branch: branch.out } : {}), head: head.out, unpushed: Number(ahead.out), sub };
+  const tracking = branch.ok ? (upstream.ok ? upstream.out : `${remote}/${branch.out}`) : undefined;
+  let behind: RepoInfo["behind"];
+  if (tracking && git(["rev-parse", "-q", "--verify", `refs/remotes/${tracking}`], top.out).ok) {
+    const n = git(["rev-list", "--count", `HEAD..refs/remotes/${tracking}`], top.out);
+    if (!n.ok) throw new Error(`paw: git rev-list failed in ${top.out}: ${n.err}`);
+    if (Number(n.out) > 0) behind = { ref: tracking, count: Number(n.out) };
+  }
+  return { top: top.out, remote, url: url.out, ...(branch.ok ? { branch: branch.out } : {}), head: head.out, unpushed: Number(ahead.out), ...(behind ? { behind } : {}), sub };
 }
 
 /** Every regular file under `abs` (following symlinks), as entries relative to `home`. */
@@ -454,9 +498,15 @@ export function placeRepo(m: Manifest, what: What[], folder: DestFolder, d: Dest
   return { folder: { ...folder, top, cwd: R.sub ? join(top, R.sub) : top, how: "worktree" }, blockers: out };
 }
 
-/** A moved file's HOME-relative path on the destination: session and memory files follow the folder
- *  into ITS project dir (the slug of the new cwd); everything else keeps its path. */
-export function remapRel(rel: string, m: Pick<Manifest, "projectDirs">, destCwd: string): string {
+/** A moved file's HOME-relative path on the destination: session files follow the folder into ITS
+ *  project dir (the slug of the new cwd); memory files go to the dir the destination's Claude Code keys
+ *  its memory by (`memorySlug`, from the probe — src/teleport-memory.ts); everything else keeps its path. */
+export function remapRel(rel: string, m: Pick<Manifest, "projectDirs"> & Partial<Pick<Manifest, "memory">>, destCwd: string, memorySlug?: string): string {
+  const mem = m.memory ? memoryPathOf(rel) : undefined;
+  if (mem && m.memory!.sources.some((s) => s.dir === `.claude/projects/${mem.slug}`)) {
+    if (!memorySlug) throw new Error(`paw: no destination memory dir for ${rel} — the memory probe did not run`);
+    return join(".claude", "projects", memorySlug, mem.inner);
+  }
   for (const pd of m.projectDirs)
     if (rel.startsWith(`${pd}/`)) return join(dirname(pd), projectSlug(destCwd), rel.slice(pd.length + 1));
   return rel;
@@ -566,12 +616,15 @@ export function buildManifest(o: { space: string; name: string; personaFile: str
     groups.session = files;
   }
 
+  let memory: MemoryManifest | undefined;
   if (what.includes("memory")) {
-    const slug = pin ? (transcriptPath(pin) ? basename(dirname(transcriptPath(pin)!)) : projectSlug(cwd)) : projectSlug(cwd);
-    const dir = join(claudeProjectsRoot(), slug, "memory");
-    if (!projectDirs.includes(relative(home, dirname(dir)))) projectDirs.push(relative(home, dirname(dir)));
-    groups.memory = existsSync(dir) ? filesUnder(home, dir) : [];
-    if (!groups.memory.length) notes.push(`no memory dir at ${dir}`);
+    const override = memoryOverride(home, cwd, deps.env ?? process.env);
+    if (override)
+      throw new Error(`paw: Claude Code writes "${name}"'s memory where ${override} says, not under ~/.claude/projects — teleport moves only that layout; move it by hand, or --no-memory`);
+    const pinned = pin ? transcriptPath(pin) : undefined;
+    memory = memoryManifest({ home, cwd, ...(pinned ? { sessionDir: dirname(pinned) } : {}), ...(deps.git ? { git: deps.git } : {}) });
+    groups.memory = memory.files;
+    if (!memory.files.length) notes.push(`no memory: nothing in ${memory.sources.map((s) => `~/${s.dir}/memory/`).join(", ")}`);
   }
 
   const skills: Manifest["skills"] = [];
@@ -580,6 +633,10 @@ export function buildManifest(o: { space: string; name: string; personaFile: str
     const files: FileEntry[] = [];
     for (const n of existsSync(dir) ? readdirSync(dir).sort() : []) {
       if (n.startsWith(".")) continue;
+      if (n === SYNCED_SKILLS) {
+        notes.push(`~/.claude/skills/${SYNCED_SKILLS}/ not moved — Claude Code's claude.ai skill sync for this machine's login (per-account buckets, manifest); the target's Claude Code syncs its own`);
+        continue;
+      }
       const abs = join(dir, n);
       let st;
       try {
@@ -604,8 +661,30 @@ export function buildManifest(o: { space: string; name: string; personaFile: str
     } else notes.push("no ~/.claude/CLAUDE.md here — nothing to move");
   }
 
-  const plugins = what.includes("skills") ? enabledPlugins(claudeDir) : [];
-  const repo = what.includes("repo") ? repoInfo(cwd, deps.git) : undefined;
+  const plugins = enabledPlugins(claudeDir);
+  const gitTop = (deps.git ?? realGit)(["rev-parse", "--show-toplevel"], cwd);
+  let repo: RepoInfo | undefined;
+  if (what.includes("repo")) {
+    if (gitTop.ok || !what.includes("folder")) repo = repoInfo(cwd, deps.git);
+    else notes.push(`${cwd} is not a git checkout — it moves as a folder (--folder), not as a repo`);
+  }
+  let folder: FolderManifest | undefined;
+  let tree: FolderManifest | undefined;
+  if (!gitTop.ok && what.includes("folder")) {
+    underHome(home, cwd, "the agent's folder");
+    tree = folderManifest(cwd, home);
+    folder = tree;
+  } else if (!gitTop.ok && existsSync(cwd) && cwd !== home && !relative(home, cwd).startsWith("..")) tree = folderManifest(cwd, home); // only read for references else if (what.includes("folder") && !what.includes("repo")) notes.push(`${cwd} is a git checkout — it moves with --repo, not --folder`);
+  const deps_ = hostDeps({
+    home,
+    cwd,
+    transcripts: pin && isClaudeHarness(agentType) ? claudeChainFiles(pin) : [],
+    files: tree ? tree.files.filter((f) => !f.link).map((f) => join(cwd, f.rel)) : trackedFiles(cwd, deps.git),
+    ...(gitTop.ok ? { repoTop: gitTop.out } : {}),
+    plugins,
+  });
+  const envFiles = what.includes("env") ? deps_.env : [];
+  const beads = what.includes("beads") ? beadsHere(name) : undefined;
   if (agent === "kit") {
     const kitRoot = kitSessionsRoot(deps.env);
     if (what.includes("session")) underHome(home, kitRoot, "kit's session store");
@@ -626,9 +705,26 @@ export function buildManifest(o: { space: string; name: string; personaFile: str
     ...(claudeMdHash ? { claudeMdHash } : {}),
     plugins,
     ...(repo ? { repo } : {}),
+    ...(beads ? { beads } : {}),
+    ...(memory ? { memory } : {}),
+    ...(folder ? { folder } : {}),
+    hostDeps: deps_,
+    ...(envFiles.length ? { env: envFiles } : {}),
     notes,
   };
 }
+
+/** The transcripts of `pin`'s whole continued-in chain in Claude Code's store (the Bash-call evidence). */
+function claudeChainFiles(pin: string): string[] {
+  const at = transcriptPath(pin);
+  if (!at) return [];
+  return sessionChain(dirname(at), pin).map((id) => join(dirname(at), `${id}.jsonl`));
+}
+
+/** `~/.claude/skills/synced/`: Claude Code's claude.ai skill sync state (`<org>_<account>` bucket dirs,
+ *  `.bucket-*` markers, `manifest.json`, `.last-complete-round`) — keyed to this machine's login, so it is
+ *  neither moved nor compared (2.1.310 loads it as `loadedFrom: "syncedSkills"`, not a user skill). */
+export const SYNCED_SKILLS = "synced";
 
 function enabledPlugins(claudeDir: string): string[] {
   const file = join(claudeDir, "settings.json");
@@ -651,11 +747,13 @@ export function manifestFiles(m: Manifest): FileEntry[] {
 
 /** What actually crosses: every moved file, minus a CLAUDE.md or skill already there byte for byte (a
  *  different one is a blocker, never an overwrite). */
-export function filesToSend(m: Manifest, dest: Pick<DestFacts, "claudeMdHash" | "skillHashes">): FileEntry[] {
+export function filesToSend(m: Manifest, dest: Pick<DestFacts, "claudeMdHash" | "skillHashes"> & Partial<Pick<DestFacts, "memory">>): FileEntry[] {
   const same = new Set(m.skills.filter((s) => dest.skillHashes[s.name] === s.hash).map((s) => `.claude/skills/${s.name}/`));
+  const memSame = m.memory ? memoryAlreadyThere(m.memory, dest.memory) : new Set<string>();
   return Object.entries(m.groups).flatMap(([group, fs]) => {
     if (group === "claude-md" && m.claudeMdHash && dest.claudeMdHash === m.claudeMdHash) return [];
     if (group === "skills") return fs.filter((f) => ![...same].some((p) => f.rel.startsWith(p)));
+    if (group === "memory") return fs.filter((f) => !memSame.has(f.rel));
     return fs;
   });
 }
@@ -704,14 +802,88 @@ export type DestFacts = {
   /** Every agent there (`space/name`) and its folder — who a moved checkout would disturb. */
   agentCwds: Array<{ who: string; cwd: string }>;
   cwdExists: boolean;
+  /** The destination folder exists and holds something. */
+  cwdNonEmpty: boolean;
+  /** What of the source's host dependencies is missing there (src/teleport-deps.ts). */
+  deps?: DestDeps;
   /** Mount point of the nearest existing parent of the repo/cwd path (`df -P`). */
   cwdMount?: string;
   claudeMdHash?: string;
   skillHashes: Record<string, string>;
   freeKb?: number;
+  /** Its beads db — probed apart from the rest (src/teleport-beads.ts), only for --beads. */
+  beads?: BeadsSide;
+  /** Where its Claude Code keeps the folder's memory and what is there (src/teleport-memory.ts) — only for --memory. */
+  memory?: DestMemory;
+  /** Live processes holding the session its persona of this name pins (`~/.claude/sessions/<pid>.json`). */
+  livePids: number[];
 };
 
-export type PlanCtx = { what: What[]; dest: DestFacts; folder: DestFolder; transport?: Transport; sourceServer?: string; back: boolean };
+/** What `--force` replaces on the destination: its own agent of this name. */
+export type Replacement = {
+  persona: string;
+  /** Where that persona is moved to there (never deleted). */
+  backup: string;
+  pin?: string;
+  cwd?: string;
+  agent: string;
+  livePids: number[];
+};
+
+/** Where a replaced persona goes: `<PAW_HOME>/spaces/<space>/personas/replaced-by-teleport/<name>.<stamp>.md`. */
+export function replacedPersonaPath(pawHome: string, space: string, name: string, stamp: string): string {
+  return join(pawHome, "spaces", space, "personas", "replaced-by-teleport", `${name}.${stamp}.md`);
+}
+
+/** A filesystem-safe UTC stamp: 20261023T221500Z. */
+export function replaceStamp(d = new Date()): string {
+  return d.toISOString().replace(/[-:]/g, "").replace(/\.\d+Z$/, "Z");
+}
+
+function frontmatter(text: string): string {
+  return text.match(/^---\n([\s\S]*?)\n---/)?.[1] ?? "";
+}
+
+/** The destination's persona of this name is a copy THIS agent left there (`teleported:`). */
+export function ownCopyThere(d: Pick<DestFacts, "personaText">): boolean {
+  return d.personaText !== undefined && !destHasOwnAgent(d);
+}
+
+/** The destination's persona of this name is its OWN agent, not a copy this agent left there. */
+export function destHasOwnAgent(d: Pick<DestFacts, "personaText">): boolean {
+  return d.personaText !== undefined && !/^\s*teleported:/m.test(frontmatter(d.personaText));
+}
+
+/** What --force replaces there, or undefined when there is nothing of its own to replace. */
+export function replacementOf(m: Pick<Manifest, "name" | "space">, d: DestFacts, stamp: string): Replacement | undefined {
+  if (!destHasOwnAgent(d)) return undefined;
+  const fm = frontmatter(d.personaText!);
+  const scalar = (k: string) =>
+    fm.split("\n").find((l) => l.trimStart().startsWith(`${k}:`))?.split(":").slice(1).join(":").trim().replace(/^["']|["']$/g, "") || undefined;
+  const pin = scalar("resume");
+  const cwd = scalar("cwd");
+  return {
+    persona: join(d.pawHome, "spaces", m.space, "personas", `${m.name}.md`),
+    backup: replacedPersonaPath(d.pawHome, m.space, m.name, stamp),
+    ...(pin ? { pin } : {}),
+    ...(cwd ? { cwd } : {}),
+    agent: scalar("agent") ?? "claude",
+    livePids: d.livePids,
+  };
+}
+
+export type PlanCtx = {
+  what: What[];
+  dest: DestFacts;
+  folder: DestFolder;
+  transport?: Transport;
+  sourceServer?: string;
+  back: boolean;
+  /** --force given. */
+  force?: boolean;
+  /** What --force replaces there (undefined = nothing of its own there). */
+  replace?: Replacement;
+};
 
 /** What stops this teleport, each with the fix. Empty ⇒ go. Pure; check:teleport covers it. */
 export function teleportBlockers(m: Manifest, c: PlanCtx): string[] {
@@ -723,8 +895,11 @@ export function teleportBlockers(m: Manifest, c: PlanCtx): string[] {
     out.push(`${there}'s paw predates this \`paw teleport\` (paw-teleport 2) — it would not honour the marker, take a moved folder, or serve --back; update paw there (agents-host: redeploy)`);
   if (!d.spaceRecord && !c.back)
     out.push(`${there}'s paw does not join space "${m.space}" (no ${d.pawHome}/spaces/${m.space}/remote-mesh.json) — \`paw mesh add ${m.space} --server … --root …\` there`);
-  if (d.personaText !== undefined && !/^\s*teleported:/m.test(d.personaText.match(/^---\n([\s\S]*?)\n---/)?.[1] ?? ""))
-    out.push(`${there} already has an agent "${m.name}" (${d.pawHome}/spaces/${m.space}/personas/${m.name}.md, not a teleported copy) — rename one of them first`);
+  if (destHasOwnAgent(d) && !c.force)
+    out.push(
+      `${there} already has an agent "${m.name}" (${d.pawHome}/spaces/${m.space}/personas/${m.name}.md, not a teleported copy) — rename one of them first, ` +
+        `or --force to replace it (stopped there, its persona backed up to ${m.space}/personas/replaced-by-teleport/, its transcript kept)`,
+    );
   if (m.agent === "claude" && d.claudeLogin && !d.claudeLogin.loggedIn)
     out.push(`claude is not logged in on ${there} — run \`claude auth login\` there (paw never copies logins)`);
   if (m.agent === "claude" && !d.claudeLogin) out.push(`${there} has no \`claude\` on PATH`);
@@ -757,6 +932,13 @@ export function teleportBlockers(m: Manifest, c: PlanCtx): string[] {
     );
   if (c.what.includes("repo") && m.repo) {
     const r = d.repo;
+    const b = m.repo.behind;
+    if (b && c.folder.how !== "original")
+      out.push(
+        m.repo.unpushed
+          ? `${m.repo.top} has diverged from ${b.ref}: ${m.repo.unpushed} commit(s) only here, ${b.count} only there — a clone there starts from ${b.ref}, and the mirror never drops its commits; rebase or merge here first (\`git -C ${m.repo.top} pull --rebase\`)`
+          : `${m.repo.top} is ${b.count} commit(s) BEHIND ${b.ref} (nothing unpushed) — a clone there starts from ${b.ref}, and teleport never moves the agent to another commit silently; fast-forward here first: \`git -C ${m.repo.top} merge --ff-only ${b.ref}\``,
+      );
     if (!d.git) out.push(`${there} has no \`git\``);
     if (r?.lsRemote && !r.lsRemote.ok)
       out.push(
@@ -771,7 +953,19 @@ export function teleportBlockers(m: Manifest, c: PlanCtx): string[] {
     for (const s of m.skills)
       if (d.skillHashes[s.name] && d.skillHashes[s.name] !== s.hash)
         out.push(`${there} has a different skill "${s.name}" (~/.claude/skills/${s.name}) — teleport never overwrites it; reconcile it by hand, or drop --skills`);
-  const bytes = manifestFiles(m).reduce((n, f) => n + f.bytes, 0);
+  if (c.what.includes("beads")) {
+    if (!m.beads) out.push(`the source's paw read no beads for --beads — it predates teleporting beads; update paw there, or --no-beads`);
+    else out.push(...beadsBlockers(m.beads, d.beads, there));
+  }
+  if (c.what.includes("memory")) {
+    if (!m.memory) out.push(`the source's paw read no memory layout for --memory — it predates finding memory by repo root; update paw there, or --no-memory`);
+    // Files there are this agent's own older copies on --back, or when the persona there is a copy it left.
+    else out.push(...memoryBlockers(m.memory, d.memory, there, c.back || (d.personaText !== undefined && !destHasOwnAgent(d))));
+  }
+  if (c.what.includes("folder") && m.folder && c.folder.how !== "original" && d.cwdNonEmpty && !ownCopyThere(d))
+    out.push(`${c.folder.cwd} on ${there} already exists and isn't empty — teleport never merges a folder into another; move it aside there first`);
+  if (m.hostDeps) out.push(...envBlockers(m.hostDeps, d.deps, c.what.includes("env"), there));
+  const bytes = manifestFiles(m).reduce((n, f) => n + f.bytes, 0) + (m.folder?.bytes ?? 0) + (m.env ?? []).reduce((n, e) => n + e.bytes, 0);
   if (d.freeKb !== undefined && d.freeKb * 1024 < bytes * 1.1) out.push(`${there} has ${fmtBytes(d.freeKb * 1024)} free under ${d.home}, and this moves ${fmtBytes(bytes)}`);
   return out;
 }
@@ -812,6 +1006,25 @@ export function fmtBytes(n: number): string {
   return `${(n / 1024 ** 3).toFixed(2)} GB`;
 }
 
+/** Where the source's beads say the agent went: the transport, or `origin` on --back. */
+export function beadsMarkTo(c: Pick<PlanCtx, "back" | "transport" | "dest">): string {
+  if (c.back) return ORIGIN;
+  if (!c.transport) throw new Error(`paw: a forward teleport to ${c.dest.label} has no transport — can't name where its beads went`);
+  return transportLabel(c.transport);
+}
+
+/** The plan's --force lines: exactly what is replaced there, and what happens to it. */
+export function replacePlanLines(r: Replacement, there: string, name: string): string[] {
+  const live = r.livePids.length ? `yes — pid ${r.livePids.join(", ")} holds its session there; stopped there first` : "no — not running there";
+  return [
+    `  replace    --force: ${there}'s own "${name}" (${r.agent}, not a teleported copy) is replaced:`,
+    `             persona  ${r.persona} → moved to ${r.backup} (never deleted)`,
+    `             session  ${r.pin ? `resume: ${r.pin} — its transcript stays where it is there` : "(no resume: pin)"}`,
+    `             folder   ${r.cwd ?? "(no cwd:)"}`,
+    `             live     ${live}`,
+  ];
+}
+
 /** The plan, as printed before anything is copied. */
 export function formatPlan(m: Manifest, c: PlanCtx & { from: string }): string[] {
   const sum = (fs: FileEntry[] = []) => `${fs.length} file${fs.length === 1 ? "" : "s"}, ${fmtBytes(fs.reduce((n, f) => n + f.bytes, 0))}`;
@@ -821,10 +1034,14 @@ export function formatPlan(m: Manifest, c: PlanCtx & { from: string }): string[]
   const why = {
     repo: "the repo's paw clone there",
     worktree: `a worktree beside the repo's paw clone there (${f.clone} has ${c.dest.repo?.branch ?? "a detached HEAD"} checked out)`,
-    agents: `no --repo: a fresh folder paw owns there — nothing in ${m.cwd} moves`,
+    agents: m.folder && c.what.includes("folder")
+      ? `not a git checkout: its files move into the folder paw owns there`
+      : `no --repo: a fresh folder paw owns there — nothing in ${m.cwd} moves`,
     original: "back where it came from",
   }[f.how];
   lines.push(`  folder     ${m.cwd} → ${f.cwd}  (${why})`);
+  if (c.replace) lines.push(...replacePlanLines(c.replace, c.dest.label, m.name));
+  else if (c.force) lines.push(`  replace    --force: ${c.dest.label} has no agent "${m.name}" of its own — nothing to replace`);
   const moved = f.cwd !== m.cwd;
   const destProject = (pd: string) => `${c.dest.home}/${join(dirname(pd), projectSlug(f.cwd))}/`;
   const projects = moved && m.projectDirs.length ? `  → ${destProject(m.projectDirs[0])}, cwd fields rewritten` : "";
@@ -842,19 +1059,22 @@ export function formatPlan(m: Manifest, c: PlanCtx & { from: string }): string[]
     lines.push(`  repo       ${r.url} ${r.branch ?? "(detached)"} @ ${r.head.slice(0, 12)} — ${state}` + (r.unpushed ? `; ${r.unpushed} unpushed commit(s) as a git bundle` : ""));
     lines.push(`             .gitignored files (.env, node_modules, …) do not move`);
   } else skip("repo");
-  if (c.what.includes("memory"))
-    lines.push(`  memory     ${sum(m.groups.memory)}${moved && m.groups.memory?.length ? `  → ${destProject(m.groups.memory[0].rel.slice(0, m.groups.memory[0].rel.indexOf("/memory/")))}memory/` : ""}`);
+  if (c.what.includes("memory") && m.memory) lines.push(...memoryPlanLines(m.memory, c.dest.memory, c.dest.home, sum(m.groups.memory)));
   else skip("memory");
   if (c.what.includes("skills")) {
     const same = m.skills.filter((s) => c.dest.skillHashes[s.name] === s.hash).map((s) => s.name);
     const names = m.skills.map((s) => s.name);
     const shown = names.length > 10 ? `${names.slice(0, 10).join(", ")}, … +${names.length - 10} more` : names.join(", ") || "(none)";
     lines.push(`  skills     ${m.skills.length} skill(s): ${shown}  ${sum(m.groups.skills)}` + (same.length ? `  (${same.length} already there, identical)` : ""));
-    if (m.plugins.length) lines.push(`             plugins NOT moved (v1): ${m.plugins.join(", ")}`);
   } else skip("skills");
   if (c.what.includes("claude-md"))
     lines.push(`  claude-md  ${m.claudeMdHash ? (c.dest.claudeMdHash === m.claudeMdHash ? "identical there — skipped" : sum(m.groups["claude-md"])) : "(none here)"}`);
   else skip("claude-md");
+  if (c.what.includes("beads") && m.beads) lines.push(...beadsPlanLines(m.beads, m.name, c.dest.beads, c.dest.label, beadsMarkTo(c)));
+  else skip("beads");
+  if (m.folder && c.what.includes("folder")) lines.push(...folderPlanLines(m.folder, fmtBytes(m.folder.bytes)));
+  else skip("folder");
+  if (m.hostDeps) lines.push(...depsPlanLines(m.hostDeps, c.dest.deps, c.dest.label, c.what.includes("env"), f.cwd !== m.cwd, m.cwd));
   lines.push(`  logins     never copied — checked on ${c.dest.label}`);
   if (c.sourceServer && c.dest.spaceRecord && c.dest.spaceRecord.server !== c.sourceServer)
     lines.push(`  mesh       ${m.space} is ${c.sourceServer} here and ${c.dest.spaceRecord.server} there — the presence wait proves it is one broker`);

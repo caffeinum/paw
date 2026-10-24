@@ -44,8 +44,9 @@ if (process.argv[2] === "--relocate") {
   const side = shell.remoteSide({ kind: "ssh", host: host! });
   const folder = plan.destFolder(m, what, await shell.probeEnv(side));
   const files = plan.manifestFiles(m);
-  await shell.copyFiles(shell.localSide(), side, files.map((f) => ({ src: f.rel, dst: plan.remapRel(f.rel, m, folder.cwd) })));
-  const rels = plan.transcriptRels(files, m).map((r) => plan.remapRel(r, m, folder.cwd));
+  const memSlug = (await shell.probe(side, m, what, folder)).memory?.slug;
+  await shell.copyFiles(shell.localSide(), side, files.map((f) => ({ src: f.rel, dst: plan.remapRel(f.rel, m, folder.cwd, memSlug) })));
+  const rels = plan.transcriptRels(files, m).map((r) => plan.remapRel(r, m, folder.cwd, memSlug));
   const r = await shell.run(side, shell.pawScript(["__teleport", "rewrite-cwd", "--from", m.cwd, "--to", folder.cwd, "--space", space!]), rels.join("\n") + "\n");
   console.log(JSON.stringify({ folder: folder.cwd, chain: m.chain, rels, code: r.code, out: r.stdout.toString("utf8").trim(), err: shell.said(r) }));
   process.exit(0);
