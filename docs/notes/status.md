@@ -84,6 +84,17 @@ Moved verbatim from CLAUDE.md (2026-10-02 split). Index: [CLAUDE.md](../../CLAUD
   metadata lines. Process start beats "metadata lines are a boundary": those record types are undocumented
   and also appear mid-session. A dead process's `tool_use` is dropped too (no false `in tool Xm`; `paw
   unstick` no longer Escs an idle prompt). Test: `check:status`.
+- **A compaction is not a turn (2026-10-24).** Same process this time: claude's IDLE compaction ("Compacted
+  while idle, before the prompt cache expired", `idleCompaction` setting) lands after a closed turn as a
+  `system/compact_boundary` record plus a `user` record with `isCompactSummary: true` +
+  `isVisibleInTranscriptOnly: true` ("This session is being continued from a previous conversation that ran
+  out of context…"), then attachments + metadata — no assistant reply ever follows. `turnState` read the
+  summary as a prompt, so evals-intern/mcp-intern showed `busy` for hours while `paw who` said idle. Now the
+  summary is skipped (the walk reaches the turn it followed: closed stays closed, a mid-turn auto-compact
+  after a tool_result still reads running), and a LOCAL slash command (`<command-name>` +
+  `<local-command-stdout|stderr>`, e.g. a manual `/compact`) is transparent. A cotal channel injection is
+  `isMeta: true` with `origin.kind: "channel"` and DOES open a turn, so it is read as a prompt despite isMeta
+  (a DM after the compaction → busy until answered). Test: `check:status`.
 
 ## json output
 
