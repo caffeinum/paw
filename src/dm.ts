@@ -36,7 +36,8 @@ import {
 } from "./addressing.ts";
 import { isAddressHandle, resolveAddress } from "./address.ts";
 import { withManagerControl } from "./control.ts";
-import { composeMessage, peelWords, stageAttachment } from "./images.ts";
+import { attachedPlaceholders, composeMessage, peelWords, stageAttachment } from "./images.ts";
+import { elsewhereFiles, runsElsewhere } from "./hosted.ts";
 import { resolveSpace } from "./lifecycle.ts";
 import { humanPeer } from "./names.ts";
 import { pawServer } from "./server.ts";
@@ -225,6 +226,10 @@ export async function sendAsYou(opts: {
   await ep.start();
   try {
     const tgt = await resolveTarget(ep, space, server, target, model, nameFlag, restartLive);
+    // Attachments are paths on THIS machine — an agent running elsewhere would be told about files it can't open.
+    const files = attachedPlaceholders(text);
+    const away = files.length ? runsElsewhere(space, tgt.name, ep.getRoster().find((p) => p.card.id === tgt.id)?.card) : undefined;
+    if (away) throw new Error(`paw: ${elsewhereFiles(tgt.name, away, files)}`);
     await unicastResilient(ep, tgt.id, text);
     return { name: tgt.name };
   } finally {

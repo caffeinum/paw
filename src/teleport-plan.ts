@@ -302,7 +302,7 @@ export type Manifest = {
 };
 
 /** Persona keys a teleport writes; they never travel with the persona. */
-export const TELEPORT_KEYS = ["teleported", "teleportedAt", "teleportedWhat"] as const;
+export const TELEPORT_KEYS = ["teleported", "teleportedAt", "teleportedWhat", "teleportedCwd"] as const;
 
 export function stripTeleportKeys(text: string): string {
   const m = text.replace(/\r\n/g, "\n").match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
@@ -319,15 +319,17 @@ export function withPersonaKey(text: string, key: string, value: string): string
   return `---\n${[...head, `${key}: ${value}`].join("\n")}\n---\n${m[2]}`;
 }
 
-/** The marker a teleported-away persona carries: where it went and when (absent ⇒ not teleported). */
-export function readTeleported(personaFile: string): { to: string; at?: string; what: What[] } | undefined {
+/** The marker a teleported-away persona carries: where it went, when, and the folder it runs in there
+ *  (`teleportedCwd`, recorded since 2026-10-23 — older markers and `--back`'s `origin` have none). */
+export function readTeleported(personaFile: string): { to: string; at?: string; what: What[]; cwd?: string } | undefined {
   if (!existsSync(personaFile)) return undefined;
   const to = personaValue(personaFile, "teleported")?.replace(/^["']|["']$/g, "");
   if (!to) return undefined;
   const at = personaValue(personaFile, "teleportedAt")?.replace(/^["']|["']$/g, "") || undefined;
   const raw = personaValue(personaFile, "teleportedWhat")?.replace(/^["']|["']$/g, "") ?? "";
   const what = raw.split(",").map((w) => w.trim()).filter((w): w is What => (WHAT as readonly string[]).includes(w));
-  return { to, ...(at ? { at } : {}), what };
+  const cwd = personaValue(personaFile, "teleportedCwd")?.replace(/^["']|["']$/g, "") || undefined;
+  return { to, ...(at ? { at } : {}), what, ...(cwd ? { cwd } : {}) };
 }
 
 /** `teleported: origin` marks the copy on a target the agent was brought BACK from. */

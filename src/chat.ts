@@ -84,7 +84,7 @@ import { renderMarkdown } from "./markdown.ts";
 import { HUMAN_PEER, humanPeer } from "./names.ts";
 import { sameSpaceAddress } from "./dispatch.ts";
 import { describeInboxBindFailure, openHumanInbox } from "./human-inbox.ts";
-import { bangNoFolder } from "./hosted.ts";
+import { bangNoFolder, elsewhereBang, elsewhereBanner, elsewhereFiles, elsewhereLogs, elsewhereStatus, runsElsewhere, type Elsewhere } from "./hosted.ts";
 import { cachedLedger, ledgerName } from "./peer-ledger.ts";
 import { hueSgr, parsePersonalityArg, personaGlyph, personalityFor, type Glyph } from "./personality.ts";
 import {
@@ -548,6 +548,8 @@ async function chat(argv: string[]): Promise<void> {
   const painter = new Painter(renderBlock, c.dim, "  ", attachesAbove);
   const follower = new LogFollower(
     (name) => {
+      const away = awayOf(name);
+      if (away) throw new Error(elsewhereLogs(away));
       const folder = folderForName(space, name);
       if (!folder) throw new Error(`${name} isn't registered to a folder`);
       return openAgentLog(space, name, folder);
@@ -715,6 +717,9 @@ async function chat(argv: string[]): Promise<void> {
     const peers = ep.getRoster().filter((p) => p.card.name.toLowerCase() === to.toLowerCase() && p.card.id !== me);
     return peers.find((p) => p.status !== "offline") ?? peers[0];
   };
+  /** Where `name` runs when that is NOT this machine (teleported, or another machine's agent on a
+   *  remote space) — then its logs, ctx, folder and files are there, and only messaging works from here. */
+  const awayOf = (name: string): Elsewhere | undefined => runsElsewhere(space, name, findPeer(name)?.card);
   /** A typed `name#space` / `#chan#space`: this session's space → the bare name; another (or unknown)
    *  space → said in red and undefined — this REPL is one space's endpoint and never re-routes. */
   const inThisSpace = (typed: string): string | undefined => {
@@ -847,8 +852,19 @@ async function chat(argv: string[]): Promise<void> {
    */
   let stagedFor: string | undefined;
 
-  const flush = (body: string, target?: string): string => {
+  /** Said the moment a file is staged for an agent running elsewhere — flush refuses to send it. */
+  const warnAwayFile = (): void => {
+    const away = curName ? awayOf(curName) : undefined;
+    if (away) emit(c.yellow(`  ⚠ ${curName} runs on ${away.where} and can't open a file on this machine — /noimg drops it`));
+  };
+
+  const flush = (body: string, target?: string, to: string | undefined = target): string => {
     if (!pending.length && !pastes.length) return body;
+    // A staged path names a file on THIS machine; an agent running elsewhere would be handed a path it
+    // cannot open. Refuse the send (thrown → printed, nothing sent, still staged) — pastes are inline
+    // text and would travel fine, but the message is one unit.
+    const away = pending.length && to && !to.startsWith("#") ? awayOf(to) : undefined;
+    if (away) throw new Error(`${elsewhereFiles(to!, away, pending.map((a) => a.placeholder))} — /noimg drops ${pending.length === 1 ? "it" : "them"}`);
     // Bound to someone else? HOLD them. Sending the body alone is the right half to get wrong: the
     // words were typed for THIS agent, the attachment was not.
     if (!attachmentsRide(stagedFor, target)) {
@@ -895,18 +911,22 @@ async function chat(argv: string[]): Promise<void> {
         `     ${c.dim(`type to post to #${room} · @name DMs someone · /who · /ps · /quit`)}\n\n`,
     });
   } else if (curName) {
-    const where = folder ? c.dim(folder) : c.dim("(by name)");
-    const state = spawned ? c.green("spawned a new agent · starting up") : c.green("reusing live agent");
+    // Running on another machine: this machine's folder, transcript and model/ctx readings are the
+    // frozen copy from before it left (or don't exist) — show where it runs instead, and no stale numbers.
+    const away = awayOf(curName);
+    const where = away ? `${c.dim("runs on")} ${c.cyan(away.where)}${away.cwd ? c.dim(` · ${away.cwd}`) : ""}` : folder ? c.dim(folder) : c.dim("(by name)");
+    const state = away ? c.green("live on the mesh") : spawned ? c.green("spawned a new agent · starting up") : c.green("reusing live agent");
     const personaPath = personaFilePath(space, curName);
-    const info = existsSync(personaPath) ? chatAgentInfo(personaPath) : undefined;
+    const info = !away && existsSync(personaPath) ? chatAgentInfo(personaPath) : undefined;
     show({ kind: "banner", text:
       `\n${c.bold("  🐾 paw chat")}\n\n` +
         `     agent:  ${c.cyan(curName)}  ${where}\n` +
         `     status: ${state}\n` +
         (info ? `     model:  ${info.model}\n     context: ${info.context}\n` : "") +
+        (away ? `     ${c.dim(elsewhereBanner(away))}\n` : "") +
         `\n` +
         (filter?.kind === "agent" ? `     showing: ${c.dim("this agent only — other DMs stay in `paw inbox`")}\n\n` : "") +
-        `     ${c.dim("type to message it · !cmd runs in its folder · @name switches target · #channel broadcasts · /who · /ps · /quit")}\n` +
+        `     ${c.dim(`type to message it · ${away ? "" : "!cmd runs in its folder · "}@name switches target · #channel broadcasts · /who · /ps · /quit`)}\n` +
         `     ${c.dim("drag an image in for [Image #1] · paste multiple lines for [Pasted text #1]")}\n` +
         `     ${c.dim("alt+enter (or end a line with \\\\) for a new line, not a send")}\n` +
         `     ${c.dim("on an empty line: ← → switch logs · chat · tasks   ↓ picks an agent")}\n` +
@@ -1458,6 +1478,7 @@ async function chat(argv: string[]): Promise<void> {
       const { rows } = await collectStatus(space, undefined, { only: () => new Set([name]) });
       const r = rows.find((x) => x.name === name);
       if (!r) return { for: name, note: "not in paw status — a mesh-only peer, no ctx/inbox to show" };
+      if (r.elsewhere) return { for: name, note: elsewhereStatus(r.elsewhere) };
       const share = contextShare(r.context);
       return {
         for: name,
@@ -1824,6 +1845,7 @@ async function chat(argv: string[]): Promise<void> {
           emit(`${ATTACH_ICON} ${a.placeholder} ${c.dim(`${a.path} (${formatBytes(a.size)})`)}`);
           if (isBig(a)) emit(c.yellow(`  ⚠ ${formatBytes(a.size)} is large — reading it will use a lot of the agent's context`));
         }
+        warnAwayFile();
       });
     });
   }
@@ -1848,6 +1870,8 @@ async function chat(argv: string[]): Promise<void> {
    *  its context. Needs an agent target — a channel has no folder to run in. */
   async function runBangCommand(command: string): Promise<void> {
     if (!curName || !curId) return void emit(c.red("! `!cmd` runs in an agent's folder — `@name` first (a channel has no folder)"));
+    const away = awayOf(curName);
+    if (away) return void emit(c.red(`! ${elsewhereBang(curName, away)}`));
     const cwd = folderForName(space, curName);
     if (!cwd) return void emit(c.red(`! ${bangNoFolder(space, curName, ep.getRoster().find((p) => p.card.id === curId)?.card)}`));
     if (!existsSync(cwd)) return void emit(c.red(`! "${curName}" is registered at ${cwd}, which no longer exists`));
@@ -1990,6 +2014,7 @@ async function chat(argv: string[]): Promise<void> {
           emit(c.red("! " + (e as Error).message));
         }
       });
+      if (peeled.paths.length) warnAwayFile();
       const text = peeled.body;
 
       // A line that was ONLY paths stages and waits — see `pending` above for why it must not send.
@@ -2046,7 +2071,7 @@ async function chat(argv: string[]): Promise<void> {
           const peer = to === undefined ? undefined : findPeer(to);
           if (to !== undefined && !peer) emit(c.red(`no peer named "${to}" present`));
           else if (peer) {
-            markWaiting(peer.card.name, await sent(ep.unicast(peer.card.id, flush(body)))); // confirm sent + await the reply (typed line alone isn't proof)
+            markWaiting(peer.card.name, await sent(ep.unicast(peer.card.id, flush(body, undefined, peer.card.name)))); // confirm sent + await the reply (typed line alone isn't proof)
           }
         }
       } else if (text.startsWith("@")) {

@@ -103,7 +103,7 @@ import { randomBytes } from "node:crypto";
 import { imagesDir } from "./images.ts";
 import { prInfo, prInfoByUrl, prInfoMany } from "./git.ts";
 import { bashMessage, runBash } from "./bash.ts";
-import { bangNoFolder } from "./hosted.ts";
+import { bangNoFolder, elsewhereBang, runsElsewhere } from "./hosted.ts";
 import { isRemoteSpace, pawServer } from "./server.ts";
 
 /** 7788, NOT 7799 — `cotal web` owns 7799 and running both at once is the normal case, not a clash. */
@@ -1853,6 +1853,8 @@ async function web(argv: string[]): Promise<void> {
       // directory, which would run the command somewhere the operator never named.
       bash: async (typed, command) => {
         const agent = sameSpaceAddress(typed, space, "paw web");
+        const away = runsElsewhere(space, agent, ep.getRoster().find((p) => p.card.name === agent)?.card);
+        if (away) throw new Error(`paw: ${elsewhereBang(agent, away)}`);
         const cwd = folderForName(space, agent);
         if (!cwd) {
           if (isRemoteSpace(space)) throw new Error(`paw: ${bangNoFolder(space, agent, ep.getRoster().find((p) => p.card.name === agent)?.card)}`);

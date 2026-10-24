@@ -27,7 +27,7 @@ import { lastFailure, lastUsage, type ContextUsage } from "./transcript.ts";
 import { tailRead, turnOfProcess, turnState, type PendingTool, type TurnState } from "./transcript.ts";
 import { gitInfoMany, type GitInfo } from "./git.ts";
 import { isRemoteSpace, natsTls, pawServer } from "./server.ts";
-import { localManagerInstanceId } from "./hosted.ts";
+import { elsewhereStatus, localManagerInstanceId, runsElsewhere, type Elsewhere } from "./hosted.ts";
 import { lagReaderCreds } from "./remote-creds.ts";
 import { pickRoster, presenceLive, readMeshRoster } from "./roster.ts";
 import { authGapWarning, probePresenceWrites } from "./presence-health.ts";
@@ -101,6 +101,9 @@ export interface AgentStatus {
   hue?: number;
   /** The persona's personality keys are malformed: shown as a note, never a crashed roster. */
   personalityError?: string;
+  /** It runs on another machine (teleported, src/hosted.ts): no transcript-derived column (ctx,
+   *  failure, last active, busy beyond the agent's own `working` claim) and no local git is read. */
+  elsewhere?: Elsewhere;
 }
 
 /** Map a manager ps row to the display status. Not listed → offline; "absent" (mid-start) → starting. */
@@ -377,6 +380,7 @@ function stuckOf(space: string, name: string): { stuck?: { since: number; restar
 function note(r: AgentStatus, now: number): string {
   if (r.personalityError) return `⚠ ${r.personalityError.replace(/^paw: /, "")}`;
   if (r.unregistered) return `unregistered ${r.unregistered.agent} peer (cotal_spawn) — paw restart registers + revives it`;
+  if (r.elsewhere) return elsewhereStatus(r.elsewhere);
   // A hung tool outranks everything: it is WHY the inbox isn't draining, and `paw unstick` is the fix.
   const hung = hungTool(r, now);
   if (hung !== undefined && r.tool) return `⚠ tool running ${ago(now - hung, now)} (${toolLabel(r.tool)}) — \`paw unstick ${r.name}\``;
@@ -932,7 +936,9 @@ export async function collectStatus(space: string, ctl?: ManagerControl, opts: C
       const file = personaFilePath(space, name);
       const has = existsSync(file);
       const roots = has ? personaTranscriptRoots(file) : [claudeProjectsRoot()];
-      return [name, { pin: has ? readResumeId(file) : undefined, harness: has ? readAgentType(file) : undefined, roots, glyph: personaGlyph(has ? file : undefined) }];
+      // Teleported away: its transcript here is the frozen copy from before it left — read none of it.
+      const away = has ? runsElsewhere(space, name) : undefined;
+      return [name, { pin: has ? readResumeId(file) : undefined, harness: has ? readAgentType(file) : undefined, roots, glyph: personaGlyph(has ? file : undefined), away }];
     }),
   );
   const pins = [...new Set([...local.values()].flatMap((l) => (l.pin ? [l.pin] : [])))];
@@ -943,8 +949,8 @@ export async function collectStatus(space: string, ctl?: ManagerControl, opts: C
   // first, everyone else in claude's alone), each store from one listing — the same id can sit in both
   // stores with different continuations, so a pin is only ever looked up in its own agent's stores.
   const byStore = new Map<string, { roots: string[]; pins: Set<string> }>();
-  for (const { pin, roots } of local.values()) {
-    if (!pin) continue;
+  for (const { pin, roots, away } of local.values()) {
+    if (!pin || away) continue;
     const key = roots.join("\0");
     if (!byStore.has(key)) byStore.set(key, { roots, pins: new Set() });
     byStore.get(key)!.pins.add(pin);
@@ -972,6 +978,8 @@ export async function collectStatus(space: string, ctl?: ManagerControl, opts: C
   const withIds = remote
     ? hostedLag.map(({ name, id }) => ({ name, id }))
     : agents
+        // A teleported agent's inbox durable belongs to the machine that runs it now.
+        .filter(({ name }) => !local.get(name)?.away)
         .map(({ name }) => ({ name, id: psByName.get(name)?.id ?? (fgByName.has(name) || unmanagedLive(name) ? rosterByName.get(name)?.id : undefined) }))
         .concat([...psByName.values()].filter((r) => !agents.some((a) => a.name === r.name)).map((r) => ({ name: r.name, id: r.id })))
         .filter((a): a is { name: string; id: string } => typeof a.id === "string" && a.id.length > 0);
@@ -984,14 +992,20 @@ export async function collectStatus(space: string, ctl?: ManagerControl, opts: C
     const rec = local.get(name)!;
     const { pin, harness, glyph } = rec;
     const sessionName = pin ? nameForSession(pin, sessionIndex) : undefined;
-    const t = transcriptOf(rec);
+    const { away } = rec;
+    const t = away ? undefined : transcriptOf(rec);
     const psRow = psByName.get(name);
     const fg = psRow ? undefined : fgByName.get(name); // ps wins; a foreground agent is only surfaced when not managed
     let mesh: string;
     let live: boolean;
     let rowRuntime: Runtime | "fg" | undefined;
-    const unmanaged = !psRow && unmanagedLive(name);
-    if (unmanaged) {
+    // Running elsewhere, it is live on the roster but no manager HERE should (or could) adopt it.
+    const unmanaged = !away && !psRow && unmanagedLive(name);
+    if (away) {
+      const ros = rosterByName.get(name);
+      live = !!ros && presenceLive(ros, now);
+      mesh = live ? ros!.status : "offline";
+    } else if (unmanaged) {
       live = true;
       mesh = rosterByName.get(name)!.status;
     } else if (fg) {
@@ -1032,7 +1046,8 @@ export async function collectStatus(space: string, ctl?: ManagerControl, opts: C
       ...(live ? liveTurn(t, mesh, harness, pin ? sessionStartedAt(procs.get(pin) ?? []) : undefined) : { busy: false }),
       // Local git only; the PR lookup is network and stays lazy. Read CONCURRENTLY above rather than
       // one folder at a time here — see gitInfoMany.
-      git: gitByFolder.get(folder),
+      git: away ? undefined : gitByFolder.get(folder),
+      ...(away ? { elsewhere: away } : {}),
       ...(glyph.emoji ? { emoji: glyph.emoji } : {}),
       ...(glyph.hue !== undefined ? { hue: glyph.hue } : {}),
       ...(glyph.error ? { personalityError: glyph.error } : {}),

@@ -336,8 +336,8 @@ type Source = {
   manifest(what: What[]): Promise<Manifest>;
   stop(pin: string | undefined): Promise<{ wasLive: boolean; released: boolean }>;
   restart(m: Manifest): Promise<void>;
-  /** After a successful cutover: this copy must never wake again. */
-  markGone(to: string, what: What[]): Promise<string>;
+  /** After a successful cutover: this copy must never wake again. `cwd` = the folder it runs in there. */
+  markGone(to: string, what: What[], cwd: string): Promise<string>;
 };
 
 function localSource(space: string, name: string, label: string): Source {
@@ -347,8 +347,8 @@ function localSource(space: string, name: string, label: string): Source {
     manifest: async (what) => buildManifest({ space, name, personaFile: file, what }),
     stop: (pin) => stopHere(space, name, pin),
     restart: (m) => startHere(space, name, m.cwd),
-    markGone: async (to, what) => {
-      const keys = { teleported: to, teleportedAt: new Date().toISOString(), teleportedWhat: what.join(",") };
+    markGone: async (to, what, cwd) => {
+      const keys = { teleported: to, teleportedAt: new Date().toISOString(), teleportedWhat: what.join(","), teleportedCwd: cwd };
       setPersonaKeys(space, name, keys);
       return `${file}: ${Object.entries(keys).map(([k, v]) => `${k}: ${v}`).join(", ")}`;
     },
@@ -639,7 +639,7 @@ async function cutover(c: Cutover, transport: Transport): Promise<void> {
       await rollback(c, after, `${name} did not appear on the mesh within ${PRESENT_MS / 1000}s`, true, beads);
       throw new Error(`paw: teleport ${name} failed — it never came up on ${c.dest.side.label}; it runs on ${c.source.side.label} again`);
     }
-    const marked = await c.source.markGone(c.markTo, what);
+    const marked = await c.source.markGone(c.markTo, what, folder.cwd);
     let beadsClosed: string | undefined;
     let beadsFailed: string | undefined;
     if (beads?.ids.length) {

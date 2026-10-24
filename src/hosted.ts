@@ -19,6 +19,7 @@ import { loadManagerInstanceIdentity } from "@cotal-ai/workspace";
 import { personaFilePath, type PsRow } from "./addressing.ts";
 import { pawCotalRoot } from "./cotal-root.ts";
 import { isRemoteSpace } from "./server.ts";
+import { ORIGIN, readTeleported } from "./teleport-plan.ts";
 
 /** This machine's manager instance id for a remote space, or undefined when no manager of this
  *  machine has registered there yet. */
@@ -66,6 +67,67 @@ export function bangNoFolderReason(o: { name: string; remote: boolean; personaHe
 
 /** {@link bangNoFolderReason} with the local facts filled in; `card` is the target's roster card. */
 export function bangNoFolder(space: string, name: string, card?: { meta?: Record<string, unknown> }): string {
-  const host = typeof card?.meta?.host === "string" && card.meta.host ? card.meta.host : undefined;
-  return bangNoFolderReason({ name, remote: isRemoteSpace(space), personaHere: existsSync(personaFilePath(space, name)), host, localHost: hostname() });
+  return bangNoFolderReason({ name, remote: isRemoteSpace(space), personaHere: existsSync(personaFilePath(space, name)), host: cardHost(card), localHost: hostname() });
+}
+
+type Card = { meta?: Record<string, unknown> };
+const cardHost = (card?: Card): string | undefined => (typeof card?.meta?.host === "string" && card.meta.host ? card.meta.host : undefined);
+
+/**
+ * An agent whose process, transcript and folder are on ANOTHER machine — the one notion of "remote
+ * agent" every local-only feature (logs, ctx, `!cmd`, attach, file attachments) checks before reading
+ * this machine's copy of anything:
+ *  - `teleported`: its persona here carries the `teleported:` marker (src/teleport.ts). The persona,
+ *    folder and transcript here are the FROZEN copy from before it left. `cwd` is the folder it runs in
+ *    there, when the marker recorded it (`teleportedCwd`).
+ *  - `hosted`: a remote space, no persona here — another machine's agent, known only from the roster.
+ * Messaging it over the mesh works either way; everything else must say where it runs, never show
+ * stale local data.
+ */
+export type Elsewhere = { how: "teleported" | "hosted"; where: string; cwd?: string };
+
+/** Pure: see {@link Elsewhere}. A same-host card (another paw on this box) is not elsewhere — its files are here. */
+export function elsewhereOf(o: { teleported?: { to: string; cwd?: string }; remote: boolean; personaHere: boolean; host?: string; localHost: string }): Elsewhere | undefined {
+  if (o.teleported) return { how: "teleported", where: o.teleported.to === ORIGIN ? "the machine it came from" : o.teleported.to, ...(o.teleported.cwd ? { cwd: o.teleported.cwd } : {}) };
+  if (o.remote && !o.personaHere && o.host !== o.localHost) return { how: "hosted", where: o.host ?? "another machine" };
+  return undefined;
+}
+
+/** {@link elsewhereOf} with the local facts filled in; `card` is the agent's roster card, if live. */
+export function runsElsewhere(space: string, name: string, card?: Card): Elsewhere | undefined {
+  const persona = personaFilePath(space, name);
+  return elsewhereOf({ teleported: readTeleported(persona), remote: isRemoteSpace(space), personaHere: existsSync(persona), host: cardHost(card), localHost: hostname() });
+}
+
+/** `ssh:mini · /Users/aleks/.paw/repos/x` — or the host alone when its folder there is unknown. */
+export const elsewhereLabel = (e: Elsewhere): string => (e.cwd ? `${e.where} · ${e.cwd}` : e.where);
+
+/** paw chat's banner line under a remote agent: what this machine can't show, said once up front. */
+export function elsewhereBanner(e: Elsewhere): string {
+  return `logs, ctx, !cmd and files are on ${e.where} — from here you message it over the mesh`;
+}
+
+/** Why there are no logs to show here — chat's logs view prints it as `(no logs for <name> — …)`. */
+export function elsewhereLogs(e: Elsewhere): string {
+  return `logs live on ${e.where}, where it runs${e.how === "teleported" ? " — the transcript on this machine stopped when it left" : ""}`;
+}
+
+/** Why `!cmd` refuses: it would run in this machine's (stale) copy of the folder, not where the agent works. */
+export function elsewhereBang(name: string, e: Elsewhere): string {
+  return `!cmd runs on this machine, not on ${e.where} where ${name} works`;
+}
+
+/** Why a message carrying local file paths is not sent: the agent's machine cannot open them. */
+export function elsewhereFiles(name: string, e: Elsewhere, placeholders: string[]): string {
+  return `not sent — ${name} runs on ${e.where} and can't open ${placeholders.join(" ")} (${placeholders.length === 1 ? "a file" : "files"} on this machine)`;
+}
+
+/** Why attach refuses: the terminal is on the agent's machine. */
+export function elsewhereAttach(name: string, e: Elsewhere): string {
+  return `paw: "${name}" runs on ${e.where} — attach to it there; from here \`paw chat @${name}\` messages it`;
+}
+
+/** The `paw status` note (and chat's tasks view) for an agent running elsewhere. */
+export function elsewhereStatus(e: Elsewhere): string {
+  return `runs on ${elsewhereLabel(e)} — ctx, logs and folder are there`;
 }
