@@ -270,6 +270,81 @@ assert(!inferBusy("idle", true, BUSY_NOW + 5_000, BUSY_NOW), "an mtime in the FU
   assert(sessionStartedAt([{ startedAt: 9 }, { startedAt: 5 }]) === 5, "sessionStartedAt: several holders → the EARLIEST (any of them may own the turn)");
 }
 
+// ---- compaction after a finished turn is not a turn (same process; PR #32 covered a dead one) ----
+{
+  const { liveTurn } = await import("../src/status.ts");
+  const { turnState } = await import("../src/transcript.ts");
+  const j = (o: object) => JSON.stringify(o);
+  const START = Date.parse("2026-10-24T09:00:00.000Z"); // the process started long BEFORE: turnOfProcess can't help
+  const readOf = (tail: string) => ({ mtimeMs: Date.now(), turn: () => turnState(tail) });
+  // mcp-intern's real tail, 2026-10-24 (record shapes verbatim, content trimmed): a closed turn, then ~55 min
+  // later claude's IDLE compaction — compact_boundary, the isCompactSummary user record, attachments, an
+  // informational "Compacted while idle…" system line, metadata. No assistant record after it, ever.
+  const closed = [
+    j({ type: "user", timestamp: "2026-10-24T13:16:36.657Z", message: { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_C", content: "…" }] } }),
+    j({ type: "assistant", timestamp: "2026-10-24T13:16:41.740Z", message: { role: "assistant", stop_reason: "end_turn", content: [{ type: "text", text: "Coverage has started." }] } }),
+    j({ type: "attachment", timestamp: "2026-10-24T13:16:41.830Z" }),
+    j({ type: "system", subtype: "stop_hook_summary", timestamp: "2026-10-24T13:16:41.832Z" }),
+    j({ type: "system", subtype: "turn_duration", isMeta: false, timestamp: "2026-10-24T13:16:41.834Z" }),
+    j({ type: "last-prompt" }), j({ type: "mode" }), j({ type: "permission-mode" }), j({ type: "atis-latch" }),
+    j({ type: "pr-link", timestamp: "2026-10-24T14:11:30.513Z" }), j({ type: "frame-link", timestamp: "2026-10-24T14:11:30.513Z" }), j({ type: "bridge-session" }),
+  ];
+  const compaction = [
+    j({ type: "system", subtype: "compact_boundary", content: "Conversation compacted", isMeta: false, timestamp: "2026-10-24T14:11:30.513Z", level: "info", compactMetadata: { trigger: "auto", preTokens: 232903 } }),
+    j({ type: "user", isCompactSummary: true, isVisibleInTranscriptOnly: true, timestamp: "2026-10-24T14:11:30.512Z", message: { role: "user", content: "This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.\n\n…" } }),
+    ...Array.from({ length: 16 }, () => j({ type: "attachment", timestamp: "2026-10-24T14:11:30.715Z" })),
+    j({ type: "system", subtype: "informational", content: 'Compacted while idle, before the prompt cache expired · turn off with "idleCompaction": false in settings.json', isMeta: false, timestamp: "2026-10-24T14:11:31.051Z", level: "notice" }),
+    j({ type: "last-prompt" }), j({ type: "mode" }), j({ type: "permission-mode" }), j({ type: "atis-latch" }),
+    j({ type: "pr-link", timestamp: "2026-10-24T14:11:31.175Z" }), j({ type: "frame-link", timestamp: "2026-10-24T14:11:31.175Z" }), j({ type: "bridge-session" }),
+  ];
+  const idleCompacted = [...closed, ...compaction].join("\n");
+  assert(turnState(idleCompacted).inFlight === false, "turnState: an idle compaction after a closed turn is not a turn in flight (compact-busy fix)");
+  assert(liveTurn(readOf(idleCompacted), "idle", undefined, START).busy === false, "liveTurn: the SAME process compacting after its turn closed → not busy");
+  // A 64KB tail can start AFTER the turn close (both live tails were ~170-200KB past it): no claim, so the
+  // caller widens — never a fabricated `in flight` from the summary alone.
+  assert(turnState(compaction.join("\n")).inFlight === undefined, "turnState: a tail holding only the compaction → cannot tell (caller widens), not in flight");
+
+  // A cotal DM after the compaction: claude writes the channel injection isMeta, origin.kind "channel" (shape
+  // from evals-intern) — it opens a turn, so until the assistant answers the agent IS busy.
+  const dmLater = "2026-10-24T14:30:00.000Z";
+  const channelDm = j({ type: "user", isMeta: true, origin: { kind: "channel", server: "cotal" }, timestamp: dmLater, message: { role: "user", content: '<channel source="cotal" kind="dm" from="aleks">\nping\n</channel>' } });
+  const dmAfter = [...closed, ...compaction, channelDm, j({ type: "attachment", timestamp: dmLater })].join("\n");
+  const dmState = turnState(dmAfter);
+  assert(dmState.inFlight === true && dmState.lastMsgMs === Date.parse(dmLater), "turnState: a channel DM after the compaction opens a turn → in flight, stamped with the DM's time");
+  assert(liveTurn(readOf(dmAfter), "idle", undefined, START).busy === true, "liveTurn: a DM written after the compaction in the current process → busy");
+  const promptAfter = [...closed, ...compaction, j({ type: "user", timestamp: dmLater, message: { role: "user", content: "next task" } })].join("\n");
+  assert(liveTurn(readOf(promptAfter), "idle", undefined, START).busy === true, "liveTurn: a typed prompt after the compaction → busy");
+  const notifAfter = [...closed, ...compaction, j({ type: "user", origin: { kind: "task-notification" }, timestamp: dmLater, message: { role: "user", content: "<task-notification>\n<status>completed</status>\n</task-notification>" } })].join("\n");
+  assert(turnState(notifAfter).inFlight === true, "turnState: a task-notification after the compaction still opens a turn");
+  const answered = [...closed, ...compaction, channelDm, j({ type: "assistant", timestamp: "2026-10-24T14:30:05.000Z", message: { role: "assistant", stop_reason: "end_turn", content: [{ type: "text", text: "pong" }] } })].join("\n");
+  assert(turnState(answered).inFlight === false, "turnState: the DM answered → closed again");
+
+  // Auto-compaction MID-turn: the summary lands after a tool_result and the turn carries on — still running.
+  const midTurn = [
+    ...closed,
+    j({ type: "user", timestamp: "2026-10-24T14:00:00.000Z", message: { role: "user", content: "big job" } }),
+    j({ type: "assistant", timestamp: "2026-10-24T14:00:01.000Z", message: { role: "assistant", stop_reason: "tool_use", content: [{ type: "tool_use", id: "toolu_M", name: "Bash", input: { command: "make" } }] } }),
+    j({ type: "user", timestamp: "2026-10-24T14:00:09.000Z", message: { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_M", content: "…" }] } }),
+    ...compaction.slice(0, 2),
+  ].join("\n");
+  assert(turnState(midTurn).inFlight === true, "turnState: a compaction in the MIDDLE of a turn (after a tool_result) still reads as running");
+
+  // Manual /compact (evals-intern, 2026-09-30): caveat(isMeta) · `<command-name>/compact` · `<local-command-stdout>
+  // Compacted…`, with boundary + summary before them in the file. A local command never reaches the model.
+  const manual = [
+    ...closed,
+    j({ type: "system", subtype: "compact_boundary", content: "Conversation compacted", timestamp: "2026-10-24T14:11:30.513Z" }),
+    j({ type: "user", isCompactSummary: true, isVisibleInTranscriptOnly: true, timestamp: "2026-10-24T14:11:30.512Z", message: { role: "user", content: "This session is being continued from a previous conversation that ran out of context." } }),
+    j({ type: "user", isMeta: true, timestamp: "2026-10-24T14:09:00.000Z", message: { role: "user", content: "<local-command-caveat>Caveat: The messages below were generated by the user while running local commands.</local-command-caveat>" } }),
+    j({ type: "user", timestamp: "2026-10-24T14:09:00.000Z", message: { role: "user", content: "<command-name>/compact</command-name>\n            <command-message>compact</command-message>\n            <command-args></command-args>" } }),
+    j({ type: "user", timestamp: "2026-10-24T14:11:30.600Z", message: { role: "user", content: "<local-command-stdout>Compacted (ctrl+o to see full summary)</local-command-stdout>" } }),
+    j({ type: "last-prompt" }), j({ type: "pr-link", timestamp: "2026-10-24T14:11:30.700Z" }),
+  ].join("\n");
+  assert(turnState(manual).inFlight === false, "turnState: a manual /compact after a closed turn is not a turn in flight");
+  const promptCommand = [...closed, j({ type: "user", timestamp: dmLater, message: { role: "user", content: "<command-message>dream</command-message>\n<command-name>/dream</command-name>" } })].join("\n");
+  assert(turnState(promptCommand).inFlight === true, "turnState: a prompt-type slash command (no local output) still opens a turn");
+}
+
 // ---- hung tool: status rendering + the keeper's Esc decision ----
 {
   const { hungTool, toolLabel, HUNG_TOOL_SHOW_MS } = await import("../src/status.ts");
