@@ -56,6 +56,9 @@ export interface AgentProcs {
   mem?: number;
   cpu?: number;
   items: Item[];
+  /** a claude seat: is its cotal MCP server (`node mcp.cjs`, or the hub shim) among its processes?
+   *  undefined for any other root (kit, hermes, acp) — they have no such child to miss. */
+  cotalMcp?: boolean;
 }
 
 export interface Machine {
@@ -146,6 +149,16 @@ export function cpuPercent(before: Map<number, number>, after: Map<number, numbe
 }
 
 // ---------- attribution + classification (pure) ----------
+
+/** The cotal MCP server of a claude seat: cotal's own `mcp.cjs`, or paw's hub shim (src/hub/). */
+const COTAL_MCP = /connector-claude-code\/dist\/mcp\.cjs|\/cotal-shim(\s|$)/;
+
+/** A claude seat whose cotal MCP child is gone: still on the roster (presence is the manager's), but it
+ *  cannot send. `undefined` = not a claude root, nothing to check. */
+export function hasCotalMcp(roots: Proc[], children: Proc[]): boolean | undefined {
+  if (!roots.some((r) => basename(r.argv.trim().split(/\s+/)[0] ?? "") === "claude")) return undefined;
+  return children.some((p) => COTAL_MCP.test(p.argv));
+}
 
 const SKIP = /^(node|bun|deno|python[\d.]*|npx|sh|bash|zsh|env|tsx|uvx)$/i;
 
@@ -254,6 +267,7 @@ export function buildFleet(g: Groups, m: Measures, machine: Machine): Fleet {
       mem: sum(m.mem, all),
       cpu: sum(m.cpu, all),
       items: a.children.map(({ child, tree, rootPgid }) => item(child, tree, classify(child, tree, rootPgid))),
+      cotalMcp: hasCotalMcp(a.roots, a.children.flatMap((c) => c.tree)),
     };
   }
   return {
@@ -372,10 +386,15 @@ export function stateText(row: AgentStatus, procs: AgentProcs | undefined, now: 
   if (hung !== undefined) return `⧗ ${row.tool!.name} ${dur(hung)}`;
   if (row.failure) return `⚠ ${/limit/i.test(row.failure.text) ? "limit" : /login/i.test(row.failure.text) ? "login" : "api error"}`;
   if ((procs?.roots.length ?? 0) > 1) return `⚠ ${procs!.roots.length} procs`;
+  if (mcpGone(procs)) return "⚠ no cotal mcp";
   if (row.conflictPids.length) return "⚠ 2 writers";
   if (!row.live && procs) return "⚠ off mesh";
   return row.busy ? "busy" : row.mesh;
 }
+
+/** Past claude's own MCP connect window (30s), so a seat that is still booting is never flagged. */
+export const MCP_GRACE_MS = 60_000;
+const mcpGone = (procs: AgentProcs | undefined) => procs?.cotalMcp === false && procs.ageMs > MCP_GRACE_MS;
 
 /** A copy-paste command (or a plain note) for the one thing worth doing about this agent. */
 export function hintFor(
@@ -393,6 +412,9 @@ export function hintFor(
   }
   if (procs && !names.has(row.name)) return { text: "no agent by this name on the manager or in the registry", cmd: `kill ${procs.roots.join(" ")}` };
   if (procs && !row.live) return { text: "running, but off the mesh — look first", cmd: `paw log ${row.name}` };
+  // Presence outlives the MCP child (the manager holds it), so the roster says present while every
+  // cotal_* call is gone. Only a restart gives claude a new MCP server — the operator's call, never ours.
+  if (mcpGone(procs)) return row.unregistered ? { text: "cotal MCP server gone — it can't send" } : { text: "cotal MCP server gone — it can't send", cmd: `paw restart ${row.name}` };
   const dup = /^(.+)_\d+$/.exec(row.name);
   if (dup && names.has(dup[1])) return { text: `duplicate of ${dup[1]}`, cmd: `paw stop --name ${row.name}` };
   if (row.conflictPids.length) {
