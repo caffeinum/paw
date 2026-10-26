@@ -80,7 +80,7 @@ Each entry: what it is + the most load-bearing rule. Full notes behind the link.
 
 ### Lifecycle, releases, managers → [lifecycle.md](docs/notes/lifecycle.md)
 - `src/lifecycle.ts` — `ensure()` starts/adopts detached mesh + manager + mailbox under a per-space lock;
-  manager/mailbox ownership by COMMAND SIGNATURE (space-exact pgrep), never recorded pid; runtime =
+  manager/mailbox ownership by COMMAND SIGNATURE (space-exact pgrep), never recorded pid; a mailbox from another PAW_HOME fails loud (`--home` marker, `check:mailbox`); runtime =
   `PAW_RUNTIME` > sticky preference > pty, RUNNING runtime read from the live cmdline; rollback net on a
   failed switch; `restartManager` bounces manager + beacon and reaps old tmux/cmux UI; tmux pinned to the
   default socket. Mesh boot = `cotal up --detach --no-manager` (cotal 0.84 exits 1 on cotald's degraded
@@ -227,7 +227,7 @@ Each entry: what it is + the most load-bearing rule. Full notes behind the link.
   (real manager, enforced isolation). A green suite + typecheck has twice proven nothing about the wire.
 
 ## Env knobs (condensed — full text: [lifecycle.md#env-knobs](docs/notes/lifecycle.md#env-knobs))
-- `PAW_SPACE` — default space (`paw`).
+- `PAW_SPACE` — default space (`paw`); set-but-empty fails loud (it used to mean the live `paw`).
 - `PAW_AUTH=1` — JWT-authed mesh (default open localhost).
 - `PAW_PERMISSION` — override `bypassPermissions`.
 - `PAW_MODEL` — default model for spawned agents (`--model` overrides).
