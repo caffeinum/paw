@@ -756,7 +756,8 @@ export async function teleport(a: TeleportArgs): Promise<void> {
   const record = readRemoteMesh(space);
   if (!record)
     throw new Error(
-      `paw: "${name}" is on space "${space}", which only this machine serves — teleport v1 moves agents on a space the target's paw joins too (a remote mesh: \`paw mesh ls\`)`,
+      `paw: "${name}" is on space "${space}", which only this machine serves — teleport v1 moves agents on a space the target's paw joins too (a remote mesh: \`paw mesh ls\`); ` +
+        `put it on one first: \`paw move ${name}#${space} --to-space <remote space>\`, then teleport it`,
     );
   if (readForeground(space, name)) throw new Error(`paw: "${name}" is a foreground \`paw claude\` in a terminal here — close it first`);
   const mark = readTeleported(file);

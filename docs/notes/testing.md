@@ -70,3 +70,7 @@ Moved verbatim from CLAUDE.md (2026-10-02 split). Index: [CLAUDE.md](../../CLAUD
   real between two temp HOMEs. `scripts/e2e-teleport.ts` (`COTAL_BIN=… node scripts/e2e-teleport.ts`) —
   the real `ssh:` transport into a Docker container running this checkout's paw on a private JWT+TLS broker;
   see [teleport.md#tests](teleport.md#tests).
+  `scripts/check-move.ts` (`pnpm check:move`) — hermetic (temp HOME + PAW_HOME + PAW_BEADS_DIR): `paw move`'s
+  args and `#space` hoist, plan text, every refusal, the cutover + `moved-to-<to>/` backup (stamped on a
+  second move), a hermes profile following it, rollback (failed target start, unreleased session), and
+  `--as` bead reassignment on a temp beads db. Stop/start are fakes — no mesh.

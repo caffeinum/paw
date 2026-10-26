@@ -41,6 +41,7 @@ const global: Loader = () => import("./global.ts"); // "global" (the always-on $
 const sleep: Loader = () => import("./sleep.ts"); // "sleep" (opt-in hibernation)
 const start: Loader = () => import("./start.ts"); // "start" (cold-start the registered fleet)
 const teleport: Loader = () => import("./teleport.ts"); // "teleport" + hidden "__teleport"
+const move: Loader = () => import("./move.ts"); // "move" (an agent to another space on this machine)
 const optimize: Loader = () => import("./commands/optimize.ts"); // "optimize" (restart long-running idle agents)
 const top: Loader = () => import("./commands/top.ts"); // "top" (per-agent memory/cpu/subprocesses)
 const tidy: Loader = () => import("./commands/tidy.ts"); // "tidy" (DM agents holding background processes)
@@ -88,6 +89,7 @@ export const COMMAND_LOADERS: Readonly<Record<string, Loader>> = {
   start,
   teleport,
   __teleport: teleport,
+  move,
   optimize,
   top,
   tidy,
