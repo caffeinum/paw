@@ -21,13 +21,14 @@ import {
   mkdirSync,
   openSync,
   readFileSync,
+  realpathSync,
   rmSync,
   statSync,
   writeFileSync,
   readdirSync,
 } from "node:fs";
 import { homedir, loadavg, userInfo } from "node:os";
-import { basename, dirname, isAbsolute, join } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   chatStream,
@@ -147,9 +148,13 @@ export function assertRuntimeUsable(runtime: Runtime): void {
 
 /** paw's per-space state dir under ~/.paw (pid/lock/log + ownership markers). Kept separate from
  *  cotal's `.cotal/` so paw owns its own singleton bookkeeping and cotal keeps creds/agent-files. */
+/** paw's state root: `PAW_HOME`, else `~/.paw`. */
+export function pawHomeDir(): string {
+  return process.env.PAW_HOME?.trim() || join(homedir(), ".paw");
+}
+
 function pawDir(space: string): string {
-  const root = process.env.PAW_HOME?.trim() || join(homedir(), ".paw");
-  const dir = join(root, "spaces", space);
+  const dir = join(pawHomeDir(), "spaces", space);
   mkdirSync(dir, { recursive: true });
   return dir;
 }
@@ -1561,25 +1566,96 @@ async function ensureManagerUp(space: string, server: string, switchRuntime = fa
   throw new Error(explainManagerFailure({ logTail, runtime, space, logPath: managerLogPath(space) }));
 }
 
+/** The mailbox's argv: `--home` is the OWNERSHIP marker {@link mailboxOwnerHome} reads back — the
+ *  PAW_HOME this beacon's human identity (`spaces/<s>/human.id`) comes from. Last, after `--space`, so
+ *  {@link mailboxMatchPattern}'s space-exact anchor still holds and a home with spaces stays one value. */
+export function mailboxArgs(space: string): string[] {
+  return ["mailbox", "--space", space, "--home", pawHomeDir()];
+}
+
+/** Two PAW_HOME paths name the same directory (a `mktemp -d` under /var is /private/var). */
+export function sameHome(a: string, b: string): boolean {
+  const canon = (p: string) => {
+    const abs = resolve(p);
+    try {
+      return realpathSync(abs);
+    } catch {
+      return abs;
+    }
+  };
+  return canon(a) === canon(b);
+}
+
+/**
+ * The PAW_HOME a running mailbox beacon belongs to. `cmd` is its command line, `envCmdOf` the same with
+ * its environment appended (`ps -E`, a thunk read only when needed). A beacon from this paw carries the `--home` marker; an older one
+ * (spawned before the marker) is read from its environment — `PAW_HOME=…`, or `~/.paw` when its env
+ * has none. Throws when neither tells: guessing would let two homes share one space. Pure.
+ */
+export function mailboxOwnerHome(cmd: string, envCmdOf: string | undefined | (() => string | undefined)): string {
+  const args = cmd.trim();
+  const marker = / --home (.+)$/.exec(args);
+  if (marker) return marker[1];
+  const envCmd = typeof envCmdOf === "function" ? envCmdOf() : envCmdOf; // read lazily: only a legacy beacon needs the `ps -E` call
+  const env = envCmd?.startsWith(args) ? envCmd.slice(args.length) : envCmd;
+  if (!env || !/(^| )PATH=/.test(env)) {
+    throw new Error(
+      `paw: can't tell which PAW_HOME the running mailbox belongs to — its command line has no --home and its environment is unreadable (\`${args}\`)`,
+    );
+  }
+  const m = /(?:^| )PAW_HOME=(.*?)(?= [A-Za-z_][A-Za-z0-9_]*=|$)/.exec(env);
+  return m && m[1].trim() ? m[1].trim() : join(homedir(), ".paw");
+}
+
+function psCommandSync(pid: number, env: boolean): string | undefined {
+  const r = spawnSync("ps", [...(env ? PS_ENV : []), "-o", "command=", "-p", String(pid)], { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 });
+  return r.status === 0 && r.stdout.trim() ? r.stdout.trim() : undefined;
+}
+
+/**
+ * Adopt-or-refuse for the "you" beacons ALREADY running for `space`, found by command signature from
+ * any PAW_HOME and any release. True = one of ours is up (adopt, spawn nothing); false = none runs.
+ * Throws when one belongs to a DIFFERENT PAW_HOME: two homes on one broker space are two human ids,
+ * two "you" peers, and replies landing on whichever inbox the agent resolved (the 2026-10-21 incident:
+ * a test home started a second beacon in the live `paw` space). Exported for check:mailbox.
+ */
+export function adoptRunningMailbox(space: string, pids: number[] = mailboxProcs(space)): boolean {
+  const ours = pawHomeDir();
+  let adopted = false;
+  for (const pid of pids) {
+    const cmd = psCommandSync(pid, false);
+    if (cmd === undefined) continue; // exited between pgrep and ps
+    const home = mailboxOwnerHome(cmd, () => psCommandSync(pid, true));
+    if (!sameHome(home, ours)) {
+      throw new Error(
+        `paw: space "${space}" already has a "you" mailbox (pid ${pid}) from another PAW_HOME (${home}); this one is ${ours}. ` +
+          `Two homes on one space mint two human ids — use a space of your own (PAW_SPACE=test-$$) or the same PAW_HOME.`,
+      );
+    }
+    adopted = true;
+  }
+  return adopted;
+}
+
 /**
  * Ensure the persistent "you" mailbox beacon is up: a paw-owned daemon that holds the human's "you"
  * identity online so agents can always resolve + deliver replies to you (read with `paw inbox`).
- * Cheap when already up (a pid-alive check); otherwise spawn it DETACHED — same runtime + entrypoint
- * as the other daemons (`<abs node> bin/paw.ts mailbox --space <s>`), stdout/stderr to mailbox.log, then
- * unref so it outlives this command. Best-effort + non-blocking: the beacon comes up in ~1s, long
- * before an agent could reply, so we don't gate on it (keeps `paw ps` snappy). NOT under JWT auth's
- * critical path — a beacon failure must never block a real command, so errors here are swallowed.
+ * Ownership is by COMMAND SIGNATURE ({@link adoptRunningMailbox}), never the recorded pid: a beacon
+ * from another PAW_HOME is invisible to our pid file, and trusting it put two "you" peers on the live
+ * mesh. Otherwise spawn it DETACHED — `<abs node> bin/paw.ts mailbox --space <s> --home <h>`,
+ * stdout/stderr to mailbox.log, then unref so it outlives this command. Non-blocking: the beacon comes
+ * up in ~1s, long before an agent could reply. A foreign-home beacon fails the command loud; a SPAWN
+ * failure only warns — a dead beacon bounds replies by presence TTL, it must not block a real command.
  */
-function ensureMailbox(space: string): void {
+export function ensureMailbox(space: string): void {
+  if (adoptRunningMailbox(space)) return;
   try {
-    const recorded = readPid(mailboxPidPath(space));
-    if (recorded !== undefined && alive(recorded)) return; // already present
     const out = openSync(mailboxLogPath(space), "a");
     try {
       // Spawn the beacon under plain node no matter how this process was launched (see viaNode) — a
       // dead "you" beacon silently drops replies. The mailbox is a PAW command, so it runs through
       // bin/paw.ts (the paw composition root), not cotald.
-      const [cmd, args] = pawViaNode(["mailbox", "--space", space]);
+      const [cmd, args] = pawViaNode(mailboxArgs(space));
       const child = spawn(cmd, args, {
         detached: true,
         stdio: ["ignore", out, out],
@@ -1592,7 +1668,6 @@ function ensureMailbox(space: string): void {
       closeSync(out);
     }
   } catch (e) {
-    // A beacon we couldn't start just means replies are presence-TTL bounded — warn, never fail the command.
     console.error(`paw: could not start the "you" mailbox beacon — replies are presence-TTL bounded until it's up (${(e as Error).message})`);
   }
 }

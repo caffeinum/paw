@@ -15,26 +15,32 @@
  */
 import { CotalEndpoint, registry, type Command } from "@cotal-ai/core";
 import { humanEndpointAuth, stableHumanId } from "./addressing.ts";
-import { resolveSpace } from "./lifecycle.ts";
+import { pawHomeDir, resolveSpace, sameHome } from "./lifecycle.ts";
 import { humanPeer } from "./names.ts";
 import { startSleepHost } from "./sleep-host.ts";
 import { startStaleForwarder } from "./stale-forward.ts";
 import { pawServer } from "./server.ts";
 
-function parseArgs(argv: string[]): { space?: string; server?: string } {
-  const out: { space?: string; server?: string } = {};
+function parseArgs(argv: string[]): { space?: string; server?: string; home?: string } {
+  const out: { space?: string; server?: string; home?: string } = {};
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--space") out.space = argv[++i];
     else if (a === "--server") out.server = argv[++i];
+    else if (a === "--home") out.home = argv[++i];
     // tolerate (and ignore) any other flag so a future ensure() can pass extras without breaking the daemon
   }
   return out;
 }
 
 async function mailbox(argv: string[]): Promise<void> {
-  const { space: spaceArg, server: serverArg } = parseArgs(argv);
+  const { space: spaceArg, server: serverArg, home } = parseArgs(argv);
   const space = spaceArg ?? resolveSpace();
+  // `--home` is the ownership marker ensure() reads back from the command line: it must name the home
+  // this beacon actually reads human.id from, or the marker would vouch for the wrong identity.
+  if (home !== undefined && !sameHome(home, pawHomeDir())) {
+    throw new Error(`paw mailbox: --home ${home} is not this process's PAW_HOME (${pawHomeDir()})`);
+  }
   const server = serverArg ?? pawServer(space);
 
   const humanAuth = await humanEndpointAuth(space, "agent");

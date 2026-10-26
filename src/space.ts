@@ -2,7 +2,13 @@
  *  modules lifecycle.ts imports (release.ts) can use it without an import cycle. */
 export const DEFAULT_SPACE = "paw";
 
+/** UNSET means the default; SET-but-empty (or whitespace) is refused. `PAW_SPACE=` used to fall
+ *  through to `paw` — the LIVE space — so a test that meant to isolate itself joined the operator's
+ *  mesh and started a second "you" beacon there (2026-10-21). */
 export function resolveSpace(): string {
-  const override = process.env.PAW_SPACE?.trim();
-  return override && override.length > 0 ? override : DEFAULT_SPACE;
+  const raw = process.env.PAW_SPACE;
+  if (raw === undefined) return DEFAULT_SPACE;
+  const space = raw.trim();
+  if (space.length === 0) throw new Error("paw: PAW_SPACE is set but empty — unset it or give a space");
+  return space;
 }
