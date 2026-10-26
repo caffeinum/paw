@@ -315,6 +315,45 @@ CLI-side only (ensureAgentSpawned runs in the caller) — live without a release
   under the old name (`stopAgent`) and respawned under the new one (`ensureAgentSpawned`, resumes via
   the moved pin); if not live, only the on-disk state changes. In NEEDS_MANAGER. Test: `check:rename`.
 
+## paw move
+
+- `src/move.ts` — `paw move <agent>[#<from>] --to-space <to> [--as <newname>] [--keep-beads] [--dry-run]
+  [--yes]`: move an agent to ANOTHER SPACE on THIS machine (teleport is the other axis: same space,
+  another box). Replaces the hand recipe used twice for paw → team2027 (stop, cp persona, back the old
+  one up under `moved-to-<to>/`, cp the kit dir, start). `<agent>#<from>` hoists like every agent verb
+  (`ADDRESS_ARGS.move`); `--to-space` takes a bare space name, which must be known (a local space dir or
+  a `paw mesh add` record).
+- **Moves** (`moveItems`): `personas/<name>.md` (pin + body kept, `name:` rewritten on `--as`),
+  `kit/<name>/` (system.md + schedules), `restarts/<name>.json`, `unstick/<name>`, `unstick-tool/<name>`,
+  and a paw-owned hermes profile `$PAW_HOME/hermes/profiles/<from>-<name>` → `<to>-<new>` (renamed, not
+  copied: it holds the login; an adopted `hermesHome:` is the operator's and stays put). The source copies
+  go to `spaces/<from>/moved-to-<to>/` (persona at its root, the rest at their relative paths) — never
+  deleted; a second move to the same space uses a stamped subdir, so a backup is never overwritten.
+- **Stays, on purpose:** the session/transcript (keyed by the folder, which doesn't change) and the beads
+  (one machine-wide db, assigned by name). On `--as` its OPEN beads and company rosters follow the new name
+  (`reassignOpenTasks` + `renameInCompanies`, exactly as `paw rename`; `--keep-beads` opts out).
+  `teleport-beads.ts` is NOT reused: it moves beads between two dbs over a transport, and here there is one
+  db. Also left: `headless/<name>/` (runtime pipes, recreated per launch), `spawn.<name>.lock`, sleep
+  stand-in keys (an identity on the SOURCE mesh), DMs still queued on the source mesh, and space-wide
+  files that merely mention the name (peers.json, tidy.json, stale-forward.json, cursors, images, the
+  legacy folders.json/agents.json the personas replaced at registry.v2). The login fleet job is not
+  rewritten (it is one space's list) — the plan notes it when it names the agent.
+- **Refuses** (`moveBlockers`, each with its fix): unknown/same target space, the name taken in the target
+  (any persona there — `--as`), the target's DEFAULT agent for the same folder (two defaults would make
+  the folder ambiguous; an extra may join), an existing target path, an orphan persona (no `cwd:`), a
+  `teleported:` marker, a foreground `paw claude`, a sleeping/waking agent, a two-writer conflict (any
+  process on its session that is not its own managed seat in the source), a live seat the manager here
+  doesn't own, the new name already present on a REMOTE target's mesh, and — without `--yes` — a running
+  agent whose transcript was written < 10 min ago (`MOVE_BUSY_MS`).
+- **Consent:** the wake-gate rule (#28): a tty asks `[y/N]` (saying it will stop + restart it when it
+  runs), no tty refuses, `--yes` approves. `--dry-run` prints the plan and stops.
+- **Cutover** (`applyMove`, stop/start injected): stop in the source and wait for the session to be let go
+  (still held → restart it there, nothing moved) → write the target (`wx`/`errorOnExist`, under both
+  spaces' registry locks) → rename the source copies into the backup → start in the target ONLY if it ran.
+  Any failure undoes every disk step in reverse, stops a half-started target copy and restarts it in the
+  source. Test: `check:move` (plan text, backup, every refusal, hermes, rollback, `--as` beads on a temp db).
+- `paw teleport` on a space only this machine serves now points at `paw move … --to-space <remote>` first.
+
 ## paw rm
 
 - `src/rm.ts` — `paw rm <name|folder|repo@branch|github:owner/repo>`: **forget** an agent — the set is

@@ -299,6 +299,7 @@ export const ADDRESS_ARGS: Readonly<Record<string, AddressSpec>> = {
   status: { values: V, slots: "all" },
   start: { values: V, slots: "all" },
   teleport: { values: [...V, "--to"], slots: [0] },
+  move: { values: [...V, "--to-space", "--as"], slots: [0] },
   sleep: { values: [...V, "--after"], slots: "all" },
   inbox: { values: [...V, "--limit", "-n"], slots: "all" },
   restart: { values: [...V, "--agent", "--model"], slots: [0] },
