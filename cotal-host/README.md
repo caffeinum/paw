@@ -49,7 +49,8 @@ fly ssh console -a 2027-cotal                        # then: cd /data/cotal && H
 ```
 
 No manager runs on the box, so `start.sh` re-signs the 24h daemon creds (delivery, membership-rw)
-with `cotal doctor auth --fix` every hour. The `$SYS` creds (membership-observer, connection-evictor)
+with `cotal doctor auth --fix` 30s after the earliest one passes 75% of its life (read from the JWTs
+on disk), about twice a day. It used to run hourly, and each pass is a ~100MB node process. The `$SYS` creds (membership-observer, connection-evictor)
 last 30 days and need `cotal down` + `cotal up --rotate-sys`; next due 2026-11-15.
 
 The machine must never auto-stop (`auto_stop_machines = "off"`): a stopped machine is a dead mesh.
@@ -59,4 +60,7 @@ The machine must never auto-stop (`auto_stop_machines = "off"`): a stopped machi
 - nats-server also opens an unencrypted websocket listener on a random port. Fly routes only
   4222 and 443 from the internet, so it is reachable only on the org's private network
   (still JWT-authed).
-- Cost: shared-cpu-1x 512MB (~$3.3/mo) + 1GB volume ($0.15) + dedicated IPv4 ($2) ≈ $5.5/mo.
+- Memory: 1GB since 2026-10-24 (512MB ran out). Budget in `fly.toml`: `GOMEMLIMIT=300MiB` for
+  nats-server, `--max-old-space-size=192` for the node daemons, 512MB swap.
+- No nats monitoring port: cotal 0.84 generates `server.conf` on every boot and has no flag for it.
+- Cost: shared-cpu-1x 1GB (~$5.7/mo) + 1GB volume ($0.15) + dedicated IPv4 ($2) ≈ $7.9/mo.
