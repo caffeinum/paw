@@ -4,7 +4,7 @@
  * `foreignWriters` detector that backs both status and the spawn/adopt two-writer guard. Isolated temp
  * HOME for the index scan; pure/no daemons. Run: pnpm check:status
  */
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -73,17 +73,17 @@ assert(inboxStuck({ ...stuckBase, busy: false, inbox: lag(0, 1) }), "idle + unre
 
 // ---- planColumns / elide: fitting the table to the terminal (reported unreadable, 2026-09-17) ----
 {
-  const nat = { name: 26, status: 7, rt: 7, cwd: 58, sess: 30, inbox: 5, ctx: 11, active: 6 };
+  const nat = { name: 26, status: 7, host: 7, rt: 7, cwd: 58, sess: 30, inbox: 5, ctx: 11, active: 6 };
   const wide = planColumns(nat, 200);
   assert(wide.showRt && wide.showSess && wide.cwd === 58, "plan: everything fits at 200 cols — nothing is dropped for its own sake");
-  assert(planColumns(nat, 160).showRt === false && planColumns(nat, 160).showSess === true, "plan: RUNTIME goes first (every cell reads `tmux` — a column that never varies says nothing)");
+  assert(planColumns(nat, 170).showRt === false && planColumns(nat, 170).showSess === true, "plan: RUNTIME goes first (every cell reads `tmux` — a column that never varies says nothing)");
   assert(planColumns(nat, 120).showSess === false, "plan: SESSION goes second (it usually echoes NAME)");
   const tight = planColumns(nat, 100);
   assert(tight.cwd < 58 && tight.cwd >= 18, "plan: CWD is elided next, never below a legible floor");
   assert(planColumns(nat, 70).name < 26, "plan: NAME shrinks only once the path has nothing left to give");
   for (const width of [70, 90, 100, 120, 160, 200]) {
     const p = planColumns(nat, width);
-    const used = p.name + p.status + (p.showRt ? p.rt + 2 : 0) + p.cwd + (p.showSess ? p.sess + 2 : 0) + p.inbox + p.ctx + p.active + 10;
+    const used = p.name + p.status + p.host + 2 + (p.showRt ? p.rt + 2 : 0) + p.cwd + (p.showSess ? p.sess + 2 : 0) + p.inbox + p.ctx + p.active + 10;
     assert(used <= width || width < 80, `plan: the row fits in ${width} cols (used ${used})`);
   }
   assert(planColumns(nat, 100, { wide: true }).showRt, "plan: --wide keeps every column at any width");
@@ -153,22 +153,22 @@ assert(formatStatus([], NOW) === "(no agents registered)", "empty → friendly m
 const base = { sessionName: undefined as string | undefined, runtime: undefined as "pty" | "tmux" | "cmux" | undefined, inbox: lag(0, 0) };
 const out = formatStatus(
   [
-    { ...base, name: "paw", folder: "/home/u/p", mesh: "idle", live: true, runtime: "cmux", pin: "abcd1234-aaaa", durable: true, activeMs: NOW - 120_000, conflictPids: [] },
+    { ...base, name: "paw", host: { label: "aleks-macbook", via: "manager", here: true }, folder: "/home/u/p", mesh: "idle", live: true, runtime: "cmux", pin: "abcd1234-aaaa", durable: true, activeMs: NOW - 120_000, conflictPids: [] },
     { ...base, name: "foo", folder: "/f", mesh: "offline", live: false, pin: undefined, durable: false, activeMs: undefined, conflictPids: [], inbox: { kind: "none" } },
     { ...base, name: "new", folder: "/n", mesh: "starting", live: true, runtime: "cmux", pin: "11112222-bbbb", durable: false, activeMs: NOW - 5_000, conflictPids: [] },
-    { ...base, name: "bar", folder: "/b", mesh: "idle", live: true, runtime: "cmux", pin: "99998888-cccc", sessionName: "research", durable: true, activeMs: NOW - 3600_000, conflictPids: [50812] },
+    { ...base, name: "bar", host: { label: "ssh:mini", via: "teleport", here: false }, folder: "/b", mesh: "idle", live: true, runtime: "cmux", pin: "99998888-cccc", sessionName: "research", durable: true, activeMs: NOW - 3600_000, conflictPids: [50812] },
   ],
   NOW,
 );
-assert(/NAME\s+STATUS\s+RUNTIME\s+CWD\s+SESSION\s+INBOX\s+CTX\s+ACTIVE/.test(out), "header row present (incl. INBOX + CTX)");
-assert(/^paw\s+idle\s+cmux\s+\S+\s+abcd1234…\s+✓\s+—\s+2m$/m.test(out), "live durable agent → status + runtime + short id + ✓ inbox + unknown ctx + active, no note");
-assert(/^foo\s+offline\s+—\s+\S+\s+—\s+—\s+—\s+—\s+⚠ no pin/m.test(out), "pinless offline → runtime — + inbox — + ctx — + no-pin warning");
+assert(/NAME\s+STATUS\s+MACHINE\s+RUNTIME\s+CWD\s+SESSION\s+INBOX\s+CTX\s+ACTIVE/.test(out), "header row present (incl. INBOX + CTX)");
+assert(/^paw\s+idle\s+aleks-macbook\s+cmux\s+\S+\s+abcd1234…\s+✓\s+—\s+2m$/m.test(out), "live durable agent → status + runtime + short id + ✓ inbox + unknown ctx + active, no note");
+assert(/^foo\s+offline\s+—\s+—\s+\S+\s+—\s+—\s+—\s+—\s+⚠ no pin/m.test(out), "pinless offline → runtime — + inbox — + ctx — + no-pin warning");
 {
   const g = formatStatus([{ ...base, name: "g", folder: "/g", mesh: "idle", live: true, runtime: "tmux", durable: false, conflictPids: [], harness: "opencode" }], NOW);
   assert(g.indexOf("no pin") === -1 && !/fresh/.test(g), "pinless opencode → no claude-pin or claude-fresh note");
 }
-assert(/^new\s+starting\s+cmux\s+\S+\s+11112222…\s+✓\s+—\s+5s\s+fresh/m.test(out), "pinned-but-no-transcript live → starting + fresh");
-assert(/^bar\s+idle\s+cmux\s+\S+\s+"research"\s+✓\s+—\s+1h\s+⚠ two writers \(pid 50812\)/m.test(out), "named session shown; conflict warns with pid");
+assert(/^new\s+starting\s+—\s+cmux\s+\S+\s+11112222…\s+✓\s+—\s+5s\s+fresh/m.test(out), "pinned-but-no-transcript live → starting + fresh");
+assert(/^bar\s+idle\s+ssh:mini\s+cmux\s+\S+\s+"research"\s+✓\s+—\s+1h\s+⚠ two writers \(pid 50812\)/m.test(out), "named session shown; conflict warns with pid");
 assert(out.includes("⚠ 1 two-writer conflict(s), 1 unpinned"), "footer summarizes conflicts + unpinned");
 assert(
   formatStatus([{ ...base, name: "ok", folder: "/o", mesh: "idle", live: true, runtime: "pty", pin: "x", durable: true, activeMs: NOW, conflictPids: [] }], NOW).indexOf("⚠") === -1,
@@ -183,8 +183,8 @@ const zombieOut = formatStatus(
   ],
   NOW,
 );
-assert(/^research\s+idle\s+pty\s+\S+\s+aaaa1111…\s+1 queued, 1 unread\s+—\s+2h\s+⚠ inbox stuck — 1 queued, 1 unread, agent not consuming$/m.test(zombieOut), "idle zombie → lag in INBOX + stuck warning");
-assert(/^erragent\s+idle\s+pty\s+\S+\s+cccc2222…\s+\?\s+—\s+1m$/m.test(zombieOut), "query error → ? in INBOX, no fabricated health, no stuck claim");
+assert(/^research\s+idle\s+—\s+pty\s+\S+\s+aaaa1111…\s+1 queued, 1 unread\s+—\s+2h\s+⚠ inbox stuck — 1 queued, 1 unread, agent not consuming$/m.test(zombieOut), "idle zombie → lag in INBOX + stuck warning");
+assert(/^erragent\s+idle\s+—\s+pty\s+\S+\s+cccc2222…\s+\?\s+—\s+1m$/m.test(zombieOut), "query error → ? in INBOX, no fabricated health, no stuck claim");
 assert(zombieOut.includes("⚠ 1 stuck inbox(es)"), "footer counts stuck inboxes");
 
 // ---- foreignWriters: standalone (non-mesh) live procs holding a session ----
@@ -411,6 +411,81 @@ assert(!inferBusy("idle", true, BUSY_NOW + 5_000, BUSY_NOW), "an mtime in the FU
   assert(m.size === 0 && errs.length === 0, "inboxLag: no agent needing a lag → no error reported");
 }
 
+// ---- MACHINE: where an agent runs, from evidence only (src/hosted.ts machineOf) ----
+{
+  const H = await import("../src/hosted.ts");
+  const S = await import("../src/status.ts");
+  const L = { host: "aleks-macbook.local", name: "aleks-macbook" };
+  const m = (o: Partial<Parameters<typeof H.machineOf>[0]>) => H.machineOf({ running: true, local: L, ...o });
+  const eq = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+  assert(H.machineLabel("aleks-macbook.local") === "aleks-macbook" && H.machineLabel("mini") === "mini", "machineLabel: the first DNS label");
+  let threw = false;
+  try { H.machineLabel("  "); } catch { threw = true; }
+  assert(threw, "machineLabel: an empty hostname throws, never a made-up label");
+  // The three team2027 hosts: this mac, the mini, the fly agents box (hostname = an opaque machine id).
+  assert(eq(m({ card: { host: "aleks-mac-mini.local", machine: "aleks-mac-mini" }, managedHere: true }), { label: "aleks-mac-mini", via: "mesh", here: false }), "machine: the card's claim wins over every local inference (the mini)");
+  assert(eq(m({ card: { host: "683e51da039598", machine: "fly-agents" } }), { label: "fly-agents", via: "mesh", here: false }), "machine: the fly box shows its NAME, not its opaque hostname");
+  assert(eq(m({ card: { host: "aleks-mac-mini.local" } }), { label: "aleks-mac-mini", via: "mesh", here: false }), "machine: a card with only meta.host → its first label");
+  assert(m({ card: { host: L.host, machine: "aleks-macbook" } })!.here === true, "machine: a card naming THIS host is here");
+  assert(eq(m({ teleportedTo: "ssh:mini", running: false }), { label: "ssh:mini", via: "teleport", here: false }), "machine: a teleported agent shows its target even when not live — it lives there");
+  assert(eq(m({ teleportedTo: "fly:2027-agents" }), { label: "fly:2027-agents", via: "teleport", here: false }), "machine: a fly teleport target");
+  assert(eq(m({ managedHere: true }), { label: "aleks-macbook", via: "manager", here: true }), "machine: in this manager's ps → this machine, by its name");
+  assert(m({ foreground: true })!.via === "foreground", "machine: a live --fg process → this machine");
+  assert(m({ localSpaceHere: true })!.via === "local-space", "machine: a registered agent on a local space → this machine");
+  assert(eq(m({}), { label: "?", via: "unknown", here: false }), "machine: running with no evidence → ? (never a guessed name)");
+  assert(m({ running: false, managedHere: true }) === undefined, "machine: not running and not teleported → none (it runs nowhere)");
+  assert(eq(H.machineOfCard({ meta: { host: "h", machine: "fly-agents", cwd: "/x" } }), { host: "h", machine: "fly-agents" }) && H.machineOfCard({ meta: { host: "" } }) === undefined && H.machineOfCard(undefined) === undefined, "machineOfCard: reads meta.host/meta.machine, an empty value is no claim");
+
+  // machineName: PAW_MACHINE > the remote record's --as name > the hostname's first label.
+  const { machineName } = await import("../src/host-stamp.ts");
+  const { writeRemoteMesh } = await import("../src/remote-mesh.ts");
+  const savedHome = process.env.PAW_HOME;
+  process.env.PAW_HOME = join(home, ".paw-machine");
+  mkdirSync(join(process.env.PAW_HOME, "spaces", "mtest"), { recursive: true });
+  assert(machineName("mtest", "aleks-macbook.local") === "aleks-macbook", "machineName: no record → the hostname's first label");
+  writeRemoteMesh({ space: "mtest", server: "tls://127.0.0.1:14999", root: home, human: "fly-agents", ts: new Date().toISOString() });
+  assert(machineName("mtest", "683e51da039598") === "fly-agents", "machineName: the record's --as name (the fly box) beats an opaque hostname");
+  writeRemoteMesh({ space: "mtest", server: "tls://127.0.0.1:14999", root: home, human: "you", ts: new Date().toISOString() });
+  assert(machineName("mtest", "aleks-macbook.local") === "aleks-macbook", "machineName: the default `you` is not a machine name");
+  process.env.PAW_MACHINE = "mac";
+  assert(machineName("mtest", "aleks-macbook.local") === "mac", "machineName: PAW_MACHINE wins");
+  delete process.env.PAW_MACHINE;
+  if (savedHome === undefined) delete process.env.PAW_HOME;
+  else process.env.PAW_HOME = savedHome;
+
+  const t = S.formatStatus(
+    [
+      { name: "away", host: { label: "ssh:mini", via: "teleport", here: false }, folder: "/a", mesh: "idle", live: true, durable: false, conflictPids: [], inbox: { kind: "none" } },
+      { name: "lost", host: { label: "?", via: "unknown", here: false }, folder: "/l", mesh: "idle", live: true, durable: false, conflictPids: [], inbox: { kind: "none" } },
+    ],
+    Date.now(),
+    Number.POSITIVE_INFINITY,
+  );
+  assert(/^away\s+\S+\s+ssh:mini\s/m.test(t) && /^lost\s+\S+\s+\?\s/m.test(t), "status: MACHINE renders the target and an explicit ?");
+  const line = S.formatMeshLine({ space: "team2027", remote: true, server: "tls://mesh.example:4222", machine: "aleks-macbook" });
+  assert(line.includes("team2027") && line.includes("remote broker tls://mesh.example:4222") && line.includes("aleks-macbook"), "status: the mesh line names the space, its broker and this machine");
+  assert(S.formatMeshLine({ space: "paw", remote: false, server: "nats://127.0.0.1:4222", machine: "aleks-macbook" }).includes("local broker"), "status: a local space says local broker");
+
+  // stampHost: persona host:/machine: → the card's meta (cotal sweeps unmodelled keys into meta).
+  const { stampHost } = await import("../src/host-stamp.ts");
+  const { loadAgentFile } = await import("@cotal-ai/core");
+  const pf = join(home, "stamp.md");
+  const st = { host: "aleks-macbook.local", machine: "aleks-macbook" };
+  writeFileSync(pf, "---\nname: s\nlaunchOptions:\n  host: /bin/acp\nhost: old-box\nmachine: old\n---\nbody\n");
+  stampHost(pf, st);
+  const after = readFileSync(pf, "utf8");
+  assert(after.includes("  host: /bin/acp") && !after.includes("old-box") && !after.includes("machine: old") && after.endsWith("---\nbody\n"), "stampHost: replaces the top-level keys only, keeps a nested host: and the body");
+  const meta = loadAgentFile(pf).meta;
+  assert(meta?.host === st.host && meta?.machine === st.machine, "stampHost: cotal's loader puts both on the card's meta");
+  const mtime = statSync(pf).mtimeMs;
+  stampHost(pf, st);
+  assert(statSync(pf).mtimeMs === mtime, "stampHost: already right → no write");
+  writeFileSync(pf, "no frontmatter\n");
+  threw = false;
+  try { stampHost(pf, st); } catch { threw = true; }
+  assert(threw, "stampHost: a persona without frontmatter fails loud");
+}
+
 if (failures > 0) {
   console.error(`\n${failures} paw status check(s) failed`);
   process.exit(1);
@@ -440,11 +515,12 @@ console.log("\nall paw status checks passed 🐾");
 // An agent the manager lists but paw never registered (cotal_spawn) gets a row with no folder and an honest note.
 {
   const unreg = {
-    name: "gpt-6_2", folder: "", mesh: "idle", live: true, runtime: "tmux" as const, durable: false, conflictPids: [], inbox: { kind: "none" as const }, busy: false, unregistered: { agent: "codex" },
+    name: "gpt-6_2", host: { label: "aleks-macbook", via: "manager" as const, here: true }, folder: "", mesh: "idle", live: true, runtime: "tmux" as const, durable: false, conflictPids: [], inbox: { kind: "none" as const }, busy: false, unregistered: { agent: "codex" },
   };
   const out = formatStatus([unreg as never], Date.now());
   assert(out.includes("gpt-6_2") && out.includes("unregistered codex peer"), "status: an unregistered manager-listed agent renders with its harness and a note");
-  assert(/gpt-6_2\s+idle\s+tmux\s+—/.test(out), "status: an unregistered agent shows — for CWD, never a fabricated folder");
+  assert(/gpt-6_2\s+idle\s+aleks-macbook\s+tmux\s+—/.test(out), "status: an unregistered agent shows — for CWD, never a fabricated folder");
 }
 console.log("✓ keeper unstickDecision");
 }
+

@@ -27,7 +27,8 @@ import { lastFailure, lastUsage, type ContextUsage } from "./transcript.ts";
 import { tailRead, turnOfProcess, turnState, type PendingTool, type TurnState } from "./transcript.ts";
 import { gitInfoMany, type GitInfo } from "./git.ts";
 import { isRemoteSpace, natsTls, pawServer } from "./server.ts";
-import { elsewhereStatus, localManagerInstanceId, runsElsewhere, type Elsewhere } from "./hosted.ts";
+import { elsewhereStatus, localMachine, localManagerInstanceId, machineOf, runsElsewhere, type Elsewhere, type Machine } from "./hosted.ts";
+import { readTeleported } from "./teleport-plan.ts";
 import { lagReaderCreds } from "./remote-creds.ts";
 import { pickRoster, presenceLive, readMeshRoster } from "./roster.ts";
 import { authGapWarning, probePresenceWrites } from "./presence-health.ts";
@@ -35,7 +36,7 @@ import { personaGlyph } from "./personality.ts";
 
 const tty = process.stdout.isTTY === true;
 const wrap = (code: string) => (s: string) => (tty ? `\x1b[${code}m${s}\x1b[0m` : s);
-const c = { dim: wrap("2"), bold: wrap("1"), green: wrap("32"), yellow: wrap("33"), red: wrap("31") };
+const c = { dim: wrap("2"), bold: wrap("1"), green: wrap("32"), yellow: wrap("33"), red: wrap("31"), cyan: wrap("36") };
 
 /** An agent's durable DM-consumer lag (`dm_<id>` on the `DM_<space>` stream) — the "is it actually
  *  consuming its inbox?" signal presence can't give. A zombie (mesh presence alive but deaf) shows
@@ -51,6 +52,12 @@ export type InboxState =
 
 export interface AgentStatus {
   name: string;
+  /** The mesh (space) this row was read from — set on every row {@link collectStatus} builds (every
+   *  row of one `paw status` shares it); optional only for the placeholder rows `paw top` makes. */
+  space?: string;
+  /** The machine its process runs on, with the evidence (src/hosted.ts {@link Machine}). Absent = not
+   *  running and not teleported: it runs nowhere right now. */
+  host?: Machine;
   folder: string;
   mesh: string; // display status: idle | working | waiting | starting | offline
   live: boolean; // reachable on the mesh (psRowAlive, or a live foreground claude) — drives RUNTIME
@@ -444,6 +451,17 @@ function statusColor(text: string): (s: string) => string {
   return c.dim; // offline
 }
 
+/** MACHINE cell colour: this machine is the quiet default, another machine stands out, `?` warns. */
+function hostColor(h: Machine | undefined): (s: string) => string {
+  if (!h || h.here) return c.dim;
+  return h.via === "unknown" ? c.yellow : c.cyan;
+}
+
+/** The line above the table: which mesh these rows are from, and which machine is reading it. Pure. */
+export function formatMeshLine(o: { space: string; remote: boolean; server: string; machine: string }): string {
+  return `mesh ${c.bold(o.space)} ${c.dim(o.remote ? `· remote broker ${o.server}` : "· local broker")} ${c.dim(`· you're on ${o.machine}`)}`;
+}
+
 /** Pad a (possibly colored) value to `width` using its known PLAIN length — color codes don't count. */
 function pad(value: string, plainLen: number, width: number): string {
   return value + " ".repeat(Math.max(0, width - plainLen));
@@ -475,6 +493,8 @@ const SESS_CAP = 24;
 export interface ColumnPlan {
   name: number;
   status: number;
+  /** MACHINE — never dropped: "where does it run" is the column you can't get from anywhere else. */
+  host: number;
   rt: number;
   cwd: number;
   sess: number;
@@ -503,7 +523,7 @@ export interface ColumnPlan {
 export function planColumns(nat: Omit<ColumnPlan, "showRt" | "showSess" | "noteInline">, width: number, opts: { wide?: boolean } = {}): ColumnPlan {
   const p: ColumnPlan = { ...nat, showRt: true, showSess: true, noteInline: 0 };
   const total = (q: ColumnPlan) => {
-    const cols = [q.name, q.status, q.showRt ? q.rt : -GAP, q.cwd, q.showSess ? q.sess : -GAP, q.inbox, q.ctx, q.active];
+    const cols = [q.name, q.status, q.host, q.showRt ? q.rt : -GAP, q.cwd, q.showSess ? q.sess : -GAP, q.inbox, q.ctx, q.active];
     return cols.reduce((a, b) => a + b + GAP, -GAP);
   };
   if (opts.wide || !Number.isFinite(width)) return { ...p, noteInline: Number.POSITIVE_INFINITY };
@@ -540,6 +560,7 @@ export function formatStatus(rows: AgentStatus[], now: number, width: number = t
   };
   const cwd = (r: AgentStatus) => (r.folder ? tilde(r.folder) : "—");
   const rtText = (r: AgentStatus) => (r.live && r.runtime ? r.runtime : "—");
+  const hostText = (r: AgentStatus) => r.host?.label ?? "—";
   const notes = new Map(rows.map((r) => [r.name, note(r, now)]));
   /** A 3-column glyph slot (emoji is 2 cells wide + a space) — only when some row has one, so a fleet
    *  with no personalities renders exactly as before. */
@@ -551,6 +572,7 @@ export function formatStatus(rows: AgentStatus[], now: number, width: number = t
       // that width out of CWD on every one of them. An outlier elides; the fleet keeps its paths.
       name: glyphW + Math.min(NAME_CAP, Math.max(4, ...rows.map((r) => r.name.length))),
       status: Math.max(6, ...rows.map((r) => statusText(r).length)),
+      host: Math.max(7, ...rows.map((r) => hostText(r).length)),
       rt: Math.max(7, ...rows.map((r) => rtText(r).length)),
       cwd: Math.max(3, ...rows.map((r) => cwd(r).length)),
       sess: Math.min(SESS_CAP, Math.max(7, ...rows.map((r) => sessionRef(r).length))),
@@ -562,10 +584,11 @@ export function formatStatus(rows: AgentStatus[], now: number, width: number = t
     { wide },
   );
   const header = c.dim(
-    `${"NAME".padEnd(w.name)}  ${"STATUS".padEnd(w.status)}  ${w.showRt ? `${"RUNTIME".padEnd(w.rt)}  ` : ""}${"CWD".padEnd(w.cwd)}  ${w.showSess ? `${"SESSION".padEnd(w.sess)}  ` : ""}${"INBOX".padEnd(w.inbox)}  ${"CTX".padEnd(w.ctx)}  ACTIVE`,
+    `${"NAME".padEnd(w.name)}  ${"STATUS".padEnd(w.status)}  ${"MACHINE".padEnd(w.host)}  ${w.showRt ? `${"RUNTIME".padEnd(w.rt)}  ` : ""}${"CWD".padEnd(w.cwd)}  ${w.showSess ? `${"SESSION".padEnd(w.sess)}  ` : ""}${"INBOX".padEnd(w.inbox)}  ${"CTX".padEnd(w.ctx)}  ACTIVE`,
   );
   const lines = rows.flatMap((r) => {
     const rt = rtText(r);
+    const host = hostText(r);
     const sess = elideRight(sessionRef(r), w.sess);
     const inbox = inboxText(r.inbox);
     const inboxColored = inboxStuck(r) ? c.yellow(inbox) : r.inbox.kind === "error" ? c.red(inbox) : r.inbox.kind === "lag" && inbox === "✓" ? c.green(inbox) : c.dim(inbox);
@@ -585,6 +608,7 @@ export function formatStatus(rows: AgentStatus[], now: number, width: number = t
     const row =
       `${pad(glyph + c.bold(name), glyphW + name.length, w.name)}  ` +
       `${pad(statusColor(statusText(r))(statusText(r)), statusText(r).length, w.status)}  ` +
+      `${pad(hostColor(r.host)(host), host.length, w.host)}  ` +
       (w.showRt ? `${pad(r.live ? rt : c.dim(rt), rt.length, w.rt)}  ` : "") +
       `${pad(c.dim(folder), folder.length, w.cwd)}  ` +
       (w.showSess ? `${pad(sess, sess.length, w.sess)}  ` : "") +
@@ -938,7 +962,8 @@ export async function collectStatus(space: string, ctl?: ManagerControl, opts: C
       const roots = has ? personaTranscriptRoots(file) : [claudeProjectsRoot()];
       // Teleported away: its transcript here is the frozen copy from before it left — read none of it.
       const away = has ? runsElsewhere(space, name) : undefined;
-      return [name, { pin: has ? readResumeId(file) : undefined, harness: has ? readAgentType(file) : undefined, roots, glyph: personaGlyph(has ? file : undefined), away }];
+      const teleportedTo = has ? readTeleported(file)?.to : undefined;
+      return [name, { pin: has ? readResumeId(file) : undefined, harness: has ? readAgentType(file) : undefined, roots, glyph: personaGlyph(has ? file : undefined), away, teleportedTo }];
     }),
   );
   const pins = [...new Set([...local.values()].flatMap((l) => (l.pin ? [l.pin] : [])))];
@@ -988,6 +1013,7 @@ export async function collectStatus(space: string, ctl?: ManagerControl, opts: C
   const inboxByName = inboxLag(listing, server, withIds, inboxErrors);
   const gitByFolder = await git;
   const procs = await procsByPin;
+  const here = localMachine(space);
   const rows: AgentStatus[] = agents.map(({ folder, name }) => {
     const rec = local.get(name)!;
     const { pin, harness, glyph } = rec;
@@ -1020,8 +1046,20 @@ export async function collectStatus(space: string, ctl?: ManagerControl, opts: C
       live = s.live;
       rowRuntime = live ? runtime : undefined;
     }
+    const ros = rosterByName.get(name);
+    const host = machineOf({
+      card: ros && presenceLive(ros, now) ? { host: ros.host, machine: ros.machine } : undefined,
+      teleportedTo: rec.teleportedTo,
+      managedHere: !!psRow && live,
+      foreground: !!fg,
+      localSpaceHere: !remote && !rec.teleportedTo,
+      running: live,
+      local: here,
+    });
     return {
       name,
+      space,
+      ...(host ? { host } : {}),
       folder,
       mesh,
       live,
@@ -1062,8 +1100,11 @@ export async function collectStatus(space: string, ctl?: ManagerControl, opts: C
   for (const [name, psRow] of psByName) {
     if (registered.has(name) || fgByName.has(name)) continue;
     const s = meshStatus(psRow);
+    const host = machineOf({ managedHere: true, running: s.live, local: here });
     rows.push({
       name,
+      space,
+      ...(host ? { host } : {}),
       folder: psRow.cwd ?? "", // the manager knows where a live peer runs; paw invents nothing beyond it
       mesh: s.text,
       live: s.live,
@@ -1134,6 +1175,7 @@ async function status(argv: string[]): Promise<void> {
   }
   // `--wide` keeps every column at any terminal width: the squeezed layout drops RUNTIME/SESSION and
   // elides long paths, which is right for reading and wrong when you need the whole cell.
+  console.log(formatMeshLine({ space, remote: isRemoteSpace(space), server: pawServer(space), machine: localMachine(space).name }));
   console.log(formatStatus(rows, Date.now(), undefined, argv.includes("--wide")));
   const hubLine = formatHubLine(hub);
   if (hubLine) console.log(hubLine);

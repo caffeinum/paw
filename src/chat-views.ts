@@ -24,6 +24,8 @@
  * Pure: no tty, no readline, no mesh — chat.ts wires these in; check:chat asserts them.
  */
 import type { Block } from "./transcript.ts";
+import type { Machine } from "./hosted.ts";
+import { displayWidth, fitWidth } from "./width.ts";
 
 export type ChatView = "logs" | "chat" | "tasks";
 
@@ -113,6 +115,33 @@ export function hintFor(s: { view: ChatView; picking: boolean; hasTarget: boolea
   if (next !== s.view) parts.push(`${VIEW_LABEL[next]} →`);
   if (s.view === "tasks") parts.push(s.clickMode ? "ctrl+o select" : "ctrl+o click to fold");
   return `${VIEW_LABEL[s.view]}  │  ${parts.join("   ")}`;
+}
+
+/**
+ * The hint line's RIGHT side: which mesh this session is on and, with an agent targeted, which machine
+ * runs it (src/hosted.ts machineOf — evidence only, `?` when nothing says). A remote space is marked,
+ * since its agents can run on any machine that joins it. Pure.
+ */
+export function whereTag(o: { space: string; remote: boolean; agent?: { machine?: Machine } }): string {
+  const mesh = `mesh ${o.space}${o.remote ? " (remote)" : ""}`;
+  if (!o.agent) return mesh;
+  return `${mesh} · ${o.agent.machine ? `on ${o.agent.machine.label}` : "not running"}`;
+}
+
+/** Below this the hint stops saying anything ("chat │ ← l…"), so the tag gives way instead. */
+const MIN_HINT = 14;
+
+/**
+ * Lay the hint (left) and the where-tag (right-aligned) into one row of `cols` columns. The hint is
+ * elided before the tag is dropped, down to {@link MIN_HINT}; narrower than that the tag goes and
+ * the hint keeps the row. Never wraps — the row is redrawn on every keystroke. Pure.
+ */
+export function hintWithTag(hint: string, tag: string, cols: number): { left: string; pad: number; tag: string } {
+  const avail = Math.max(0, cols - 1);
+  const tw = displayWidth(tag);
+  if (!tag || tw + 2 + MIN_HINT > avail) return { left: fitWidth(hint, avail), pad: 0, tag: "" };
+  const left = fitWidth(hint, avail - tw - 2);
+  return { left, pad: avail - displayWidth(left) - tw, tag };
 }
 
 /**

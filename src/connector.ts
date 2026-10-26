@@ -12,6 +12,7 @@ import { ensureShim, headlessDir, hubEnabled, hubSocketPath } from "./hub/paths.
 import { headlessLaunch } from "./headless.ts";
 import { routeCotalToHub } from "./hub/route.ts";
 import { isRemoteSpace } from "./server.ts";
+import { localHost, machineName, stampHost } from "./host-stamp.ts";
 import { readTracepaperUrl, routeTracepaperDirect } from "./tracepaper-direct.ts";
 
 /** TLS trust a REMOTE space's seats need. cotal's launch env is an allowlist without the CA knobs, so a
@@ -128,6 +129,10 @@ export const pawConnector: Connector = {
   kind: "connector",
   name: "paw",
   buildLaunch(opts: LaunchOpts): LaunchSpec {
+    // The card's `meta.host` comes from the persona's `host:` (src/host-stamp.ts): stamped HERE, by the
+    // machine about to launch it, so `paw status`/`paw chat` anywhere on the mesh can say where it runs.
+    // No persona (a bare cotal_spawn peer) ⇒ nothing to stamp, and its card claims no host.
+    if (opts.configPath) stampHost(opts.configPath, { host: localHost(), machine: machineName(opts.space) });
     // cotal ≥0.84 loads claude's NATIVE MCP sources (user/project/plugin/claude.ai connectors) unless the
     // caller marks the selection exclusive — and the manager marks it only when a persona names
     // `shareTools:`. paw's contract is cotal + the servers `paw mcp` shares and nothing else (a fleet each
