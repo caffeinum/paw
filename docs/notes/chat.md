@@ -403,3 +403,14 @@ none. ctx % over the mesh needs the remote to publish it (card meta or an event)
 (`#files` announces absolute paths — meaningless on another box; the agent's own `📷 /mini/path` replies
 404 in paw web here). Tests: `check:teleport` (marker cwd, runsElsewhere, log/attach refusals, status row),
 `check:remote` (elsewhereOf + strings), `check:images` (`attachedPlaceholders`).
+
+## where it runs (hint row, picker, banner)
+
+The hint row under the input right-aligns `mesh <space>[ (remote)] · on <machine>` for the target
+(`· not running` when it runs nowhere, `mesh <space>` alone with no target); the hint is elided before
+the tag drops, and the tag gives way below 14 columns of hint (`hintWithTag`, src/chat-views.ts). Picker
+and `$` mode keep the plain hint. Machine comes from the same `machineOf` as `paw status` (card
+`meta.machine`/`meta.host`, else the teleport marker, else a local space's persona → this machine, else
+`?` while live) — chat reads no manager ps, so on a remote space a live agent whose card has no host
+reads `?`. Another machine is cyan, `?` yellow. ↓ picker rows append `· <machine>` when the row fits; the
+banner prints the mesh line once. Tests: `check:chat` (whereTag, hintWithTag widths).

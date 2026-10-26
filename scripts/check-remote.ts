@@ -343,7 +343,8 @@ const tele = elsewhereOf({ teleported: { to: "ssh:mini", cwd: "/Users/a/.paw/rep
 assert(tele?.how === "teleported" && elsewhereLabel(tele) === "ssh:mini · /Users/a/.paw/repos/o/tp", "teleported: where + the folder there");
 assert(elsewhereLabel(elsewhereOf({ teleported: { to: "ssh:mini" }, remote: true, personaHere: true, localHost: "laptop" })!) === "ssh:mini", "…the host alone when the folder there was never recorded");
 assert(elsewhereOf({ teleported: { to: "origin" }, remote: true, personaHere: true, localHost: "laptop" })?.where === "the machine it came from", "a brought-back copy names no fake host");
-assert(elsewhereOf({ remote: true, personaHere: false, host: "mini.local", localHost: "laptop" })?.where === "mini.local", "another machine's agent (no persona here): its card's host");
+assert(elsewhereOf({ remote: true, personaHere: false, host: "mini.local", localHost: "laptop" })?.where === "mini", "another machine's agent (no persona here): its card's host, by its first label");
+assert(elsewhereOf({ remote: true, personaHere: false, host: "683e51da039598", machine: "fly-agents", localHost: "laptop" })?.where === "fly-agents", "…or by the machine name its card carries (the fly box)");
 assert(elsewhereOf({ remote: true, personaHere: false, localHost: "laptop" })?.where === "another machine", "…or 'another machine' when its card reports none");
 assert(elsewhereOf({ remote: true, personaHere: false, host: "laptop", localHost: "laptop" }) === undefined, "same host (another paw on this box): its files are here, not elsewhere");
 assert(elsewhereOf({ remote: true, personaHere: true, localHost: "laptop" }) === undefined && elsewhereOf({ remote: false, personaHere: false, localHost: "laptop" }) === undefined, "hosted here / open mesh: not elsewhere");
