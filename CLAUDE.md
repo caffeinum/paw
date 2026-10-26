@@ -51,9 +51,10 @@ Each entry: what it is + the most load-bearing rule. Full notes behind the link.
 
 ### Composition roots & CLI → [cli.md](docs/notes/cli.md)
 - `bin/paw.ts` — endpoint-native composition root: imports ONLY @cotal-ai/core + paw command modules;
-  own dispatch, NEEDS_MESH/NEEDS_MANAGER pre-gating, `paw cotal <cmd>` → cotald subprocess; unknown
+  own dispatch loading ONLY the verb's module (`src/command-modules.ts`, map checked by check:dispatch),
+  NEEDS_MESH/NEEDS_MANAGER pre-gating, `paw cotal <cmd>` → cotald subprocess; unknown
   command fails loud. → [cli.md#binpawts](docs/notes/cli.md#binpawts)
-- `bin/paw.mjs` — package `bin` shim: node → repo tsx → bin/paw.ts (no dist/ build). → [cli.md#binpawmjs](docs/notes/cli.md#binpawmjs)
+- `bin/paw.mjs` — package `bin` shim: native TS on node ≥22.18, else node → repo tsx (no dist/ build); every launcher's no-bun fallback = `node bin/paw.mjs`, never tsx. → [cli.md#binpawmjs](docs/notes/cli.md#binpawmjs)
 - `bin/cotald.ts` — cotal composition root (runCli + manager + paw connector aliased as the default
   agent type); **only ever a subprocess**; the only file allowed to import @cotal-ai/cli/manager. → [cli.md#bincotaldts](docs/notes/cli.md#bincotaldts)
 - `src/commands/` — self-registering commands: stop, msg, ask, who, history (read-only), watch (tap

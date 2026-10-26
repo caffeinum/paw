@@ -126,8 +126,9 @@ function assertPawCheckout(root: string, source: string): void {
   }
 }
 
-/** How to execute `<root>/bin/paw.ts`. Prefers bun (the same choice ~/.local/bin/paw makes: ~0.2s
- *  vs ~0.8s under tsx), falls back to node + the checkout's own tsx. Every path is ABSOLUTE. */
+/** How to execute `<root>/bin/paw.ts`. Prefers bun (the same choice ~/.local/bin/paw makes), falls
+ *  back to node + `<root>/bin/paw.mjs`, which strips the types natively on node >= 22.18 (~0.7s) and
+ *  only reaches for tsx (~4s on a loaded box) on an older node. Every path is ABSOLUTE. */
 export function pawExec(root: string): { exec: string; args: string[] } {
   const entry = join(root, "bin", "paw.ts");
 
@@ -142,11 +143,9 @@ export function pawExec(root: string): { exec: string; args: string[] } {
   if (existsSync(bunHome)) return { exec: bunHome, args: [entry] };
   if (basename(process.execPath).startsWith("bun")) return { exec: process.execPath, args: [entry] };
 
-  const tsx = join(root, "node_modules", "tsx", "dist", "cli.mjs");
-  if (!existsSync(tsx)) {
-    throw new Error(`paw: ${tsx} is missing — run \`pnpm install\` in ${root}, or install bun.`);
-  }
-  return { exec: nodeBin(), args: [tsx, entry] };
+  const launcher = join(root, "bin", "paw.mjs");
+  if (!existsSync(launcher)) throw new Error(`paw: ${launcher} is missing — ${root} is not a complete paw checkout.`);
+  return { exec: nodeBin(), args: [launcher] };
 }
 
 function nodeBin(): string {
@@ -155,7 +154,7 @@ function nodeBin(): string {
   const found = NODE_CANDIDATES.find((p) => p && existsSync(p));
   if (found) return found;
   throw new Error(
-    "paw: could not resolve an absolute `node` to run the paw CLI under tsx — install bun, " +
+    "paw: could not resolve an absolute `node` to run the paw CLI — install bun, " +
       "or set PAW_BIN to an executable paw launcher.",
   );
 }

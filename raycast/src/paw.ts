@@ -7,7 +7,7 @@
  * CLI means Raycast is just another reader of the same state — nothing to desync, nothing to starve.
  *
  * Raycast runs commands with a MINIMAL PATH (no shell rc, no nvm), so the paw launcher is invoked by
- * absolute path; the launcher itself already resolves bun/tsx absolutely, so it works from here.
+ * absolute path; the launcher itself already resolves bun/node absolutely, so it works from here.
  */
 import { Clipboard, getPreferenceValues } from "@raycast/api";
 import { execFile } from "node:child_process";
