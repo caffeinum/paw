@@ -15,8 +15,6 @@ import { existsSync } from "node:fs";
 import {
   agentRecord,
   assertUnambiguousTarget,
-  ensureAgentSpawned,
-  folderForName,
   personaFilePath,
   psRowAlive,
   registerLivePeer,
@@ -25,7 +23,6 @@ import {
   type PsRow,
 } from "../addressing.ts";
 import { withManagerControl } from "../control.ts";
-import { awaitSpawnHeadroom } from "../pacing.ts";
 import {
   RUNTIMES,
   type Runtime,
@@ -48,6 +45,17 @@ import { pawServer } from "../server.ts";
 import { applySwap, readSwapPersona, SWAP_AGENTS, type SwapRequest } from "../swap.ts";
 import { assertManagerFeature, KIT_ARGS_FEATURE, KIT_DEFAULTS_FEATURE } from "../manager-features.ts";
 import { resolveStopName } from "./stop.ts";
+import {
+  clearReviveList,
+  describeFailedRestart,
+  pendingNames,
+  readLeftState,
+  reviveAgents,
+  revivalFailure,
+  withReviveLock,
+  writeReviveList,
+  type Skipped,
+} from "../revive.ts";
 
 const tty = process.stdout.isTTY === true;
 const wrap = (code: string) => (s: string) => (tty ? `\x1b[${code}m${s}\x1b[0m` : s);
@@ -124,44 +132,10 @@ async function liveAgentNames(space: string): Promise<string[]> {
   }
 }
 
-/** Re-spawn `names` (from paw's folder→name registry) under the current manager — the "bring
- *  everyone back" step a manager restart otherwise leaves to a lazy `dm`/`chat`. Idempotent:
- *  ensureAgentSpawned reuses an already-live agent, so this is safe even when nothing bounced. A
- *  name with no folder (a live peer whose ps row carried no cwd) or a vanished folder is
- *  skipped — reported, never fabricated. Each agent resumes its pinned session, so it comes back warm. */
-async function reviveAgents(space: string, names: string[]): Promise<{ revived: string[]; skipped: string[] }> {
-  const revived: string[] = [];
-  const skipped: string[] = [];
-  if (!names.length) return { revived, skipped };
-  await withManagerControl(space, pawServer(space), async (ctl) => {
-    for (const name of names) {
-      const folder = folderForName(space, name);
-      if (!folder || !existsSync(folder)) {
-        skipped.push(name);
-        continue;
-      }
-      // Anti-thundering-herd: a revival after a load-induced lease loss must not deepen the
-      // starvation that caused it. Bounded — after the cap the spawn proceeds regardless.
-      const headroom = await awaitSpawnHeadroom({
-        onWait: (load, thr) => console.log(c.dim(`  load ${load.toFixed(0)} > ${thr} — pausing revival until the machine has headroom…`)),
-      });
-      if (headroom === "gave-up") console.log(c.dim(`  still loaded after the wait cap — spawning ${name} anyway`));
-      try {
-        const r = await ensureAgentSpawned(ctl, { space, name, cwd: folder });
-        if (r.stuck) console.error(`paw: ${r.stuck}`);
-        (r.stuck ? skipped : revived).push(name);
-      } catch {
-        skipped.push(name); // a spawn failure (e.g. two-writer guard) — reported, not fatal to the rest
-      }
-    }
-  });
-  return { revived, skipped };
-}
-
 /** One line summarising a revive pass, or nothing when there was nobody to bring back. */
-function reportRevival(before: string[], revived: string[], skipped: string[]): void {
+function reportRevival(before: string[], revived: string[], skipped: Skipped[]): void {
   if (!before.length) return;
-  const tail = skipped.length ? c.dim(` (skipped: ${skipped.join(", ")})`) : "";
+  const tail = skipped.length ? c.dim(` (skipped: ${skipped.map((x) => x.name).join(", ")})`) : "";
   console.log(c.dim(`  brought back ${revived.length}/${before.length} agent(s)${tail}`));
 }
 
@@ -198,6 +172,7 @@ async function runtime(argv: string[]): Promise<void> {
   // NEW runtime). No-op when nothing bounced (ensureAgentSpawned reuses live agents).
   const { revived, skipped } = await reviveAgents(space, liveBefore);
   reportRevival(liveBefore, revived, skipped);
+  if (skipped.length) throw new Error(revivalFailure(space, liveBefore.length, skipped));
 }
 
 async function restart(argv: string[]): Promise<void> {
@@ -291,18 +266,36 @@ async function restart(argv: string[]): Promise<void> {
     assertRuntimeUsable(r); // refuse cmux-without-a-surface before writing the preference / bouncing
     writeRuntimePreference(space, r);
   }
-  const liveBefore = await liveAgentNames(space); // capture who's up so the bounce brings them back
-  await restartManager({ space });
-  const now = actualManagerRuntime(space) ?? readRuntimePreference(space) ?? "pty";
-  console.log(c.green(`✓ manager restarted (${now})`));
-  // The bounce dropped every agent — re-spawn the ones that were live (each resumes its session), so
-  // `paw restart` brings everyone back without a manual `dm`/`chat` probe.
-  const { revived, skipped } = await reviveAgents(space, liveBefore);
-  reportRevival(liveBefore, revived, skipped);
+  // The revive list goes to DISK before the bounce despawns anyone (src/revive.ts): a restart that
+  // fails half-way (2026-10-26: a broker stall after the despawn) used to lose who was live with it.
+  // A list a previous failed restart left is merged in — those agents are down and still owed a revive.
+  // The lock spans write → bounce → revive, so an ensure() elsewhere can't consume the list mid-bounce.
+  const outcome = await withReviveLock(
+    space,
+    async () => {
+      const liveBefore = await liveAgentNames(space); // capture who's up so the bounce brings them back
+      const owed = writeReviveList(space, liveBefore)?.names ?? [];
+      try {
+        await restartManager({ space });
+      } catch (e) {
+        throw new Error(describeFailedRestart((e as Error).message, readLeftState(space, pendingNames(space))));
+      }
+      const now = actualManagerRuntime(space) ?? readRuntimePreference(space) ?? "pty";
+      console.log(c.green(`✓ manager restarted (${now})`));
+      // The bounce dropped every agent — re-spawn the ones that were live (each resumes its session), so
+      // `paw restart` brings everyone back without a manual `dm`/`chat` probe.
+      const { revived, skipped } = await reviveAgents(space, owed);
+      reportRevival(owed, revived, skipped);
+      clearReviveList(space);
+      return { owed, skipped };
+    },
+    true,
+  );
 
   // If WE are the detached child, the bounce + revive are done — wake the agent that launched us so it
   // resumes its task (a respawned session is idle until it gets a turn), then clear the in-flight pidfile.
   if (detachedChild) finishDetachedRestart(space, process.env.PAW_WAKE_AGENT!);
+  if (outcome?.skipped.length) throw new Error(revivalFailure(space, outcome.owed.length, outcome.skipped));
 }
 
 const runtimeCommand: Command = {

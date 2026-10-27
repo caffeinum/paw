@@ -63,7 +63,8 @@
     "check:move": "node scripts/check-move.ts",
     "check:connect-diag": "node scripts/check-connect-diag.ts",
     "check:log-stamp": "node scripts/check-log-stamp.ts",
-    "check:mailbox": "node scripts/check-mailbox.ts"
+    "check:mailbox": "node scripts/check-mailbox.ts",
+    "check:restart": "node scripts/check-restart.ts"
   },
   "dependencies": {
     "@cotal-ai/cli": "0.100.0",
