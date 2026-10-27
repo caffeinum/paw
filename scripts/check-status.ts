@@ -345,6 +345,53 @@ assert(!inferBusy("idle", true, BUSY_NOW + 5_000, BUSY_NOW), "an mtime in the FU
   assert(turnState(promptCommand).inFlight === true, "turnState: a prompt-type slash command (no local output) still opens a turn");
 }
 
+// ---- resume-time "didn't finish before the previous session ended" notices are not a turn ----
+{
+  const { liveTurn } = await import("../src/status.ts");
+  const { turnState } = await import("../src/transcript.ts");
+  const j = (o: object) => JSON.stringify(o);
+  const START = Date.parse("2026-10-27T05:05:17.000Z"); // harbor's resumed claude process start
+  const readOf = (tail: string) => ({ mtimeMs: Date.now(), turn: () => turnState(tail) });
+  const notice = (status: string, summary: string) =>
+    `<task-notification>\n<task-id>b5yhrgxkw</task-id>\n<tool-use-id>toolu_01A</tool-use-id>\n<status>${status}</status>\n<summary>${summary}</summary>\n</task-notification>`;
+  const STALE = notice("stopped", "Background shell command didn't finish before the previous session ended");
+  // harbor's real tail, 2026-10-27 (record shapes verbatim, content trimmed): a closed turn from the OLD process,
+  // its metadata, then — 26s after the new process started — queue-operation enqueue/dequeue and the
+  // `queueTranscriptOnly` user record, then bridge-session. No assistant record ever followed.
+  const closed = [
+    j({ type: "assistant", timestamp: "2026-10-27T04:34:40.000Z", message: { role: "assistant", stop_reason: "end_turn", content: [{ type: "text", text: "done" }] } }),
+    j({ type: "system", subtype: "stop_hook_summary", timestamp: "2026-10-27T04:34:43.629Z" }),
+    j({ type: "system", subtype: "turn_duration", isMeta: false, durationMs: 257228, timestamp: "2026-10-27T04:34:43.632Z" }),
+    j({ type: "bridge-session" }), j({ type: "cost-state" }), j({ type: "last-prompt" }), j({ type: "cost-state" }),
+  ];
+  const T = "2026-10-27T05:05:43.631Z";
+  const resumeNotice = [
+    j({ type: "queue-operation", operation: "enqueue", timestamp: "2026-10-27T05:05:37.734Z", content: notice("killed", 'Background command "Push fix" was stopped') }),
+    j({ type: "tools-used", tools: ["Bash"] }),
+    j({ type: "queue-operation", operation: "enqueue", timestamp: "2026-10-27T05:05:43.601Z", content: STALE }),
+    j({ type: "queue-operation", operation: "dequeue", timestamp: "2026-10-27T05:05:43.629Z" }),
+    j({ type: "user", promptId: "p1", timestamp: T, message: { role: "user", content: STALE }, permissionMode: "bypassPermissions", origin: { kind: "task-notification" }, promptSource: "system", queueSkipAttachments: true, queueTranscriptOnly: true }),
+    j({ type: "bridge-session" }),
+  ];
+  const harbor = [...closed, ...resumeNotice].join("\n");
+  assert(turnState(harbor).inFlight === false, "turnState: a resume-time queueTranscriptOnly notice after a closed turn is not a turn in flight (harbor fix)");
+  assert(liveTurn(readOf(harbor), "idle", undefined, START).busy === false, "liveTurn: the notice written AFTER the process start still isn't busy");
+  assert(turnState(resumeNotice.join("\n")).inFlight === undefined, "turnState: a tail holding only the notice → cannot tell (caller widens), not in flight");
+
+  // Negative: a task that finished in THIS process is delivered as a real prompt (no queueTranscriptOnly) and
+  // opens a turn — busy until the assistant answers.
+  const doneTs = "2026-10-27T05:20:00.000Z";
+  const completed = j({ type: "user", timestamp: doneTs, message: { role: "user", content: notice("completed", 'Background command "make" completed (exit code 0)') }, origin: { kind: "task-notification" }, promptSource: "system" });
+  const realDone = [...closed, ...resumeNotice, completed].join("\n");
+  assert(turnState(realDone).inFlight === true && turnState(realDone).lastMsgMs === Date.parse(doneTs), "turnState: a completed task-notification in the current process still opens a turn");
+  assert(liveTurn(readOf(realDone), "idle", undefined, START).busy === true, "liveTurn: that completed notification → busy");
+  // Negative: a stopped/killed notice WITHOUT the flag (a task killed in this process) is a real prompt too.
+  const killedNow = [...closed, j({ type: "user", timestamp: doneTs, message: { role: "user", content: notice("killed", 'Background command "make" was stopped') }, origin: { kind: "task-notification" }, promptSource: "system" })].join("\n");
+  assert(turnState(killedNow).inFlight === true, "turnState: a killed notification without queueTranscriptOnly still opens a turn");
+  const answered = [...closed, ...resumeNotice, completed, j({ type: "assistant", timestamp: "2026-10-27T05:20:05.000Z", message: { role: "assistant", stop_reason: "end_turn", content: [{ type: "text", text: "ok" }] } })].join("\n");
+  assert(turnState(answered).inFlight === false, "turnState: the completed notification answered → closed");
+}
+
 // ---- hung tool: status rendering + the keeper's Esc decision ----
 {
   const { hungTool, toolLabel, HUNG_TOOL_SHOW_MS } = await import("../src/status.ts");

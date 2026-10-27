@@ -95,6 +95,15 @@ Moved verbatim from CLAUDE.md (2026-10-02 split). Index: [CLAUDE.md](../../CLAUD
   `<local-command-stdout|stderr>`, e.g. a manual `/compact`) is transparent. A cotal channel injection is
   `isMeta: true` with `origin.kind: "channel"` and DOES open a turn, so it is read as a prompt despite isMeta
   (a DM after the compaction → busy until answered). Test: `check:status`.
+- **A resume-time stale-task notice is not a turn (2026-10-27).** On resume claude writes, per background
+  task of the PREVIOUS process, a `user` record `<task-notification>` (`<status>stopped</status>`, "Background
+  shell command didn't finish before the previous session ended" + a "No completion record was found" note)
+  with `origin.kind: "task-notification"`, `promptSource: "system"`, `queueSkipAttachments: true` and
+  `queueTranscriptOnly: true`, preceded by `queue-operation` enqueue/dequeue — seconds AFTER the new process
+  started, so turnOfProcess can't discount it, and no turn is ever run for it. harbor showed `busy` 1h+ at ~0%
+  CPU while `paw who` said idle. `turnState` now skips any `queueTranscriptOnly` user record: across every
+  local transcript all 23 such records (stopped, plus a few session-task completed/failed) went unanswered,
+  while a normal task-notification (no flag, any status) still opens a turn. Test: `check:status`.
 
 ## json output
 
