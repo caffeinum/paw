@@ -414,3 +414,25 @@ and `$` mode keep the plain hint. Machine comes from the same `machineOf` as `pa
 `?` while live) — chat reads no manager ps, so on a remote space a live agent whose card has no host
 reads `?`. Another machine is cyan, `?` yellow. ↓ picker rows append `· <machine>` when the row fits; the
 banner prints the mesh line once. Tests: `check:chat` (whereTag, hintWithTag widths).
+
+## connection state
+
+`src/conn-state.ts` (`ConnState`, `attachConn`, `logConn`). cotal 0.100's endpoint reports trouble one
+event at a time: a `warning` per failed presence heartbeat (2s) and an `error` per failed presence-watch
+rebind — `sweep()` → `rebindStalePresenceWatch` once per TTL (6s) while a held link keeps the watch
+silent, and the rebind's consumer create rejects with nats.js `TimeoutError`, message exactly
+`timeout`. chat printed every `error` as `! <message>`, so a remote fly space filled with red
+`! timeout` (2026-10-26). Now chat, `paw inbox --watch` and `paw web` feed the endpoint's `transport`,
+`connection`, `warning` and `error` events into one state: `connecting` / `connected` / `degraded`
+(socket up, transient failures within 20s) / `reconnecting (n)` (n = failed dials only) /
+`disconnected Ns` (cotal's terminal-close supervisor is rebuilding). chat leads the hint row's right side
+with it (`● connected · mesh … · on …`, green/yellow/red), redrawn by a 1s tick only when the label
+changes. Transcript lines: ONE when a non-connected streak lasts 30s (with the last reason), ONE when it
+recovers. Printed immediately: auth/permission refusals (even inside a `mesh connection closed`),
+creds/bearer refresh failures, cotal `transient: false` escalations (presence-write-stuck only while the
+connection is UP — during an outage it is the outage restated), and anything unrecognised (fail loud);
+a repeated loud text is counted, not reprinted, for 10 min. `/conn` prints the state, the session's
+transient + loud counts and the last of each; `PAW_CONN_DEBUG=1` prints every raw signal. `show()` now
+clears from the prompt's FIRST row (`getCursorPos().rows`), so a wrapped input no longer leaves stale
+prompt rows above each printed line. Upstream: cotal should log one line per failure streak, not per
+heartbeat. Tests: `check:chat` (`conn:` cases).

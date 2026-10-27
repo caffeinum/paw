@@ -53,6 +53,7 @@ import { HOST_RE } from "./url.ts";
 import { bashMessage, parseBang, runBash } from "./bash.ts";
 import { ManagerControl, withManagerControl } from "./control.ts";
 import { advanceCursor } from "./cursor.ts";
+import { attachConn, type ConnPhase } from "./conn-state.ts";
 import { AwaitTracker } from "./chat-awaiting.ts";
 import { arrowRun, CLEAR_ALL, displayWidth, fitWidth, entryVisible, hintFor, hintWithTag, whereTag, History, LogFollower, navKey, scrollKey, Painter, type Entry, pickerWindow, showsChat, showsLogs, stepView, VIEW_LABEL, viewNeedsTarget, type ChatView } from "./chat-views.ts";
 import { agentBeads, agentInfo, CLOSED_RECENT_MS, hitAt, lastExchange, newer, renderTasksPanel, type InfoFacts, type Said, type TasksHit } from "./chat-tasks.ts";
@@ -117,6 +118,8 @@ const c = {
 };
 
 /** The where-tag's colour: this machine is quiet, another machine stands out, `?` warns. */
+const connColor = (p: ConnPhase): ((s: string) => string) =>
+  p === "connected" ? c.green : p === "disconnected" ? c.red : c.yellow;
 const machineColor = (m: Machine | undefined): ((s: string) => string) => (!m || m.here ? c.dim : m.via === "unknown" ? c.yellow : c.cyan);
 
 /** The channel a plain line broadcasts to when there's no sticky target yet (cotal's default room). */
@@ -593,6 +596,9 @@ async function chat(argv: string[]): Promise<void> {
     // made it erase the wrong rows and leave stale ones behind. Take it down, print, put it back.
     if (picking) pickerHooks?.erase();
     if (rl && !closing) {
+      // From the prompt's FIRST row: a line wrapped past the terminal width puts the cursor rows below
+      // it, and clearing from there left the prompt's earlier rows stranded above every printed line.
+      readline.moveCursor(process.stdout, 0, -rl.getCursorPos().rows);
       readline.cursorTo(process.stdout, 0);
       // clearScreenDown, not clearLine: the hint line sits BELOW the prompt, and a message printed
       // over the prompt row would otherwise leave a stale hint stranded in the middle of the text.
@@ -670,13 +676,17 @@ async function chat(argv: string[]): Promise<void> {
    * Gated on `rl`, which is created after all of chat's state: emit() can run during startup, before
    * `curName`/`bang`/`picking` exist, and touching them then would be a temporal-dead-zone crash.
    */
+  /** The connection label the hint line last showed, so a tick redraws only when it changed. */
+  let hintState: string | undefined;
   function drawHint(): void {
     if (!rl || closing || !process.stdout.isTTY) return;
     const hint = hintFor({ view, picking, hasTarget: !!curName, bang, clickMode });
     const cols = process.stdout.columns || 80;
     // The RIGHT side: which mesh, and which machine runs the target — the picker and `$` mode keep the row.
     const machine = curName ? machineFor(curName) : undefined;
-    const row = hintWithTag(hint, picking || bang ? "" : whereTag({ space, remote: remoteSpace, ...(curName ? { agent: { machine } } : {}) }), cols);
+    const state = conn.label(Date.now());
+    const where = whereTag({ space, remote: remoteSpace, ...(curName ? { agent: { machine } } : {}) });
+    const row = hintWithTag(hint, picking || bang ? "" : `${state} · ${where}`, cols);
     const pos = rl.getCursorPos();
     const shown = displayWidth(stripVTControlCharacters(promptFor())) + displayWidth(rl.line);
     const lastRow = Math.floor(Math.max(0, shown - 1) / cols);
@@ -689,11 +699,23 @@ async function chat(argv: string[]): Promise<void> {
     readline.clearLine(process.stdout, 1);
     process.stdout.write("\n");
     readline.clearLine(process.stdout, 0);
-    process.stdout.write(c.dim(row.left) + " ".repeat(row.pad) + (row.tag ? machineColor(machine)(row.tag) : ""));
+    const tag = row.tag ? connColor(conn.phase(Date.now()))(state) + machineColor(machine)(row.tag.slice(state.length)) : "";
+    process.stdout.write(c.dim(row.left) + " ".repeat(row.pad) + tag);
+    hintState = state;
     readline.moveCursor(process.stdout, 0, -(down + 1));
     readline.cursorTo(process.stdout, pos.cols);
   }
-  ep.on("error", (e: Error) => emit(c.red("! " + e.message)));
+  // cotal's endpoint reports trouble one event at a time — a remote broker's slow link printed a red
+  // `! timeout` per presence-watch rebind, dozens of them (src/conn-state.ts). They fold into one state
+  // shown on the hint line; only sustained trouble, its recovery, and non-transient errors print.
+  const conn = attachConn(
+    ep,
+    Date.now,
+    (lines) => {
+      for (const l of lines) emit(l.level === "recovered" ? c.green(l.text) : c.red(l.text));
+    },
+    (raw) => emit(c.dim(raw)),
+  );
   try {
     await startResilient(ep);
   } catch (e) {
@@ -1471,6 +1493,14 @@ async function chat(argv: string[]): Promise<void> {
   // never be the thing keeping a quit chat alive.
   const followTimer = setInterval(pumpLogs, 1000);
   followTimer.unref();
+  // The connection state ages on its own (degraded clears, a disconnect's seconds count up, a streak
+  // turns sustained), so it is ticked — and the hint redrawn only when its label actually changed.
+  const connTimer = setInterval(() => {
+    if (closing) return;
+    for (const l of conn.tick(Date.now())) emit(l.level === "recovered" ? c.green(l.text) : c.red(l.text));
+    if (rl && !scanner.pasting && conn.label(Date.now()) !== hintState) drawHint();
+  }, 1000);
+  connTimer.unref();
 
   function setView(next: ChatView): void {
     if (next === view) return;
@@ -1911,6 +1941,7 @@ async function chat(argv: string[]): Promise<void> {
     if (closing) return;
     closing = true;
     if (followTimer) clearInterval(followTimer);
+    clearInterval(connTimer);
     // Leave the terminal as we found it — bracketed paste is a MODE, and a shell that inherits it
     // set without knowing would see raw \e[200~ markers in its own input.
     if (process.stdin.isTTY) process.stdout.write(DISABLE_BRACKETED_PASTE + MOUSE_OFF);
@@ -2086,7 +2117,9 @@ async function chat(argv: string[]): Promise<void> {
         return;
       }
 
-      if (text === "/who") {
+      if (text === "/conn") {
+        for (const l of conn.report(Date.now())) emit(c.dim(l));
+      } else if (text === "/who") {
         emit(c.dim("Roster:"));
         // One row per NAME: a restart mints a new id and the stale record only goes `offline`, never
         // away, so a long-lived chat shows one dead row per past incarnation. See dedupeRoster.
