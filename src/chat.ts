@@ -54,6 +54,7 @@ import { bashMessage, parseBang, runBash } from "./bash.ts";
 import { ManagerControl, withManagerControl } from "./control.ts";
 import { advanceCursor } from "./cursor.ts";
 import { attachConn, type ConnPhase } from "./conn-state.ts";
+import { PresenceHold, type PresenceLine } from "./presence-hold.ts";
 import { AwaitTracker } from "./chat-awaiting.ts";
 import { arrowRun, CLEAR_ALL, displayWidth, fitWidth, entryVisible, hintFor, hintWithTag, whereTag, History, LogFollower, navKey, scrollKey, Painter, type Entry, pickerWindow, showsChat, showsLogs, stepView, VIEW_LABEL, viewNeedsTarget, type ChatView } from "./chat-views.ts";
 import { agentBeads, agentInfo, CLOSED_RECENT_MS, hitAt, lastExchange, newer, renderTasksPanel, type InfoFacts, type Said, type TasksHit } from "./chat-tasks.ts";
@@ -1164,9 +1165,26 @@ async function chat(argv: string[]): Promise<void> {
     throw e;
   }
 
+  // Joins/departures are held while the view can't be trusted and debounced while it can
+  // (src/presence-hold.ts) — a slow broker flapped `joined` / `went offline` pairs for live peers.
+  type Card = typeof ep.card;
+  const presenceQuiet = (now: number): boolean =>
+    conn.phase(now) !== "connected" || !ep.presenceView().fresh || ep.presenceWriteFailure()?.stuck === true;
+  const peerHold = new PresenceHold<Card, PresenceStatus>();
+  peerHold.seed(ep.getRoster().filter((p) => p.card.id !== me).map((p) => ({ id: p.card.id, card: p.card, status: p.status })));
+  const printPeerLines = (lines: PresenceLine<Card, PresenceStatus>[]): void => {
+    for (const l of lines) {
+      if (!presenceVisible(filter, l.card.name)) continue;
+      if (l.type === "join") emit(`${c.green("→")} ${who(l.card)} joined ${statusBadge(l.status)}`);
+      else emit(c.dim(`← ${who(l.card)} went offline`));
+    }
+  };
+
   ep.on("presence", (ev) => {
     const card = ev.presence.card;
     if (card.id === me) return;
+    if (ev.type === "join" || ev.type === "offline")
+      printPeerLines(peerHold.feed({ type: ev.type, id: card.id, card, status: ev.presence.status }, presenceQuiet(Date.now()), Date.now()));
     // A restarted agent comes back under a NEW id. Follow it, or every later line goes to the dead id —
     // the send still succeeds (the DM stream stores it) and nobody ever reads it (benmore-intern, 2026-09-16).
     if (ev.type !== "offline" && curName && card.name === curName && card.id !== curId) curId = card.id;
@@ -1177,9 +1195,8 @@ async function chat(argv: string[]): Promise<void> {
     if (!presenceVisible(filter, card.name)) return;
     // Track the status on join/offline too, so the next flip into working is judged against the truth.
     const picked = awaiting.presence(card.name, ev.type === "offline" ? "offline" : ev.presence.status);
-    if (ev.type === "join") emit(`${c.green("→")} ${who(card)} joined ${statusBadge(ev.presence.status)}`);
-    else if (ev.type === "offline") emit(c.dim(`← ${who(card)} went offline`));
-    else if (picked.length) {
+    if (ev.type === "join" || ev.type === "offline") return;
+    if (picked.length) {
       // A NEW turn began on an agent we're waiting on — an explicit "got it, on it" receipt for the
       // messages sent before it (otherwise the only feedback is the final reply, minutes away).
       const what = picked.length === 1 ? "picked it up" : `picked up your ${picked.length} messages`;
@@ -1498,6 +1515,7 @@ async function chat(argv: string[]): Promise<void> {
   const connTimer = setInterval(() => {
     if (closing) return;
     for (const l of conn.tick(Date.now())) emit(l.level === "recovered" ? c.green(l.text) : c.red(l.text));
+    printPeerLines(peerHold.tick(presenceQuiet(Date.now()), Date.now()));
     if (rl && !scanner.pasting && conn.label(Date.now()) !== hintState) drawHint();
   }, 1000);
   connTimer.unref();
@@ -2119,6 +2137,14 @@ async function chat(argv: string[]): Promise<void> {
 
       if (text === "/conn") {
         for (const l of conn.report(Date.now())) emit(c.dim(l));
+        const view = ep.presenceView();
+        const stuck = ep.presenceWriteFailure();
+        emit(
+          c.dim(
+            `presence view: ${view.state}${stuck ? ` · our presence writes failing ×${stuck.consecutiveFailures}${stuck.error ? ` (${stuck.error})` : ""}` : ""}` +
+              (presenceQuiet(Date.now()) ? ` · joins/departures held (${peerHold.heldCount()} so far); net changes print when live` : ""),
+          ),
+        );
       } else if (text === "/who") {
         emit(c.dim("Roster:"));
         // One row per NAME: a restart mints a new id and the stale record only goes `offline`, never

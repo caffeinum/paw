@@ -436,3 +436,30 @@ transient + loud counts and the last of each; `PAW_CONN_DEBUG=1` prints every ra
 clears from the prompt's FIRST row (`getCursorPos().rows`), so a wrapped input no longer leaves stale
 prompt rows above each printed line. Upstream: cotal should log one line per failure streak, not per
 heartbeat. Tests: `check:chat` (`conn:` cases).
+
+**Quieter still (2026-10-27).** `paw chat @queue#team2027` still printed, over a few minutes, ~5
+`! mesh degraded for 30s …` / `● mesh connected again after 2m …` pairs, a loud `! presence writes to
+bucket … failed 4 consecutive times … (last refusal: timeout)` ×4, and `→ queue joined` / `← queue went
+offline` every minute for a peer that never left — under a footer that already said so. Now:
+- **presence-write-stuck with `lastError` a timeout** (`isPresenceStall`: cotal's `PresenceWriteStuckError`
+  `code` + `lastError`) is transient — the same stall `degraded` shows. Any other refusal (permission, a
+  latched/damaged store, #1356) stays loud; a `transient: false` error without that code + lastError is loud.
+- **Transcript threshold 2 min** (`SUSTAIN_MS`, was 30s) and **coalesced** (`COALESCE_MS` 10 min): at most
+  one problem line + its recovery per window. A sustained episode inside the window is counted, not
+  printed, and the next printed line says `(+N earlier episodes, M warnings, shown in the footer only —
+  /conn)`; one still going when the window ends prints then (a long outage is never hidden). Applies to
+  `paw inbox --watch` and `paw web` too (they share `logConn`; neither prints presence).
+- **Presence joins/departures** go through `src/presence-hold.ts` (`PresenceHold`). While the view is
+  quiet — conn phase not `connected`, `ep.presenceView().fresh` false, or `ep.presenceWriteFailure()?.stuck`
+  — nothing prints; the latest state per peer id is held, and when live again only the NET change prints
+  (left-and-back prints nothing, really gone prints once, new prints a join). On a live view an offline
+  waits `OFFLINE_DEBOUNCE_MS` (12s = 2 × cotal's 6s TTL) and a join inside it cancels it; a join prints
+  at once. Peers present at attach are seeded so a real departure still prints. `update` events
+  (status lines, `picked it up`) are unchanged.
+- `/conn` adds the sustained-episode count (and how many were footer-only), the last 5 warnings/errors,
+  the presence view state, our own presence-write failure, and how many joins/departures are held.
+Root cause of the flaps (investigated read-only 2026-10-27): not the broker (CPU 2–6%, no iowait, RSS
+under GOMEMLIMIT, presence KV memory-backed). The mac's and the mini's timeout bursts don't overlap
+(the mac's run into `getaddrinfo ENOTFOUND` — its own link drops; the mini's 05:28–05:37Z / 05:58Z took
+every seat offline in one ms — a shared uplink stall, likely its Wi-Fi). cotal's 2s heartbeat / 6s TTL
+turns any >4–6s client stall into fleet-wide flaps. Tests: `check:chat` (`conn:` + `presence:` cases).
