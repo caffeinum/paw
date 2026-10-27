@@ -74,3 +74,7 @@ Moved verbatim from CLAUDE.md (2026-10-02 split). Index: [CLAUDE.md](../../CLAUD
   args and `#space` hoist, plan text, every refusal, the cutover + `moved-to-<to>/` backup (stamped on a
   second move), a hermes profile following it, rollback (failed target start, unreleased session), and
   `--as` bead reassignment on a temp beads db. Stop/start are fakes — no mesh.
+  `scripts/e2e-mcp-reconnect.ts` (`NATS_SERVER=<nats-server> OUTAGE_S=90 node scripts/e2e-mcp-reconnect.ts`)
+  — cotal's real `mcp.cjs` over stdio on a PRIVATE broker that it SIGKILLs and restarts: the server survives
+  the outage with its tool set intact and rejoins by itself (open mesh — not JWT renewal); see
+  [agents.md](agents.md#the-cotal-tools-disconnected-2026-10-24--the-mcp-server-was-fine). ~2min.

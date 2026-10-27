@@ -101,6 +101,10 @@ assert(
   "brief: a channel message doesn't oblige a reply (only DMs do)",
 );
 assert(args[appendIdx + 1].includes('cotal_dm("you"'), "brief: the human is \"you\" on a space with no remote record");
+assert(
+  /MCP server\s+disconnected/.test(args[appendIdx + 1]) && /cotal_spawn, cotal_run/.test(args[appendIdx + 1]) && /keep replying with cotal_dm/.test(args[appendIdx + 1]),
+  "brief: Claude Code's 'mcp__cotal__* (4) … MCP server disconnected' notice is about the capability-gated tools, not the mesh",
+);
 {
   // A remote space's record may name the operator (`paw mesh add … --as` / `paw mesh set`): the brief must say so.
   const { writeRemoteMesh, removeRemoteMesh } = await import("../src/remote-mesh.ts");

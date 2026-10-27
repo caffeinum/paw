@@ -24,6 +24,29 @@ Moved verbatim from CLAUDE.md (2026-10-02 split). Index: [CLAUDE.md](../../CLAUD
   (`runtime.spawn(name, spec, cwd)`); the connector never sees it. cwd confinement + folder pre-trust
   moved to `src/cwd.ts`, applied at the spawn site.
 
+### "the cotal tools disconnected" (2026-10-24) — the MCP server was fine
+
+Two team2027 agents hosted here (mcp-intern after `paw teleport --to ssh:mini`, evals-intern after
+resuming from a usage limit) told the operator their cotal tools had disconnected and stopped replying,
+while still receiving DMs. Evidence, not a guess: each seat's `node mcp.cjs` was alive and connected
+(`~/Library/Caches/claude-cli-nodejs/<slug>/mcp-logs-cotal/*.jsonl`: "MCP ready", no errors; mcp-intern
+later called `cotal_dm` successfully dozens of times in the SAME process), and neither had even TRIED a
+cotal call. The trigger was Claude Code's first-turn tool-delta reminder on the resumed transcript:
+`45 deferred tools are no longer available (MCP server disconnected): mcp__cotal__* (4), …`. Both
+sessions had lived in the open `paw` space, where cotal offers `cotal_spawn`/`cotal_run`/`cotal_persona`/
+`cotal_personas`; on an authed mesh those four are gated by persona `capabilities: [spawn]`/`[run]`, so a
+team2027 seat lacks them, and the agents read the glob as ALL their cotal tools. Fix: the claude brief's
+`COTAL_TOOLS_NOTICE_BRIEF` (src/brief.ts) says what that notice means and to try the call. Running agents
+only get it on their next launch (connector → release + manager restart, then a per-agent restart).
+
+The broker-drop theory was also tested and refuted: `scripts/e2e-mcp-reconnect.ts` SIGKILLs a private
+broker under cotal 0.100's real `mcp.cjs` for longer than its 60s reconnect backoff cap — the process
+stays up, `tools/list` keeps the same tool set, a send is a tool error, and the seat rejoins on its own
+once the broker is back (cotal's `superviseConnection` → `reestablishLoop`, forever, until stdin ends).
+`paw top` now also flags the failure that WOULD look like this: a claude seat whose cotal MCP child
+(`mcp.cjs` or the hub shim) is gone, past a 60s boot grace — `⚠ no cotal mcp`, hint `paw restart <name>`
+(printed, never run). Presence is the manager's, so such a seat still shows on the roster.
+
 ## src/cwd.ts
 
 - `src/cwd.ts` — `confineAndTrustCwd(cwd)`: PAW_ROOT confinement (out-of-root throws unless
