@@ -681,8 +681,19 @@ type TurnRec = {
   subtype?: string;
   timestamp?: string;
   isMeta?: boolean;
+  isCompactSummary?: boolean;
+  isVisibleInTranscriptOnly?: boolean;
+  origin?: { kind?: string };
   message?: { stop_reason?: string; content?: unknown };
 };
+
+/** The leading text of a user record: a string content, or its first text part. */
+function userText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  const first = (content as Part[]).find((p) => p?.type === "text");
+  return first?.text ?? "";
+}
 
 /**
  * {@link turnInFlight}, plus WHICH tool the running turn is sitting inside and since when.
@@ -706,6 +717,7 @@ export function turnState(tailText: string): TurnState {
   let tool: PendingTool | undefined;
   let lastMsgMs: number | undefined;
   let sawMsg = false;
+  let localCommandDone = false; // walking back past a local command's output: its `<command-name>` record is next
   const done = (inFlightNow: boolean | undefined): TurnState => ({ inFlight: inFlightNow, ...(tool ? { tool } : {}), ...(lastMsgMs !== undefined ? { lastMsgMs } : {}) });
   const noteMsg = (rec: TurnRec) => {
     if (sawMsg) return;
@@ -746,9 +758,35 @@ export function turnState(tailText: string): TurnState {
     if (rec.type === "user") {
       // Harness-injected context, not a prompt: a resumed session gets a meta "Continue from where you left
       // off." that no turn answers. Read as a prompt, evals showed `busy` for 5h after its restart.
-      if (rec.isMeta) continue;
-      noteMsg(rec);
+      // Exception: a channel injection (cotal DM/channel message, `origin.kind: "channel"`) is written isMeta
+      // too, yet it OPENS a turn exactly like a typed prompt (measured on evals-intern: each of ~1.8k comes
+      // after a closed turn or another prompt, never mid-tool, and an assistant record answers it) — a prompt.
+      const channel = rec.origin?.kind === "channel";
+      if (rec.isMeta && !channel) continue;
+      // A compaction summary ("This session is being continued from a previous conversation that ran out of
+      // context…", `isCompactSummary: true`, `isVisibleInTranscriptOnly: true`, after a `compact_boundary`
+      // system record) is the harness rewriting context, not a prompt: an auto-compact that lands after a
+      // finished turn leaves it as the newest user record with nothing answering it. Read as a prompt,
+      // evals-intern/mcp-intern showed `busy` for hours at 0% CPU while presence said idle (2026-10-24).
+      // Skipping it lets the walk reach the turn it followed: closed (end_turn) stays closed, a compaction
+      // mid-turn (tool_result before it) still reads as running.
+      if (rec.isCompactSummary || rec.isVisibleInTranscriptOnly) continue;
       const content = rec.message?.content;
+      // A LOCAL slash command (/compact, /model, /login …) never reaches the model: claude writes the
+      // `<command-name>` record, then `<local-command-stdout>` (or -stderr) with its output. The pair is
+      // transparent to the turn — a manual /compact after a finished turn must not read as one in flight.
+      // (A prompt-type command like /dream gets no local output, so its `<command-name>` stays a prompt.)
+      const text = userText(content);
+      if (/^<local-command-std(out|err)>/.test(text)) {
+        localCommandDone = true;
+        continue;
+      }
+      if (localCommandDone && text.startsWith("<command-name>")) {
+        localCommandDone = false;
+        continue;
+      }
+      localCommandDone = false;
+      noteMsg(rec);
       // An Esc'd turn ends on claude's own "[Request interrupted by user…]" text record — no turn_duration,
       // no end_turn (measured in the paw unstick e2e). Read as running, an interrupted agent would show
       // `busy` until something else woke it.
