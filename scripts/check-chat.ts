@@ -600,17 +600,76 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
   }
 
   {
-    // The live bug: a rebind timeout every presence TTL (6s) with the socket up, for a minute.
+    // The live bug: a rebind timeout every presence TTL (6s) with the socket up.
     const s = new ConnState(0);
     up(s, 0);
     const lines = [];
     for (let t = 6000; t <= 60_000; t += 6000) lines.push(...s.feed({ kind: "error", error: timeout() }, t), ...s.tick(t + 1));
-    assert(lines.length === 1 && lines[0].level === "error" && /degraded for 30s/.test(lines[0].text) && /last: timeout/.test(lines[0].text), `conn: ten timeouts → ONE sustained line (got ${JSON.stringify(lines.map((l) => l.text))})`);
-    const rec = s.tick(60_000 + 20_001);
-    assert(rec.length === 1 && rec[0].level === "recovered" && /connected again after/.test(rec[0].text), `conn: recovery prints once (got ${JSON.stringify(rec)})`);
-    assert(s.tick(100_000).length === 0, "conn: and only once");
-    const report = s.report(100_000).join("\n");
-    assert(/transient warnings this session: 10/.test(report) && /last .*: timeout/.test(report), "conn: /conn keeps the count and the last warning — nothing swallowed");
+    assert(lines.length === 0 && s.phase(60_001) === "degraded", `conn: a minute of timeouts prints NOTHING — the footer shows it (got ${JSON.stringify(lines.map((l) => l.text))})`);
+    for (let t = 66_000; t <= 150_000; t += 6000) lines.push(...s.feed({ kind: "error", error: timeout() }, t), ...s.tick(t + 1));
+    assert(lines.length === 1 && lines[0].level === "error" && /degraded for 2m/.test(lines[0].text) && /last: timeout/.test(lines[0].text), `conn: past 2m → ONE sustained line (got ${JSON.stringify(lines.map((l) => l.text))})`);
+    const rec = s.tick(150_000 + 20_001);
+    assert(rec.length === 1 && rec[0].level === "recovered" && /connected again after/.test(rec[0].text) && /25 transient warnings/.test(rec[0].text), `conn: recovery prints once, with the count (got ${JSON.stringify(rec)})`);
+    assert(s.tick(200_000).length === 0, "conn: and only once");
+    const report = s.report(200_000).join("\n");
+    assert(/transient warnings this session: 25/.test(report) && /last .*: timeout/.test(report) && /episodes over 2m this session: 1/.test(report), "conn: /conn keeps the counts and the last warnings — nothing swallowed");
+  }
+
+  {
+    // The operator's screenshot: five 2-3 minute degraded episodes in ~20 minutes. One problem line +
+    // one recovery per 10 minutes; the episodes between are counted into the next line and /conn.
+    const s = new ConnState(0);
+    up(s, 0);
+    const lines: { level: string; text: string }[] = [];
+    const episode = (start: number, lenMs: number) => {
+      for (let t = start; t <= start + lenMs; t += 6000) lines.push(...s.feed({ kind: "error", error: timeout() }, t), ...s.tick(t + 1));
+      for (let t = start + lenMs + 1000; t <= start + lenMs + 30_000; t += 1000) lines.push(...s.tick(t));
+    };
+    for (const start of [0, 240_000, 480_000]) episode(start, 150_000); // 0m, 4m, 8m
+    const first = lines.map((l) => l.text);
+    assert(lines.length === 2 && lines[0].level === "error" && lines[1].level === "recovered", `conn: three sustained episodes in 10 min → one problem + one recovery line (got ${JSON.stringify(first)})`);
+    const mid = s.report(700_000).join("\n");
+    assert(/episodes over 2m this session: 3/.test(mid) && /2 since the last notice shown in the footer only/.test(mid), `conn: /conn counts the coalesced episodes (got ${mid})`);
+    episode(720_000, 150_000); // 12m: the window has passed → prints again, naming the quiet ones
+    const next = lines.slice(2);
+    assert(next.length === 2 && /\+2 earlier episodes/.test(next[0].text) && /footer only/.test(next[0].text) && next[1].level === "recovered", `conn: the next window's line names the coalesced episodes (got ${JSON.stringify(next.map((l) => l.text))})`);
+  }
+
+  {
+    // An outage that begins inside the coalescing window but outlasts it still prints when the window ends.
+    const s = new ConnState(0);
+    up(s, 0);
+    s.feed({ kind: "transport", connected: false }, 1000);
+    for (let t = 1000; t <= 140_000; t += 1000) s.tick(t);
+    s.feed({ kind: "transport", connected: true }, 140_000);
+    s.tick(140_000);
+    s.feed({ kind: "transport", connected: false }, 200_000);
+    const late: string[] = [];
+    for (let t = 200_000; t <= 720_000; t += 1000) late.push(...s.tick(t).map((l) => l.text));
+    assert(late.length === 0, `conn: a second outage inside the window waits (got ${JSON.stringify(late)})`);
+    for (let t = 720_001; t <= 760_000; t += 1000) late.push(...s.tick(t).map((l) => l.text));
+    assert(late.length === 1 && /reconnecting for/.test(late[0]), `conn: a long outage inside the window prints once the window ends — never hidden (got ${JSON.stringify(late)})`);
+  }
+
+  {
+    // cotal's presence-write-stuck escalation whose last refusal is a timeout: the same stall, folded.
+    const { isPresenceStall } = await import("../src/conn-state.ts");
+    const stall = () =>
+      Object.assign(new Error('presence writes to bucket "cotal_presence_team2027" have failed 4 consecutive times for at least one TTL (6000ms); the presence view is not live until a write succeeds or the broker store is repaired (last refusal: timeout)'), {
+        name: "PresenceWriteStuckError",
+        code: "presence-write-stuck",
+        transient: false,
+        lastError: "timeout",
+      });
+    assert(isPresenceStall(stall()) && classifyEndpointError(stall()) === "transient", "conn: presence-write-stuck with last refusal `timeout` is transient");
+    const s = new ConnState(0);
+    up(s, 0);
+    assert(s.feed({ kind: "warning", error: stall() }, 1000).length === 0 && s.phase(1000) === "degraded", "conn: … folded into degraded, not printed (the connection is UP)");
+    const refused = Object.assign(new Error("presence writes … (last refusal: insufficient resources)"), { code: "presence-write-stuck", transient: false, lastError: "insufficient resources" });
+    assert(s.feed({ kind: "warning", error: refused }, 2000).length === 1, "conn: presence-write-stuck with a NON-timeout refusal still prints (latched/damaged store)");
+    const perm = Object.assign(new Error("presence writes … (last refusal: Permissions Violation for Publish)"), { code: "presence-write-stuck", transient: false, lastError: "Permissions Violation for Publish to $KV.x" });
+    assert(classifyEndpointError(perm) === "loud", "conn: presence-write-stuck refused by permissions is loud");
+    assert(/presence writes to bucket/.test(s.report(3000).join("\n")), "conn: the folded stall is still in /conn's recent warnings");
   }
 
   {
@@ -625,12 +684,12 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
     s.feed({ kind: "warning", error: new Error("connect ECONNREFUSED 1.2.3.4:4222") }, 8000);
     assert(s.label(17_000) === "✕ disconnected 12s", `conn: the label counts the outage (got ${s.label(17_000)})`);
     const all = [];
-    for (let t = 6000; t <= 60_000; t += 1000) all.push(...s.tick(t));
-    assert(all.length === 1 && /mesh disconnected for 30s \(1 attempt\)/.test(all[0].text) && /ECONNREFUSED/.test(all[0].text), `conn: a sustained disconnect prints ONCE with the reason (got ${JSON.stringify(all.map((l) => l.text))})`);
-    s.feed({ kind: "transport", connected: true }, 61_000);
-    const back = s.feed({ kind: "connection", connected: true }, 61_000);
-    assert(back.length === 1 && back[0].level === "recovered" && /after 60s/.test(back[0].text), `conn: rebind → one recovery line (got ${JSON.stringify(back)})`);
-    assert(s.phase(61_000) === "connected", "conn: and connected");
+    for (let t = 6000; t <= 180_000; t += 1000) all.push(...s.tick(t));
+    assert(all.length === 1 && /mesh disconnected for 2m \(1 attempt\)/.test(all[0].text) && /ECONNREFUSED/.test(all[0].text), `conn: a sustained disconnect prints ONCE with the reason (got ${JSON.stringify(all.map((l) => l.text))})`);
+    s.feed({ kind: "transport", connected: true }, 181_000);
+    const back = s.feed({ kind: "connection", connected: true }, 181_000);
+    assert(back.length === 1 && back[0].level === "recovered" && /after 3m/.test(back[0].text), `conn: rebind → one recovery line (got ${JSON.stringify(back)})`);
+    assert(s.phase(181_000) === "connected", "conn: and connected");
   }
 
   {
@@ -644,7 +703,7 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
     const unknown = s.feed({ kind: "warning", error: new Error("delivery durable bound while the plane has no ready delivery lease") }, 2000);
     assert(unknown.length === 1, "conn: an unrecognised warning is loud — fail loud by default");
     const stuck = Object.assign(new Error("presence writes to bucket have failed 4 consecutive times (last refusal: timeout)"), { transient: false });
-    assert(classifyEndpointError(stuck) === "loud", "conn: cotal's transient:false escalation is loud even though it mentions a timeout");
+    assert(classifyEndpointError(stuck) === "loud", "conn: a transient:false escalation without the stall's code + lastError is loud, even when its text mentions a timeout");
     const stuckErr = () => Object.assign(new Error("presence writes to bucket have failed 4 consecutive times"), { transient: false, code: "presence-write-stuck" });
     assert(s.feed({ kind: "warning", error: stuckErr() }, 2500).length === 1, "conn: presence-write-stuck with the connection UP prints (the latched-bucket fault)");
     const down = new ConnState(0);
@@ -668,6 +727,37 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
     ep.emit("error", timeout()); // would throw on an EventEmitter with no "error" listener
     ep.emit("warning", timeout());
     assert(sunk.length === 0 && conn.phase(t) === "degraded", "conn: attachConn routes real endpoint events (transport/connection/warning/error) without printing transients");
+  }
+
+  {
+    // Presence flap (src/presence-hold.ts): `joined` / `went offline` pairs for a live peer.
+    const { PresenceHold, OFFLINE_DEBOUNCE_MS } = await import("../src/presence-hold.ts");
+    const ev = (type: "join" | "offline", id = "q1") => ({ type, id, card: { name: "queue" }, status: type === "join" ? "idle" : "offline" });
+    const said = (ls: { type: string; card: { name: string } }[]) => ls.map((l) => `${l.type}:${l.card.name}`);
+
+    const h = new PresenceHold<{ name: string }>();
+    h.seed([{ id: "q1", card: { name: "queue" }, status: "idle" }]);
+    assert(h.feed(ev("offline"), false, 1000).length === 0, "presence: healthy offline waits out the debounce");
+    assert(h.tick(false, 5000).length === 0 && h.feed(ev("join"), false, 7000).length === 0 && h.tick(false, 30_000).length === 0, "presence: one missed heartbeat (offline→join within 2×TTL) prints nothing");
+    h.feed(ev("offline"), false, 40_000);
+    assert(h.tick(false, 40_000 + OFFLINE_DEBOUNCE_MS - 1).length === 0, "presence: still inside the debounce");
+    assert(eq(said(h.tick(false, 40_000 + OFFLINE_DEBOUNCE_MS)), ["offline:queue"]), "presence: really gone with the view live → prints ONCE");
+    assert(h.tick(false, 90_000).length === 0, "presence: … and only once");
+    assert(eq(said(h.feed(ev("join"), false, 100_000)), ["join:queue"]), "presence: a join with the view live prints at once");
+
+    // Hold-and-diff while the view is quiet (degraded / stale / writes stuck).
+    const q = new PresenceHold<{ name: string }>();
+    q.seed([{ id: "q1", card: { name: "queue" }, status: "idle" }, { id: "k1", card: { name: "kit" }, status: "idle" }]);
+    const flaps = [];
+    for (let t = 0; t < 120_000; t += 30_000) flaps.push(...q.feed(ev("offline"), true, t), ...q.feed(ev("join"), true, t + 15_000), ...q.tick(true, t + 20_000));
+    flaps.push(...q.feed({ type: "offline", id: "k1", card: { name: "kit" }, status: "offline" }, true, 100_000));
+    flaps.push(...q.feed({ type: "join", id: "n1", card: { name: "newbie" }, status: "idle" }, true, 101_000));
+    flaps.push(...q.feed({ type: "join", id: "g1", card: { name: "ghost" }, status: "idle" }, true, 102_000), ...q.feed({ type: "offline", id: "g1", card: { name: "ghost" }, status: "offline" }, true, 103_000));
+    assert(flaps.length === 0 && q.heldCount() === 12, `presence: nothing prints while the view is quiet, every event held (got ${JSON.stringify(said(flaps))}, held ${q.heldCount()})`);
+    const live = q.tick(false, 130_000);
+    assert(eq(said(live), ["join:newbie"]), `presence: view live again → only NET changes: the flapping peer and the come-and-gone one print nothing, the new one joins (got ${JSON.stringify(said(live))})`);
+    assert(eq(said(q.tick(false, 130_000 + OFFLINE_DEBOUNCE_MS)), ["offline:kit"]), "presence: the one really gone prints once, after the debounce on the live view");
+    assert(q.tick(false, 200_000).length === 0, "presence: and nothing more");
   }
 
   {
