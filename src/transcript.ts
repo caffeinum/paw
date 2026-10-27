@@ -683,6 +683,7 @@ type TurnRec = {
   isMeta?: boolean;
   isCompactSummary?: boolean;
   isVisibleInTranscriptOnly?: boolean;
+  queueTranscriptOnly?: boolean;
   origin?: { kind?: string };
   message?: { stop_reason?: string; content?: unknown };
 };
@@ -771,6 +772,15 @@ export function turnState(tailText: string): TurnState {
       // Skipping it lets the walk reach the turn it followed: closed (end_turn) stays closed, a compaction
       // mid-turn (tool_result before it) still reads as running.
       if (rec.isCompactSummary || rec.isVisibleInTranscriptOnly) continue;
+      // A record the harness queued "transcript only" (`queueTranscriptOnly: true`) is written to the file and
+      // never run as a turn. On resume claude writes one `<task-notification>` per background task of the
+      // PREVIOUS process (`<status>stopped</status>`, "…didn't finish before the previous session ended",
+      // `origin.kind: "task-notification"`, `promptSource: "system"`), seconds AFTER the new process started —
+      // so turnOfProcess can't discount it. Read as a prompt, harbor showed `busy` for 1h+ at ~0% CPU while
+      // presence said idle (2026-10-27; queue/harbor 2026-10-23 too). Measured over every local transcript:
+      // 23 such records (stopped, plus a few session-task completed/failed), not one ever answered by an
+      // assistant record; a normal task-notification never carries the flag and still opens a turn.
+      if (rec.queueTranscriptOnly) continue;
       const content = rec.message?.content;
       // A LOCAL slash command (/compact, /model, /login …) never reaches the model: claude writes the
       // `<command-name>` record, then `<local-command-stdout>` (or -stderr) with its output. The pair is
