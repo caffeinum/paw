@@ -80,7 +80,8 @@ Moved verbatim from CLAUDE.md (2026-10-02 split). Index: [CLAUDE.md](../../CLAUD
   needs that ensure() won't do on a same-runtime manager (e.g. after a connector edit): under the lock,
   ensureMesh → (if `managerProcs(space)` non-empty) stop the manager by signature + **`reapRuntimeUi` the
   OLD runtime's leftover windows/tabs** → ensureManagerUp → **kill + re-spawn the beacon** (`stopMailbox`
-  by signature → ensureMailbox). No running manager is NOT an error — it just starts one. The beacon
+  by signature → ensureMailbox, even when the manager start failed — see
+  [explainManagerFailure](#explainmanagerfailure) for the retry + revive list). No running manager is NOT an error — it just starts one. The beacon
   refresh is load-bearing:
   the mailbox is a LONG-LIVED daemon ensure() only ADOPTS, so a STALE beacon (old paw code / old
   @cotal-ai in its memory) keeps holding "you" under a mismatched id — e.g. a server-minted nkey rather
@@ -270,6 +271,28 @@ Moved verbatim from CLAUDE.md (2026-10-02 split). Index: [CLAUDE.md](../../CLAUD
   the same fact that made `managerProcs` signature-based in the first place), so `> 1` is true on every
   working install. I shipped that heuristic and it would have labelled every failure a duplicate; caught
   the same day by reading `ps` on a healthy box.
+- **Transient retry + the revive list (2026-10-27, after the 10-26 team2027 incident).** `paw restart
+  --space team2027` despawned queue-ea, stopped the old manager, hit a fly-broker stall (`could not
+  acquire the manager lease …: timeout`) and exited 1: no manager, the OLD mailbox still up, and the live
+  list (only in memory) lost, so the re-run 2h later brought nobody back. Now:
+  1. `classifyManagerFailure` (pure) reads ONLY the failed attempt's own log lines (`logSince` from the
+     pre-start offset). Fatal markers win: duplicate manager, auth refused, broken install, config
+     error, and an unknown or empty log. Transient = a NAMED broker stall (lease/endpoint/inventory
+     timeout, ETIMEDOUT/ECONNRESET/…). On a FRESH start, `startWithRetry` retries a transient failure
+     after `MANAGER_RETRY_BACKOFF_MS` 5s/15s/30s (≤4 starts), reaping between attempts and logging each
+     one; the readiness probe timeouts are unchanged. The runtime-switch path keeps its single
+     try + rollback. `LIFECYCLE_LOCK_HOLD_MS` went 180s → 300s to cover the retries.
+  2. `paw restart` writes `spaces/<s>/restart-revive.json` (`{space, at, names}`, src/revive.ts)
+     BEFORE the bounce, merged with any fresh pending list. Success → revive, delete. Failure → the file
+     stays, and the error lists what's left (manager down/up, the mailbox's release vs the target one,
+     the pending names) plus `paw restart --space <s> will bring back: …`. The next `paw restart` merges it
+     in; `ensure()` with needManager also revives a fresh list (< 24h; a stale one is dropped out loud),
+     then deletes it. One lock (`restart-revive.json.lock`) spans restart's write → bounce → revive, and
+     ensure()'s pass skips while it's held, so a list is never consumed mid-bounce. Agents that can't
+     start are named loud (restart exits 1; ensure() prints but doesn't fail the unrelated command).
+  3. `restartManager` re-arms the mailbox EVEN WHEN the manager start failed — the beacon needs the
+     mesh (proved first), not the lease — so a failed restart no longer leaves the old release's beacon.
+  Test: `check:restart`.
   **WHY it matters (reported live):** on a dead LTE link `paw chat` failed this way and the message
   pointed at tmux. The real chain is **slow internet → slow agent boots → loaded machine → LOCAL mesh
   timeout → the 0.15 lease bug tears the manager down → paw restarts it → it revives the whole fleet →
