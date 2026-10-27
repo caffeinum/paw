@@ -28,6 +28,18 @@ Moved verbatim from CLAUDE.md (2026-10-02 split). Index: [CLAUDE.md](../../CLAUD
   marker (`meshPidPath` from cotal's own `nats.pid`, which is correct — not a spawn() pid). Space-
   exactness is unit-tested in `check:commands`. Verified live: `paw restart` → exactly one manager
   (no dup), `paw down` → zero managers + zero mailbox, `down` on `ex1` leaves `ex11` untouched.
+  **ensureMailbox adopts-or-refuses by signature too (2026-10-26).** It used to gate on `mailbox.pid`
+  under ITS OWN `$PAW_HOME`, so a test run (fresh `PAW_HOME`, `PAW_SPACE=` empty → `paw`) saw no pid,
+  started a second beacon in the LIVE space, and that beacon minted a new human id (no `human.id` in the
+  test home): two "you" peers on the live mesh for days (2026-10-21). Now `adoptRunningMailbox` scans
+  `mailboxProcs(space)` (any home, any release): ours → adopt, spawn nothing; another PAW_HOME's → THROW
+  (two homes on one space = two human ids). The owner home is the `--home <PAW_HOME>` marker the spawn
+  appends LAST (`mailboxArgs`; the beacon refuses a `--home` that isn't its own PAW_HOME); a pre-marker
+  beacon is read from `ps -E` (`PAW_HOME=…`, else `~/.paw`); unreadable env → throw, never a guess.
+  Paths compare after realpath (`/var` vs `/private/var`). A spawn FAILURE still only warns. Not done:
+  refusing to mint a fresh `human.id` while the broker shows a live "you" — the signature check already
+  covers the one-machine case, and a lingering presence TTL or a deliberately reset id would be false
+  positives. `stop()`/`paw down` still kill every beacon of the space regardless of home. `check:mailbox`.
   **Daemons are pinned to PLAIN node (native TypeScript, no tsx — 2026-10-03).** `ensureMesh`/
   `ensureManagerUp` start the mesh (`up --detach`) and manager (`supervise`) by driving
   **bin/cotald.ts** via `cotaldViaNode` (exported — bin/paw.ts reuses it for the passthrough);
@@ -355,6 +367,18 @@ falls back to `/tmp/paw-<uid>/<hash>`. Agents keep the durable dir too: without 
 own MCP process reads the material and checks it sits in ITS tmpdir. Cost: nothing purges it, so
 tool temp files from agents accumulate there. `check:spawn-env` covers it.
 
+**Timestamped daemon logs (2026-10-24, `src/log-stamp.ts`).** manager.log, mailbox.log, mesh.log
+(paw's side; nats-server stamps its own), restart.log and adopt.log lines start with an ISO time, so a
+failure can be lined up with the broker's metrics (the team2027 outage couldn't be). The spawn passes
+`loggedDaemonEnv()` (= `daemonEnv` + `PAW_LOG_STAMP=1`); the daemon's entry (bin/cotald.ts,
+bin/paw.ts) imports `src/log-stamp-boot.ts` FIRST, which consumes the flag (children, agents and
+`paw cotal` passthroughs never inherit it) and wraps its own process.stdout/stderr.write to insert
+the stamp at each line start. In-process on purpose: the logs are file fds and stay synchronous, so
+there's no pipe to fill, no extra process to die, nothing buffered. Not stamped: bytes written straight to the fd
+(node's fatal trace, preceded by a stamped `uncaught exception` line) and a child's inherited stdio.
+hub.log was already stamped by the hub itself. Readers that match line STARTS go through `stripStamp`
+(src/manager-log.ts). `check:log-stamp`.
+
 ## pid-stamped locks
 
 - **Locks are PID-STAMPED and break on a dead holder (`src/lock.ts`, 2026-08-20)** — the lock file used
@@ -385,6 +409,8 @@ tool temp files from agents accumulate there. `check:spawn-env` covers it.
 
 ## Env knobs
 - `PAW_SPACE` — override the machine-wide default space (`paw`). Folder → agent NAME, not space.
+  UNSET = `paw`; set-but-EMPTY (or whitespace) fails loud in `resolveSpace` (2026-10-26) — it used to
+  fall through to the live `paw` space (the 2026-10-21 second-beacon incident).
 - `PAW_AUTH=1` — JWT-authed mesh instead of the default open localhost mesh (open needs no creds).
   ⚠ KNOWN GAP: presence-latch detection is DISABLED under it (control creds can't write the presence KV) —
   see [addressing.md#presence-latch-guard](addressing.md#presence-latch-guard), grep `AUTH-GAP`.
@@ -494,8 +520,9 @@ tool temp files from agents accumulate there. `check:spawn-env` covers it.
 ## Dev
 - ESM, run TS directly with tsx — no build step for dev: `pnpm paw <cmd>` (= `tsx bin/paw.ts`).
 - **The CLI may run under bun; the DAEMONS must be node+tsx.** The CLI startup tax is real — tsx
-  ~0.82s vs bun ~0.21s (~4×) on every `paw` invocation — so the launcher (`~/.local/bin/paw`) MAY
-  exec bun for speed. What previously made bun fatal: cotal's `ensureManager`/`startMeshDetached`
+  ~0.82s vs bun ~0.21s (~4×) on every `paw` invocation (2026-10-24 at load ~17: tsx 4–5s, native
+  node `bin/paw.mjs` ~0.6s, bun ~0.35s) — so the launcher (`~/.local/bin/paw`) MAY exec bun for
+  speed, and its no-bun fallback must be `node bin/paw.mjs`, never tsx ([cli.md#binpawmjs](cli.md#binpawmjs)). What previously made bun fatal: cotal's `ensureManager`/`startMeshDetached`
   re-exec the *current* runtime (`selfArgv()`), so a bun CLI spawned the manager under bun, where
   `@lydell/node-pty`'s native ioctl fails (`ioctl(2) failed`) → pty stubs stuck `starting…`, no agents
   (2026-06-26: bricked all 5 agents). FIXED by `cotalViaTsx` (src/lifecycle.ts): paw now spawns the

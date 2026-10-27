@@ -4,7 +4,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { HUMAN_PEER, humanPeer } from "./names.ts";
 import { permissionMode } from "./bypass-consent.ts";
-import { ADDRESSING_BRIEF, BACKGROUND_BASH_BRIEF, CHANNELS_BRIEF, FILES_BRIEF, OPERATOR_REQUESTS_BRIEF, TASKS_BRIEF, UNATTENDED_BRIEF, WAKE_BRIEF } from "./brief.ts";
+import { ADDRESSING_BRIEF, BACKGROUND_BASH_BRIEF, CHANNELS_BRIEF, COTAL_TOOLS_NOTICE_BRIEF, FILES_BRIEF, OPERATOR_REQUESTS_BRIEF, TASKS_BRIEF, UNATTENDED_BRIEF, WAKE_BRIEF } from "./brief.ts";
 import { beadsDir } from "./beads-dir.ts";
 import { voiceLineFor } from "./personality.ts";
 import { readClaudeArgs, readCwd, readHeadless, readNice, readResumeId, transcriptExists } from "./session.ts";
@@ -12,6 +12,7 @@ import { ensureShim, headlessDir, hubEnabled, hubSocketPath } from "./hub/paths.
 import { headlessLaunch } from "./headless.ts";
 import { routeCotalToHub } from "./hub/route.ts";
 import { isRemoteSpace } from "./server.ts";
+import { localHost, machineName, stampHost } from "./host-stamp.ts";
 import { readTracepaperUrl, routeTracepaperDirect } from "./tracepaper-direct.ts";
 
 /** TLS trust a REMOTE space's seats need. cotal's launch env is an allowlist without the CA knobs, so a
@@ -75,6 +76,7 @@ export function meshBrief(name: string, voice?: string, human: string = HUMAN_PE
     ...TASKS_BRIEF,
     ...OPERATOR_REQUESTS_BRIEF,
     ...BACKGROUND_BASH_BRIEF,
+    ...COTAL_TOOLS_NOTICE_BRIEF,
   ].join(" ");
 }
 
@@ -128,6 +130,10 @@ export const pawConnector: Connector = {
   kind: "connector",
   name: "paw",
   buildLaunch(opts: LaunchOpts): LaunchSpec {
+    // The card's `meta.host` comes from the persona's `host:` (src/host-stamp.ts): stamped HERE, by the
+    // machine about to launch it, so `paw status`/`paw chat` anywhere on the mesh can say where it runs.
+    // No persona (a bare cotal_spawn peer) ⇒ nothing to stamp, and its card claims no host.
+    if (opts.configPath) stampHost(opts.configPath, { host: localHost(), machine: machineName(opts.space) });
     // cotal ≥0.84 loads claude's NATIVE MCP sources (user/project/plugin/claude.ai connectors) unless the
     // caller marks the selection exclusive — and the manager marks it only when a persona names
     // `shareTools:`. paw's contract is cotal + the servers `paw mcp` shares and nothing else (a fleet each

@@ -105,6 +105,29 @@ Moved verbatim from CLAUDE.md (2026-10-02 split). Index: [CLAUDE.md](../../CLAUD
   mark everything read out from under `paw inbox`/`paw chat`, which share that one unread marker;
   `--watch` + `--json` fail loud (one-shot vs feed).
 
+## mesh and machine
+
+Agents run on several machines (this mac, the mini, the fly agents box) and several meshes, so
+`paw status` prints a `mesh <space> · local|remote broker <url> · you're on <machine>` line above the
+table, and a **MACHINE** column (never dropped by the width planner). Rows in `--json` carry `space` and
+`host: { label, via, here }` (absent = not running and not teleported).
+
+Where "machine" comes from (src/hosted.ts `machineOf`, evidence only, strongest first):
+1. **mesh** — the agent's card: `meta.machine` (shown) / `meta.host` (raw hostname, compared).
+   cotal reserves `meta.host` but sets nothing, so paw's connector stamps `host:` + `machine:` into the
+   persona at every launch (src/host-stamp.ts); cotal's agent-file loader sweeps unmodelled frontmatter
+   keys into card meta. Only claude seats launched by a released paw carry it (kit/hermes/acp don't yet).
+2. **teleport** — the persona's `teleported:` target (`ssh:mini`, `fly:2027-agents`), live or not.
+3. **manager** — in THIS machine's ps (the rail is pinned to this machine's manager instance).
+4. **foreground** — a live `paw claude --fg` here.
+5. **local-space** — a registered, not-teleported agent on a local space (one manager per local broker).
+6. otherwise a running agent is `?` — never a guessed name.
+
+A machine's NAME (`machineName`): `PAW_MACHINE` > the space's remote record `--as` name (the mini boots as
+`aleks-mac-mini`, the fly box as `fly-agents` — its hostname is an opaque machine id) > the hostname's
+first label (`aleks-macbook`). Tests: `check:status` (machineOf, machineName, stampHost round-trip
+through cotal's `loadAgentFile`, the column, the mesh line).
+
 ## speed
 
 - **2026-10-05: `paw status <name>` 3.6s → ~0.5s, full `paw status` 3.5s → ~0.65s** (126 registered,

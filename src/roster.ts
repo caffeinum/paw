@@ -17,7 +17,14 @@ export const ROSTER_FRESH_MS = 15_000;
 
 const LIVE = new Set(["idle", "working", "waiting"]);
 
-export type RosterEntry = { id: string; status: string; ts: number };
+/** `host` / `machine`: the card's `meta.host` (raw hostname) and `meta.machine` (its name) — the
+ *  machine that launched it (src/host-stamp.ts), when the card says. */
+export type RosterEntry = { id: string; status: string; ts: number; host?: string; machine?: string };
+
+const metaString = (meta: Record<string, unknown> | undefined, k: string): string | undefined => {
+  const v = meta?.[k];
+  return typeof v === "string" && v.trim() ? v.trim() : undefined;
+};
 
 /** Is this presence record a running agent right now? Live status AND a fresh heartbeat. Pure. */
 export function presenceLive(p: { status: string; ts: number }, now: number, freshMs = ROSTER_FRESH_MS): boolean {
@@ -41,7 +48,9 @@ export function pickRoster(space: string, roster: Presence[], want: Set<string>,
     if (!want.has(name) || isStandIn(space, name, p.card.id)) continue;
     const cur = out.get(name);
     const rank = (e: { status: string; ts: number }) => (presenceLive(e, now) ? 2 : e.status !== "offline" ? 1 : 0);
-    const next = { id: p.card.id, status: p.status, ts: p.ts };
+    const host = metaString(p.card.meta, "host");
+    const machine = metaString(p.card.meta, "machine");
+    const next = { id: p.card.id, status: p.status, ts: p.ts, ...(host ? { host } : {}), ...(machine ? { machine } : {}) };
     if (!cur || rank(next) > rank(cur) || (rank(next) === rank(cur) && next.ts > cur.ts)) out.set(name, next);
   }
   return out;

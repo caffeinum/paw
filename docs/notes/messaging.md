@@ -32,8 +32,11 @@ Moved verbatim from CLAUDE.md (2026-10-02 split). Index: [CLAUDE.md](../../CLAUD
   can always reach you; their DMs land in your durable inbox for `paw inbox`. **Pure beacon:
   registerPresence:true, consume:false** — it never drains/acks your inbox (that would starve
   `paw inbox`/chat — cotal allows ONE active consumer on "you"'s durable). lifecycle.ts `ensureMailbox()`
-  spawns it DETACHED (`node bin/paw.ts mailbox --space <s>` via the tsx runtime, pid in `mailbox.pid`, log in
-  `mailbox.log`), called from `ensure()` on any mesh-up context; `stop()`/`paw down` kills it.
+  spawns it DETACHED (`node bin/paw.ts mailbox --space <s> --home <PAW_HOME>`, log in `mailbox.log`),
+  called from `ensure()` on any mesh-up context; `stop()`/`paw down` kills it. ONE beacon per space, ONE
+  PAW_HOME per space: ensure() adopts a running beacon by command signature and FAILS LOUD if it belongs
+  to another PAW_HOME — that home's `human.id` is a different "you" (the 2026-10-21 two-"you" incident).
+  → [lifecycle.md#srclifecyclets](lifecycle.md#srclifecyclets)
 
 ## paw inbox
 

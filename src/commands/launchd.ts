@@ -252,6 +252,24 @@ export function renameInFleetArgs(args: string[], space: string, from: string, t
   return out;
 }
 
+/** The installed fleet plist (path + its JSON), or undefined when there is none. A malformed one throws. */
+function readFleetJob(): { path: string; plist: Record<string, unknown> & { ProgramArguments: string[] } } | undefined {
+  const path = plistPath(FLEET_LABEL);
+  if (!existsSync(path)) return undefined;
+  const plist = JSON.parse(execFileSync("plutil", ["-convert", "json", "-o", "-", path], { encoding: "utf8" })) as Record<string, unknown>;
+  const args = plist.ProgramArguments;
+  if (!Array.isArray(args) || !args.every((a) => typeof a === "string")) {
+    throw new Error(`paw: ${path} has no string ProgramArguments — fix or reinstall it (\`paw launchd install\`)`);
+  }
+  return { path, plist: { ...plist, ProgramArguments: args } };
+}
+
+/** The fleet plist's path when its login `paw start` names `name` in `space` (read-only), else undefined. */
+export function fleetJobStarts(space: string, name: string): string | undefined {
+  const job = readFleetJob();
+  return job && renameInFleetArgs(job.plist.ProgramArguments, space, name, name) ? job.path : undefined;
+}
+
 /**
  * Keep the login fleet job pointing at an agent through `paw rename`: the job bakes agent NAMES, so a
  * renamed agent silently dropped out of the next login's `paw start` (vibeos-landing → vibeos-ceo,
@@ -260,14 +278,9 @@ export function renameInFleetArgs(args: string[], space: string, from: string, t
  * rewrote, or undefined when there is no fleet job or it doesn't start `from`.
  */
 export function renameInFleetJob(space: string, from: string, to: string): string | undefined {
-  const path = plistPath(FLEET_LABEL);
-  if (!existsSync(path)) return undefined;
-  const plist = JSON.parse(execFileSync("plutil", ["-convert", "json", "-o", "-", path], { encoding: "utf8" })) as {
-    ProgramArguments?: unknown;
-  };
-  if (!Array.isArray(plist.ProgramArguments) || !plist.ProgramArguments.every((a) => typeof a === "string")) {
-    throw new Error(`paw: ${path} has no string ProgramArguments — fix or reinstall it (\`paw launchd install\`)`);
-  }
+  const job = readFleetJob();
+  if (!job) return undefined;
+  const { path, plist } = job;
   const args = renameInFleetArgs(plist.ProgramArguments, space, from, to);
   if (!args) return undefined;
   const tmp = `${path}.paw-rename.json`;

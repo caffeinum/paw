@@ -230,7 +230,7 @@ scan only matches `--help` in a flag position, not inside a quoted argument. Tes
 ### ~0.2s extra process start per command
 
 Every `cotal paw <verb>` starts one additional process (paw's CLI) on top of cotal's own: ~0.2s when
-bun is on the box, ~0.8s under node+tsx. Irrelevant next to a mesh round-trip; noticeable if you
+bun is on the box, ~0.5–0.7s under plain node (native type stripping via `bin/paw.mjs`). Irrelevant next to a mesh round-trip; noticeable if you
 script a tight loop of `cotal paw status`.
 
 ### Finding the checkout — and what happens when it moves
@@ -259,7 +259,8 @@ no stamp at all, and even then only if that path really is a paw checkout.
 `~/.local/bin/paw`) and the runtime-selection logic is skipped entirely.
 
 Runtime selection otherwise mirrors `~/.local/bin/paw`: prefer `$HOME/.bun/bin/bun`, else bun if
-cotal itself runs under bun, else `<node> <root>/node_modules/tsx/dist/cli.mjs`. Every path is
+cotal itself runs under bun, else `<node> <root>/bin/paw.mjs` (native type stripping; it falls back to
+the checkout's tsx itself only on node < 22.18). Every path is
 resolved **absolutely** — a stripped PATH (launchd, Raycast, a mesh-agent shell) has none of these on
 it, which paw already learned the hard way (`nodeBin` / `withToolPath` in `src/lifecycle.ts`).
 

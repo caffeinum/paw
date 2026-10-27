@@ -343,13 +343,18 @@ export async function updateTask(id: string, fields: { title?: string; descripti
   invalidate();
 }
 
+/** The ids of every OPEN task (open, in_progress, blocked) assigned to exactly `assignee`. */
+export async function openTaskIds(assignee: string): Promise<string[]> {
+  return parseTasks(await bdRead(["list", "-n", "0", "-a", assignee, "--json"]))
+    .filter((t) => isOpen(t) && t.assignee === assignee)
+    .map((t) => t.id);
+}
+
 /** Move every OPEN task (bd's default filter: open, in_progress, blocked) from assignee `from` to `to`;
  *  returns the ids moved. Closed work keeps its historical assignee. For `paw rename`: without it the
  *  renamed agent stopped seeing its own queue (9 open beads stayed on vibeos-landing, 2026-10-03). */
 export async function reassignOpenTasks(from: string, to: string): Promise<string[]> {
-  const ids = parseTasks(await bdRead(["list", "-n", "0", "-a", from, "--json"]))
-    .filter((t) => isOpen(t) && t.assignee === from)
-    .map((t) => t.id);
+  const ids = await openTaskIds(from);
   for (const id of ids) await updateTask(id, { assignee: to });
   return ids;
 }
