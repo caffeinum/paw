@@ -51,9 +51,10 @@ Each entry: what it is + the most load-bearing rule. Full notes behind the link.
 
 ### Composition roots & CLI → [cli.md](docs/notes/cli.md)
 - `bin/paw.ts` — endpoint-native composition root: imports ONLY @cotal-ai/core + paw command modules;
-  own dispatch, NEEDS_MESH/NEEDS_MANAGER pre-gating, `paw cotal <cmd>` → cotald subprocess; unknown
+  own dispatch loading ONLY the verb's module (`src/command-modules.ts`, map checked by check:dispatch),
+  NEEDS_MESH/NEEDS_MANAGER pre-gating, `paw cotal <cmd>` → cotald subprocess; unknown
   command fails loud. → [cli.md#binpawts](docs/notes/cli.md#binpawts)
-- `bin/paw.mjs` — package `bin` shim: node → repo tsx → bin/paw.ts (no dist/ build). → [cli.md#binpawmjs](docs/notes/cli.md#binpawmjs)
+- `bin/paw.mjs` — package `bin` shim: native TS on node ≥22.18, else node → repo tsx (no dist/ build); every launcher's no-bun fallback = `node bin/paw.mjs`, never tsx. → [cli.md#binpawmjs](docs/notes/cli.md#binpawmjs)
 - `bin/cotald.ts` — cotal composition root (runCli + manager + paw connector aliased as the default
   agent type); **only ever a subprocess**; the only file allowed to import @cotal-ai/cli/manager. → [cli.md#bincotaldts](docs/notes/cli.md#bincotaldts)
 - `src/commands/` — self-registering commands: stop, msg, ask, who, history (read-only), watch (tap
@@ -79,7 +80,7 @@ Each entry: what it is + the most load-bearing rule. Full notes behind the link.
 
 ### Lifecycle, releases, managers → [lifecycle.md](docs/notes/lifecycle.md)
 - `src/lifecycle.ts` — `ensure()` starts/adopts detached mesh + manager + mailbox under a per-space lock;
-  manager/mailbox ownership by COMMAND SIGNATURE (space-exact pgrep), never recorded pid; runtime =
+  manager/mailbox ownership by COMMAND SIGNATURE (space-exact pgrep), never recorded pid; a mailbox from another PAW_HOME fails loud (`--home` marker, `check:mailbox`); runtime =
   `PAW_RUNTIME` > sticky preference > pty, RUNNING runtime read from the live cmdline; rollback net on a
   failed switch; `restartManager` bounces manager + beacon and reaps old tmux/cmux UI; tmux pinned to the
   default socket. Mesh boot = `cotal up --detach --no-manager` (cotal 0.84 exits 1 on cotald's degraded
@@ -170,6 +171,7 @@ Each entry: what it is + the most load-bearing rule. Full notes behind the link.
   self-adopt via detached child; `assertSafeRepin` (one agent per session, `--replace` to re-pin);
   worktree sessions adoptable from the repo root. → [addressing.md#paw-adopt](docs/notes/addressing.md#paw-adopt)
 - `src/rename.ts` — relabel (moves persona + pin). → [addressing.md#paw-rename](docs/notes/addressing.md#paw-rename)
+- `src/move.ts` — `paw move <a>#<from> --to-space <to> [--as <n>]`: another space, SAME machine — persona, kit dir, restart/unstick state, paw-owned hermes profile; source copies kept in `spaces/<from>/moved-to-<to>/`; session + beads stay (`--as` reassigns open beads); wake-gate consent, rollback on failure. → [addressing.md#paw-move](docs/notes/addressing.md#paw-move)
 - `src/rm.ts` — forget an agent; transcript always kept. → [addressing.md#paw-rm](docs/notes/addressing.md#paw-rm)
 - `src/named.ts` — named-session resolution via `~/.claude/sessions`. → [addressing.md#named-sessions](docs/notes/addressing.md#named-sessions)
 - `src/github.ts` — `github:owner/repo[#branch]` (pasted URLs accepted), blobless clone, no fork. → [addressing.md#github-handles](docs/notes/addressing.md#github-handles), [addressing.md#github-pasted-urls](docs/notes/addressing.md#github-pasted-urls)
@@ -226,7 +228,7 @@ Each entry: what it is + the most load-bearing rule. Full notes behind the link.
   (real manager, enforced isolation). A green suite + typecheck has twice proven nothing about the wire.
 
 ## Env knobs (condensed — full text: [lifecycle.md#env-knobs](docs/notes/lifecycle.md#env-knobs))
-- `PAW_SPACE` — default space (`paw`).
+- `PAW_SPACE` — default space (`paw`); set-but-empty fails loud (it used to mean the live `paw`).
 - `PAW_AUTH=1` — JWT-authed mesh (default open localhost).
 - `PAW_PERMISSION` — override `bypassPermissions`.
 - `PAW_MODEL` — default model for spawned agents (`--model` overrides).

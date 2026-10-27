@@ -20,6 +20,9 @@ import { personaFilePath, type PsRow } from "./addressing.ts";
 import { pawCotalRoot } from "./cotal-root.ts";
 import { isRemoteSpace } from "./server.ts";
 import { ORIGIN, readTeleported } from "./teleport-plan.ts";
+import { localHost, machineLabel, machineName } from "./host-stamp.ts";
+
+export { localHost, machineLabel, machineName, stampHost } from "./host-stamp.ts";
 
 /** This machine's manager instance id for a remote space, or undefined when no manager of this
  *  machine has registered there yet. */
@@ -87,16 +90,16 @@ const cardHost = (card?: Card): string | undefined => (typeof card?.meta?.host =
 export type Elsewhere = { how: "teleported" | "hosted"; where: string; cwd?: string };
 
 /** Pure: see {@link Elsewhere}. A same-host card (another paw on this box) is not elsewhere — its files are here. */
-export function elsewhereOf(o: { teleported?: { to: string; cwd?: string }; remote: boolean; personaHere: boolean; host?: string; localHost: string }): Elsewhere | undefined {
+export function elsewhereOf(o: { teleported?: { to: string; cwd?: string }; remote: boolean; personaHere: boolean; host?: string; machine?: string; localHost: string }): Elsewhere | undefined {
   if (o.teleported) return { how: "teleported", where: o.teleported.to === ORIGIN ? "the machine it came from" : o.teleported.to, ...(o.teleported.cwd ? { cwd: o.teleported.cwd } : {}) };
-  if (o.remote && !o.personaHere && o.host !== o.localHost) return { how: "hosted", where: o.host ?? "another machine" };
+  if (o.remote && !o.personaHere && o.host !== o.localHost) return { how: "hosted", where: o.machine ?? (o.host ? machineLabel(o.host) : "another machine") };
   return undefined;
 }
 
 /** {@link elsewhereOf} with the local facts filled in; `card` is the agent's roster card, if live. */
 export function runsElsewhere(space: string, name: string, card?: Card): Elsewhere | undefined {
   const persona = personaFilePath(space, name);
-  return elsewhereOf({ teleported: readTeleported(persona), remote: isRemoteSpace(space), personaHere: existsSync(persona), host: cardHost(card), localHost: hostname() });
+  return elsewhereOf({ teleported: readTeleported(persona), remote: isRemoteSpace(space), personaHere: existsSync(persona), host: cardHost(card), machine: machineOfCard(card)?.machine, localHost: hostname() });
 }
 
 /** `ssh:mini · /Users/aleks/.paw/repos/x` — or the host alone when its folder there is unknown. */
@@ -131,3 +134,62 @@ export function elsewhereAttach(name: string, e: Elsewhere): string {
 export function elsewhereStatus(e: Elsewhere): string {
   return `runs on ${elsewhereLabel(e)} — ctx, logs and folder are there`;
 }
+
+/**
+ * Where an agent's process runs — the MACHINE column of `paw status` and paw chat's right-side tag —
+ * with the evidence it came from, strongest first:
+ *  - `mesh`:        the agent's own card says so (`meta.machine` / `meta.host` — cotal reserves `host` but
+ *                   sets nothing; paw's connector stamps both into the persona at launch, src/host-stamp.ts).
+ *  - `teleport`:    its persona here carries the `teleported:` marker — the TARGET it was sent to
+ *                   (`ssh:mini`), shown whether or not it is live there: it lives there, not here.
+ *  - `manager`:     THIS machine's manager runs it (it is in our ps — the control rail is pinned to this
+ *                   machine's manager instance, so another machine's seats never appear there).
+ *  - `foreground`:  a live `paw claude --fg` process on this machine (src/foreground.ts).
+ *  - `local-space`: a local space's broker serves one machine's manager by construction (see the top of
+ *                   this file), so a registered, not-teleported agent there runs here.
+ *  - `unknown`:     it is running, and nothing above says where — rendered `?`, never a guessed name.
+ * Not running and not teleported ⇒ undefined: it runs nowhere right now.
+ */
+export type Machine = { label: string; via: "mesh" | "teleport" | "manager" | "foreground" | "local-space" | "unknown"; here: boolean };
+
+/** What a card says about its machine: `meta.host` (raw hostname) and `meta.machine` (its name). */
+export type CardMachine = { host?: string; machine?: string };
+
+/** Pure: see {@link Machine}. `teleportedTo` is the raw marker value (`ssh:mini`, `fly:app`, `origin`);
+ *  `local` is this machine's raw hostname and its name on the space (src/host-stamp.ts machineName). */
+export function machineOf(o: {
+  card?: CardMachine;
+  teleportedTo?: string;
+  managedHere?: boolean;
+  foreground?: boolean;
+  localSpaceHere?: boolean;
+  running: boolean;
+  local: { host: string; name: string };
+}): Machine | undefined {
+  const { host, machine } = o.card ?? {};
+  if (host || machine) {
+    const here = host ? host === o.local.host : machine === o.local.name;
+    return { label: machine ?? machineLabel(host!), via: "mesh", here };
+  }
+  if (o.teleportedTo) return { label: o.teleportedTo, via: "teleport", here: false };
+  if (!o.running) return undefined;
+  if (o.managedHere) return { label: o.local.name, via: "manager", here: true };
+  if (o.foreground) return { label: o.local.name, via: "foreground", here: true };
+  if (o.localSpaceHere) return { label: o.local.name, via: "local-space", here: true };
+  return { label: "?", via: "unknown", here: false };
+}
+
+const metaString = (card: Card | undefined, k: string): string | undefined => {
+  const v = card?.meta?.[k];
+  return typeof v === "string" && v.trim() ? v.trim() : undefined;
+};
+
+/** A roster card's machine claim (`meta.host` / `meta.machine`), if it makes one. */
+export function machineOfCard(card?: Card): CardMachine | undefined {
+  const host = metaString(card, "host");
+  const machine = metaString(card, "machine");
+  return host || machine ? { ...(host ? { host } : {}), ...(machine ? { machine } : {}) } : undefined;
+}
+
+/** This machine, as {@link machineOf} wants it for `space`. */
+export const localMachine = (space: string): { host: string; name: string } => ({ host: localHost(), name: machineName(space) });

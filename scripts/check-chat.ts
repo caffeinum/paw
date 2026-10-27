@@ -149,7 +149,7 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
 
 // ── views: logs · chat · tasks, the keys, the hint and the picker window (2026-09-23, tasks 2026-10-07) ─
 {
-  const { stepView, navKey, hintFor, pickerWindow, logBlockVisible, showsLogs, showsChat, arrowRun, VIEWS, VIEW_LABEL, viewNeedsTarget } = await import("../src/chat-views.ts");
+  const { stepView, navKey, hintFor, pickerWindow, logBlockVisible, showsLogs, showsChat, arrowRun, VIEWS, VIEW_LABEL, viewNeedsTarget, displayWidth: displayWidthOf } = await import("../src/chat-views.ts");
   assert(arrowRun("\x1b[B") === 1 && arrowRun("\x1b[A") === -1, "arrows: a single ↓/↑ is one step");
   assert(arrowRun("\x1b[B".repeat(20)) === 20, "arrows: a held ↓ read as ONE chunk is 20 steps, not typing (the collapse-to-1/1 bug)");
   assert(arrowRun("\x1b[B\x1b[A\x1b[B") === 1 && arrowRun("\x1bOB\x1bOB") === 2, "arrows: mixed runs net out; SS3 encodings count");
@@ -179,6 +179,23 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
   assert(hintFor({ view: "tasks", picking: false, hasTarget: false, bang: false }) === "tasks  │  ← chat   ↓ mention an agent   ctrl+o click to fold", "hint: tasks with no target goes back to chat, and offers click mode");
   assert(hintFor({ view: "tasks", picking: false, hasTarget: true, bang: false, clickMode: true }).endsWith("ctrl+o select") && !hintFor({ view: "chat", picking: false, hasTarget: true, bang: false }).includes("ctrl+o"), "hint: in click mode ctrl+o gives selection back; other views don't offer it");
   assert(hintFor({ view: "chat", picking: true, hasTarget: true, bang: false }).startsWith("↑↓ select"), "hint: the picker's own keys while it is open");
+
+  // The hint row's right side: which mesh, and which machine runs the target.
+  const { whereTag, hintWithTag } = await import("../src/chat-views.ts");
+  const mini = { label: "ssh:mini", via: "teleport" as const, here: false };
+  assert(whereTag({ space: "paw", remote: false }) === "mesh paw", "where: no target → the mesh alone");
+  assert(whereTag({ space: "team2027", remote: true, agent: { machine: mini } }) === "mesh team2027 (remote) · on ssh:mini", "where: a remote space is marked, and the target's machine named");
+  assert(whereTag({ space: "paw", remote: false, agent: {} }) === "mesh paw · not running", "where: a target that runs nowhere says so — no machine invented");
+  assert(whereTag({ space: "team2027", remote: true, agent: { machine: { label: "?", via: "unknown", here: false } } }).endsWith("on ?"), "where: running with no evidence → ?");
+  const hint = hintFor({ view: "chat", picking: false, hasTarget: true, bang: false });
+  const tag = "mesh team2027 (remote) · on ssh:mini";
+  const wide = hintWithTag(hint, tag, 120);
+  assert(wide.left === hint && wide.tag === tag && displayWidthOf(wide.left) + wide.pad + displayWidthOf(tag) === 119, "where: at 120 cols the tag is right-aligned and the row never reaches the last column");
+  const midRow = hintWithTag(hint, tag, 60);
+  assert(midRow.tag === tag && midRow.left.endsWith("…") && displayWidthOf(midRow.left) + midRow.pad + displayWidthOf(tag) === 59, "where: narrower, the hint elides before the tag goes");
+  const narrow = hintWithTag(hint, tag, 40);
+  assert(narrow.tag === "" && displayWidthOf(narrow.left) <= 39, "where: too narrow for both → the hint keeps the row, nothing wraps");
+  assert(hintWithTag(hint, "", 120).left === hint && hintWithTag(hint, "", 120).pad === 0, "where: no tag (picker / $ mode) → the plain hint");
 
   assert(JSON.stringify(pickerWindow(5, 2, 12)) === JSON.stringify({ start: 0, end: 5 }), "picker: a short list shows whole");
   assert(JSON.stringify(pickerWindow(118, 0, 12)) === JSON.stringify({ start: 0, end: 12 }), "picker: the top of a long list");

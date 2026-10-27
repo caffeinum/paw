@@ -16,7 +16,7 @@ Moved verbatim from CLAUDE.md (2026-10-02 split). Index: [CLAUDE.md](../../CLAUD
   connecting under that identity would contend with a live `paw chat`/`paw inbox` and starve it. Via
   the CLI, Raycast is just another reader of the same state. Raycast runs extensions with a MINIMAL
   PATH (no shell rc, no nvm), so the launcher is invoked by ABSOLUTE path — fine, because
-  `~/.local/bin/paw` already resolves bun/tsx absolutely for exactly this class of caller (verified
+  `~/.local/bin/paw` already resolves bun/node absolutely for exactly this class of caller (verified
   with `env -i`). Sending is `paw dm` (which also WAKES an offline agent from its pin); replies arrive
   by POLLING `paw inbox --json` — 2s while hot, backing off to 30s (see the feed.ts paragraph; the
   next poll is scheduled only after the last one settles, so a slow mesh can't stack `paw` processes; a RUN of failed polls toasts instead of looking like a quiet

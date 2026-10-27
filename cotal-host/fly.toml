@@ -3,9 +3,18 @@ primary_region = "sjc"
 kill_signal = "SIGTERM"
 kill_timeout = "30s"
 
+# 512MB went OOM; swap absorbs a transient spike instead of the OOM killer taking the broker.
+swap_size_mb = 512
+
 [env]
   PUBLIC_HOST = "2027-cotal.fly.dev"
   COTAL_SPACE = "team2027"
+  # Memory budget for the 1GB box (no manager here; nats-server + two node daemons + the cred renewer).
+  # nats-server ran at ~160MB RSS; GOMEMLIMIT is a soft cap that makes Go GC harder near it, about 2x that.
+  GOMEMLIMIT = "300MiB"
+  # cotal up and cotal deliver each hold ~46MB of live V8 heap; the default limit on 1GB is ~530MB,
+  # which lets each grow to ~180MB RSS before collecting. 192MB is 4x the live heap.
+  NODE_OPTIONS = "--max-old-space-size=192"
 
 [[mounts]]
   source = "cotal_data"
@@ -33,7 +42,7 @@ kill_timeout = "30s"
 
 [[vm]]
   size = "shared-cpu-1x"
-  memory = "512mb"
+  memory = "1024mb"
 
 # start.sh stops the broker on purpose to rotate the $SYS creds; the machine must always come back.
 [[restart]]

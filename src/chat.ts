@@ -54,7 +54,7 @@ import { bashMessage, parseBang, runBash } from "./bash.ts";
 import { ManagerControl, withManagerControl } from "./control.ts";
 import { advanceCursor } from "./cursor.ts";
 import { AwaitTracker } from "./chat-awaiting.ts";
-import { arrowRun, CLEAR_ALL, displayWidth, fitWidth, entryVisible, hintFor, History, LogFollower, navKey, scrollKey, Painter, type Entry, pickerWindow, showsChat, showsLogs, stepView, VIEW_LABEL, viewNeedsTarget, type ChatView } from "./chat-views.ts";
+import { arrowRun, CLEAR_ALL, displayWidth, fitWidth, entryVisible, hintFor, hintWithTag, whereTag, History, LogFollower, navKey, scrollKey, Painter, type Entry, pickerWindow, showsChat, showsLogs, stepView, VIEW_LABEL, viewNeedsTarget, type ChatView } from "./chat-views.ts";
 import { agentBeads, agentInfo, CLOSED_RECENT_MS, hitAt, lastExchange, newer, renderTasksPanel, type InfoFacts, type Said, type TasksHit } from "./chat-tasks.ts";
 import { CLICK_MODE_KEY, MOUSE_OFF, MOUSE_ON, stripMouse, type MouseEvent } from "./mouse.ts";
 import { collectStatus, contextShare, contextText, inboxText, toolLabel } from "./status.ts";
@@ -85,7 +85,8 @@ import { renderMarkdown } from "./markdown.ts";
 import { HUMAN_PEER, humanPeer } from "./names.ts";
 import { sameSpaceAddress } from "./dispatch.ts";
 import { describeInboxBindFailure, openHumanInbox } from "./human-inbox.ts";
-import { bangNoFolder, elsewhereBang, elsewhereBanner, elsewhereFiles, elsewhereLogs, elsewhereStatus, runsElsewhere, type Elsewhere } from "./hosted.ts";
+import { bangNoFolder, elsewhereBang, elsewhereBanner, elsewhereFiles, elsewhereLogs, elsewhereStatus, localMachine, machineOf, machineOfCard, runsElsewhere, type Elsewhere, type Machine } from "./hosted.ts";
+import { readTeleported } from "./teleport-plan.ts";
 import { cachedLedger, ledgerName } from "./peer-ledger.ts";
 import { hueSgr, parsePersonalityArg, personaGlyph, personalityFor, type Glyph } from "./personality.ts";
 import {
@@ -100,7 +101,7 @@ import {
   submittedLineCount,
   type PasteBlock,
 } from "./paste.ts";
-import { pawServer } from "./server.ts";
+import { isRemoteSpace, pawServer } from "./server.ts";
 
 /** Tiny ANSI helpers — kept local so chat doesn't reach into cotal's CLI internals. */
 const tty = process.stdout.isTTY === true;
@@ -114,6 +115,9 @@ const c = {
   magenta: wrap("35"),
   red: wrap("31"),
 };
+
+/** The where-tag's colour: this machine is quiet, another machine stands out, `?` warns. */
+const machineColor = (m: Machine | undefined): ((s: string) => string) => (!m || m.here ? c.dim : m.via === "unknown" ? c.yellow : c.cyan);
 
 /** The channel a plain line broadcasts to when there's no sticky target yet (cotal's default room). */
 const ROOM = "general";
@@ -383,6 +387,7 @@ async function chat(argv: string[]): Promise<void> {
   const room = addressed.mode === "channel" ? addressed.target! : ROOM;
   const space = spaceArg ?? resolveSpace();
   const server = serverArg ?? pawServer(space);
+  const remoteSpace = isRemoteSpace(space);
   // ONE resolved control handle for startup: ensure()'s "is the manager up?" probe and the target's
   // spawn/reuse below. bin/paw.ts used to ensure() first and the spawn then resolved the manager's
   // service again — a describe, a contract fetch and an Ajv compile of every validator, twice per
@@ -669,6 +674,9 @@ async function chat(argv: string[]): Promise<void> {
     if (!rl || closing || !process.stdout.isTTY) return;
     const hint = hintFor({ view, picking, hasTarget: !!curName, bang, clickMode });
     const cols = process.stdout.columns || 80;
+    // The RIGHT side: which mesh, and which machine runs the target — the picker and `$` mode keep the row.
+    const machine = curName ? machineFor(curName) : undefined;
+    const row = hintWithTag(hint, picking || bang ? "" : whereTag({ space, remote: remoteSpace, ...(curName ? { agent: { machine } } : {}) }), cols);
     const pos = rl.getCursorPos();
     const shown = displayWidth(stripVTControlCharacters(promptFor())) + displayWidth(rl.line);
     const lastRow = Math.floor(Math.max(0, shown - 1) / cols);
@@ -681,7 +689,7 @@ async function chat(argv: string[]): Promise<void> {
     readline.clearLine(process.stdout, 1);
     process.stdout.write("\n");
     readline.clearLine(process.stdout, 0);
-    process.stdout.write(c.dim(fitWidth(hint, cols - 1)));
+    process.stdout.write(c.dim(row.left) + " ".repeat(row.pad) + (row.tag ? machineColor(machine)(row.tag) : ""));
     readline.moveCursor(process.stdout, 0, -(down + 1));
     readline.cursorTo(process.stdout, pos.cols);
   }
@@ -721,6 +729,18 @@ async function chat(argv: string[]): Promise<void> {
   /** Where `name` runs when that is NOT this machine (teleported, or another machine's agent on a
    *  remote space) — then its logs, ctx, folder and files are there, and only messaging works from here. */
   const awayOf = (name: string): Elsewhere | undefined => runsElsewhere(space, name, findPeer(name)?.card);
+  /** Which machine runs `name` (src/hosted.ts machineOf): its live card's `meta.host`, else its
+   *  teleport marker, else — a local space with its persona here — this machine, else `?` while live.
+   *  chat reads no manager ps, so on a remote space a live agent whose card names no host is `?`. */
+  const here = localMachine(space);
+  const machineFor = (name: string): Machine | undefined => {
+    const peer = findPeer(name);
+    const live = !!peer && peer.status !== "offline";
+    const persona = /^[A-Za-z0-9_-]+$/.test(name) ? personaFilePath(space, name) : undefined;
+    const personaHere = !!persona && existsSync(persona);
+    const teleportedTo = personaHere ? readTeleported(persona!)?.to : undefined;
+    return machineOf({ card: live ? machineOfCard(peer.card) : undefined, teleportedTo, localSpaceHere: !remoteSpace && personaHere && !teleportedTo, running: live, local: here });
+  };
   /** A typed `name#space` / `#chan#space`: this session's space → the bare name; another (or unknown)
    *  space → said in red and undefined — this REPL is one space's endpoint and never re-routes. */
   const inThisSpace = (typed: string): string | undefined => {
@@ -901,13 +921,17 @@ async function chat(argv: string[]): Promise<void> {
     else emit(c.dim(`⏳ waiting for ${to}…`), "you");
   };
 
-  // Banner.
+  // Banner. The mesh line names the space (a remote one marked) and, for an agent, the machine running
+  // it right now — a just-spawned agent has no card yet, so it shows the mesh alone, never a guess.
+  const bannerWhere = (m?: Machine): string =>
+    c.dim(`${whereTag({ space, remote: remoteSpace })}${m ? " · on " : ""}`) + (m ? machineColor(m)(m.label) : "");
   if (filter?.kind === "channel") {
     // A channel session says so plainly: what you see, and where a plain line goes, are both this one
     // channel — an operator who thinks they are in the global view would post to the wrong place.
     show({ kind: "banner", text:
       `\n${c.bold("  🐾 paw chat")}\n\n` +
         `     channel: ${c.cyan("#" + room)}  ${c.dim("(subscribed)")}\n` +
+        `     ${bannerWhere()}\n` +
         `     showing: ${c.dim("this channel only — DMs stay in `paw inbox`")}\n\n` +
         `     ${c.dim(`type to post to #${room} · @name DMs someone · /who · /ps · /quit`)}\n\n`,
     });
@@ -923,6 +947,7 @@ async function chat(argv: string[]): Promise<void> {
       `\n${c.bold("  🐾 paw chat")}\n\n` +
         `     agent:  ${c.cyan(curName)}  ${where}\n` +
         `     status: ${state}\n` +
+        `     ${bannerWhere(machineFor(curName))}\n` +
         (info ? `     model:  ${info.model}\n     context: ${info.context}\n` : "") +
         (away ? `     ${c.dim(elsewhereBanner(away))}\n` : "") +
         `\n` +
@@ -940,7 +965,8 @@ async function chat(argv: string[]): Promise<void> {
       : c.dim("no agents live yet — `paw chat <folder>` spawns one");
     show({ kind: "banner", text:
       `\n${c.bold("  🐾 paw chat")}  ${c.dim('— joined the mesh as "you"')}\n\n` +
-        `     ${roster}\n\n` +
+        `     ${roster}\n` +
+        `     ${bannerWhere()}\n\n` +
         `     ${c.dim(`type to broadcast to #${ROOM} · @name starts a sticky DM · !cmd runs in its folder · #channel · /who · /ps · /quit`)}\n` +
         `     ${c.dim("drag an image in for [Image #1] · paste multiple lines for [Pasted text #1]")}\n` +
         `     ${c.dim("alt+enter (or end a line with \\\\) for a new line, not a send")}\n` +
@@ -1376,6 +1402,7 @@ async function chat(argv: string[]): Promise<void> {
     // of the conversation visible — the picker is a detour, not a new screen.
     const size = Math.max(3, Math.min(12, (process.stdout.rows || 24) - 6));
     const { start, end } = pickerWindow(hits.length, picked, size);
+    const cols = process.stdout.columns || 80;
     const rows = [
       c.dim(hits.length ? `agents ${picked + 1}/${hits.length}` : `no agent matches "${pickFilter}"`),
       ...(start > 0 ? [c.dim(`    ↑ ${start} more`)] : []),
@@ -1383,7 +1410,11 @@ async function chat(argv: string[]): Promise<void> {
         const i = start + j;
         const marker = i === picked ? c.green("▸") : " ";
         const name = i === picked ? c.bold(c.cyan(a.name)) : c.cyan(a.name);
-        return `  ${marker} ${name} ${a.note}${a.name === curName ? c.dim("  (current)") : ""}`;
+        const row = `  ${marker} ${name} ${a.note}${a.name === curName ? c.dim("  (current)") : ""}`;
+        // Where it runs, when the row has room for it — read only for the rows on screen.
+        const m = machineFor(a.name);
+        const where = m ? `  · ${m.label}` : "";
+        return where && displayWidth(row) + displayWidth(where) < cols ? row + machineColor(m)(where) : row;
       }),
       ...(end < hits.length ? [c.dim(`    ↓ ${hits.length - end} more`)] : []),
     ];
