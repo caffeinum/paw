@@ -571,6 +571,113 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
   assert(renderTasksView({ agent: "kit", operator: "op" }, { width: 60, height: 20, now }).some((r) => r.includes("reading beads")), "render: before the first read it says so");
 }
 
+// Connection state (src/conn-state.ts): cotal's per-event warnings fold into one state; only sustained
+// trouble, its recovery and non-transient errors print (the team2027 `! timeout` flood, 2026-10-26).
+{
+  const { ConnState, attachConn, classifyEndpointError } = await import("../src/conn-state.ts");
+  const { EventEmitter } = await import("node:events");
+  // nats.js's TimeoutError: name "TimeoutError", message exactly "timeout" — what chat printed raw.
+  const timeout = () => Object.assign(new Error("timeout"), { name: "TimeoutError" });
+  const up = (s: InstanceType<typeof ConnState>, t: number) => {
+    s.feed({ kind: "transport", connected: true }, t);
+    return s.feed({ kind: "connection", connected: true }, t);
+  };
+
+  {
+    const s = new ConnState(0);
+    assert(s.phase(0) === "connecting" && s.label(0) === "◌ connecting…", "conn: starts connecting");
+    assert(up(s, 500).length === 0 && s.phase(500) === "connected" && s.label(500) === "● connected", "conn: bind → connected, nothing printed");
+  }
+
+  {
+    const s = new ConnState(0);
+    up(s, 0);
+    const printed = s.feed({ kind: "error", error: timeout() }, 1000);
+    assert(printed.length === 0, "conn: a transient timeout is NOT printed");
+    assert(s.phase(1000) === "degraded" && s.label(1000) === "◐ degraded (1 failed)", `conn: a timeout with the socket up → degraded (got ${s.label(1000)})`);
+    assert(s.tick(15_000).length === 0 && s.phase(15_000) === "degraded", "conn: still degraded inside the window");
+    assert(s.tick(21_001).length === 0 && s.phase(21_001) === "connected", "conn: a quiet window → connected again, no recovery line for an unsustained blip");
+  }
+
+  {
+    // The live bug: a rebind timeout every presence TTL (6s) with the socket up, for a minute.
+    const s = new ConnState(0);
+    up(s, 0);
+    const lines = [];
+    for (let t = 6000; t <= 60_000; t += 6000) lines.push(...s.feed({ kind: "error", error: timeout() }, t), ...s.tick(t + 1));
+    assert(lines.length === 1 && lines[0].level === "error" && /degraded for 30s/.test(lines[0].text) && /last: timeout/.test(lines[0].text), `conn: ten timeouts → ONE sustained line (got ${JSON.stringify(lines.map((l) => l.text))})`);
+    const rec = s.tick(60_000 + 20_001);
+    assert(rec.length === 1 && rec[0].level === "recovered" && /connected again after/.test(rec[0].text), `conn: recovery prints once (got ${JSON.stringify(rec)})`);
+    assert(s.tick(100_000).length === 0, "conn: and only once");
+    const report = s.report(100_000).join("\n");
+    assert(/transient warnings this session: 10/.test(report) && /last .*: timeout/.test(report), "conn: /conn keeps the count and the last warning — nothing swallowed");
+  }
+
+  {
+    // A sustained disconnect: transport drops, nats gives up, cotal rebuilds with failing attempts.
+    const s = new ConnState(0);
+    up(s, 0);
+    s.feed({ kind: "transport", connected: false }, 1000);
+    assert(s.phase(1000) === "reconnecting" && s.label(1000) === "◌ reconnecting…", "conn: transport down → reconnecting");
+    s.feed({ kind: "connection", connected: false }, 5000);
+    const closed = s.feed({ kind: "error", error: new Error("mesh connection closed: CONNECTION_REFUSED - re-establishing") }, 5000);
+    assert(closed.length === 0 && s.phase(5000) === "disconnected", "conn: terminal close → disconnected, not printed yet");
+    s.feed({ kind: "warning", error: new Error("connect ECONNREFUSED 1.2.3.4:4222") }, 8000);
+    assert(s.label(17_000) === "✕ disconnected 12s", `conn: the label counts the outage (got ${s.label(17_000)})`);
+    const all = [];
+    for (let t = 6000; t <= 60_000; t += 1000) all.push(...s.tick(t));
+    assert(all.length === 1 && /mesh disconnected for 30s \(1 attempt\)/.test(all[0].text) && /ECONNREFUSED/.test(all[0].text), `conn: a sustained disconnect prints ONCE with the reason (got ${JSON.stringify(all.map((l) => l.text))})`);
+    s.feed({ kind: "transport", connected: true }, 61_000);
+    const back = s.feed({ kind: "connection", connected: true }, 61_000);
+    assert(back.length === 1 && back[0].level === "recovered" && /after 60s/.test(back[0].text), `conn: rebind → one recovery line (got ${JSON.stringify(back)})`);
+    assert(s.phase(61_000) === "connected", "conn: and connected");
+  }
+
+  {
+    const s = new ConnState(0);
+    up(s, 0);
+    const auth = s.feed({ kind: "error", error: new Error("mesh connection closed: Authorization Violation - re-establishing") }, 1000);
+    assert(auth.length === 1 && auth[0].level === "error" && /Authorization Violation/.test(auth[0].text), "conn: an auth refusal prints IMMEDIATELY, even inside a reconnect message");
+    const perm = s.feed({ kind: "error", error: new Error('NATS permission denied: cannot publish "x.y" - check this endpoint\'s ACLs') }, 1000);
+    assert(perm.length === 1 && /permission denied/.test(perm[0].text), "conn: a permission violation prints immediately");
+    assert(s.feed({ kind: "error", error: new Error('NATS permission denied: cannot publish "x.y" - check this endpoint\'s ACLs') }, 2000).length === 0, "conn: the same loud text again within 10m is counted, not reprinted");
+    const unknown = s.feed({ kind: "warning", error: new Error("delivery durable bound while the plane has no ready delivery lease") }, 2000);
+    assert(unknown.length === 1, "conn: an unrecognised warning is loud — fail loud by default");
+    const stuck = Object.assign(new Error("presence writes to bucket have failed 4 consecutive times (last refusal: timeout)"), { transient: false });
+    assert(classifyEndpointError(stuck) === "loud", "conn: cotal's transient:false escalation is loud even though it mentions a timeout");
+    const stuckErr = () => Object.assign(new Error("presence writes to bucket have failed 4 consecutive times"), { transient: false, code: "presence-write-stuck" });
+    assert(s.feed({ kind: "warning", error: stuckErr() }, 2500).length === 1, "conn: presence-write-stuck with the connection UP prints (the latched-bucket fault)");
+    const down = new ConnState(0);
+    up(down, 0);
+    down.feed({ kind: "transport", connected: false }, 1000);
+    assert(down.feed({ kind: "warning", error: stuckErr() }, 4000).length === 0, "conn: presence-write-stuck during an outage is the outage restated — folded, not printed");
+    down.feed({ kind: "warning", error: timeout() }, 5000);
+    assert(down.label(5000) === "◌ reconnecting…", `conn: heartbeat timeouts while reconnecting are not counted as attempts (got ${down.label(5000)})`);
+    assert(classifyEndpointError(new Error("creds refresh failed (timeout) - retrying")) === "loud", "conn: a creds refresh failure is loud (the connection dies at expiry)");
+    assert(/errors printed or repeated this session: 5/.test(s.report(3000).join("\n")), "conn: /conn counts the loud ones too");
+  }
+
+  {
+    const ep = new EventEmitter();
+    const sunk: string[] = [];
+    let t = 0;
+    const conn = attachConn(ep, () => t, (lines) => sunk.push(...lines.map((l) => l.text)));
+    ep.emit("transport", { connected: true });
+    ep.emit("connection", { connected: true });
+    t = 1000;
+    ep.emit("error", timeout()); // would throw on an EventEmitter with no "error" listener
+    ep.emit("warning", timeout());
+    assert(sunk.length === 0 && conn.phase(t) === "degraded", "conn: attachConn routes real endpoint events (transport/connection/warning/error) without printing transients");
+  }
+
+  {
+    const { hintWithTag } = await import("../src/chat-views.ts");
+    const tag = "◌ reconnecting… · mesh team2027 (remote) · on aleks-mac-mini";
+    const row = hintWithTag("chat  │  ↓ mention   logs →", tag, 100);
+    assert(row.tag === tag && row.tag.startsWith("◌ reconnecting…"), "conn: the hint line's right side leads with the connection state");
+  }
+}
+
 rmSync(process.env.PAW_HOME as string, { recursive: true, force: true });
 
 if (failures > 0) {

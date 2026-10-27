@@ -17,6 +17,7 @@
 import { registry, type Command } from "@cotal-ai/core";
 import { advanceCursor, readCursor } from "./cursor.ts";
 import { observerEndpoint, pollLoop, readConversation, type Entry } from "./feed.ts";
+import { logConn } from "./conn-state.ts";
 import { resolveSpace } from "./lifecycle.ts";
 import { humanPeer } from "./names.ts";
 import { writeJson } from "./stdout.ts";
@@ -93,7 +94,8 @@ const POLL_MS = 2000; // how often --watch re-reads the DM stream (mirrors `log 
  */
 async function watchInbox(space: string, server: string, agents: string[]): Promise<void> {
   const ep = await observerEndpoint(space, server);
-  ep.on("error", (e: Error) => console.error(c.red("! " + e.message)));
+  // A tail runs for hours: one line per sustained streak, not one per failed rebind (src/conn-state.ts).
+  logConn(ep, (l) => console.error(l.level === "recovered" ? c.dim(l.text) : c.red(l.text)));
   await ep.start();
   console.log(c.dim(`# ${humanPeer(space)} · watching for new DMs (Ctrl-C to stop)`));
 

@@ -106,6 +106,7 @@ import { prInfo, prInfoByUrl, prInfoMany } from "./git.ts";
 import { bashMessage, runBash } from "./bash.ts";
 import { bangNoFolder, elsewhereBang, runsElsewhere } from "./hosted.ts";
 import { isRemoteSpace, pawServer } from "./server.ts";
+import { logConn } from "./conn-state.ts";
 
 /** 7788, NOT 7799 — `cotal web` owns 7799 and running both at once is the normal case, not a clash. */
 const DEFAULT_PORT = 7788;
@@ -1654,7 +1655,8 @@ async function web(argv: string[]): Promise<void> {
   // watchPresence:true only to name DM RECIPIENTS: a unicast carries the sender's name but the
   // recipient's bare id. Still never registers presence and never consumes — see src/feed.ts.
   const ep = await observerEndpoint(space, server, { watchPresence: true });
-  ep.on("error", (e: Error) => console.error(c.red("! " + e.message)));
+  // One line per sustained streak, not one per failed presence rebind (src/conn-state.ts).
+  logConn(ep, (l) => console.error(l.level === "recovered" ? l.text : c.red(l.text)));
   await ep.start();
   // The roster tick reads this endpoint's presence view; the first tick must not read it unhydrated.
   if ((await ep.waitForPresenceSnapshot(5000)) === "timeout") console.error(c.red("! presence snapshot not loaded within 5s — the first roster may be partial"));
