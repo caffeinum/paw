@@ -21,6 +21,7 @@ import {
   mkdirSync,
   openSync,
   readFileSync,
+  readSync,
   realpathSync,
   rmSync,
   statSync,
@@ -59,6 +60,7 @@ import { readRemoteMesh } from "./remote-mesh.ts";
 import { ensureShim, hubEnabled, hubModeFile, hubSocketPath } from "./hub/paths.ts";
 import { STAMP_ENV } from "./log-stamp.ts";
 import { diagnoseConnect, explainConnectFailure } from "./connect-diag.ts";
+import { logOffset } from "./manager-log.ts";
 
 export interface EnsureOpts {
   /** Bring up (or adopt) the NATS mesh. Commands that talk to the mesh need this. */
@@ -245,7 +247,7 @@ function tail(path: string, tailN = 25): string {
  *  machine: `cotal up` (spawnSync timeout {@link MESH_UP_TIMEOUT_MS}) + the adopt wait
  *  ({@link MESH_ADOPT_WAIT_MS}) + the hub ({@link HUB_READY_MS}) + the manager's readiness window
  *  ({@link MANAGER_READY_MS}), twice on a rollback. The lock is held across all of it. */
-export const LIFECYCLE_LOCK_HOLD_MS = 180_000;
+export const LIFECYCLE_LOCK_HOLD_MS = 300_000; // 180s + a fresh manager start's transient-broker retries (MANAGER_RETRY_BACKOFF_MS)
 /**
  * Wait opts for the lifecycle lock. WHY not lock.ts's defaults (30s wait, 60s age-out): at LOGIN three
  * launchd jobs (fleet `paw start`, `paw global`, `paw web`) all call ensure() at once on a cold, loaded
@@ -1308,11 +1310,12 @@ function signalProcs(pids: number[], sig: NodeJS.Signals): void {
  * Exported + pure for tests: this is error text, which is exactly the code that never gets exercised
  * until it matters.
  */
-export function explainManagerFailure(o: { logTail: string; runtime: string; space: string; logPath: string }): string {
+export function explainManagerFailure(o: { logTail: string; runtime: string; space: string; logPath: string; attempts?: number }): string {
   const lines = o.logTail.split("\n").filter((l) => l.trim());
   const last = lines.slice(-3).join("\n");
   const leaseLosses = lines.filter((l) => l.includes("lost its singleton lease")).length;
-  const head = `paw: the manager didn't answer within ${Math.round(MANAGER_READY_MS / 1000)}s (space "${o.space}", runtime ${o.runtime}).`;
+  const retried = o.attempts !== undefined && o.attempts > 1;
+  const head = `paw: the manager didn't answer within ${Math.round(MANAGER_READY_MS / 1000)}s${retried ? ` on any of ${o.attempts} attempts` : ""} (space "${o.space}", runtime ${o.runtime}).`;
 
   // A SECOND manager is a different fault with a different fix, and it says so itself in the log.
   //
@@ -1332,11 +1335,100 @@ export function explainManagerFailure(o: { logTail: string; runtime: string; spa
       `  fix: \`paw down\`, wait for the load to drop, then retry. (cotal 0.21 fixes the underlying bug.)\n\n  log: ${o.logPath}`
     );
   }
+  const failure = classifyManagerFailure(o.logTail);
+  if (failure.kind === "transient") {
+    return (
+      `${head}\n\n  the link to the broker stalled while it started (${failure.reason})${retried ? ` — retried ${o.attempts! - 1}×, it never cleared` : ""}:\n` +
+      `  ${last}\n  fix: check the broker is reachable (\`paw status --space ${o.space}\`), then retry.\n\n  log: ${o.logPath}`
+    );
+  }
   // A missing binary is the ONE case where naming the runtime is the right question.
   if (lines.some((l) => /not found|ENOENT|couldn't reach|no such file/i.test(l))) {
     return `${head}\n\n  it couldn't launch its runtime — something it needs isn't on PATH${o.runtime !== "pty" ? ` (is ${o.runtime} installed and running?)` : ""}.\n\n  ${last}\n\n  log: ${o.logPath}`;
   }
   return `${head}\n\n  ${last || "(nothing in the log yet — it may still be starting)"}\n\n  log: ${o.logPath}`;
+}
+
+/**
+ * Is this manager-startup failure worth another start? `logTail` must be ONLY what this attempt wrote
+ * (an older line would classify the wrong start). Transient = the broker link stalled: a lease or
+ * endpoint call that timed out, a connect that timed out / was reset (2026-10-26: team2027's fly broker
+ * stalled for seconds, the manager logged `could not acquire the manager lease …: timeout` and exited,
+ * and `paw restart` left the space with NO manager). Fatal markers win over transient ones, and a log
+ * with neither is fatal too — only a NAMED broker stall is retried; auth, a duplicate manager, a broken
+ * install or an unexplained failure fail loud at once. Pure; check:restart covers it.
+ */
+export type ManagerFailure = { kind: "transient" | "fatal"; reason: string };
+const FATAL_MANAGER_MARKERS: Array<[RegExp, string]> = [
+  [/already serves space|Two processes claim manager instance/, "another manager already serves this space"],
+  [/authoriz|permissions? violation|authentication|not authorized|bad (creds|credentials)|user .*expired|AUTH_/i, "the broker refused its credentials"],
+  [/not found|ENOENT|no such file|couldn't reach|Cannot find (module|package)|ERR_MODULE_NOT_FOUND|SyntaxError|TypeError|ReferenceError/, "a broken install or runtime"],
+  [/unknown (option|flag|argument)|invalid (option|config)/i, "a configuration error"],
+];
+const TRANSIENT_MANAGER_MARKERS: Array<[RegExp, string]> = [
+  [/could not acquire the manager lease[^\n]*\b(timeout|timed out)/i, "lease timeout"],
+  [/manager endpoint: [^\n]*\b(timeout|timed out)/i, "endpoint timeout"],
+  [/membership inventory incomplete \(timeout\)/i, "membership inventory timeout"],
+  [/\b(ETIMEDOUT|ECONNRESET|ECONNREFUSED|EHOSTUNREACH|ENETUNREACH|EPIPE|CONNECTION_REFUSED)\b|connection (timed out|timeout|closed|refused|reset)|\bdisconnected\b/i, "broker connection dropped"],
+  [/\b(timeout|timed out)\b/i, "broker timeout"],
+];
+export function classifyManagerFailure(logTail: string): ManagerFailure {
+  for (const [re, reason] of FATAL_MANAGER_MARKERS) if (re.test(logTail)) return { kind: "fatal", reason };
+  for (const [re, reason] of TRANSIENT_MANAGER_MARKERS) if (re.test(logTail)) return { kind: "transient", reason };
+  return { kind: "fatal", reason: logTail.trim() ? "an unrecognised failure" : "nothing in the log" };
+}
+
+/** Backoff before each RETRY of a fresh manager start that failed transiently (so up to 4 starts). */
+export const MANAGER_RETRY_BACKOFF_MS = [5_000, 15_000, 30_000];
+
+export type StartAttempt = { ok: true } | { ok: false; logTail: string };
+/**
+ * Run `attempt` (start a manager, wait for its readiness), retrying ONLY a transient failure, after
+ * `cleanup` (reap the half-started daemon) and each `backoffMs` wait, saying every attempt out loud.
+ * A fatal failure returns at once. The probe timeouts inside `attempt` are untouched — a retry is a
+ * new start, not a longer wait. Injectable sleep/log for check:restart.
+ */
+export async function startWithRetry(o: {
+  attempt: () => Promise<StartAttempt>;
+  cleanup: () => Promise<void>;
+  backoffMs?: number[];
+  sleep?: (ms: number) => Promise<void>;
+  log?: (line: string) => void;
+}): Promise<{ ok: true; attempts: number } | { ok: false; attempts: number; logTail: string; failure: ManagerFailure }> {
+  const backoff = o.backoffMs ?? MANAGER_RETRY_BACKOFF_MS;
+  const nap = o.sleep ?? sleep;
+  const log = o.log ?? ((l: string) => console.error(l));
+  const total = backoff.length + 1;
+  for (let n = 1; ; n++) {
+    const r = await o.attempt();
+    if (r.ok) {
+      if (n > 1) log(`paw: manager up on attempt ${n}/${total}`);
+      return { ok: true, attempts: n };
+    }
+    const failure = classifyManagerFailure(r.logTail);
+    if (failure.kind === "fatal" || n === total) return { ok: false, attempts: n, logTail: r.logTail, failure };
+    const wait = backoff[n - 1];
+    log(`paw: manager start attempt ${n}/${total} failed — transient broker error (${failure.reason}); retrying in ${Math.round(wait / 1000)}s`);
+    await o.cleanup();
+    await nap(wait);
+  }
+}
+
+/** The lines a log gained since byte offset `from` (one manager start's own output), last `tailN`.
+ *  Reads at most 1MB — the manager log is long-lived and large. */
+export function logSince(path: string, from: number, tailN = 25): string {
+  if (!existsSync(path)) return "";
+  const size = statSync(path).size;
+  const start = Math.max(from, size - (1 << 20));
+  if (size <= start) return "";
+  const buf = Buffer.alloc(size - start);
+  const fd = openSync(path, "r");
+  try {
+    readSync(fd, buf, 0, buf.length, start);
+  } finally {
+    closeSync(fd);
+  }
+  return buf.toString("utf8").split("\n").filter((l) => l.length > 0).slice(-tailN).join("\n");
 }
 
 async function managerReady(space: string, server: string, creds: string | undefined, ms = MANAGER_READY_MS): Promise<boolean> {
@@ -1548,22 +1640,34 @@ async function ensureManagerUp(space: string, server: string, switchRuntime = fa
     assertRuntimeUsable(runtime);
   }
 
+  if (previous === undefined) {
+    // A fresh start (nothing to roll back to): a broker stall is retried, anything else fails loud now.
+    const logPath = managerLogPath(space);
+    const r = await startWithRetry({
+      attempt: async () => {
+        const from = logOffset(logPath);
+        startManagerDaemon(space, server, runtime);
+        return (await managerReady(space, server, creds)) ? { ok: true } : { ok: false, logTail: logSince(logPath, from) };
+      },
+      cleanup: () => stopOwnedManager(space),
+    });
+    if (r.ok) return;
+    throw new Error(explainManagerFailure({ logTail: r.logTail, runtime, space, logPath, attempts: r.attempts }));
+  }
+
   startManagerDaemon(space, server, runtime);
   if (await managerReady(space, server, creds)) return;
 
+  // The switch's new runtime never came up — restore the previous, known-good manager so the
+  // operator isn't left with NONE, then fail loud naming both runtimes.
   const logTail = tail(managerLogPath(space));
-  if (previous !== undefined) {
-    // The switch's new runtime never came up — restore the previous, known-good manager so the
-    // operator isn't left with NONE, then fail loud naming both runtimes.
-    await stopOwnedManager(space); // reap the half-started (possibly-alive) new daemon
-    startManagerDaemon(space, server, previous);
-    await managerReady(space, server, creds);
-    throw new Error(
-      `paw: manager failed to start under ${runtime} (is it installed + reachable?) — restored the ${previous} manager.\n` +
-        `--- manager.log tail ---\n${logTail}`,
-    );
-  }
-  throw new Error(explainManagerFailure({ logTail, runtime, space, logPath: managerLogPath(space) }));
+  await stopOwnedManager(space); // reap the half-started (possibly-alive) new daemon
+  startManagerDaemon(space, server, previous);
+  await managerReady(space, server, creds);
+  throw new Error(
+    `paw: manager failed to start under ${runtime} (is it installed + reachable?) — restored the ${previous} manager.\n` +
+      `--- manager.log tail ---\n${logTail}`,
+  );
 }
 
 /** The mailbox's argv: `--home` is the OWNERSHIP marker {@link mailboxOwnerHome} reads back — the
@@ -1843,7 +1947,15 @@ export async function ensure(opts: EnsureOpts = {}): Promise<{ space: string; se
     // Any mesh-up context keeps "you" reachable — so a fire-and-forget `paw dm` gets a reply later.
     if (opts.needMesh || opts.needManager) ensureMailbox(space);
   });
+  // A `paw restart` that failed after despawning left its revive list; the manager is up now, so bring
+  // those agents back (src/revive.ts). Lazy import: revive.ts reaches addressing.ts, which imports this.
+  if (opts.needManager && existsSync(reviveListPath(space))) await (await import("./revive.ts")).revivePending(space);
   return { space, server };
+}
+
+/** The revive list `paw restart` writes before it despawns (src/revive.ts owns its format). */
+export function reviveListPath(space: string): string {
+  return join(pawDir(space), "restart-revive.json");
 }
 
 /**
@@ -1923,16 +2035,24 @@ export async function restartManager(opts: { space?: string } = {}): Promise<voi
       reapRuntimeUi(space, running, uiNames); // old UI gone before ensureManagerUp + revival create the new
     }
     // A restart renews the hub too, so it runs the code the new manager's connector expects.
-    await stopHub(space);
-    await ensureHub(space);
-    await ensureManagerUp(space, server);
+    let managerError: unknown;
+    try {
+      await stopHub(space);
+      await ensureHub(space);
+      await ensureManagerUp(space, server);
+    } catch (e) {
+      managerError = e;
+    }
     // Refresh the beacon too — a restart renews the whole daemon set. A STALE beacon (old paw code or
     // an old @cotal-ai in its long-lived memory) can hold "you" under a mismatched id (e.g. a
     // server-minted nkey instead of the current stableHumanId), so agents reply to a "you" that
     // `paw inbox` doesn't read → replies vanish. Kill it by SIGNATURE (all beacons, stale wrapper pid
     // and all) so a fresh one registers under the current identity.
+    // EVEN WHEN the manager failed: the beacon needs only the mesh (proved above), not the manager's
+    // lease — a failed restart used to leave the OLD release's beacon running beside no manager.
     await stopMailbox(space);
     ensureMailbox(space);
+    if (managerError !== undefined) throw managerError;
   });
 }
 
