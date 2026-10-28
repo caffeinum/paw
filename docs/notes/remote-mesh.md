@@ -167,8 +167,9 @@ machine 1: DM round-trip, `!pwd` gives that line, no permission line.
 
 ## Off on a remote space
 
-The stale-id forwarder (re-publishes ANY peer's DM under its sender — no narrow grant for that),
-presence-latch detection (AUTH-GAP), and `paw spaces` (reads the local broker only).
+The stale-id forwarder (re-publishes ANY peer's DM under its sender — no narrow grant for that) and
+`paw spaces` (reads the local broker only). Presence-latch detection is ON since 2026-10-28 (a paw-signed
+one-key `presence-probe` cred — [addressing.md#presence-latch-guard](addressing.md#presence-latch-guard)).
 
 ## cotal gaps found
 

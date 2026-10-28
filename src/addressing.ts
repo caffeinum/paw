@@ -31,9 +31,10 @@ import { readForeground } from "./foreground.ts";
 import { clearSleep, prepareWake, sleepLog, sleepState } from "./sleep-state.ts";
 import { clearRestartHistory, markStuck, readRestartHistory, recordRestart, restartVerdict } from "./restart-history.ts";
 import { presenceLive, readMeshRoster } from "./roster.ts";
-import { authGapWarning, PRESENCE_PROBE_MS, presenceLatchRefusal, probePresenceWrites, type PresenceHealth } from "./presence-health.ts";
+import { probeRefusedLine, PRESENCE_PROBE_MS, presenceLatchRefusal, probePresenceWrites, type PresenceHealth } from "./presence-health.ts";
 import { pawServer } from "./server.ts";
 import { readRemoteMesh } from "./remote-mesh.ts";
+import { presenceProbeCreds } from "./remote-creds.ts";
 import { withFileLock, withFileLockAsync, type LockOpts } from "./lock.ts";
 import { liveSessionProcs, meshAgentSession, meshIdentity, type LiveSessionProc } from "./named.ts";
 import { readTeleported, teleportedRefusal } from "./teleport-plan.ts";
@@ -1240,10 +1241,10 @@ export async function ensureAgentSpawned(
 /** Throw (nothing stopped, nothing spawned) when the space's presence store refuses writes. A probe that
  *  can't tell (auth grants, unreachable) is said out loud and the gate proceeds as before. */
 async function refuseOnPresenceLatch(space: string, name: string, probe?: () => Promise<PresenceHealth>): Promise<void> {
-  const h = probe ? await probe() : await probePresenceWrites(space, pawServer(space), await controlCreds(space));
+  const h = probe ? await probe() : await probePresenceWrites(space, pawServer(space), (key) => presenceProbeCreds(space, key));
   if (h.kind === "latched") throw new Error(presenceLatchRefusal(name, h, pawServer(space)));
   if (h.kind === "unknown") console.error(`paw: couldn't probe the presence store before starting "${name}" (${h.message}) — proceeding`);
-  if (h.kind === "not-permitted") console.error(authGapWarning(h.message, `starting "${name}" anyway`));
+  if (h.kind === "not-permitted") console.error(probeRefusedLine(h.message, `starting "${name}" anyway`));
 }
 
 /**
