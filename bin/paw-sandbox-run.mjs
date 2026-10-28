@@ -117,5 +117,9 @@ for (const sig of ["SIGTERM", "SIGHUP", "SIGINT"]) process.on(sig, () => stop(si
 child.on("error", (e) => die(`couldn't start ${container}: ${e.message}`));
 child.on("exit", (code, signal) => {
   note(`${name} exited (${signal ?? `code ${code}`})`);
+  // The run CLI dying (a crash, a SIGKILL) leaves the VM running — an unmanaged agent still on the mesh.
+  // `--rm` already removed a container that stopped on its own; this catches the rest.
+  const del = spawnSync(container, ["delete", "--force", name], { encoding: "utf8", timeout: 30_000 });
+  if (del.status === 0) note(`removed ${name}, which outlived its run CLI`);
   process.exit(code ?? (signal ? 1 : 0));
 });

@@ -4,7 +4,8 @@
  * with it, so the agent keeps its conversation. paw's OWN command, not a cotal verb. The set: chat
  * --fresh = new, adopt = resume a past session, rename = relabel an existing agent.
  */
-import { readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { sandboxStateDir } from "./session.ts";
 import { registry, type Command } from "@cotal-ai/core";
 import {
   agentRecord,
@@ -76,7 +77,12 @@ export function renameAgentOnDisk(
     const holder = folderForName(space, to);
     if (holder !== undefined) throw new Error(`paw: the name "${to}" is already used by an agent at ${holder} — pick another`);
     const toFile = personaFilePath(space, to);
+    // A sandboxed agent's own claude store (its transcripts) is keyed by its name: it moves with the persona.
+    const fromSandbox = sandboxStateDir(personaFilePath(space, from));
+    const toSandbox = sandboxStateDir(toFile);
+    if (existsSync(toSandbox)) throw new Error(`paw: ${toSandbox} already exists — a sandbox store for "${to}" is in the way; move it aside first`);
     renameSync(personaFilePath(space, from), toFile);
+    if (existsSync(fromSandbox)) renameSync(fromSandbox, toSandbox);
     writeFileSync(toFile, readFileSync(toFile, "utf8").replace(/^name:.*$/m, `name: ${to}`));
     return { from, to };
   });

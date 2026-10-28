@@ -41,7 +41,7 @@ import {
   writeRuntimePreference,
 } from "../lifecycle.ts";
 import { checkKitArgs, KIT_AGENT } from "../kit.ts";
-import { claudeProjectsRoot, kitSessionsRoot, readResumeId, transcriptExists } from "../session.ts";
+import { claudeProjectsRoot, kitSessionsRoot, personaTranscriptRoots, readResumeId, readSandbox, transcriptExists } from "../session.ts";
 import { pawServer } from "../server.ts";
 import { applySwap, readSwapPersona, SWAP_AGENTS, type SwapRequest } from "../swap.ts";
 import { assertManagerFeature, KIT_ARGS_FEATURE, KIT_DEFAULTS_FEATURE } from "../manager-features.ts";
@@ -228,8 +228,11 @@ async function restart(argv: string[]): Promise<void> {
           `paw: "${agent}" is neither a runtime (${RUNTIMES.join(", ")}) nor a known agent${elsewhereHint(space, agent)} — \`paw status\` lists the agents`,
         );
       if (!existsSync(folder)) throw new Error(`paw: "${agent}" is registered at ${folder}, which no longer exists`);
-      const pin = readResumeId(personaFilePath(space, agent));
-      const warm = !!pin && transcriptExists(pin, [claudeProjectsRoot(), kitSessionsRoot()]);
+      const persona = personaFilePath(space, agent);
+      const pin = readResumeId(persona);
+      // A sandboxed agent writes its transcript only into its own mounted store (src/sandbox.ts).
+      const roots = readSandbox(persona) ? personaTranscriptRoots(persona) : [claudeProjectsRoot(), kitSessionsRoot()];
+      const warm = !!pin && transcriptExists(pin, roots);
       const res = await restartAgent(ctl, { space, name: agent, cwd: folder, progress: (line) => console.log(c.dim(`  ${line}`)) });
       console.log(
         res.starting

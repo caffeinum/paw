@@ -228,7 +228,16 @@ export async function runClaude(argv: string[]): Promise<void> {
   const { space: spaceArg, name: nameArg, fg, noAttach, sandbox, claudeArgs } = peelArgs(argv);
   const space = spaceArg ?? resolveSpace();
   const folder = canonicalDir("."); // always the operator's current directory — no folder positional
+  // `--sandbox` refuses BEFORE anything is written (the name binding below, the persona): a persona pinned
+  // `sandbox:` on a space it can't run on would refuse every later start.
+  if (sandbox) {
+    if (fg) throw new Error("paw: --sandbox runs the agent as a managed agent in its VM, never in this terminal — drop --fg");
+    assertSandboxSpace(space, nameArg ?? folder);
+    assertSandboxHostReady(nameArg ? personaFilePath(space, nameArg) : undefined);
+  }
   const name = nameArg ?? folderToName(space, folder);
+  if (fg && readSandbox(personaFilePath(space, name)))
+    throw new Error(`paw: "${name}" is sandboxed — it runs as a managed agent in its VM, never in this terminal; drop --fg`);
   // `--fg` launches claude itself, past the wake gate's own teleported check (src/teleport.ts).
   const teleported = readTeleported(personaFilePath(space, name));
   if (teleported) throw new Error(teleportedRefusal(name, teleported));
@@ -239,13 +248,6 @@ export async function runClaude(argv: string[]): Promise<void> {
   const intent = deriveSessionIntent(claudeArgs);
   const sessionId = deriveSessionId(folder, claudeArgs); // the operator's explicit pin (undefined = fresh/bare)
 
-  if (fg && (sandbox || readSandbox(personaFilePath(space, name))))
-    throw new Error(`paw: "${name}" is sandboxed — it runs as a managed agent in its VM, never in this terminal; drop --fg`);
-  // Refuse before anything is written: a persona pinned `sandbox:` on a space it can't run on would refuse every later start.
-  if (sandbox) {
-    assertSandboxSpace(space, name);
-    assertSandboxHostReady(personaFilePath(space, name));
-  }
   if (!fg) return runManaged(space, folder, name, claudeArgs, sessionId, noAttach === true, sandbox === true);
 
   // Serialize the whole dedup→spawn→register window on the SAME per-(space,name) lock ensureAgentSpawned

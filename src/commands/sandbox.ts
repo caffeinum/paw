@@ -31,6 +31,9 @@ function build(argv: string[]): void {
   console.log(`paw: building ${image} from ${CONTAINERFILE}`);
   const r = spawnSync(bin, ["build", "--progress", "plain", "-t", image, "-f", CONTAINERFILE, dirname(CONTAINERFILE)], { stdio: "inherit" });
   if (r.status !== 0) throw new Error(`paw: \`container build\` failed (${r.status ?? r.error?.message})`);
+  // `container build` leaves its BuildKit VM running (~4 GB resident on the mini) — a one-shot build doesn't need it.
+  const stop = spawnSync(bin, ["builder", "stop"], { encoding: "utf8", timeout: 60_000 });
+  if (stop.status !== 0) console.error(`paw: built, but \`container builder stop\` failed — the builder VM still holds its memory (${(stop.stderr || stop.error?.message || "").trim()})`);
   console.log(`paw: built ${image} — sandboxed agents (persona \`sandbox: container\`) launch from it`);
 }
 

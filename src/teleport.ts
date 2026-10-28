@@ -30,7 +30,7 @@ import { hosting, type Hosting } from "./hosted.ts";
 import { ensureSpaceFor, resolveSpace, withEnsuredManager } from "./lifecycle.ts";
 import { liveSessionProcs } from "./named.ts";
 import { readRemoteMesh } from "./remote-mesh.ts";
-import { readCwd, readResumeId } from "./session.ts";
+import { readCwd, readResumeId, readSandbox } from "./session.ts";
 import { pawServer } from "./server.ts";
 import {
   BEADS_SIDE_SH,
@@ -760,6 +760,8 @@ export async function teleport(a: TeleportArgs): Promise<void> {
         `put it on one first: \`paw move ${name}#${space} --to-space <remote space>\`, then teleport it`,
     );
   if (readForeground(space, name)) throw new Error(`paw: "${name}" is a foreground \`paw claude\` in a terminal here — close it first`);
+  // v1: its transcript lives in its own sandbox store, which teleport does not carry (docs/notes/sandbox.md).
+  if (readSandbox(file)) throw new Error(`paw: "${name}" is sandboxed (sandbox: container) — teleport does not move a sandboxed agent's own claude store yet`);
   const mark = readTeleported(file);
 
   if (a.back) {
