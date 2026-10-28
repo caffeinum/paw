@@ -97,7 +97,7 @@ const doneId = mk("Remove the logs + chat view", "kit");
 mk("Someone else's bead — must not show", "evals");
 bd("update", ipId, "--status", "in_progress");
 bd("update", blkId, "--status", "blocked");
-bd("close", doneId);
+bd("close", doneId, "--actor", "kit");
 const epicId = mk("Epic: polish the tasks view", "kit");
 for (const t of ["child one", "child two", "child three"]) bd("create", t, "-a", "kit", "--parent", epicId, "--silent");
 
@@ -184,7 +184,7 @@ try {
   ok("13s idle (incl. a bead refresh): at most one in-place repaint, never a screen clear — no flicker", frames <= 1 && !idle.includes("\x1b[2J"), `${idle.length} bytes, ${frames} repaint(s)`);
 
   // ── a bead closed behind the view's back shows up on the next refresh ───────────────────────────
-  bd("close", openId);
+  bd("close", openId, "--actor", "kit");
   const closed = await until(() => (/✓ \S+ +Write the chat/.test(screen()) ? true : undefined), 20_000, 200);
   ok("a bead closed elsewhere turns ✓ within one refresh", !!closed);
 

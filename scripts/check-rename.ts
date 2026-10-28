@@ -141,7 +141,7 @@ assert(renameAgentOnDisk(SPACE, FOLDER, "api2", "queue2").from === "api", "a for
     const open2 = mk("two", "old-name");
     const done = mk("three", "old-name");
     const other = mk("four", "someone-else");
-    execFileSync("bd", ["close", done], { cwd: home, env, stdio: "ignore" });
+    execFileSync("bd", ["close", done, "--actor", "old-name"], { cwd: home, env, stdio: "ignore" });
     const { reassignOpenTasks } = await import("../src/tasks.ts");
     const moved = await reassignOpenTasks("old-name", "new-name");
     assert(moved.sort().join(",") === [open1, open2].sort().join(","), "beads: exactly the old name's OPEN beads move");
@@ -152,7 +152,7 @@ assert(renameAgentOnDisk(SPACE, FOLDER, "api2", "queue2").from === "api", "a for
     assert(who(other) === "someone-else", "beads: another agent's bead is untouched");
     // companies: the roster key and the lead follow the name; other metadata keys survive
     const co = execFileSync("bd", ["create", "Acme", "-t", "epic", "-a", "old-name", "-l", "company:acme", "--metadata", JSON.stringify({ company: "acme", org: { "old-name": {}, x: {} }, note: "keep" }), "--silent"], { cwd: home, env, encoding: "utf8" }).trim();
-    execFileSync("bd", ["close", co], { cwd: home, env, stdio: "ignore" }); // closed: reassignOpenTasks won't move it
+    execFileSync("bd", ["close", co, "--actor", "old-name"], { cwd: home, env, stdio: "ignore" }); // closed: reassignOpenTasks won't move it
     const { renameInCompanies } = await import("../src/company-service.ts");
     const touched = await renameInCompanies("old-name", "new-name");
     const shown = (JSON.parse(execFileSync("bd", ["show", co, "--json"], { cwd: home, env, encoding: "utf8" })) as Array<{ assignee?: string; metadata?: { org?: Record<string, unknown>; note?: string; company?: string } }>)[0];

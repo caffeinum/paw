@@ -80,7 +80,8 @@ export function beadsImportScript(allowStale: boolean): string {
 exec bd import - --json${allowStale ? " --allow-stale" : ""}`;
 }
 
-/** `--force`: bd refuses to close a bead an open one blocks, and a moved bead's blockers may stay open here. */
+/** `--force`: bd refuses to close a bead an open one blocks (a moved bead's blockers may stay open here), and
+ *  since 1.3.1 a bead assigned to anyone but the actor — a moved bead belongs to the agent, not the operator. */
 export function beadsCloseScript(ids: string[], reason: string): string {
   const q = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
   return `${DB}

@@ -43,7 +43,10 @@ Moved verbatim from CLAUDE.md (2026-10-02 split). Index: [CLAUDE.md](../../CLAUD
   row `⚠ not saved` and KEEPS the text; removing a synced row CLOSES it with a reason (shared list —
   never hard-delete an id a teammate may hold), an unsynced row just drops (`deletionPlan`). The Tasks
   header stays visible when the list is empty (unlike PRs) — an empty list is still where you ADD.
-  Server ops in src/tasks.ts (`createTaskGetId`/`updateTask`/`closeTask`/`commentTask`); `/api/tasks`
+  Server ops in src/tasks.ts (`createTaskGetId`/`updateTask`/`closeTask`/`commentTask`); `closeTask` passes
+  `bd close --force` — bd 1.3.1 refuses to close a bead assigned to anyone but the actor, and a paw close is
+  the operator's deliberate call (`--actor <assignee>` would forge the audit trail; it also skips bd's
+  open-blocker/pinned/gate refusals); `/api/tasks`
   POST takes `op: create|update|close|comment` (+`parent`, `text`), and writes return `{ok}`/`{id}`
   WITHOUT re-listing (a re-list doubled every write's cost — each bd call boots an embedded dolt
   engine, ~1s). **bd calls are SERIALIZED** (`chain` in tasks.ts): dolt is single-writer and two

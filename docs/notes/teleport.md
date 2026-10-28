@@ -247,7 +247,8 @@ list. src/teleport-beads.ts.
   only when it holds earlier teleported copies.
 - **Ownership — one open copy:** the import runs after the stop and before the target's `paw start`; the
   source copies are closed only after the presence wait, with `bd close --force --reason "teleported to
-  <transport>"` (`--force`: bd refuses to close a bead an open bead still blocks) and verified by export.
+  <transport>"` (`--force`: bd refuses to close a bead an open bead still blocks, and since bd 1.3.1 one assigned to
+  anyone but the actor — a moved bead is the agent's) and verified by export.
   Never deleted. `--back` closes the target's copies with `teleported to origin`. A failed import leaves
   the source untouched; an import followed by a failed start closes the target's copies again (`teleported
   to origin (rolled back)`). A source bead changed after the export is closed anyway and named loudly.
