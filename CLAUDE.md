@@ -138,6 +138,10 @@ Each entry: what it is + the most load-bearing rule. Full notes behind the link.
   from the SAME plugin commit as the vendored tgz (`ACP_HOST_REV`; `paw acp-host install` = git archive +
   cargo --locked, never the working tree; missing → fail loud, `acpHost: ts` = node host); re-vendor = bump
   `ACP_HOST_REV` + `ACP_PLUGIN_INTEGRITY` together; `check:acp`. → [agents.md#acp](docs/notes/agents.md#acp)
+- `src/sandbox.ts` + `bin/paw-sandbox-run.mjs` + `src/commands/sandbox.ts` — persona `sandbox: container`: the claude
+  launch runs in an Apple `container` VM (folder rw; own claude store at /paw/claude; node_modules + launch dirs ro;
+  only ITS creds via a mirror; token file → env, never argv); remote spaces only (v1); `paw claude --sandbox`,
+  `paw sandbox build|ls`; `check:sandbox`. → [sandbox.md](docs/notes/sandbox.md)
 - `src/session.ts` — `readResumeId`, `transcriptExists`; leaf module. → [agents.md#srcsessionts](docs/notes/agents.md#srcsessionts)
 - **Two-writer guard** — never start an agent whose pinned session a standalone claude holds. → [agents.md#two-writer-guard](docs/notes/agents.md#two-writer-guard)
 - `src/open.ts` — `paw open`/`paw attach`: runtime-aware; tmux → real window, cmux → names the tab, pty
@@ -271,6 +275,7 @@ Each entry: what it is + the most load-bearing rule. Full notes behind the link.
 | [docs/notes/agents.md](docs/notes/agents.md) | connector, cwd, paw claude, foreground, open/attach, waking |
 | [docs/notes/cron.md](docs/notes/cron.md) | paw cron: interface, store, keeper-tick firing, catch-up, tests |
 | [docs/notes/sleep.md](docs/notes/sleep.md) | paw sleep / sleep host |
+| [docs/notes/sandbox.md](docs/notes/sandbox.md) | sandbox: container — mounts, launcher, refusals, local-space plan, cost |
 | [docs/notes/teleport.md](docs/notes/teleport.md) | paw teleport: transports, what moves, the continued-in chain, cutover, marker, fly specifics, e2e |
 | [docs/notes/addressing.md](docs/notes/addressing.md) | registry, adopt, rename, rm, named sessions, github, worktrees |
 | [docs/notes/status.md](docs/notes/status.md) | paw status, failure, busy, unregistered rows |
