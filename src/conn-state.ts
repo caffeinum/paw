@@ -5,12 +5,16 @@
  * an `error` per failed presence-watch rebind — a raw nats `TimeoutError` whose whole message is
  * "timeout", once per presence TTL (6s) for as long as a slow link holds the watch silent. Printing each
  * one buried a remote chat in red `! timeout` lines (team2027, 2026-10-26). This folds those signals into
- * ONE state the UI shows in place, and prints a transcript line only when the trouble is sustained
- * (2 min), when that recovers, or when it is not transient at all (auth, permissions, anything
- * unrecognised). Sustained episodes are coalesced: at most one problem line (and its recovery) per 10
- * min — the episodes in between are counted into the next line and `/conn` (team2027, 2026-10-27: a
- * 30s threshold printed five degraded/recovered pairs in a few minutes under a footer that already said
- * so).
+ * ONE state the UI shows in place, and prints a transcript line only when the SOCKET has been down for
+ * 2 min, when that recovers, or when the trouble is not transient at all (auth, permissions, anything
+ * unrecognised). A merely degraded connection (socket up, timeouts) never prints — the footer and
+ * `/conn` carry it (team2027, 2026-10-27: `! mesh degraded for 3m` / `● … again after 4m` pairs under
+ * a footer that already said so). Down episodes are coalesced: at most one problem line (and its
+ * recovery) per 10 min — the episodes in between are counted into the next line and `/conn`.
+ *
+ * DNS and dial failures (`getaddrinfo ENOTFOUND`, ECONNREFUSED, ECONNRESET, EHOSTUNREACH, ETIMEDOUT)
+ * are connection-state signals: they make the state `reconnecting` (for {@link DIAL_FAIL_MS} unless the
+ * transport reports up), and their short code rides in the footer label and `/conn`.
  *
  * Every state comes from a real signal — the endpoint's `transport` / `connection` events and the
  * warning stream — never from a guess. Nothing is swallowed: every signal is counted, the last one is
@@ -35,8 +39,11 @@ export interface ConnLine {
 export type Severity = "transient" | "loud";
 
 const AUTH_RE = /authoriz|authenticat|permission|not permitted|denied|expired|revoked|bad (creds|jwt)|invalid (creds|jwt|token)/i;
-const TRANSIENT_RE =
-  /^timeout$|\btime[sd]? ?out\b|mesh connection closed|connection (closed|draining|lost|refused|reset)|reconnect|ECONNRESET|ECONNREFUSED|EPIPE|ETIMEDOUT|membership watch closed|presence watch silent|no responders|error connecting/i;
+const NET_CODES = "ENOTFOUND|EAI_AGAIN|ECONNRESET|ECONNREFUSED|EHOSTUNREACH|ENETUNREACH|ENETDOWN|ETIMEDOUT|EPIPE";
+const TRANSIENT_RE = new RegExp(
+  `^timeout$|\\btime[sd]? ?out\\b|mesh connection closed|connection (closed|draining|lost|refused|reset)|reconnect|${NET_CODES}|getaddrinfo|membership watch closed|presence watch silent|no responders|error connecting`,
+  "i",
+);
 
 const TIMEOUT_RE = /^timeout$|\btime[sd]? ?out\b/i;
 
@@ -50,8 +57,20 @@ export function isPresenceStall(e: Error): boolean {
   return x.code === "presence-write-stuck" && typeof x.lastError === "string" && TIMEOUT_RE.test(x.lastError);
 }
 
-/** A dial that failed (nats.js ConnectionError, a refused/reset socket) — one reconnect attempt. */
-const CONNECT_FAILURE_RE = /ConnectionError|error connecting|ECONNREFUSED|ECONNRESET|ETIMEDOUT|connection refused/i;
+/** A dial that failed (nats.js ConnectionError, a refused/reset socket, DNS) — one reconnect attempt. */
+const CONNECT_FAILURE_RE = new RegExp(`ConnectionError|error connecting|connection refused|getaddrinfo|${NET_CODES}`, "i");
+/** A dial failure says the socket is not up even when no `transport` event did; it holds the state at
+ *  `reconnecting` this long unless the transport reports up (self-heals if it came from a side dial). */
+export const DIAL_FAIL_MS = 20_000;
+
+/** The short reason for the footer: a net error code, else `timeout`, else the first words. */
+export function shortReason(text: string): string {
+  const code = new RegExp(NET_CODES).exec(text)?.[0];
+  if (code) return code;
+  if (TIMEOUT_RE.test(text)) return "timeout";
+  const first = text.split(/[:\n]/)[0].trim();
+  return first.length > 28 ? `${first.slice(0, 27)}…` : first;
+}
 
 /**
  * Auth and permission refusals are loud even inside a reconnect message: a broker that drops us for an
@@ -93,9 +112,18 @@ export class ConnState {
   private bound = false;
   /** cotal's terminal-close supervisor fired: nats gave up, cotal is rebuilding the connection. */
   private closedAt: number | undefined;
-  /** When the current non-connected streak began, and whether its one sustained line was printed. */
+  /** When the current non-connected streak (any phase but connected) began — for `/conn`. */
   private problemSince: number | undefined;
-  /** The current streak passed {@link SUSTAIN_MS} (counted once as an episode). */
+  /** When the current SOCKET-DOWN streak (connecting/reconnecting/disconnected) began — the one that
+   *  can print — and whether its one sustained line was printed. */
+  private downSince: number | undefined;
+  /** When the current degraded spell began; spells over {@link SUSTAIN_MS} are counted, never printed. */
+  private degradedSince: number | undefined;
+  private degradedSpells = 0;
+  /** The last failed dial (DNS, refused, reset…) and its short code, for the state and the footer. */
+  private dialFailAt: number | undefined;
+  private dialReason: string | undefined;
+  /** The current down streak passed {@link SUSTAIN_MS} (counted once as an episode). */
   private streakSustained = false;
   private sustainedPrinted = false;
   /** When the last sustained-problem line printed — the coalescing window's start. */
@@ -127,12 +155,16 @@ export class ConnState {
     const out: ConnLine[] = [];
     if (sig.kind === "transport") {
       this.transportUp = sig.connected;
-      if (sig.connected) this.closedAt = undefined;
+      if (sig.connected) {
+        this.closedAt = undefined;
+        this.dialFailAt = undefined;
+      }
     } else if (sig.kind === "connection") {
       this.bound = sig.connected;
       if (sig.connected) {
         this.everBound = true;
         this.closedAt = undefined;
+        this.dialFailAt = undefined;
         // A bound connection is up by definition; cotal emits `transport` first, but don't depend on it.
         this.transportUp = true;
       }
@@ -161,7 +193,11 @@ export class ConnState {
         }
         // Only a failed dial is an attempt — the heartbeat timeouts that keep arriving while nats.js
         // reconnects are not, and counting them showed "reconnecting (13)" after one real try.
-        if (this.everBound && CONNECT_FAILURE_RE.test(`${sig.error.name}: ${text}`)) this.attempts++;
+        if (CONNECT_FAILURE_RE.test(`${sig.error.name}: ${text}`)) {
+          this.dialFailAt = now;
+          this.dialReason = shortReason(text);
+          if (this.everBound) this.attempts++;
+        }
       }
     }
     return out.concat(this.settle(now));
@@ -182,6 +218,7 @@ export class ConnState {
     if (!this.everBound) return "connecting";
     if (this.closedAt !== undefined) return "disconnected";
     if (!this.transportUp || !this.bound) return "reconnecting";
+    if (this.dialFailAt !== undefined && now - this.dialFailAt < DIAL_FAIL_MS) return "reconnecting";
     if (this.lastTransientAt !== undefined && now - this.lastTransientAt < this.degradedWindowMs) return "degraded";
     return "connected";
   }
@@ -192,8 +229,9 @@ export class ConnState {
     if (p === "connected") return "● connected";
     if (p === "connecting") return "◌ connecting…";
     if (p === "degraded") return `◐ degraded (${this.streakTransients} failed)`;
-    if (p === "reconnecting") return this.attempts ? `◌ reconnecting (${this.attempts})` : "◌ reconnecting…";
-    return `✕ disconnected ${secs(now - (this.closedAt ?? now))}`;
+    const why = this.dialReason && this.dialFailAt !== undefined ? ` ${this.dialReason}` : "";
+    if (p === "reconnecting") return (this.attempts ? `◌ reconnecting (${this.attempts})` : "◌ reconnecting…") + why;
+    return `✕ disconnected ${secs(now - (this.closedAt ?? now))}${why}`;
   }
 
   /** What `/conn` prints: the state, the counts, the last signals of each kind. */
@@ -206,36 +244,51 @@ export class ConnState {
       `episodes over ${secs(this.sustainMs)} this session: ${this.episodes}` +
         (this.quietEpisodes ? ` — ${this.quietEpisodes} since the last notice shown in the footer only (${this.quietWarnings} warnings)` : ""),
     );
+    lines.push(`degraded spells over ${secs(this.sustainMs)} (socket up, footer only, never printed): ${this.degradedSpells}`);
+    if (this.dialReason) lines.push(`last failed dial: ${this.dialReason}${this.dialFailAt !== undefined ? ` — ${ago(this.dialFailAt)}` : " (since recovered)"}`);
     for (const r of this.recent.slice().reverse()) lines.push(`  ${r.loud ? "!" : "·"} ${ago(r.at)}: ${r.text}`);
     lines.push(`session up ${secs(now - this.startedAt)} · PAW_CONN_DEBUG=1 prints every raw signal`);
     return lines;
   }
 
   /**
-   * The transcript rule: a streak prints once when it passes {@link SUSTAIN_MS}, and once when it
-   * recovers — but only one such pair per {@link COALESCE_MS}. A sustained episode inside the window is
+   * The transcript rule: a degraded spell (socket up) never prints — the footer and `/conn` show it. A
+   * socket-down streak prints once when it passes {@link SUSTAIN_MS}, and once when the socket is back —
+   * but only one such pair per {@link COALESCE_MS}. A sustained down episode inside the window is
    * counted (footer and `/conn` show it live) and named in the next printed line; one still going when
    * the window ends prints then, so a long outage is never hidden.
    */
   private settle(now: number): ConnLine[] {
     const p = this.phase(now);
+    if (p === "degraded") this.degradedSince ??= now;
+    else if (this.degradedSince !== undefined) {
+      if (now - this.degradedSince >= this.sustainMs) this.degradedSpells++;
+      this.degradedSince = undefined;
+    }
     if (p === "connected") {
+      this.problemSince = undefined;
+      this.streakTransients = 0;
+    } else this.problemSince ??= p === "connecting" ? this.startedAt : now;
+    const down = p === "connecting" || p === "reconnecting" || p === "disconnected";
+    if (!down) {
       const lines: ConnLine[] = [];
-      if (this.problemSince !== undefined && this.sustainedPrinted) {
-        lines.push({ level: "recovered", text: `● mesh connected again after ${secs(now - this.problemSince)} (${plural(this.streakTransients, "transient warning")} meanwhile)` });
+      if (this.downSince !== undefined && this.sustainedPrinted) {
+        lines.push({ level: "recovered", text: `● mesh connected again after ${secs(now - this.downSince)} (${plural(this.streakTransients, "transient warning")} meanwhile)` });
       } else if (this.streakSustained) {
         this.quietEpisodes++;
         this.quietWarnings += this.streakTransients;
       }
-      this.problemSince = undefined;
+      if (this.downSince !== undefined) {
+        this.attempts = 0;
+        if (p === "degraded") this.streakTransients = 0;
+      }
+      this.downSince = undefined;
       this.streakSustained = false;
       this.sustainedPrinted = false;
-      this.attempts = 0;
-      this.streakTransients = 0;
       return lines;
     }
-    this.problemSince ??= p === "connecting" ? this.startedAt : now;
-    if (now - this.problemSince < this.sustainMs) return [];
+    this.downSince ??= p === "connecting" ? this.startedAt : now;
+    if (now - this.downSince < this.sustainMs) return [];
     if (!this.streakSustained) {
       this.streakSustained = true;
       this.episodes++;
@@ -246,11 +299,9 @@ export class ConnState {
     this.lastNoticeAt = now;
     const why = this.lastTransient ? ` — last: ${this.lastTransient.text}` : "";
     const what =
-      p === "degraded"
-        ? `mesh degraded for ${secs(now - this.problemSince)}: ${this.streakTransients} transient failures with the connection up`
-        : p === "connecting"
-          ? `still connecting to the mesh after ${secs(now - this.problemSince)}`
-          : `mesh ${p} for ${secs(now - this.problemSince)}${this.attempts ? ` (${plural(this.attempts, "attempt")})` : ""}`;
+      p === "connecting"
+        ? `still connecting to the mesh after ${secs(now - this.downSince)}`
+        : `mesh ${p} for ${secs(now - this.downSince)}${this.attempts ? ` (${plural(this.attempts, "attempt")})` : ""}`;
     const before = this.quietEpisodes
       ? ` (+${plural(this.quietEpisodes, "earlier episode")}, ${plural(this.quietWarnings, "warning")}, shown in the footer only — /conn)`
       : "";

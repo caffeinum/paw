@@ -606,23 +606,24 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
     const lines = [];
     for (let t = 6000; t <= 60_000; t += 6000) lines.push(...s.feed({ kind: "error", error: timeout() }, t), ...s.tick(t + 1));
     assert(lines.length === 0 && s.phase(60_001) === "degraded", `conn: a minute of timeouts prints NOTHING — the footer shows it (got ${JSON.stringify(lines.map((l) => l.text))})`);
-    for (let t = 66_000; t <= 150_000; t += 6000) lines.push(...s.feed({ kind: "error", error: timeout() }, t), ...s.tick(t + 1));
-    assert(lines.length === 1 && lines[0].level === "error" && /degraded for 2m/.test(lines[0].text) && /last: timeout/.test(lines[0].text), `conn: past 2m → ONE sustained line (got ${JSON.stringify(lines.map((l) => l.text))})`);
-    const rec = s.tick(150_000 + 20_001);
-    assert(rec.length === 1 && rec[0].level === "recovered" && /connected again after/.test(rec[0].text) && /25 transient warnings/.test(rec[0].text), `conn: recovery prints once, with the count (got ${JSON.stringify(rec)})`);
-    assert(s.tick(200_000).length === 0, "conn: and only once");
-    const report = s.report(200_000).join("\n");
-    assert(/transient warnings this session: 25/.test(report) && /last .*: timeout/.test(report) && /episodes over 2m this session: 1/.test(report), "conn: /conn keeps the counts and the last warnings — nothing swallowed");
+    for (let t = 66_000; t <= 600_000; t += 6000) lines.push(...s.feed({ kind: "error", error: timeout() }, t), ...s.tick(t + 1));
+    assert(lines.length === 0 && s.phase(600_001) === "degraded", `conn: 10 minutes degraded (socket UP) prints NOTHING — degraded never reaches the transcript (got ${JSON.stringify(lines.map((l) => l.text))})`);
+    const rec = s.tick(600_000 + 20_001);
+    assert(rec.length === 0 && s.phase(620_001) === "connected", `conn: … nor its recovery (got ${JSON.stringify(rec)})`);
+    const report = s.report(620_001).join("\n");
+    assert(/transient warnings this session: 100/.test(report) && /last .*: timeout/.test(report) && /degraded spells over 2m .*: 1/.test(report), `conn: /conn keeps the counts, the spell and the last warnings — nothing swallowed (got ${report})`);
   }
 
   {
-    // The operator's screenshot: five 2-3 minute degraded episodes in ~20 minutes. One problem line +
-    // one recovery per 10 minutes; the episodes between are counted into the next line and /conn.
+    // Repeated 2-3 minute OUTAGES (socket down). One problem line + one recovery per 10 minutes; the
+    // episodes between are counted into the next line and /conn.
     const s = new ConnState(0);
     up(s, 0);
     const lines: { level: string; text: string }[] = [];
     const episode = (start: number, lenMs: number) => {
-      for (let t = start; t <= start + lenMs; t += 6000) lines.push(...s.feed({ kind: "error", error: timeout() }, t), ...s.tick(t + 1));
+      lines.push(...s.feed({ kind: "transport", connected: false }, start));
+      for (let t = start; t <= start + lenMs; t += 6000) lines.push(...s.feed({ kind: "warning", error: timeout() }, t), ...s.tick(t + 1));
+      lines.push(...s.feed({ kind: "transport", connected: true }, start + lenMs + 500));
       for (let t = start + lenMs + 1000; t <= start + lenMs + 30_000; t += 1000) lines.push(...s.tick(t));
     };
     for (const start of [0, 240_000, 480_000]) episode(start, 150_000); // 0m, 4m, 8m
@@ -682,7 +683,7 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
     const closed = s.feed({ kind: "error", error: new Error("mesh connection closed: CONNECTION_REFUSED - re-establishing") }, 5000);
     assert(closed.length === 0 && s.phase(5000) === "disconnected", "conn: terminal close → disconnected, not printed yet");
     s.feed({ kind: "warning", error: new Error("connect ECONNREFUSED 1.2.3.4:4222") }, 8000);
-    assert(s.label(17_000) === "✕ disconnected 12s", `conn: the label counts the outage (got ${s.label(17_000)})`);
+    assert(s.label(17_000) === "✕ disconnected 12s ECONNREFUSED", `conn: the label counts the outage and names the failed dial (got ${s.label(17_000)})`);
     const all = [];
     for (let t = 6000; t <= 180_000; t += 1000) all.push(...s.tick(t));
     assert(all.length === 1 && /mesh disconnected for 2m \(1 attempt\)/.test(all[0].text) && /ECONNREFUSED/.test(all[0].text), `conn: a sustained disconnect prints ONCE with the reason (got ${JSON.stringify(all.map((l) => l.text))})`);
@@ -714,6 +715,27 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
     assert(down.label(5000) === "◌ reconnecting…", `conn: heartbeat timeouts while reconnecting are not counted as attempts (got ${down.label(5000)})`);
     assert(classifyEndpointError(new Error("creds refresh failed (timeout) - retrying")) === "loud", "conn: a creds refresh failure is loud (the connection dies at expiry)");
     assert(/errors printed or repeated this session: 5/.test(s.report(3000).join("\n")), "conn: /conn counts the loud ones too");
+  }
+
+  {
+    // The live screenshot: this mac's Wi-Fi/DNS drops and nats' redial fails `getaddrinfo ENOTFOUND`.
+    // A connection-state signal, never a red line: reconnecting, with the code in the footer and /conn.
+    const s = new ConnState(0);
+    up(s, 0);
+    const dns = () => Object.assign(new Error("getaddrinfo ENOTFOUND 2027-cotal.fly.dev"), { code: "ENOTFOUND" });
+    for (const [msg, code] of [["getaddrinfo ENOTFOUND 2027-cotal.fly.dev", "ENOTFOUND"], ["connect ECONNREFUSED 1.2.3.4:4222", "ECONNREFUSED"], ["read ECONNRESET", "ECONNRESET"], ["connect EHOSTUNREACH 1.2.3.4:4222", "EHOSTUNREACH"], ["connect ETIMEDOUT 1.2.3.4:4222", "ETIMEDOUT"]] as const)
+      assert(classifyEndpointError(new Error(msg)) === "transient", `conn: ${code} is a transient connection signal`);
+    const printed = [...s.feed({ kind: "error", error: dns() }, 1000), ...s.feed({ kind: "warning", error: dns() }, 3000)];
+    assert(printed.length === 0, `conn: ENOTFOUND prints nothing (got ${JSON.stringify(printed)})`);
+    assert(s.phase(3000) === "reconnecting" && s.label(3000) === "◌ reconnecting (2) ENOTFOUND", `conn: a failed dial with no transport event → reconnecting, reason in the footer label (got ${s.label(3000)})`);
+    assert(/last failed dial: ENOTFOUND/.test(s.report(3000).join("\n")) && /getaddrinfo ENOTFOUND 2027-cotal\.fly\.dev/.test(s.report(3000).join("\n")), "conn: /conn names the failed dial and keeps the raw text");
+    s.feed({ kind: "transport", connected: true }, 9000);
+    assert(s.phase(9000) === "degraded", `conn: the transport back clears the dial failure at once (got ${s.phase(9000)})`);
+    const side = new ConnState(0);
+    up(side, 0);
+    side.feed({ kind: "warning", error: dns() }, 1000);
+    assert(side.phase(1000 + 20_001) !== "reconnecting", "conn: a dial failure with no transport event self-heals after 20s (a side dial can't pin `reconnecting`)");
+    assert(classifyEndpointError(new Error("Authorization Violation")) === "loud" && classifyEndpointError(new Error("permission denied: getaddrinfo ok")) === "loud", "conn: auth/permission stay loud");
   }
 
   {
@@ -766,6 +788,181 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
     const row = hintWithTag("chat  │  ↓ mention   logs →", tag, 100);
     assert(row.tag === tag && row.tag.startsWith("◌ reconnecting…"), "conn: the hint line's right side leads with the connection state");
   }
+}
+
+// Sends through a flaky link (src/outbox.ts + src/mesh-publish.ts): a send whose JetStream ack timed out
+// printed a bare `! timeout` and the operator couldn't tell whether it went (team2027, 2026-10-27).
+{
+  const { Outbox, GIVE_UP_MS } = await import("../src/outbox.ts");
+  const { draftDm, draftPost, publishDraft, DEDUP_WINDOW_MS } = await import("../src/mesh-publish.ts");
+  const { unicastSubject, chatSubject } = await import("@cotal-ai/core");
+  const timeout = () => Object.assign(new Error("timeout"), { name: "TimeoutError" });
+  const settle = async () => {
+    for (let i = 0; i < 5; i++) await new Promise((r) => setImmediate(r));
+  };
+
+  /** A fake clock + timer wheel, and a fake broker that dedups by msgID like JetStream does. */
+  const rig = (behave: (attempt: number, id: string) => "ok" | "landed-ack-lost" | "lost" | Error) => {
+    let t = 0;
+    let timers: { at: number; fn: () => void }[] = [];
+    const stored: string[] = [];
+    const attempts = new Map<string, number>();
+    const events: { kind: string; label: string; transient?: boolean; error?: string }[] = [];
+    const box = new Outbox<{ id: string; text: string }>({
+      now: () => t,
+      schedule: (fn, ms) => {
+        const tm = { at: t + ms, fn };
+        timers.push(tm);
+        return () => (timers = timers.filter((x) => x !== tm));
+      },
+      publish: async (m) => {
+        const n = (attempts.get(m.id) ?? 0) + 1;
+        attempts.set(m.id, n);
+        const b = behave(n, m.id);
+        if (b instanceof Error) throw b;
+        if (b === "lost") throw timeout();
+        const dup = stored.includes(m.id);
+        if (!dup) stored.push(m.id);
+        if (b === "landed-ack-lost") throw timeout();
+        return { duplicate: dup };
+      },
+      onEvent: (e) => events.push({ kind: e.kind, label: e.item.label, ...(e.kind === "failed" ? { transient: e.transient, error: e.error } : {}) }),
+    });
+    const advance = async (ms: number) => {
+      const end = t + ms;
+      for (;;) {
+        await settle();
+        const due = timers.filter((x) => x.at <= end).sort((a, b) => a.at - b.at)[0];
+        if (!due) break;
+        t = due.at;
+        timers = timers.filter((x) => x !== due);
+        due.fn();
+      }
+      t = end;
+      await settle();
+    };
+    return { box, stored, attempts, events, advance, now: () => t };
+  };
+
+  {
+    // The first attempt LANDED but its ack timed out; the second times out too; the third acks as a
+    // duplicate. Same id every time → the broker holds ONE copy. Transcript: one ◌ sending…, one ✓ sent.
+    const r = rig((n) => (n === 1 ? "landed-ack-lost" : n === 2 ? "lost" : "ok"));
+    const done = r.box.submit("2027-intern", { id: "m1", text: "status" });
+    await r.advance(0);
+    assert(eq(r.events.map((e) => e.kind), ["pending"]), `send: a transient failure marks the message pending, never a bare \`! timeout\` (got ${JSON.stringify(r.events)})`);
+    assert(r.box.pending().length === 1 && r.box.failed().length === 0, "send: the message is kept while it retries");
+    await r.advance(10_000);
+    const item = await done;
+    assert(item.state === "sent" && item.retried && item.attempts === 3 && item.duplicate === true, `send: success after transients — sent on the 3rd try, the broker saw the landed copy (got ${item.state}/${item.attempts}/${item.duplicate})`);
+    assert(eq(r.events.map((e) => e.kind), ["pending", "sent"]), `send: exactly one pending and one sent event (got ${JSON.stringify(r.events.map((e) => e.kind))})`);
+    assert(eq(r.stored, ["m1"]), `send: no double delivery — one stored copy across 3 attempts (got ${JSON.stringify(r.stored)})`);
+  }
+
+  {
+    // Never acked: retries with backoff until the bound, then ONE failed line; /retry sends it again
+    // with the SAME id, and a copy that had landed is deduped.
+    let down = true;
+    const r = rig((n, id) => (down ? (n === 2 ? "landed-ack-lost" : "lost") : "ok"));
+    const done = r.box.submit("kit", { id: "m2", text: "create pdf one-pager" });
+    await r.advance(GIVE_UP_MS + 30_000);
+    const item = await done;
+    const tries = r.attempts.get("m2")!;
+    assert(item.state === "failed" && r.events.filter((e) => e.kind === "failed").length === 1 && r.events.find((e) => e.kind === "failed")!.transient === true, `send: gives up ONCE after the bound (got ${JSON.stringify(r.events)})`);
+    assert(tries >= 6 && tries <= 15, `send: retried with backoff, not hammered (${tries} attempts in ${GIVE_UP_MS / 1000}s)`);
+    assert(GIVE_UP_MS + 15_000 < DEDUP_WINDOW_MS, "send: the give-up bound (+ one ack timeout) sits inside the broker's 2m dedup window — the last retry is still deduped");
+    assert(r.events.filter((e) => e.kind === "pending").length === 1, "send: one pending line per run, not one per attempt");
+    assert(r.box.failed().length === 1 && r.box.pending().length === 0, "send: the failed message is kept for /retry");
+    down = false;
+    const again = r.box.retry();
+    assert(again.length === 1 && again[0].msg.id === "m2", "send: /retry re-queues the failed message with its id");
+    await r.advance(1000);
+    assert(again[0].state === "sent" && again[0].duplicate === true && eq(r.stored, ["m2"]), `send: /retry after a landed-but-unacked copy → deduped, one stored copy (got ${JSON.stringify(r.stored)}, dup ${again[0].duplicate})`);
+    assert(r.box.retry().length === 0, "send: nothing left to retry");
+  }
+
+  {
+    // Not transient (permissions): no retries, one clear failure with the real reason.
+    const r = rig(() => new Error('NATS permission denied: cannot publish "x"'));
+    const item = await (async () => {
+      const p = r.box.submit("kit", { id: "m3", text: "hi" });
+      await r.advance(0);
+      return p;
+    })();
+    assert(item.state === "failed" && r.attempts.get("m3") === 1 && r.events.length === 1 && r.events[0].transient === false && /permission denied/.test(r.events[0].error!), `send: a non-transient error fails at once, loud, with its reason (got ${JSON.stringify(r.events)})`);
+  }
+
+  {
+    // Order: a line typed while an earlier one retries lands after it; kick() skips the backoff.
+    const order: string[] = [];
+    let down = true;
+    const r = rig((_n, id) => {
+      if (down) return "lost";
+      order.push(id);
+      return "ok";
+    });
+    void r.box.submit("kit", { id: "a", text: "first" });
+    void r.box.submit("kit", { id: "b", text: "second" });
+    await r.advance(3500);
+    assert(r.attempts.get("b") === undefined && r.box.pending().length === 2, "send: the second message waits behind the retrying first");
+    down = false;
+    r.box.kick();
+    await r.advance(0);
+    assert(eq(order, ["a", "b"]), `send: kick() on reconnect sends at once, in order (got ${JSON.stringify(order)})`);
+  }
+
+  {
+    // The publish itself: the same subject + payload cotal's unicast/multicast use, msgID = our id.
+    const published: { subject: string; data: string; msgID: string }[] = [];
+    const ep = {
+      space: "test",
+      card: { id: "you_owner.you", name: "you" },
+      js: { publish: async (subject: string, data: string, o: { msgID: string }) => (published.push({ subject, data, msgID: o.msgID }), { seq: published.length, duplicate: published.length > 1 }) },
+    };
+    const m = draftDm(ep, "agent_owner.kit", "status");
+    await publishDraft(ep, m);
+    const ack = await publishDraft(ep, m);
+    assert(published.length === 2 && published[0].msgID === m.id && published[1].msgID === m.id && published[0].data === published[1].data, "publish: a retry re-publishes the identical message under the same msgID");
+    assert(published[0].subject === unicastSubject("test", "agent_owner", "kit", "you_owner", "you") && ack.duplicate, "publish: on cotal's own DM subject, and the broker's duplicate flag comes back");
+    const post = draftPost(ep, "general", "hi all");
+    await publishDraft(ep, post);
+    assert(published[2].subject === chatSubject("test", "you_owner", "you", "general") && JSON.parse(published[2].data).channel === "general", "publish: a channel post goes on cotal's chat subject");
+    let threw = "";
+    try {
+      await publishDraft({ space: "test", card: ep.card }, m);
+    } catch (e) {
+      threw = (e as Error).message;
+    }
+    assert(/needs a new hook/.test(threw), "publish: an endpoint without cotal's private `js` fails LOUD (a cotal bump renamed it)");
+    const { classifyEndpointError } = await import("../src/conn-state.ts");
+    try {
+      await publishDraft({ space: "test", card: ep.card, js: undefined } as never, m);
+    } catch (e) {
+      threw = (e as Error).message;
+    }
+    assert(/reconnecting/.test(threw) && classifyEndpointError(new Error(threw)) === "transient", "publish: cotal's rebuild window (js unset) is a transient, retried failure");
+  }
+}
+
+// Status flips live in the footer, not the transcript (team2027, 2026-10-27).
+{
+  const { peerStatusTag } = await import("../src/chat.ts");
+  const roster = (st: string) => [
+    { card: { id: "me", name: "you" }, status: "idle" },
+    { card: { id: "old", name: "2027-intern" }, status: "offline" },
+    { card: { id: "new", name: "2027-intern" }, status: st },
+    { card: { id: "k", name: "kit" }, status: "working" },
+  ];
+  const flips = ["idle", "working", "idle", "working", "idle"].map((st) => peerStatusTag("2027-intern", roster(st), "me")!.text);
+  assert(eq(flips, ["2027-intern ● idle", "2027-intern ● working", "2027-intern ● idle", "2027-intern ● working", "2027-intern ● idle"]), `footer: the target's live status, flip by flip, over a stale offline record (got ${JSON.stringify(flips)})`);
+  assert(peerStatusTag("ghost", roster("idle"), "me")!.text === "ghost ○ offline", "footer: a target with no record reads offline");
+  assert(peerStatusTag(undefined, roster("working"), "me")!.text === "2027-intern, kit working", "footer: all-chat mode summarises who is working");
+  assert(peerStatusTag(undefined, roster("working"), "me", (n) => n === "kit")!.text === "kit working", "footer: … only peers the session's filter shows");
+  assert(peerStatusTag(undefined, roster("idle").map((p) => ({ ...p, status: "idle" })), "me") === undefined, "footer: nobody working → nothing");
+  const { readFileSync } = await import("node:fs");
+  const src = readFileSync(new URL("../src/chat.ts", import.meta.url), "utf8");
+  const handler = src.slice(src.indexOf('ep.on("presence"'), src.indexOf("// Tab-complete `@name` mentions"));
+  assert(handler.length > 0 && !/statusBadge\(ev\.presence\.status\)/.test(handler) && /picked it up/.test(handler), "footer: the presence handler prints only picked-it-up receipts — no line per status flip");
 }
 
 rmSync(process.env.PAW_HOME as string, { recursive: true, force: true });

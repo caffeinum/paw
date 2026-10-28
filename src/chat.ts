@@ -53,7 +53,9 @@ import { HOST_RE } from "./url.ts";
 import { bashMessage, parseBang, runBash } from "./bash.ts";
 import { ManagerControl, withManagerControl } from "./control.ts";
 import { advanceCursor } from "./cursor.ts";
-import { attachConn, type ConnPhase } from "./conn-state.ts";
+import { attachConn, shortReason, type ConnLine, type ConnPhase } from "./conn-state.ts";
+import { DEDUP_WINDOW_MS, draftDm, draftPost, publishDraft } from "./mesh-publish.ts";
+import { Outbox, type OutEvent } from "./outbox.ts";
 import { PresenceHold, type PresenceLine } from "./presence-hold.ts";
 import { AwaitTracker } from "./chat-awaiting.ts";
 import { arrowRun, CLEAR_ALL, displayWidth, fitWidth, entryVisible, hintFor, hintWithTag, whereTag, History, LogFollower, navKey, scrollKey, Painter, type Entry, pickerWindow, showsChat, showsLogs, stepView, VIEW_LABEL, viewNeedsTarget, type ChatView } from "./chat-views.ts";
@@ -260,6 +262,30 @@ export function elsewhereBadge(hidden: number): string {
 export function activityLine(activity: string, max = 100): string {
   const flat = activity.replace(/\s+/g, " ").trim();
   return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
+}
+
+/**
+ * The footer's peer-status part — where status flips live now, instead of a transcript line per flip
+ * (team2027, 2026-10-27: `• 2027-intern ● idle` / `● working` / `● idle` … under every message).
+ * With a target: its live status (a live record wins over a stale offline one under the same name;
+ * none at all = offline). Without: who is working, by name up to two, else a count; nothing when no
+ * one is. Uncoloured; the caller paints it by `status`.
+ */
+export function peerStatusTag(
+  target: string | undefined,
+  roster: { card: { id: string; name: string }; status: string }[],
+  me: string,
+  visible: (name: string) => boolean = () => true,
+): { text: string; status: string } | undefined {
+  const others = roster.filter((p) => p.card.id !== me);
+  if (target) {
+    const same = others.filter((p) => p.card.name.toLowerCase() === target.toLowerCase());
+    const st = (same.find((p) => p.status !== "offline") ?? same[0])?.status ?? "offline";
+    return { text: `${target} ${st === "offline" ? "○" : "●"} ${st}`, status: st };
+  }
+  const names = [...new Set(others.filter((p) => p.status === "working" && visible(p.card.name)).map((p) => p.card.name))];
+  if (!names.length) return undefined;
+  return { text: names.length <= 2 ? `${names.join(", ")} working` : `${names.length} working`, status: "working" };
 }
 
 function statusBadge(status: PresenceStatus): string {
@@ -666,6 +692,42 @@ async function chat(argv: string[]): Promise<void> {
   /** The picker's erase/draw, registered once its section of this function has run. */
   let pickerHooks: { erase(): void; draw(): void } | undefined;
 
+  /** What the footer last said (bar the mesh/machine part), so a tick redraws only when it changed. */
+  let hintState: string | undefined;
+  /** The outbox, once it exists (presence events can redraw the footer before it does). */
+  let outboxRef: Outbox<Outgoing> | undefined;
+  /**
+   * The hint row's RIGHT side, plain and coloured: the target's live status (or, with no target, who is
+   * working), unsent messages, the connection state, the mesh and machine. Status flips live HERE, not
+   * as transcript lines (src/chat.ts presence handler).
+   */
+  function footerParts(): [string, (s: string) => string][] {
+    const now = Date.now();
+    const parts: [string, (s: string) => string][] = [];
+    const peer = peerStatusTag(curName, ep.getRoster(), ep.card.id, (n) => presenceVisible(filter, n));
+    if (peer) parts.push([peer.text, peer.status === "working" ? c.yellow : peer.status === "waiting" ? c.magenta : c.dim]);
+    // Only a send that has hit trouble shows: a healthy one acks in milliseconds and would just flicker.
+    const pending = outboxRef?.pending() ?? [];
+    const failed = outboxRef?.failed().length ?? 0;
+    if (pending.some((i) => i.retried)) parts.push([`◌ sending ${pending.length}`, c.yellow]);
+    if (failed) parts.push([`✕ ${failed} not sent · /retry`, c.red]);
+    parts.push([conn.label(now), connColor(conn.phase(now))]);
+    return parts;
+  }
+  const footerKey = (parts: [string, unknown][]): string => parts.map(([t]) => t).join(" · ");
+  function footerTag(): { plain: string; painted: string; key: string } {
+    const parts = footerParts();
+    const key = footerKey(parts);
+    const machine = curName ? machineFor(curName) : undefined;
+    parts.push([whereTag({ space, remote: remoteSpace, ...(curName ? { agent: { machine } } : {}) }), machineColor(machine)]);
+    return { plain: footerKey(parts), painted: parts.map(([t, f]) => f(t)).join(c.dim(" · ")), key };
+  }
+  /** Redraw the hint row when what its footer says changed (the mesh/machine part is read on redraw
+   *  only — it reads the persona file, too much for a 1s tick). */
+  function refreshFooter(): void {
+    if (!rl || closing || scanner.pasting || !process.stdout.isTTY) return;
+    if (footerKey(footerParts()) !== hintState) drawHint();
+  }
   /**
    * Draw the hint line UNDER the input: where ←/↓/→ go from here, and which view you're in.
    *
@@ -677,17 +739,13 @@ async function chat(argv: string[]): Promise<void> {
    * Gated on `rl`, which is created after all of chat's state: emit() can run during startup, before
    * `curName`/`bang`/`picking` exist, and touching them then would be a temporal-dead-zone crash.
    */
-  /** The connection label the hint line last showed, so a tick redraws only when it changed. */
-  let hintState: string | undefined;
   function drawHint(): void {
     if (!rl || closing || !process.stdout.isTTY) return;
     const hint = hintFor({ view, picking, hasTarget: !!curName, bang, clickMode });
     const cols = process.stdout.columns || 80;
-    // The RIGHT side: which mesh, and which machine runs the target — the picker and `$` mode keep the row.
-    const machine = curName ? machineFor(curName) : undefined;
-    const state = conn.label(Date.now());
-    const where = whereTag({ space, remote: remoteSpace, ...(curName ? { agent: { machine } } : {}) });
-    const row = hintWithTag(hint, picking || bang ? "" : `${state} · ${where}`, cols);
+    // The RIGHT side — the picker and `$` mode keep the row.
+    const foot = footerTag();
+    const row = hintWithTag(hint, picking || bang ? "" : foot.plain, cols);
     const pos = rl.getCursorPos();
     const shown = displayWidth(stripVTControlCharacters(promptFor())) + displayWidth(rl.line);
     const lastRow = Math.floor(Math.max(0, shown - 1) / cols);
@@ -700,23 +758,19 @@ async function chat(argv: string[]): Promise<void> {
     readline.clearLine(process.stdout, 1);
     process.stdout.write("\n");
     readline.clearLine(process.stdout, 0);
-    const tag = row.tag ? connColor(conn.phase(Date.now()))(state) + machineColor(machine)(row.tag.slice(state.length)) : "";
+    const tag = row.tag ? foot.painted : "";
     process.stdout.write(c.dim(row.left) + " ".repeat(row.pad) + tag);
-    hintState = state;
+    hintState = foot.key;
     readline.moveCursor(process.stdout, 0, -(down + 1));
     readline.cursorTo(process.stdout, pos.cols);
   }
   // cotal's endpoint reports trouble one event at a time — a remote broker's slow link printed a red
   // `! timeout` per presence-watch rebind, dozens of them (src/conn-state.ts). They fold into one state
   // shown on the hint line; only sustained trouble, its recovery, and non-transient errors print.
-  const conn = attachConn(
-    ep,
-    Date.now,
-    (lines) => {
-      for (const l of lines) emit(l.level === "recovered" ? c.green(l.text) : c.red(l.text));
-    },
-    (raw) => emit(c.dim(raw)),
-  );
+  const emitConn = (lines: ConnLine[]): void => {
+    for (const l of lines) emit(l.level === "recovered" ? c.green(l.text) : c.red(l.text));
+  };
+  const conn = attachConn(ep, Date.now, emitConn, (raw) => emit(c.dim(raw)));
   try {
     await startResilient(ep);
   } catch (e) {
@@ -936,12 +990,12 @@ async function chat(argv: string[]): Promise<void> {
   // so when the agent is mid-turn (the line is queued, not lost), and lets each reply be stamped with
   // how long ITS message took — so a long-running agent doesn't feel like silence.
   const awaiting = new AwaitTracker();
-  const markWaiting = (to: string, m: CotalMessage): void => {
+  const markWaiting = (to: string, m: CotalMessage, lead = ""): void => {
     if (!m?.id) throw new Error(`send to ${to} returned no message id — cannot track the reply`);
     noteSaid(to, "out", { text: textOf(m), ts: m.ts });
     const { queued } = awaiting.sent(to, m.id, Date.now(), findPeer(to)?.status);
-    if (queued) emit(c.dim(`⏳ queued — ${to} is mid-turn`), "you");
-    else emit(c.dim(`⏳ waiting for ${to}…`), "you");
+    if (queued) emit(c.dim(`${lead}⏳ queued — ${to} is mid-turn`), "you");
+    else emit(c.dim(`${lead}⏳ waiting for ${to}…`), "you");
   };
 
   // Banner. The mesh line names the space (a remote one marked) and, for an agent, the machine running
@@ -1122,13 +1176,13 @@ async function chat(argv: string[]): Promise<void> {
       const fwd = { id: msg.id, to: msg.to, from: { id: msg.from.id }, forwardOf };
       for (const o of shownSends.values()) if (isForwardOf(fwd, o)) return;
     }
-    // NOT-in-ownIds is not yet proof it came from elsewhere: the broker echoes a publish back to our
-    // own tap before `unicast` has returned the id we record. Wait out any in-flight send (plus a
-    // short grace for the resolve itself) and re-check. Deciding immediately is what made a session
-    // label its OWN message "(other session)".
+    // Our sends are recorded in ownIds BEFORE they are published (the outbox drafts the id), so the
+    // echo can't outrun the record; a short grace and re-check stays for safety. Deciding on a send
+    // whose id was only known after `unicast` returned is what once made a session label its OWN
+    // message "(other session)".
     const decide = (attempt: number): void => {
       if (ownIds.has(msg.id)) return; // ours after all — the send resolved while we waited
-      if (attempt < 25 && (sending > 0 || attempt < 3)) {
+      if (attempt < 3) {
         setTimeout(() => decide(attempt + 1), 100);
         return;
       }
@@ -1158,7 +1212,9 @@ async function chat(argv: string[]): Promise<void> {
   };
   let stopOwnTap: () => Promise<void>;
   try {
-    stopOwnTap = await tapOwnSends(ep, space, server, onOwnSend, (e) => emit(c.red("! " + e.message)));
+    // A tap failure on a flaky link (a DNS drop: `getaddrinfo ENOTFOUND`) is a connection signal, not
+    // a red line — fed to the state, which still prints anything non-transient at once.
+    stopOwnTap = await tapOwnSends(ep, space, server, onOwnSend, (e) => emitConn(conn.feed({ kind: "warning", error: e }, Date.now())));
   } catch (e) {
     await ep.stop().catch(() => {});
     await releaseInbox();
@@ -1201,11 +1257,11 @@ async function chat(argv: string[]): Promise<void> {
       // messages sent before it (otherwise the only feedback is the final reply, minutes away).
       const what = picked.length === 1 ? "picked it up" : `picked up your ${picked.length} messages`;
       emit(`${c.green("✓")} ${card.name} ${what}${ev.presence.activity ? c.dim(" — " + activityLine(ev.presence.activity)) : c.dim(" — working…")}`, "you");
-    } else
-      emit(
-        `${c.dim("•")} ${who(card)} ${statusBadge(ev.presence.status)}` +
-          (ev.presence.activity ? c.dim(" — " + activityLine(ev.presence.activity)) : ""),
-      );
+    }
+    // A plain status flip (idle ↔ working, activity updates) is NOT a transcript line any more — a
+    // line per flip buried the conversation (team2027, 2026-10-27). The footer shows the target's live
+    // status (or, with no target, who is working); `/who` lists everyone.
+    refreshFooter();
   });
 
   // Tab-complete `@name` mentions. Names are the UNION of the live roster (present peers) + paw's
@@ -1277,23 +1333,57 @@ async function chat(argv: string[]): Promise<void> {
    *  so the space tap below can tell "I sent this" from "another `paw chat` sent this" exactly —
    *  no text/timestamp heuristics. */
   const ownIds = new Set<string>();
-  /** Sends this process has started but not yet recorded. The id only exists once `unicast` RETURNS,
-   *  but the broker has already echoed the message to our own tap by then — so "not in ownIds" is not
-   *  yet evidence of "not mine" while this is above zero. */
-  let sending = 0;
   const mine = <T extends { id?: string }>(m: T): T => {
     if (m?.id) ownIds.add(m.id);
     noteShownSend(m as { id?: string; to?: string });
     return m;
   };
-  /** Wrap a send so the in-flight window is visible to the tap. */
-  const sent = async <T extends { id?: string }>(p: Promise<T>): Promise<T> => {
-    sending++;
-    try {
-      return mine(await p);
-    } finally {
-      sending--;
+
+  /**
+   * Every message this chat sends goes through the outbox (src/outbox.ts): drafted here with an id WE
+   * own (src/mesh-publish.ts), recorded as ours before it is published (so the echo tap never races
+   * it), and retried through a flaky link with that same id — a copy that did land is deduped by the
+   * broker. A bare `! timeout` after a send (team2027, 2026-10-27) left the operator unable to tell
+   * whether it went; now the transcript says `◌ sending…` while it retries, `✓ sent` when it lands,
+   * and ONE `✕ not sent … /retry` when it gives up.
+   */
+  interface Outgoing {
+    msg: CotalMessage;
+    /** The agent whose reply to await (⏳ / ✓ picked it up) once it lands; none for a channel post. */
+    awaitFrom?: string;
+  }
+  const preview = (m: CotalMessage): string => {
+    const t = textOf(m).replace(/\s+/g, " ").trim();
+    return t.length > 48 ? `${t.slice(0, 47)}…` : t;
+  };
+  const secsOf = (ms: number): string => `${Math.max(1, Math.round(ms / 1000))}s`;
+  const onOutEvent = (e: OutEvent<Outgoing>): void => {
+    const { item } = e;
+    const o = item.msg;
+    if (e.kind === "pending") {
+      emit(c.dim(`◌ sending… ${HUMAN_PEER} → ${item.label}: ${preview(o.msg)}   (${shortReason(e.error)} — retrying)`), "you");
+    } else if (e.kind === "sent") {
+      const lead = item.retried ? `✓ sent after ${secsOf(Date.now() - item.firstAt)} · ` : "";
+      if (o.awaitFrom) markWaiting(o.awaitFrom, o.msg, lead);
+      else if (lead) emit(c.dim(`✓ sent to ${item.label} after ${secsOf(Date.now() - item.firstAt)}`), "you");
+    } else {
+      const why = e.transient ? `${shortReason(e.error)} — no ack in ${secsOf(Date.now() - item.firstAt)}, ${item.attempts} tries` : e.error;
+      emit(c.red(`✕ not sent to ${item.label}: ${why} — /retry to send again`) + c.dim(`   (${preview(o.msg)})`), "you");
     }
+    refreshFooter();
+  };
+  const outbox = new Outbox<Outgoing>({ publish: (o) => publishDraft(ep, o.msg), onEvent: onOutEvent });
+  outboxRef = outbox;
+  /** Queue a DM to `toId` (the agent `name`). `awaitReply` false: no ⏳ tracking (a stuck seat). */
+  const sendDm = (name: string, toId: string, text: string, awaitReply = true): void => {
+    const msg = mine(draftDm(ep, toId, text));
+    void outbox.submit(name, { msg, ...(awaitReply ? { awaitFrom: name } : {}) });
+    refreshFooter();
+  };
+  const sendPost = (channel: string, text: string): void => {
+    const msg = mine(draftPost(ep, channel, text));
+    void outbox.submit(`#${channel}`, { msg });
+    refreshFooter();
   };
 
   const scanner = new PasteScanner();
@@ -1512,11 +1602,17 @@ async function chat(argv: string[]): Promise<void> {
   followTimer.unref();
   // The connection state ages on its own (degraded clears, a disconnect's seconds count up, a streak
   // turns sustained), so it is ticked — and the hint redrawn only when its label actually changed.
+  let lastPhase = conn.phase(Date.now());
+  const socketDown = (p: ConnPhase): boolean => p === "connecting" || p === "reconnecting" || p === "disconnected";
   const connTimer = setInterval(() => {
     if (closing) return;
-    for (const l of conn.tick(Date.now())) emit(l.level === "recovered" ? c.green(l.text) : c.red(l.text));
+    emitConn(conn.tick(Date.now()));
     printPeerLines(peerHold.tick(presenceQuiet(Date.now()), Date.now()));
-    if (rl && !scanner.pasting && conn.label(Date.now()) !== hintState) drawHint();
+    // The socket is back: a send waiting out its backoff goes now, not up to 15s later.
+    const phase = conn.phase(Date.now());
+    if (socketDown(lastPhase) && !socketDown(phase)) outbox.kick();
+    lastPhase = phase;
+    refreshFooter();
   }, 1000);
   connTimer.unref();
 
@@ -1958,6 +2054,12 @@ async function chat(argv: string[]): Promise<void> {
   async function shutdown(): Promise<void> {
     if (closing) return;
     closing = true;
+    // Never a silent drop: say what is leaving with us unsent.
+    const unsent = [...outbox.pending(), ...outbox.failed()];
+    if (unsent.length) {
+      process.stdout.write(c.red(`\n✕ quitting with ${unsent.length} message${unsent.length === 1 ? "" : "s"} not sent:\n`));
+      for (const it of unsent) process.stdout.write(c.dim(`   → ${it.label}: ${preview(it.msg.msg)}${it.lastError ? ` (${shortReason(it.lastError)})` : ""}\n`));
+    }
     if (followTimer) clearInterval(followTimer);
     clearInterval(connTimer);
     // Leave the terminal as we found it — bracketed paste is a MODE, and a shell that inherits it
@@ -1989,7 +2091,7 @@ async function chat(argv: string[]): Promise<void> {
     // log emitted line by line is 200 prompt redraws.
     emit(body.split("\n").map((l) => `  ${l}`).join("\n") + (status ? `\n${c.yellow(`  (${status})`)}` : ""), "you");
     refreshTarget();
-    markWaiting(curName, await sent(ep.unicast(curId!, bashMessage(result))));
+    sendDm(curName, curId!, bashMessage(result));
   }
 
   rl.on("line", async (rawLine) => {
@@ -2135,7 +2237,20 @@ async function chat(argv: string[]): Promise<void> {
         return;
       }
 
-      if (text === "/conn") {
+      if (text === "/retry") {
+        const again = outbox.retry();
+        const inFlight = outbox.pending().length - again.length;
+        if (!again.length) emit(c.dim(inFlight ? `(nothing failed — ${inFlight} still sending, retried on its own)` : "(nothing to retry — every message went out)"));
+        for (const it of again) {
+          const old = Date.now() - it.createdAt > DEDUP_WINDOW_MS;
+          emit(
+            c.dim(`↻ sending again → ${it.label}: ${preview(it.msg.msg)}`) +
+              (old ? c.yellow(`   (first tried ${secsOf(Date.now() - it.createdAt)} ago, past the broker's 2m dedup window — if that copy did land, it arrives twice)`) : ""),
+            "you",
+          );
+        }
+        refreshFooter();
+      } else if (text === "/conn") {
         for (const l of conn.report(Date.now())) emit(c.dim(l));
         const view = ep.presenceView();
         const stuck = ep.presenceWriteFailure();
@@ -2187,7 +2302,7 @@ async function chat(argv: string[]): Promise<void> {
           const peer = to === undefined ? undefined : findPeer(to);
           if (to !== undefined && !peer) emit(c.red(`no peer named "${to}" present`));
           else if (peer) {
-            markWaiting(peer.card.name, await sent(ep.unicast(peer.card.id, flush(body, undefined, peer.card.name)))); // confirm sent + await the reply (typed line alone isn't proof)
+            sendDm(peer.card.name, peer.card.id, flush(body, undefined, peer.card.name)); // confirm sent + await the reply (typed line alone isn't proof)
           }
         }
       } else if (text.startsWith("@")) {
@@ -2231,7 +2346,7 @@ async function chat(argv: string[]): Promise<void> {
             curName = to;
             if (filter?.kind === "agent") filter = { kind: "agent", name: to };
             rl!.setPrompt(promptFor());
-            if (body) await sent(ep.unicast(curId, flush(body, curName)));
+            if (body) sendDm(curName, curId, flush(body, curName), false);
           } else if (!peer) {
             emit(c.red(`no peer named "${to}" present (/who to list)`));
             warnStranded(to, body);
@@ -2247,7 +2362,7 @@ async function chat(argv: string[]): Promise<void> {
             if (filter?.kind === "agent") filter = { kind: "agent", name: peer.card.name };
             rl!.setPrompt(promptFor());
             if (body) {
-              markWaiting(curName, await sent(ep.unicast(curId, flush(body, curName))));
+              sendDm(curName, curId, flush(body, curName));
             } else emit(c.dim(`(now messaging ${curName})`));
           }
         }
@@ -2261,15 +2376,15 @@ async function chat(argv: string[]): Promise<void> {
           const typed = inThisSpace(text.slice(0, sp).trim());
           const channel = typed?.slice(1);
           const body = text.slice(sp + 1).trim();
-          if (channel !== undefined) await sent(ep.multicast(flush(body, `#${channel}`), { channel }));
+          if (channel !== undefined) sendPost(channel, flush(body, `#${channel}`));
           else warnStranded(text.slice(0, sp).trim(), body);
         }
       } else if (curId) {
         refreshTarget();
         // sticky target — DM it; curName is set whenever curId is
-        markWaiting(curName!, await sent(ep.unicast(curId!, flush(text, curName))));
+        sendDm(curName!, curId!, flush(text, curName));
       } else {
-        await sent(ep.multicast(flush(text, `#${room}`), { channel: room })); // no sticky target — post to the room this session opened
+        sendPost(room, flush(text, `#${room}`)); // no sticky target — post to the room this session opened
       }
     } catch (e) {
       emit(c.red("! " + (e as Error).message));
