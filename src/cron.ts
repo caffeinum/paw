@@ -33,6 +33,11 @@ export interface CronJob {
   /** One-shot delivery failures so far; it is dropped after {@link ONE_SHOT_MAX_ATTEMPTS}. */
   attempts?: number;
   lastError?: string;
+  /** `--run`: a shell command the KEEPER runs at fire time (cwd = the agent's folder). Silent on exit 0
+   *  with empty stdout; otherwise its output (or failure) is DM'd. `prompt` is optional then. */
+  run?: string;
+  /** `--run` timeout, ms (default {@link RUN_TIMEOUT_MS}). */
+  timeoutMs?: number;
 }
 
 export interface CronStore {
@@ -158,18 +163,23 @@ export function nextFire(expr: string | CronSpec, after: number): number {
 // ── argv shape ──────────────────────────────────────────────────────────────────────────────────────
 
 /** Flags of `paw cron` that take a value / take none. Shared by the CLI parser and the `#space` hoister. */
-export const CRON_VALUE_FLAGS = ["--space", "--server", "--in", "--at"];
+export const CRON_VALUE_FLAGS = ["--space", "--server", "--in", "--at", "--run", "--timeout"];
 export const CRON_BOOL_FLAGS = ["--once", "--all"];
 
 /** Is the first positional after `add` the AGENT (vs. the schedule/prompt, agent defaulting to the
- *  caller)? `add [<agent>] "<cron>" "<prompt>"` or `add [<agent>] --in|--at <t> "<prompt>"`. */
-export function cronAddHasAgent(positionalsAfterAdd: number, timed: boolean): boolean {
-  return positionalsAfterAdd === (timed ? 2 : 3);
+ *  caller)? `add [<agent>] "<cron>" "<prompt>"` or `add [<agent>] --in|--at <t> "<prompt>"`. With
+ *  `--run` the prompt is optional, so the count alone can't tell: a cron form's agent is whatever comes
+ *  before the 5-field expression, and a timed form's lone word is the agent (a one-word prompt needs the
+ *  agent named too). */
+export function cronAddHasAgent(rest: string[], timed: boolean, run: boolean): boolean {
+  if (!run) return rest.length === (timed ? 2 : 3);
+  if (!timed) return rest.length > 0 && rest[0].trim().split(/\s+/).length !== 5;
+  return rest.length === 2 || (rest.length === 1 && /^@?[A-Za-z0-9_.-]+$/.test(rest[0]));
 }
 
 // ── one-shot times ──────────────────────────────────────────────────────────────────────────────────
 
-/** `--in 20m` → ms. Units s, m, h, d; combinations like `1h30m`. */
+/** `--in 20m` / `--timeout 90s` → ms. Units s, m, h, d; combinations like `1h30m`. */
 export function parseIn(s: string): number {
   const re = /(\d+)\s*(s|m|h|d)/gy;
   let total = 0;
@@ -244,8 +254,45 @@ export function settle(store: CronStore, id: string, error: string | undefined):
 
 /** The DM text a fire delivers. */
 export function fireText(job: CronJob): string {
+  return `${fireHead(job)}: ${job.prompt}`;
+}
+
+function fireHead(job: CronJob): string {
   const when = job.cron ? `"${job.cron}"` : "one-shot";
-  return `⏰ paw cron ${job.id} (${when}, set by ${job.createdBy}; scheduled wake-up, no reply needed): ${job.prompt}`;
+  return `⏰ paw cron ${job.id} (${when}, set by ${job.createdBy}; scheduled wake-up, no reply needed)`;
+}
+
+/** Default `--run` timeout. */
+export const RUN_TIMEOUT_MS = 10 * 60_000;
+/** How much of a command's output a DM carries. */
+export const RUN_OUTPUT_MAX = 8_000;
+
+export interface RunResult {
+  /** Exit code, or undefined when killed (timeout/signal). */
+  code: number | undefined;
+  timedOut: boolean;
+  stdout: string;
+  stderr: string;
+}
+
+const clip = (s: string, max: number, keep: "head" | "tail"): string => {
+  if (s.length <= max) return s;
+  const cut = keep === "head" ? s.slice(0, max) : s.slice(-max);
+  return keep === "head" ? `${cut}\n[… output truncated: ${s.length} chars, first ${max} shown]` : `[… output truncated: ${s.length} chars, last ${max} shown]\n${cut}`;
+};
+
+/** Pure: the DM a `--run` fire sends, or undefined for a silent success (exit 0, empty stdout). */
+export function runText(job: CronJob, r: RunResult, timeoutMs: number): string | undefined {
+  const ok = !r.timedOut && r.code === 0;
+  if (ok && !r.stdout.trim()) return undefined;
+  const head = job.prompt ? fireText(job) : fireHead(job);
+  if (ok) {
+    const err = r.stderr.trim() ? `\n[stderr]\n${clip(r.stderr.trim(), 2_000, "tail")}` : "";
+    return `${head}\n\n\`${job.run}\` printed:\n${clip(r.stdout.trim(), RUN_OUTPUT_MAX, "head")}${err}`;
+  }
+  const why = r.timedOut ? `timed out after ${Math.round(timeoutMs / 1000)}s` : r.code === undefined ? "was killed" : `exited ${r.code}`;
+  const both = `${r.stdout}${r.stderr ? `${r.stdout && !r.stdout.endsWith("\n") ? "\n" : ""}${r.stderr}` : ""}`.trim();
+  return `${head}\n\n\`${job.run}\` FAILED — ${why}.${both ? `\nlast output:\n${clip(both, 4_000, "tail")}` : " (no output)"}`;
 }
 
 /** Human description of a job's schedule. */

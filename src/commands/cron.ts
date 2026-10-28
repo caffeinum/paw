@@ -4,7 +4,12 @@
  *   paw cron add [<agent>[#space]] "<m h dom mon dow>" "<prompt>"   recurring, local time
  *   paw cron add [<agent>[#space]] "<cron>" "<prompt>" --once        next match only, then deleted
  *   paw cron add [<agent>[#space]] --in 20m|--at 09:30 "<prompt>"    one-shot, then deleted
+ *   paw cron add [<agent>] <schedule> ["<prompt>"] --run "<cmd>" [--timeout 10m]
  *   paw cron ls [--all]  ·  paw cron rm <id>  ·  paw cron tick
+ *
+ * `--run`: the KEEPER runs <cmd> itself at fire time (/bin/sh, cwd = the agent's registered folder,
+ * daemonEnv's PATH) so an hourly check costs no claude turn. Exit 0 with empty stdout = silent, nothing
+ * sent; output = one DM (prompt + output, truncated); failure = one DM (exit/timeout + tail of output).
  *
  * The agent defaults to the caller (COTAL_NAME, which cotal stamps into every agent's tools). A fire is
  * ONLY a message: the prompt is DM'd to the agent from the peer "cron" through the same path as `paw dm`
@@ -29,11 +34,14 @@ import {
   parseCron,
   parseIn,
   readStore,
+  RUN_TIMEOUT_MS,
+  runText,
   scheduleLabel,
   settle,
   spacesWithCron,
   updateStore,
   type CronJob,
+  type RunResult,
 } from "../cron.ts";
 import { runsElsewhere } from "../hosted.ts";
 import { resolveSpace } from "../space.ts";
@@ -42,7 +50,8 @@ import { resolveSpace } from "../space.ts";
 export const CRON_SENDER = "cron";
 
 const USAGE =
-  'cron add [<agent>[#space]] "<m h dom mon dow>" "<prompt>" [--once] · cron add [<agent>] --in 20m|--at HH:MM "<prompt>" · cron ls [--all] · cron rm <id> · cron tick   [--space s]';
+  'cron add [<agent>[#space]] "<m h dom mon dow>" "<prompt>" [--once] · cron add [<agent>] --in 20m|--at HH:MM "<prompt>" · ' +
+  '--run "<cmd>" [--timeout 10m] (keeper runs it; silent unless it prints or fails; prompt optional) · cron ls [--all] · cron rm <id> · cron tick   [--space s]';
 
 export interface CronArgs {
   sub?: string;
@@ -50,6 +59,8 @@ export interface CronArgs {
   space?: string;
   in?: string;
   at?: string;
+  run?: string;
+  timeout?: string;
   once: boolean;
   all: boolean;
 }
@@ -64,6 +75,8 @@ export function parseCronArgs(argv: string[]): CronArgs {
       if (a === "--space") out.space = v;
       else if (a === "--in") out.in = v;
       else if (a === "--at") out.at = v;
+      else if (a === "--run") out.run = v;
+      else if (a === "--timeout") out.timeout = v;
     } else if (CRON_BOOL_FLAGS.includes(a)) {
       if (a === "--once") out.once = true;
       else out.all = true;
@@ -88,15 +101,28 @@ export function buildJob(a: CronArgs, o: { space: string; self?: string; now: nu
   const timed = a.in !== undefined || a.at !== undefined;
   if (a.in !== undefined && a.at !== undefined) throw new Error("paw cron: give --in OR --at, not both");
   if (timed && a.once) throw new Error("paw cron: --once is for a cron expression; --in/--at are already one-shots");
+  const run = a.run?.trim();
+  if (a.run !== undefined && !run) throw new Error("paw cron: empty --run command");
+  if (a.timeout !== undefined && !run) throw new Error("paw cron: --timeout is for --run");
   const rest = [...a.positionals];
-  const named = cronAddHasAgent(rest.length, timed);
-  if (!named && rest.length !== (timed ? 1 : 2)) throw new Error(`paw cron: wrong arguments for add — ${USAGE}`);
+  const named = cronAddHasAgent(rest, timed, !!run);
+  const want = (timed ? 0 : 1) + (run ? 0 : 1); // schedule + prompt positionals besides the agent
+  if (rest.length - (named ? 1 : 0) !== want && !(run && rest.length - (named ? 1 : 0) === want + 1))
+    throw new Error(`paw cron: wrong arguments for add — ${USAGE}`);
   const agentArg = named ? rest.shift()!.replace(/^@/, "") : undefined;
   const agent = agentArg ?? o.self;
   if (!agent) throw new Error('paw cron: no agent given and not run from inside an agent — `paw cron add <agent> "<cron>" "<prompt>"`');
-  const prompt = rest.pop()!.trim();
-  if (!prompt) throw new Error("paw cron: empty prompt");
-  const base = { id: o.id, agent, prompt, createdAt: o.now, createdBy: o.self ?? "operator" };
+  const prompt = (rest.length > (timed ? 0 : 1) ? rest.pop()! : "").trim();
+  if (!prompt && !run) throw new Error("paw cron: empty prompt");
+  const base = {
+    id: o.id,
+    agent,
+    prompt,
+    createdAt: o.now,
+    createdBy: o.self ?? "operator",
+    ...(run ? { run } : {}),
+    ...(a.timeout !== undefined ? { timeoutMs: parseIn(a.timeout) } : {}),
+  };
   if (a.in !== undefined) return { ...base, at: o.now + parseIn(a.in) };
   if (a.at !== undefined) return { ...base, at: parseAt(a.at, o.now) };
   const expr = rest[0].trim().replace(/\s+/g, " ");
@@ -138,7 +164,8 @@ export function formatJobs(jobs: Array<CronJob & { space?: string }>, now: numbe
       })();
       const where = j.space ? `${j.agent}#${j.space}` : j.agent;
       const err = j.lastError ? `\n    ⚠ last fire failed: ${j.lastError}` : "";
-      return `${j.id}  ${where}  ${scheduleLabel(j)}  next ${next}  (by ${j.createdBy})\n    ${j.prompt}${err}`;
+      const run = j.run ? `\n    run: ${j.run}${j.timeoutMs ? ` (timeout ${Math.round(j.timeoutMs / 1000)}s)` : ""}` : "";
+      return `${j.id}  ${where}  ${scheduleLabel(j)}  next ${next}  (by ${j.createdBy})${run}${j.prompt ? `\n    ${j.prompt}` : ""}${err}`;
     })
     .join("\n");
 }
@@ -184,6 +211,25 @@ export async function cronSweep(now = Date.now(), log: (line: string) => void = 
     let meshUp: string | undefined;
     for (const job of claimed) {
       let error = unfireable(space, job.agent);
+      let text = fireText(job);
+      if (!error && job.run) {
+        const timeoutMs = job.timeoutMs ?? RUN_TIMEOUT_MS;
+        let r: RunResult;
+        try {
+          r = await runCommand(job.run, folderForName(space, job.agent)!, timeoutMs, job);
+        } catch (e) {
+          r = { code: undefined, timedOut: false, stdout: "", stderr: `could not start /bin/sh: ${(e as Error).message}` };
+        }
+        log(`paw cron: ${job.id} ran \`${job.run}\` → ${r.timedOut ? "timed out" : `exit ${r.code}`}, ${r.stdout.trim().length} chars of stdout`);
+        const said = runText(job, r, timeoutMs);
+        if (said === undefined) {
+          const outcome = updateStore(space, (s) => settle(s, job.id, undefined));
+          fired.push(job.id);
+          log(`paw cron: ${job.id} → ${job.agent}#${space}: silent (exit 0, no output) — nothing sent${outcome === "removed" ? " (one-shot, removed)" : ""}`);
+          continue;
+        }
+        text = said;
+      }
       if (!error && meshUp === undefined) {
         try {
           await ensure({ needMesh: true, needManager: true, space });
@@ -195,7 +241,7 @@ export async function cronSweep(now = Date.now(), log: (line: string) => void = 
       if (!error && meshUp) error = meshUp;
       if (!error) {
         try {
-          await sendAsYou({ space, server: pawServer(space), target: job.agent, text: fireText(job), byName: true, sender: CRON_SENDER });
+          await sendAsYou({ space, server: pawServer(space), target: job.agent, text, byName: true, sender: CRON_SENDER });
         } catch (e) {
           error = (e as Error).message;
         }
@@ -212,6 +258,39 @@ export async function cronSweep(now = Date.now(), log: (line: string) => void = 
     }
   }
   return { fired, failed };
+}
+
+/** Run a `--run` command the way a daemon runs things: /bin/sh in the agent's folder, PATH backfilled
+ *  (daemonEnv), stdout + stderr captured, killed at `timeoutMs`. */
+export async function runCommand(cmd: string, cwd: string, timeoutMs: number, job?: CronJob): Promise<RunResult> {
+  const { spawn } = await import("node:child_process");
+  const { daemonEnv } = await import("../lifecycle.ts");
+  const env = daemonEnv({ PAW_CRON_JOB: job?.id ?? "", PAW_CRON_AGENT: job?.agent ?? "" });
+  for (const k of ["COTAL_NAME", "COTAL_SPACE"]) delete env[k];
+  return new Promise((resolve, reject) => {
+    const child = spawn("/bin/sh", ["-c", cmd], { cwd, env, stdio: ["ignore", "pipe", "pipe"], detached: true });
+    let stdout = "";
+    let stderr = "";
+    let timedOut = false;
+    child.stdout.on("data", (d: Buffer) => (stdout += d.toString()));
+    child.stderr.on("data", (d: Buffer) => (stderr += d.toString()));
+    const timer = setTimeout(() => {
+      timedOut = true;
+      try {
+        process.kill(-child.pid!, "SIGKILL"); // the whole process group: sh and whatever it started
+      } catch {
+        child.kill("SIGKILL");
+      }
+    }, timeoutMs);
+    child.on("error", (e) => {
+      clearTimeout(timer);
+      reject(e);
+    });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      resolve({ code: code ?? undefined, timedOut, stdout, stderr });
+    });
+  });
 }
 
 async function cron(argv: string[]): Promise<void> {

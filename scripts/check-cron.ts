@@ -4,7 +4,7 @@
  * self default, and the fire gate (registered + hosted here). Hermetic: temp PAW_HOME, no mesh.
  * Run: pnpm check:cron
  */
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -17,7 +17,7 @@ delete process.env.COTAL_NAME;
 delete process.env.COTAL_SPACE;
 
 const cron = await import("../src/cron.ts");
-const { buildJob, parseCronArgs, unfireable, formatJobs } = await import("../src/commands/cron.ts");
+const { buildJob, parseCronArgs, unfireable, formatJobs, runCommand } = await import("../src/commands/cron.ts");
 const { setFolderName } = await import("../src/addressing.ts");
 
 let failures = 0;
@@ -134,6 +134,61 @@ console.log("add: argv shapes");
   throws(() => b(["add", "a", "b", "c", "d"]), /wrong arguments/, "too many positionals fail loud");
   throws(() => b(["add", "bob", "* * * * *", "  "]), /empty prompt/, "empty prompt fails loud");
   throws(() => parseCronArgs(["add", "--every", "5m"]), /unknown flag/, "unknown flag fails loud");
+}
+
+console.log("--run: argv");
+{
+  const now = at(2026, 10, 28, 14, 7);
+  const b = (argv: string[], self?: string) => buildJob(parseCronArgs(argv), { space: SPACE, self, now, id: "x" });
+  const r1 = b(["add", "bob", "0 * * * *", "--run", "./check.sh"]);
+  assert(r1.agent === "bob" && r1.cron === "0 * * * *" && r1.run === "./check.sh" && r1.prompt === "", "add <agent> <cron> --run <cmd> (prompt optional)");
+  const r2 = b(["add", "0 * * * *", "--run", "./check.sh"], "me");
+  assert(r2.agent === "me" && r2.cron === "0 * * * *", "add <cron> --run <cmd> inside an agent → the caller");
+  const r3 = b(["add", "0 * * * *", "look at this", "--run", "x", "--timeout", "90s"], "me");
+  assert(r3.agent === "me" && r3.prompt === "look at this" && r3.timeoutMs === 90_000, "add <cron> <prompt> --run --timeout");
+  const r4 = b(["add", "bob", "--in", "5m", "--run", "x"]);
+  assert(r4.agent === "bob" && r4.at === now + 300_000 && r4.prompt === "", "add <agent> --in <t> --run (lone word = agent)");
+  const r5 = b(["add", "--in", "5m", "--run", "x"], "me");
+  assert(r5.agent === "me" && r5.prompt === "", "add --in <t> --run inside an agent");
+  const r6 = b(["add", "check the result", "--in", "5m", "--run", "x"], "me");
+  assert(r6.agent === "me" && r6.prompt === "check the result", "add <multi-word prompt> --in --run → the caller");
+  throws(() => b(["add", "bob", "0 * * * *", "--run", "  "]), /empty --run/, "empty --run fails loud");
+  throws(() => b(["add", "bob", "0 * * * *", "p", "--timeout", "5m"]), /--timeout is for --run/, "--timeout without --run fails loud");
+  throws(() => b(["add", "bob", "0 * * * *", "p", "q", "--run", "x"]), /wrong arguments/, "too many positionals with --run fail loud");
+  assert(formatJobs([r3], now).includes("run: x (timeout 90s)"), "ls shows the command and its timeout");
+}
+
+console.log("--run: output → message");
+{
+  const job = { id: "j", agent: "a", prompt: "", cron: "0 * * * *", createdAt: 0, createdBy: "me", run: "./c.sh" };
+  const ok = (stdout: string, stderr = "") => ({ code: 0, timedOut: false, stdout, stderr });
+  assert(cron.runText(job, ok(""), 1000) === undefined, "exit 0 + empty stdout → silent (nothing sent)");
+  assert(cron.runText(job, ok("  \n", "noise on stderr"), 1000) === undefined, "whitespace stdout + stderr only → still silent");
+  const t = cron.runText({ ...job, prompt: "act on this" }, ok("3 new rows\n"), 1000)!;
+  assert(t.startsWith("⏰ paw cron j (") && t.includes(": act on this") && t.includes("`./c.sh` printed:\n3 new rows"), "output → prompt + output");
+  const big = cron.runText(job, ok("x".repeat(cron.RUN_OUTPUT_MAX + 500)), 1000)!;
+  assert(big.includes(`output truncated: ${cron.RUN_OUTPUT_MAX + 500} chars, first ${cron.RUN_OUTPUT_MAX} shown`) && big.length < cron.RUN_OUTPUT_MAX + 600, "large output is truncated and says so");
+  const f = cron.runText(job, { code: 2, timedOut: false, stdout: "step 1\n", stderr: "boom\n" }, 1000)!;
+  assert(/FAILED — exited 2\.\nlast output:\nstep 1\nboom/.test(f), "non-zero exit → failure + tail of stdout+stderr");
+  const to = cron.runText(job, { code: undefined, timedOut: true, stdout: "", stderr: "" }, 600_000)!;
+  assert(/FAILED — timed out after 600s\. \(no output\)/.test(to), "timeout → says so");
+  const tail = cron.runText(job, { code: 1, timedOut: false, stdout: "a".repeat(5000) + "END", stderr: "" }, 1000)!;
+  assert(tail.endsWith("END") && tail.includes("last 4000 shown"), "failure keeps the TAIL of long output");
+}
+
+console.log("--run: execution");
+{
+  const dir = mkdtempSync(join(tmpdir(), "paw-cron-run-"));
+  const r1 = await runCommand('pwd; echo "$PAW_CRON_JOB"; echo err >&2', dir, 10_000, { id: "jid", agent: "a", prompt: "", createdAt: 0, createdBy: "x" });
+  assert(r1.code === 0 && r1.stdout.split("\n")[0] === realpathSync(dir) && r1.stdout.includes("jid") && r1.stderr.trim() === "err", "runs in the agent folder via /bin/sh, env carries the job id, stderr captured");
+  const r2 = await runCommand("exit 3", dir, 10_000);
+  assert(r2.code === 3 && !r2.timedOut, "exit code captured");
+  const t0 = Date.now();
+  const r3 = await runCommand("sleep 30 & sleep 30", dir, 500);
+  assert(r3.timedOut && Date.now() - t0 < 5_000, "timeout kills the whole process group promptly");
+  const r4 = await runCommand("command -v sh >/dev/null && echo ok", dir, 10_000);
+  assert(r4.stdout.trim() === "ok", "PATH is set (daemonEnv)");
+  rmSync(dir, { recursive: true, force: true });
 }
 
 console.log("store");

@@ -10,7 +10,7 @@
  *   PAW_HOME=$(mktemp -d) PAW_SPACE=test-$$ PAW_RELEASE=dev PAW_COTAL_ROOT=$(mktemp -d) node scripts/e2e-cron.ts
  */
 import { spawnSync } from "node:child_process";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -99,6 +99,24 @@ try {
   const t = paw(["tick"]);
   ok("a hand-written job for an unregistered name is NOT delivered, tick exits 1", t.status === 1 && /ghost001 → ghost.*NOT delivered/.test(t.stdout));
   ok("…and kept for a bounded retry", readStore(space).jobs.find((j) => j.id === "ghost001")?.attempts === 1);
+
+  // 4b. --run: the keeper runs the command; silent unless it prints or fails
+  const before = inbox.length;
+  ok("add --run (silent)", paw(["add", "target", "--in", "2s", "--run", "true"]).status === 0);
+  ok("add --run (prints)", paw(["add", "target", "--in", "2s", "look at token-RUN", "--run", "pwd; echo RUN-OUT-42"]).status === 0);
+  ok("add --run (fails)", paw(["add", "target", "--in", "2s", "--run", "echo partial; exit 7"]).status === 0);
+  await sleep(2500);
+  const tr = paw(["tick"]);
+  ok("tick reports the silent run as sent nothing", /silent \(exit 0, no output\) — nothing sent/.test(tr.stdout));
+  await waitFor(() => inbox.length >= before + 2, 15_000);
+  await sleep(3000);
+  const fresh = inbox.slice(before);
+  ok("exactly two DMs: the printing run and the failing run (silent sent none)", fresh.length === 2, `${fresh.length}: ${fresh.join(" ‖ ")}`);
+  const printed = fresh.find((t) => t.includes("RUN-OUT-42"));
+  ok("…the printing run: prompt + output, run in the agent's folder", !!printed && printed.includes("look at token-RUN") && printed.includes(realpathSync(folder)), printed);
+  ok("…the failing run: exit + tail", fresh.some((t) => /FAILED — exited 7\.\nlast output:\npartial/.test(t)));
+  ok("…all from \"cron\"", senders.slice(before).every((s) => s === "cron"));
+  ok("run one-shots removed", !readStore(space).jobs.some((j) => j.run));
 
   // 5. rm
   const rec = readStore(space).jobs.find((j) => j.prompt.includes("token-C"))!;

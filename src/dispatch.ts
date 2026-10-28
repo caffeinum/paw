@@ -288,7 +288,7 @@ export interface AddressSpec {
 /** `paw cron add [<agent>] …`: the agent is slot 1 only when the arity says it was given (else slot 1 is
  *  the schedule or a prompt that may itself contain "#"). */
 const cronSlots = (positionals: string[], args: string[]): number[] =>
-  positionals[0] === "add" && cronAddHasAgent(positionals.length - 1, args.includes("--in") || args.includes("--at")) ? [1] : [];
+  positionals[0] === "add" && cronAddHasAgent(positionals.slice(1), args.includes("--in") || args.includes("--at"), args.includes("--run")) ? [1] : [];
 
 const V = ["--space", "--server"];
 export const ADDRESS_ARGS: Readonly<Record<string, AddressSpec>> = {
