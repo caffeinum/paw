@@ -42,6 +42,7 @@ const paw = (args: string[], env: NodeJS.ProcessEnv = process.env) => {
 
 let target: CotalEndpoint | undefined;
 const inbox: string[] = [];
+const senders: string[] = [];
 const waitFor = async (pred: () => boolean, ms: number) => {
   for (const end = Date.now() + ms; Date.now() < end && !pred(); ) await sleep(250);
   return pred();
@@ -53,7 +54,10 @@ try {
   ok("registered agent \"target\"", name === "target");
   target = new CotalEndpoint({ space, servers: pawServer(space), channels: [], consume: true, registerPresence: true, watchPresence: true, card: { name: "target", kind: "endpoint" } });
   target.on("error", () => {});
-  target.on("message", (m: { parts?: Array<{ text?: string }> }) => inbox.push((m.parts ?? []).map((p) => p.text ?? "").join(" ")));
+  target.on("message", (m: { from?: { name?: string }; parts?: Array<{ text?: string }> }) => {
+    inbox.push((m.parts ?? []).map((p) => p.text ?? "").join(" "));
+    senders.push(m.from?.name ?? "?");
+  });
   await target.start();
   await sleep(1500);
 
@@ -63,6 +67,7 @@ try {
   await sleep(2500);
   ok("tick exits 0", paw(["tick"]).status === 0);
   ok("the one-shot DM arrived over the mesh", await waitFor(() => inbox.some((t) => t.includes("token-A") && t.startsWith("⏰ paw cron")), 15_000), inbox.at(-1));
+  ok('…sent by the peer "cron", not "you"', senders[inbox.findIndex((t) => t.includes("token-A"))] === "cron", senders.join(","));
   ok("…and the one-shot was removed", !readStore(space).jobs.some((j) => j.prompt.includes("token-A")));
 
   // 2. inside an agent: the caller + its space by default (no PAW_SPACE in the child)

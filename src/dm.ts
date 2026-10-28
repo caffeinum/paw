@@ -30,8 +30,10 @@ import {
   folderForName,
   registerInstance,
   resolveFolderAgent,
+  senderEndpointAuth,
   setFolderName,
   stableHumanId,
+  stableSenderId,
   waitForPeerId,
 } from "./addressing.ts";
 import { isAddressHandle, resolveAddress } from "./address.ts";
@@ -227,17 +229,20 @@ export async function sendAsYou(opts: {
   restartLive?: RestartConsent;
   /** `target` is an agent NAME only — never a folder/handle, whatever the cwd holds (paw cron). */
   byName?: boolean;
+  /** Send as this non-human peer instead of "you" (paw cron fires as "cron"). */
+  sender?: string;
 }): Promise<{ name: string }> {
-  const { space, server, target, text, model, name: nameFlag, restartLive, byName } = opts;
+  const { space, server, target, text, model, name: nameFlag, restartLive, byName, sender } = opts;
   if (!byName) assertUnambiguousTarget(space, target); // a bare token that's BOTH a known name and a folder here → fail loud
 
   // Pure sender: watch the roster to resolve/spawn the target, but don't register presence (the mailbox
   // beacon holds "you") and don't consume (never touch the durable inbox slot — that's `paw inbox`'s).
-  const humanAuth = await humanEndpointAuth(space, "operator");
+  const humanAuth = sender ? await senderEndpointAuth(space, sender) : await humanEndpointAuth(space, "operator");
   const creds = humanAuth.creds;
+  const peerName = sender ?? humanPeer(space);
   const card = creds
-    ? { name: humanPeer(space), kind: "endpoint" as const }
-    : { name: humanPeer(space), kind: "endpoint" as const, id: stableHumanId(space) };
+    ? { name: peerName, kind: "endpoint" as const }
+    : { name: peerName, kind: "endpoint" as const, id: sender ? stableSenderId(space, sender) : stableHumanId(space) };
   const ep = new CotalEndpoint({ space, servers: server, ...humanAuth, card, registerPresence: false, consume: false, watchPresence: true });
   ep.on("error", (e: Error) => console.error(c.red("! " + e.message)));
   await ep.start();

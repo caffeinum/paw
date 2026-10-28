@@ -7,7 +7,7 @@
  *   paw cron ls [--all]  ·  paw cron rm <id>  ·  paw cron tick
  *
  * The agent defaults to the caller (COTAL_NAME, which cotal stamps into every agent's tools). A fire is
- * ONLY a message: the prompt is DM'd to the agent as "you" through the same path as `paw dm`
+ * ONLY a message: the prompt is DM'd to the agent from the peer "cron" through the same path as `paw dm`
  * (src/dm.ts sendAsYou), so a stopped or sleeping registered agent wakes the way a DM wakes it, and
  * nothing ever restarts, stops or interrupts a live one. Firing rides the global keeper's 60s tick
  * (`paw global`, src/global.ts), which runs `cronSweep` over every space with a store; `paw cron tick`
@@ -37,6 +37,9 @@ import {
 } from "../cron.ts";
 import { runsElsewhere } from "../hosted.ts";
 import { resolveSpace } from "../space.ts";
+
+/** The peer name a fire is sent from — never "you", so an agent can't take a fire for the operator. */
+export const CRON_SENDER = "cron";
 
 const USAGE =
   'cron add [<agent>[#space]] "<m h dom mon dow>" "<prompt>" [--once] · cron add [<agent>] --in 20m|--at HH:MM "<prompt>" · cron ls [--all] · cron rm <id> · cron tick   [--space s]';
@@ -73,9 +76,9 @@ export function parseCronArgs(argv: string[]): CronArgs {
 
 /** Why `agent` can't be scheduled from this machine in `space`, or undefined when it can. */
 export function unfireable(space: string, agent: string): string | undefined {
-  if (!folderForName(space, agent)) return `"${agent}" is not a registered agent in space "${space}" (\`paw status\` lists them)`;
   const away = runsElsewhere(space, agent);
-  if (away) return `"${agent}" runs on ${away.where} — schedule it there`;
+  if (away) return `"${agent}" is not hosted on this machine (runs on ${away.where}) — schedule it there`;
+  if (!folderForName(space, agent)) return `"${agent}" is not a registered agent in space "${space}" (\`paw status\` lists them)`;
   if (!existsSync(personaFilePath(space, agent))) return `"${agent}" has no persona in space "${space}" on this machine`;
   return undefined;
 }
@@ -192,7 +195,7 @@ export async function cronSweep(now = Date.now(), log: (line: string) => void = 
       if (!error && meshUp) error = meshUp;
       if (!error) {
         try {
-          await sendAsYou({ space, server: pawServer(space), target: job.agent, text: fireText(job), byName: true });
+          await sendAsYou({ space, server: pawServer(space), target: job.agent, text: fireText(job), byName: true, sender: CRON_SENDER });
         } catch (e) {
           error = (e as Error).message;
         }

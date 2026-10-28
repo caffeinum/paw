@@ -31,8 +31,11 @@ lastFiredAt?, attempts?, lastError?}`.
   `paw cron tick` runs the same sweep by hand.
 - Claim under the lock (`lastFiredAt = now`), deliver outside it, settle under it. Due = next occurrence
   after `lastFiredAt ?? createdAt` ≤ now, so missed fires (machine asleep) collapse into ONE fire.
-- A fire is ONLY a DM: `sendAsYou({ byName: true })` (src/dm.ts) — the `paw dm` path as "you", text
-  `⏰ paw cron <id> (…, set by X; scheduled wake-up, no reply needed): <prompt>`. A stopped registered
+- A fire is ONLY a DM: `sendAsYou({ byName: true, sender: "cron" })` (src/dm.ts) — the `paw dm` path,
+  but from the peer **"cron"**, never "you", so an agent can't take a fire for the operator. Open mesh:
+  stable id `spaces/<s>/cron.id`; remote: its own nkey `spaces/<s>/cron.nkey.json` (0600) minted
+  `operator` from the signer (`senderEndpointAuth`). Text: `⏰ paw cron <id> (…, set by X; scheduled
+  wake-up, no reply needed): <prompt>`. A stopped registered
   agent wakes the way a DM wakes it (wake gate, `restartLive` absent ⇒ a live seat is never restarted);
   a sleeping one through its stand-in. `byName` skips folder/handle resolution so the keeper's cwd can
   never turn a job into a new registration.
@@ -52,3 +55,10 @@ so agents see it only after a release + restart (and their next spawn).
 store, argv shapes, fire gate); `check:hash-space` covers the `#space` hoist. Live:
 `PAW_HOME=$(mktemp -d) PAW_SPACE=test-$$ PAW_RELEASE=dev PAW_COTAL_ROOT=$(mktemp -d) node scripts/e2e-cron.ts`
 — real mesh + manager, a listening "target" peer, the real CLI; tears down with stop + purgeTestSpace.
+- `scripts/e2e-cron-agent.ts` (same env): a REAL haiku claude agent; fires driven by the keeper entry
+  `paw global --space <s>` (the plist's argv; brings up a test-space `global`). Live idle agent acts on
+  an `--in 1m` fire; then `paw sleep --now`, the next fire wakes it through the stand-in (sleep.log:
+  "woke worker — DM from cron") and it acts.
+- `COTAL_BIN=<cotal-ai@0.100.0>/dist/cotal.js node scripts/e2e-cron-remote.ts`: own JWT+TLS broker +
+  `paw mesh add`; a real claude agent hosted here acts on a fire (history shows it from `cron`), an agent
+  with no persona here is refused at add, skipped + logged at fire, and nothing is spawned for it.
