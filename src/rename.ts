@@ -4,14 +4,17 @@
  * with it, so the agent keeps its conversation. paw's OWN command, not a cotal verb. The set: chat
  * --fresh = new, adopt = resume a past session, rename = relabel an existing agent.
  */
-import { readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { basename, resolve } from "node:path";
 import { registry, type Command } from "@cotal-ai/core";
 import {
   agentRecord,
   assertUnambiguousTarget,
   cleanAgentName,
+  elsewhereHint,
   ensureAgentSpawned,
   folderForName,
+  listAgents,
   lookupFolderName,
   personaFilePath,
   stopAgent,
@@ -38,12 +41,26 @@ function parseArgs(argv: string[]): { space?: string; target?: string; newName?:
   return out;
 }
 
+/**
+ * A bare word that is neither an agent here nor a folder in the cwd (`paw rename 2027-skills skills` used
+ * to die on `ENOENT: lstat '…/2027-skills'`). When an agent's REGISTERED folder has that basename and is
+ * gone from disk, the operator renamed the folder, not the agent — point at `paw relocate`.
+ */
+export function noAgentNamed(space: string, word: string): string {
+  const gone = listAgents(space).filter((a) => basename(a.folder) === word && !existsSync(a.folder));
+  const hint = gone.length
+    ? ` — ${gone.map((a) => `"${a.name}" ran in ${a.folder}`).join(", ")}, which is gone: if you moved that folder, \`paw relocate ${gone[0].name}#${space} <new-folder>\` makes the agent follow it`
+    : elsewhereHint(space, word) || ` (\`paw status --space ${space}\` lists them)`;
+  return `paw: no agent named "${word}" in space "${space}", and no folder ./${word} here${hint}`;
+}
+
 /** Resolve the first arg to a canonical folder: a known agent NAME (reverse lookup), a
  *  `<repo>@<branch>` worktree, or a plain folder path. */
 function resolveTarget(space: string, arg: string): string {
   if (!arg.includes("@")) {
     const byName = folderForName(space, arg);
     if (byName) return byName;
+    if (/^[A-Za-z0-9_.-]+$/.test(arg) && arg !== "." && arg !== ".." && !existsSync(resolve(arg))) throw new Error(noAgentNamed(space, arg));
   }
   return resolveExistingFolderArg(arg); // worktree or plain folder; a URL/gh:/web: handle fails loud (rename never clones/mints)
 }
