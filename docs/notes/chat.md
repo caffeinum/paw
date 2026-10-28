@@ -463,3 +463,49 @@ under GOMEMLIMIT, presence KV memory-backed). The mac's and the mini's timeout b
 (the mac's run into `getaddrinfo ENOTFOUND` — its own link drops; the mini's 05:28–05:37Z / 05:58Z took
 every seat offline in one ms — a shared uplink stall, likely its Wi-Fi). cotal's 2s heartbeat / 6s TTL
 turns any >4–6s client stall into fleet-wide flaps. Tests: `check:chat` (`conn:` + `presence:` cases).
+
+**An indicator, not spam (2026-10-27, later).** `paw chat @2027-intern --space team2027` over this mac's
+dropping Wi-Fi/DNS still printed: `! timeout` right after a send (was it sent?), repeated `! mesh degraded
+for 3m …` / `● mesh connected again after 4m …` pairs, a raw `! getaddrinfo ENOTFOUND`, and a `• 2027-intern
+● idle` / `● working` line per status flip. Now:
+- **Sends never print a bare error.** The `timeout` was the JetStream publish ack: cotal's `unicast` /
+  `multicast` → `js.publish(subject, msg, { msgID: msg.id })` → nats.js `nc.request` with the JetStream
+  context's default 5s timeout, one attempt (`retries` 1) → `TimeoutError("timeout")`, caught by the line handler's
+  `! ${message}`. A timed-out publish may or may not have been STORED, and `unicast` mints the id inside the
+  call, so a re-send through it could deliver twice. `src/mesh-publish.ts` drafts the message (`draftDm` /
+  `draftPost`, the exact shape and subject cotal uses) with an id paw owns and publishes it with
+  `msgID = id` (`publishDraft`), so a re-publish of a copy that landed is deduped by the stream (2m
+  `duplicate_window` on the DM and chat streams). It reads cotal's PRIVATE `js` client — the one coupling,
+  checked loud (`needs a new hook` if a bump renames it); cotal nulls it in its rebuild window, reported as
+  cotal's own `reconnecting - try again shortly` (transient). Upstream gap: `unicast`/`multicast` should
+  take `opts.id`.
+- **`src/outbox.ts` (`Outbox`)** — every chat send (sticky DM, `@name msg`, `/dm`, `#chan msg`, room post,
+  `!cmd` result, stuck-seat queue) goes through one FIFO (only the head is in flight, so order holds). A
+  transient failure (`classifyEndpointError`) prints ONE dim `◌ sending… you → kit: status   (timeout —
+  retrying)` and retries with backoff 1/2/4/8/15s; the conn tick `kick()`s it the moment the socket is back.
+  Success after a retry: `✓ sent after 14s · ⏳ waiting for kit…` (a first-try success is unchanged: just
+  `⏳`). Give-up after `GIVE_UP_MS` 90s (inside the 2m dedup window, so the last retry still dedups) or at
+  once on a non-transient error (auth, permissions, unknown — the real reason): ONE red `✕ not sent to kit:
+  timeout — no ack in 90s, 6 tries — /retry to send again   (status)`. `/retry` re-queues every failed
+  message with its SAME id (`↻ sending again → kit: …`; past the 2m window it says the first copy, if it
+  did land, would arrive twice). Quitting with unsent messages prints them. The footer shows `◌ sending N`
+  (only once a send has hit trouble) and `✕ N not sent · /retry`. Ids are recorded in `ownIds` BEFORE the
+  publish, so the echo tap's in-flight wait (`sending` counter) is gone.
+- **Degraded never prints.** `ConnState.settle` now prints only for a SOCKET-DOWN streak (connecting /
+  reconnecting / disconnected) past 2 min, plus its recovery, coalesced per 10 min as before. A degraded
+  spell (socket up) lives in the footer; `/conn` counts `degraded spells over 2m`. Applies to `paw inbox
+  --watch` and `paw web` (shared `logConn`).
+- **DNS/dial errors are state.** ENOTFOUND, EAI_AGAIN, ECONNREFUSED, ECONNRESET, EHOSTUNREACH, ENETUNREACH,
+  ETIMEDOUT, `getaddrinfo` are transient; a failed dial makes the phase `reconnecting` for `DIAL_FAIL_MS`
+  (20s, unless the transport reports up — so a side dial can't pin it) and its code rides in the footer
+  (`◌ reconnecting (2) ENOTFOUND`) and `/conn` (`last failed dial: ENOTFOUND`). The echo tap's errors feed
+  the same state instead of printing `! <message>`. Auth/permission stay loud.
+- **Status flips live in the footer.** The presence handler prints only `✓ kit picked it up — …` (the ⏳/✓
+  flow) and the debounced joins/departures; every other `update` (idle ↔ working, activity) just redraws
+  the footer, which now leads with `peerStatusTag`: the target's live status (`2027-intern ● working`), or
+  with no target who is working (`kit, queue working` / `3 working`, filter-aware). `/who` lists everyone.
+Tests: `check:chat` (`send:`, `publish:`, `footer:`, DNS `conn:` cases); `scripts/e2e-send-retry.ts` (a
+private nats-server + a TCP proxy that HOLDS bytes like a dropped link: the stalled send times out, shows
+pending, lands once the link is back — the held copy and the retry dedup to ONE delivery; past a short
+bound it fails once and `retry()` still delivers once). Run it with the isolated env:
+`PAW_HOME=$(mktemp -d) PAW_SPACE=test-$$ PAW_RELEASE=dev node scripts/e2e-send-retry.ts`.

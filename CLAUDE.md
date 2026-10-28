@@ -207,6 +207,9 @@ Each entry: what it is + the most load-bearing rule. Full notes behind the link.
 - `src/conn-state.ts` — mesh connection state for chat / inbox --watch / web: cotal's per-event `warning`/`error`
   (e.g. a raw `timeout` per presence-watch rebind) fold into one state on the hint row; ONE line per sustained
   (30s) streak + one on recovery; auth/permission/unknown print at once; `/conn`, `PAW_CONN_DEBUG=1`. → [chat.md#connection-state](docs/notes/chat.md#connection-state)
+- `src/outbox.ts` + `src/mesh-publish.ts` — every chat send: paw-owned msg id (`msgID` dedup; reads cotal's
+  private `js`, loud if renamed), transient → `◌ sending…` + backoff ≤90s, then ONE `✕ not sent … /retry`;
+  degraded never prints, DNS errors are conn state, status flips live in the footer. → [chat.md#connection-state](docs/notes/chat.md#connection-state)
 - `src/images.ts` — `[Image #N]` attachments as TEXT (never a new part kind); stage ephemeral paths. → [chat.md#images](docs/notes/chat.md#images)
 - `src/paste.ts` — bracketed paste → one `[Pasted text #N]` message; suppression starts at the START marker. → [chat.md#paste](docs/notes/chat.md#paste)
 - `src/multiline.ts` — alt/shift+enter and trailing `\` continuation. → [chat.md#multiline](docs/notes/chat.md#multiline)
