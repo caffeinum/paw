@@ -16,6 +16,8 @@ import { createInterface } from "node:readline/promises";
 import {
   CotalEndpoint,
   DEV_OWNER,
+  loadCotalConfig,
+  spaceConfigPath,
   mintCreds,
   mintLifecycleUid,
   newIdentity,
@@ -50,6 +52,7 @@ import { ensureBypassConsent, managedLaunchesBypass } from "./bypass-consent.ts"
 import { readStartupPrompt, tmuxSplit, tmuxSplitAdvice, type StartupScreen } from "./native-attach.ts";
 import { HOST_RE } from "./url.ts";
 import { personalityFor, readPersonality } from "./personality.ts";
+import { GRANT_KEY, readOptIn, shareSelection } from "./mcp-select.ts";
 import type { ManagerControl, ManagerReply } from "./control.ts";
 import { resolveSpace } from "./space.ts";
 
@@ -203,6 +206,20 @@ export function setPersonaKeys(space: string, name: string, keys: Record<string,
   writeFileSync(file, `---\n${lines.join("\n")}\n---\n${body}`);
 }
 
+/** The `shareTools` list a claude-harness agent spawns with, resolved against the SAME merged cotal
+ *  config the manager reads at this spawn (operator file + the space root's), so an opt-in server is
+ *  left out of an absent selection and added for an agent its `mcpOptIn:` names. */
+function claudeShareSelection(space: string, name: string, config: string): string[] | undefined {
+  const root = pawCotalRoot(space);
+  const connector = loadCotalConfig(root).connectors?.claude;
+  return shareSelection({
+    declared: Object.keys(connector?.mcpServers ?? {}),
+    optIn: readOptIn(connector, `cotal config (${spaceConfigPath(root)} over the operator file) connectors.claude.`),
+    share: readShareTools(config),
+    grants: personaValue(config, GRANT_KEY)?.replace(/^["']|["']$/g, "") || undefined,
+    agent: name,
+  });
+}
 /** Is `name` free to give to (folder, extra)? Free = no persona, an orphan persona (no folder), or
  *  already exactly this registration. */
 function nameFree(space: string, name: string, folder: string, extra: boolean): boolean {
@@ -1141,12 +1158,15 @@ export async function ensureAgentSpawned(
     // agent (its persona's `model:` names a codex/grok model; an explicit --model still applies).
     const model = kit || hermes || acp ? opts.model?.trim() || undefined : resolveModel(opts.model);
     if (model) args.model = model;
-    // Which of the operator's MCP servers this agent gets (`paw mcp share`). Absent ⇒ not sent ⇒ cotal
-    // shares every declared server, which is what `paw mcp add` promises. The persona keeps the flag
-    // grammar (`none` / `a,b`); since cotal 0.69 the spawn op takes the parsed LIST (a string is refused
-    // "shareTools: expected an array of strings"), so it goes through cotal's own parser — no second grammar.
+    // Which of the operator's MCP servers this agent gets (`paw mcp share` / `paw mcp only`). With no
+    // opt-in server declared and no grant, an absent selection is not sent ⇒ cotal shares every declared
+    // server, which is what `paw mcp add` promises. Once a server is opt-in (src/mcp-select.ts) an absent
+    // selection must become an explicit list that leaves it out — cotal itself knows no opt-in. The
+    // persona keeps the flag grammar (`none` / `a,b`); since cotal 0.69 the spawn op takes the parsed LIST,
+    // so it goes through cotal's own parser — no second grammar.
     const share = readShareTools(config);
-    if (share) args.shareTools = parseShareSelection(share);
+    const selection = isClaudeHarness(agentType) ? claudeShareSelection(opts.space, opts.name, config) : parseShareSelection(share);
+    if (selection !== undefined) args.shareTools = selection;
     // Which CONNECTOR runs this agent (`agent:` in the persona; absent = the default claude). Sent as
     // the spawn op's `agent` so a codex/opencode agent respawns as ITSELF on every wake/revival path.
     if (agentType) args.agent = agentType;

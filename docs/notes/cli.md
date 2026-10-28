@@ -106,6 +106,38 @@ Moved verbatim from CLAUDE.md (2026-10-02 split). Index: [CLAUDE.md](../../CLAUD
   prints `paw restart <name>`. Verified live: added a server, scoped it to one agent, restarted, and
   read the MERGED temp config the process actually launched with (shared server + cotal's own, so mesh
   tools survive). Test: `check:mcp` (hermetic, pure helpers).
+  **Opt-in servers (2026-10-28):** `paw mcp add <name> --only a,b -- <cmd|https-url>` / `paw mcp only
+  <server> a,b` make a server PRIVATE to the named agents; `paw mcp only <server> --all` shares it again.
+  Before, a persona without `shareTools:` got every declared server, so a server could not be private.
+  **The mark lives in cotal's config, beside the definitions:** `connectors.claude.pawOptIn: [names]`.
+  A paw-side file (`$PAW_HOME/mcp-optin.json`) was rejected because a lost or reset mark turns a private
+  server into one EVERY agent gets, silently. In the same file the mark is written and removed in the same
+  write as the server (`rm` drops both) and travels with it. It is a CONNECTOR key, not a field on the
+  server entry, because that entry goes verbatim into claude's `--mcp-config`. cotal's reader validates
+  only `mcpServers` under a connector and its operator/space merge spreads the rest (checked in
+  `check:mcp` against cotal's own `readCotalConfigFile`/`loadCotalConfig`). **Grants live in the persona**
+  as `mcpOptIn: a,b`, so they follow rename/move/teleport and stay per space. **Selection math**
+  (`src/mcp-select.ts`, shared by the listing and the spawn site): `shareTools` absent ⇒ every declared
+  server EXCEPT opt-in; `none` ⇒ nothing; a list ⇒ that list; then `mcpOptIn:` is added on top. **`--only`
+  wins over `shareTools: none`**, because naming the agent is explicit. A `shareTools:` list that names an
+  opt-in server also counts as a grant. cotal knows no opt-in (an absent selection = every declared
+  server, opt-in included), so `ensureAgentSpawned` now sends an EXPLICIT list for a claude-harness agent
+  once any opt-in server is declared or the agent holds a grant. It resolves the list against the same
+  merged config the manager reads (`loadCotalConfig(pawCotalRoot(space))`). With no opt-in anywhere
+  nothing changes: absent stays absent. A grant naming an undeclared server fails the spawn loud.
+  `rm` and `only --all` strip the grant from personas in every local space so a stale grant can't break
+  another space's spawn, and `unshare` can still remove a dangling one. `add` of an existing opt-in
+  server without `--only` keeps it opt-in, so a re-add never widens it. `unshare` from an absent
+  selection writes only the SHARED rest, because an opt-in name in `shareTools:` would be a grant.
+  **Every verb now prints `paw restart <name>` for exactly the agents whose server set changed** (a
+  before/after diff of the same math) and restarts nothing. **The listing is short:** `all agents (152)`,
+  `all agents (152) except a, b`, or `1/152: alice` for opt-in servers. Limited selections are grouped
+  by value, and names are capped at 8 with `+N more` (`--verbose` shows all). **Limits:** opt-in is
+  enforced by paw's spawn site, not by cotal. A raw `paw cotal spawn` or an agent's `cotal_spawn` with no
+  selection still gets every declared server. Manager-internal revival replays the list stored at
+  spawn. **Takes effect** for CLI-initiated spawns at once. Daemon-initiated wakes (mailbox sleep host,
+  keeper) run the release, so they need a release + restart; until then they launch an absent-selection
+  agent with the opt-in server included. The connector is unchanged. E2E: `scripts/e2e-mcp-optin.ts`.
   **`paw restart <agent>` (src/commands/runtime.ts)** — there was no verb for cycling ONE agent;
   `paw restart` means the MANAGER, and the only way was `paw stop` + `paw start`. It matters exactly
   after a change an agent reads only at startup (a new MCP server, an edited persona), which is when

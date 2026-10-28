@@ -60,7 +60,10 @@ Each entry: what it is + the most load-bearing rule. Full notes behind the link.
 - `src/commands/` — self-registering commands: stop, msg, ask, who, history (read-only), watch (tap
   handler shape-guarded), runtime/restart (restart revives the agents that were live). → [cli.md#srccommands](docs/notes/cli.md#srccommands)
 - `src/commands/mcp.ts` — `paw mcp`: shared MCP servers live in cotal's config under key `claude` (NOT
-  `paw`); per-agent selection is persona `shareTools:` (absent = all, `none` = none); never restarts. → [cli.md#paw-mcp](docs/notes/cli.md#paw-mcp)
+  `paw`); per-agent selection is persona `shareTools:` (absent = all, `none` = none); never restarts.
+  Opt-in servers (`add --only a,b`, `only <s> a,b|--all`) are marked `connectors.claude.pawOptIn` in the same
+  file and granted by persona `mcpOptIn:`. `src/mcp-select.ts` holds the math, and the spawn sends an explicit
+  list once any opt-in exists. → [cli.md#paw-mcp](docs/notes/cli.md#paw-mcp)
 - `src/commands/files.ts` — `paw files`: pure observer of `#files` (`ai.cotal.file` FileEntry, absolute
   paths, no bytes on the mesh). → [cli.md#paw-files](docs/notes/cli.md#paw-files)
 - `src/commands/bind.ts` — `paw bind`: one-time Telegram bind code minted over the mesh, as a distinct
