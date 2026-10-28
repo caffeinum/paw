@@ -1,0 +1,19 @@
+# paw's sandbox image (`paw sandbox build`): what a `sandbox: container` agent runs in — a Linux VM under
+# Apple's `container`. Claude Code itself, plus node for the cotal MCP server and the plugin hooks, which
+# claude starts as its own children: their code is paw's node_modules, mounted READ-ONLY at the same path
+# at launch, so only the node binary has to live here. Both pins are older than the 7-day release-age gate.
+FROM docker.io/library/node:24.21.0-bookworm-slim@sha256:d6aa754f16b3197301076f047b5def2f02ea1dbbc2ca920407d46d7ec7f87b20
+
+ARG CLAUDE_CODE_VERSION=2.1.304
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates git ripgrep procps curl less \
+ && rm -rf /var/lib/apt/lists/*
+
+RUN npm install -g --allow-scripts=@anthropic-ai/claude-code "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" && npm cache clean --force
+
+# The seat's claude state is the per-agent dir paw mounts at /paw/claude (transcripts survive restarts).
+# The VM is the sandbox, so claude runs as its root: IS_SANDBOX lets bypassPermissions run as root.
+ENV CLAUDE_CONFIG_DIR=/paw/claude \
+    IS_SANDBOX=1 \
+    DISABLE_AUTOUPDATER=1

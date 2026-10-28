@@ -48,6 +48,7 @@ const tidy: Loader = () => import("./commands/tidy.ts"); // "tidy" (DM agents ho
 const cron: Loader = () => import("./commands/cron.ts"); // "cron" (scheduled wake-ups for agents)
 const nice: Loader = () => import("./commands/nice.ts"); // "nice" (per-agent CPU priority)
 const acpHost: Loader = () => import("./commands/acp-host.ts"); // "acp-host" (the Rust ACP seat host)
+const sandbox: Loader = () => import("./commands/sandbox.ts"); // "sandbox" (build the image, list sandboxed agents)
 const mesh: Loader = () => import("./commands/mesh.ts"); // "mesh" (spaces on a remote broker)
 const spaces: Loader = () => import("./commands/spaces.ts"); // "spaces" (broker streams per space)
 const web: Loader = () => import("./web.ts"); // "web" (local http+ws UI)
@@ -97,6 +98,7 @@ export const COMMAND_LOADERS: Readonly<Record<string, Loader>> = {
   cron,
   nice,
   "acp-host": acpHost,
+  sandbox,
   mesh,
   spaces,
   web,

@@ -66,23 +66,23 @@ const guarded = await ensureAgentSpawned(throwingCtl, { space, name: "web", cwd:
 assert(eq(guarded, { spawned: false }), "ensureAgentSpawned returns {spawned:false} for a live foreground name (no manager duplicate)");
 
 // ---- peelArgs: two-zone parse (paw opts vs claude passthrough) ----
-assert(eq(peelArgs(["-c"]), { space: undefined, name: undefined, fg: false, noAttach: false, claudeArgs: ["-c"] }), "no paw opts → all tokens passthrough");
-assert(eq(peelArgs(["--space", "s", "--name", "n", "-c", "-p", "hi"]), { space: "s", name: "n", fg: false, noAttach: false, claudeArgs: ["-c", "-p", "hi"] }), "leading --space/--name peel; rest passthrough");
-assert(eq(peelArgs(["--name=n", "--resume", "x"]), { space: undefined, name: "n", fg: false, noAttach: false, claudeArgs: ["--resume", "x"] }), "--name= form peels; --resume is claude's");
-assert(eq(peelArgs(["--", "--space", "foo"]), { space: undefined, name: undefined, fg: false, noAttach: false, claudeArgs: ["--space", "foo"] }), "-- terminator: following --space is claude's, not paw's");
-assert(eq(peelArgs(["-p", "--name", "n"]), { space: undefined, name: undefined, fg: false, noAttach: false, claudeArgs: ["-p", "--name", "n"] }), "a claude flag first stops the peel (later --name is claude's)");
-assert(eq(peelArgs([]), { space: undefined, name: undefined, fg: false, noAttach: false, claudeArgs: [] }), "empty argv is safe");
+assert(eq(peelArgs(["-c"]), { space: undefined, name: undefined, fg: false, noAttach: false, sandbox: false, claudeArgs: ["-c"] }), "no paw opts → all tokens passthrough");
+assert(eq(peelArgs(["--space", "s", "--name", "n", "-c", "-p", "hi"]), { space: "s", name: "n", fg: false, noAttach: false, sandbox: false, claudeArgs: ["-c", "-p", "hi"] }), "leading --space/--name peel; rest passthrough");
+assert(eq(peelArgs(["--name=n", "--resume", "x"]), { space: undefined, name: "n", fg: false, noAttach: false, sandbox: false, claudeArgs: ["--resume", "x"] }), "--name= form peels; --resume is claude's");
+assert(eq(peelArgs(["--", "--space", "foo"]), { space: undefined, name: undefined, fg: false, noAttach: false, sandbox: false, claudeArgs: ["--space", "foo"] }), "-- terminator: following --space is claude's, not paw's");
+assert(eq(peelArgs(["-p", "--name", "n"]), { space: undefined, name: undefined, fg: false, noAttach: false, sandbox: false, claudeArgs: ["-p", "--name", "n"] }), "a claude flag first stops the peel (later --name is claude's)");
+assert(eq(peelArgs([]), { space: undefined, name: undefined, fg: false, noAttach: false, sandbox: false, claudeArgs: [] }), "empty argv is safe");
 
 assert(
-  eq(peelArgs(["--fg", "-c"]), { space: undefined, name: undefined, fg: true, noAttach: false, claudeArgs: ["-c"] }),
+  eq(peelArgs(["--fg", "-c"]), { space: undefined, name: undefined, fg: true, noAttach: false, sandbox: false, claudeArgs: ["-c"] }),
   "--fg peels (foreground opt-in), rest passthrough",
 );
 assert(
-  eq(peelArgs(["--foreground", "--no-attach"]), { space: undefined, name: undefined, fg: true, noAttach: true, claudeArgs: [] }),
+  eq(peelArgs(["--foreground", "--no-attach"]), { space: undefined, name: undefined, fg: true, noAttach: true, sandbox: false, claudeArgs: [] }),
   "--foreground alias + --no-attach both peel",
 );
 assert(
-  eq(peelArgs(["-p", "--fg"]), { space: undefined, name: undefined, fg: false, noAttach: false, claudeArgs: ["-p", "--fg"] }),
+  eq(peelArgs(["-p", "--fg"]), { space: undefined, name: undefined, fg: false, noAttach: false, sandbox: false, claudeArgs: ["-p", "--fg"] }),
   "--fg AFTER the passthrough begins belongs to claude, not paw",
 );
 

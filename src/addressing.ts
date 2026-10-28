@@ -42,7 +42,8 @@ import { checkKitArgs, ensureKitBinary, isKitProvider, KIT_AGENT, preflightKitAr
 import { HERMES_AGENT } from "./hermes-profile.ts";
 import { ACP_AGENT } from "./acp-agent.ts";
 import { resolveAcpHost } from "./acp-host.ts";
-import { isClaudeHarness, personaTranscriptRoots, personaValue, readAgentType, readClaudeArgs, readCwd, readKitArgs, readResumeId, readShareTools, transcriptMtime } from "./session.ts";
+import { isClaudeHarness, personaTranscriptRoots, personaValue, readAgentType, readClaudeArgs, readCwd, readKitArgs, readResumeId, readSandbox, readShareTools, transcriptMtime } from "./session.ts";
+import { assertSandboxable, assertSandboxHostReady } from "./sandbox.ts";
 import { defaultTmuxEnv, managerLogPath, readRuntimeMarker } from "./lifecycle.ts";
 import { logOffset, seatDiagnostic, seatExit } from "./manager-log.ts";
 import { assertManagerFeature, describeCodeRoot, KIT_ARGS_FEATURE, KIT_DEFAULTS_FEATURE, runningManagerRoot } from "./manager-features.ts";
@@ -1130,6 +1131,12 @@ export async function ensureAgentSpawned(
     // Claude's one-time bypass-permissions consent dialog is answered by nobody (cotal's startup watch
     // knows only the trust dialog + dev-channels gate): pre-accept it like the folder trust (#1).
     if (isClaudeHarness(agentType) && managedLaunchesBypass(readClaudeArgs(config))) ensureBypassConsent();
+    // `sandbox: container` (src/sandbox.ts): refuse HERE, at the prompt, what the manager's buildLaunch would
+    // refuse anyway — a local space, a non-claude harness, no folder, no `container`, no image, no token.
+    if (readSandbox(config)) {
+      assertSandboxable(opts.space, opts.name, config);
+      assertSandboxHostReady(config);
+    }
     // `identity` HARD-PINS the name: on a collision the manager refuses instead of minting `<name>_2`.
     // Without it a restart whose old presence hadn't expired yet came back as `queue-ea_2` — alive,
     // resumed, and unreachable under its own name (2026-09-16: eight restarts, eight `_2` agents).

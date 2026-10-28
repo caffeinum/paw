@@ -28,6 +28,7 @@ import {
   restartAgent,
   psRowAlive,
   resolveModel,
+  setPersonaKeys,
   SPAWN_LOCK_OPTS,
   spawnLockPath,
   type PsRow,
@@ -43,7 +44,8 @@ import { readTeleported, teleportedRefusal } from "./teleport-plan.ts";
 import { daemonEnv, resolveSpace, withEnsuredManager } from "./lifecycle.ts";
 import { withFileLockAsync } from "./lock.ts";
 import { resolveNamedSession } from "./named.ts";
-import { readClaudeArgs, readModel, readResumeId } from "./session.ts";
+import { readClaudeArgs, readModel, readResumeId, readSandbox } from "./session.ts";
+import { assertSandboxHostReady, assertSandboxSpace } from "./sandbox.ts";
 
 /**
  * Two-zone parse: consume LEADING paw-owned opts (`--space <s>`, `--name <n>`, and `--space=`/`--name=`
@@ -51,8 +53,9 @@ import { readClaudeArgs, readModel, readResumeId } from "./session.ts";
  * from there is the claude passthrough, forwarded VERBATIM. So `paw claude --name x -c -p "hi"` →
  * name=x, claudeArgs=["-c","-p","hi"], and `paw claude -- --space foo` treats `--space foo` as claude's.
  */
-export function peelArgs(argv: string[]): { space?: string; name?: string; fg?: boolean; noAttach?: boolean; claudeArgs: string[] } {
+export function peelArgs(argv: string[]): { space?: string; name?: string; fg?: boolean; noAttach?: boolean; sandbox?: boolean; claudeArgs: string[] } {
   let space: string | undefined;
+  let sandbox = false;
   let name: string | undefined;
   let fg = false;
   let noAttach = false;
@@ -89,9 +92,13 @@ export function peelArgs(argv: string[]): { space?: string; name?: string; fg?: 
       noAttach = true;
       continue;
     }
+    if (a === "--sandbox") {
+      sandbox = true;
+      continue;
+    }
     break; // first non-paw token → claude passthrough begins here
   }
-  return { space, name, fg, noAttach, claudeArgs: argv.slice(i) };
+  return { space, name, fg, noAttach, sandbox, claudeArgs: argv.slice(i) };
 }
 
 /** What session the operator's own claude args target, for the DURABLE pin: `--continue`/`-c` continues
@@ -180,6 +187,7 @@ async function runManaged(
   claudeArgs: string[],
   sessionId: string | undefined,
   noAttach: boolean,
+  sandbox: boolean,
 ): Promise<void> {
   const existingFg = readForeground(space, name);
   if (existingFg)
@@ -196,7 +204,11 @@ async function runManaged(
     if (sessionId) pinSession(space, name, sessionId);
     const configPath = ensurePersonaFile(space, name, { kind: "folder" });
     const wanted = stripSessionFlags(claudeArgs);
-    const changed = JSON.stringify(readClaudeArgs(configPath)) !== JSON.stringify(wanted);
+    // `--sandbox` makes the agent a sandboxed one for good (persona `sandbox: container`, src/sandbox.ts) —
+    // every later start/restart/wake runs it in its VM. Never cleared here: un-sandboxing is a deliberate edit.
+    const sandboxed = readSandbox(configPath) !== undefined;
+    if (sandbox && !sandboxed) setPersonaKeys(space, name, { sandbox: "container" });
+    const changed = JSON.stringify(readClaudeArgs(configPath)) !== JSON.stringify(wanted) || (sandbox && !sandboxed);
     pinClaudeArgs(space, name, wanted);
 
     // A live agent launched under DIFFERENT flags (or a different session) is not the agent the
@@ -213,7 +225,7 @@ async function runManaged(
 }
 
 export async function runClaude(argv: string[]): Promise<void> {
-  const { space: spaceArg, name: nameArg, fg, noAttach, claudeArgs } = peelArgs(argv);
+  const { space: spaceArg, name: nameArg, fg, noAttach, sandbox, claudeArgs } = peelArgs(argv);
   const space = spaceArg ?? resolveSpace();
   const folder = canonicalDir("."); // always the operator's current directory — no folder positional
   const name = nameArg ?? folderToName(space, folder);
@@ -227,7 +239,14 @@ export async function runClaude(argv: string[]): Promise<void> {
   const intent = deriveSessionIntent(claudeArgs);
   const sessionId = deriveSessionId(folder, claudeArgs); // the operator's explicit pin (undefined = fresh/bare)
 
-  if (!fg) return runManaged(space, folder, name, claudeArgs, sessionId, noAttach === true);
+  if (fg && (sandbox || readSandbox(personaFilePath(space, name))))
+    throw new Error(`paw: "${name}" is sandboxed — it runs as a managed agent in its VM, never in this terminal; drop --fg`);
+  // Refuse before anything is written: a persona pinned `sandbox:` on a space it can't run on would refuse every later start.
+  if (sandbox) {
+    assertSandboxSpace(space, name);
+    assertSandboxHostReady(personaFilePath(space, name));
+  }
+  if (!fg) return runManaged(space, folder, name, claudeArgs, sessionId, noAttach === true, sandbox === true);
 
   // Serialize the whole dedup→spawn→register window on the SAME per-(space,name) lock ensureAgentSpawned
   // uses, so two concurrent `paw claude` (or a racing `paw dm <folder>`) can't both pass the dedup and put
@@ -345,7 +364,7 @@ const claudeCommand: Command = {
   name: "claude",
   group: "Lifecycle",
   summary: "start claude as a warm managed mesh agent and attach — claude [claude-args] (--fg runs it in THIS terminal instead)",
-  usage: "claude [--name <n>] [--space <s>] [--fg] [--no-attach] [--] [any claude flags/args]   (--continue/--resume set the durable pin)",
+  usage: "claude [--name <n>] [--space <s>] [--sandbox] [--fg] [--no-attach] [--] [any claude flags/args]   (--continue/--resume set the durable pin; --sandbox runs it in a container VM)",
   run: (a) => runClaude([...a.raw]),
 };
 
