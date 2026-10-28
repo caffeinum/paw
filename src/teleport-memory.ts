@@ -158,13 +158,14 @@ export function memoryPathOf(rel: string): { slug: string; inner: string } | und
 
 /**
  * Every memory dir that is this agent's (see the file header), merged. `sessionDir` is the absolute
- * project dir of its pinned transcript, when it has one.
+ * project dir of its pinned transcript, when it has one. `base` overrides the key folder: `paw relocate`
+ * names it when the folder is already gone from disk (the walk would land on an unrelated ancestor).
  */
-export function memoryManifest(o: { home: string; cwd: string; sessionDir?: string; git?: Git }): MemoryManifest {
+export function memoryManifest(o: { home: string; cwd: string; base?: string; sessionDir?: string; git?: Git }): MemoryManifest {
   const { home, cwd } = o;
   const git = o.git ?? realGit;
   const projects = join(home, ".claude", "projects");
-  const base = claudeMemoryBase(cwd);
+  const base = o.base ?? claudeMemoryBase(cwd);
   const slug = memorySlug(base);
   if (!slug)
     throw new Error(`paw: Claude Code keys ${base}'s memory by a hashed name (its path is over ${MEMORY_SLUG_MAX} chars) — paw can't name that dir; teleport it with --no-memory`);
