@@ -251,6 +251,19 @@ console.log("the launcher (bin/paw-sandbox-run.mjs) against a fake container");
   assert(bad.status === 2 && /can't read the Claude OAuth token file/.test(bad.stderr), "an unreadable token file fails the launch loud");
 }
 
+console.log("paw stop's reap");
+{
+  const row = { configuration: { id: "paw-sbxremote-smoke-zzz111", labels: { "paw.space": SPACE, "paw.agent": "smoke" } }, status: { state: "running" } };
+  writeFileSync(lsJson, JSON.stringify([row]));
+  setTimeout(() => writeFileSync(lsJson, "[]"), 700);
+  assert((await sbx.reapSandbox(SPACE, "smoke", 5_000)).length === 0, "a VM that goes down within the window needs no force");
+  writeFileSync(lsJson, JSON.stringify([row]));
+  writeFileSync(fakeLog, "");
+  const forced = await sbx.reapSandbox(SPACE, "smoke", 600);
+  assert(forced.join() === "paw-sbxremote-smoke-zzz111" && readFileSync(fakeLog, "utf8").includes("argv: delete --force paw-sbxremote-smoke-zzz111"), "one that outlives it is force-deleted (and named)");
+  writeFileSync(lsJson, "[]");
+}
+
 console.log("sandbox image recipe");
 {
   const cf = readFileSync(sbx.CONTAINERFILE, "utf8");

@@ -312,6 +312,23 @@ export function sandboxLaunch(spec: LaunchSpec, o: SandboxLaunchOpts): LaunchSpe
   };
 }
 
+/**
+ * After a stop: wait (bounded) for the agent's VM to be gone — the launcher's detached `container stop` takes a
+ * second or two after the seat's SIGTERM — then force-delete whatever remains, so `paw stop` returning means no
+ * container is left. Returns the ids it had to force-delete.
+ */
+export async function reapSandbox(space: string, name: string, ms = 15_000): Promise<string[]> {
+  const bin = containerBin();
+  const mine = () => listSandboxContainers(bin).filter((c) => c.space === space && c.agent === name).map((c) => c.id);
+  for (const end = Date.now() + ms; Date.now() < end; await new Promise((r) => setTimeout(r, 500))) if (!mine().length) return [];
+  const left = mine();
+  if (left.length) {
+    const r = spawnSync(bin, ["delete", "--force", ...left], { encoding: "utf8", timeout: 60_000 });
+    if (r.status !== 0) throw new Error(`paw: "${name}"'s container(s) ${left.join(" ")} outlived the stop and \`container delete --force\` failed (${(r.stderr || r.error?.message || "").trim()})`);
+  }
+  return left;
+}
+
 /** One paw sandbox container as `container ls --all --format json` reports it. */
 export interface SandboxContainer {
   id: string;

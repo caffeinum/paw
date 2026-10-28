@@ -84,7 +84,10 @@ The local open `paw` broker listens on 127.0.0.1, which a VM can't reach. The VM
 vmnet gateway `192.168.64.1` (a `bridge10x` interface while `container`'s default network is up) — and,
 through NAT, the host's other addresses. Enabling local spaces later = bind the local broker ALSO on
 192.168.64.1 and require auth there (an open broker reachable from every VM is every agent's identity), i.e.
-`PAW_AUTH=1` + a listener on the gateway. Until then: put sandboxed agents on a remote (authed, TLS) space.
+`PAW_AUTH=1` + a listener on the gateway. Catch, seen live: the gateway address exists only while at least
+one container runs — a test broker bound to 192.168.64.1 became unreachable once the last VM stopped — so a
+local listener there has to bind/rebind with the bridge (or bind the host's tailscale/LAN address, which VMs
+also reach through NAT). Until then: put sandboxed agents on a remote (authed, TLS) space.
 
 ## What a sandboxed agent can still reach
 
