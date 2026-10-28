@@ -115,11 +115,13 @@ async function resolveTarget(
   model: string | undefined,
   nameFlag: string | undefined,
   restartLive: RestartConsent | undefined,
+  byName = false,
 ): Promise<{ id: string; name: string }> {
   if (target.startsWith("@")) target = target.slice(1); // `@name` = that agent, like everywhere else
   const me = ep.card.id;
   const live = (name: string) =>
     ep.getRoster().filter((p) => p.card.name.toLowerCase() === name.toLowerCase() && p.card.id !== me).find((p) => p.status !== "offline");
+  if (byName) return resolveByName(ep, space, server, target, model, restartLive, live);
 
   // A URL / web: / gh: / github: handle, a repo@branch worktree, or a bare host → spawn-if-absent under
   // its name; a plain folder path too. An explicit handle's errors surface (fail loud); a plain string
@@ -157,7 +159,20 @@ async function resolveTarget(
       `paw: --name adds an extra agent to a FOLDER — combine it with a folder path (e.g. \`paw dm . "…" --name ${nameFlag}\`), ` +
         `not with an agent name "${target}"`,
     );
-  // An agent name: prefer a live peer; wake a known-but-offline one via its folder.
+  return resolveByName(ep, space, server, target, model, restartLive, live);
+}
+
+/** An agent NAME: prefer a live peer; wake a known-but-offline one via its registered folder. Never
+ *  registers or spawns anything that isn't already a registered agent. */
+async function resolveByName(
+  ep: CotalEndpoint,
+  space: string,
+  server: string,
+  target: string,
+  model: string | undefined,
+  restartLive: RestartConsent | undefined,
+  live: (name: string) => { card: { id: string; name: string } } | undefined,
+): Promise<{ id: string; name: string }> {
   const present = live(target);
   if (present) return { id: present.card.id, name: present.card.name };
   const home = folderForName(space, target);
@@ -210,9 +225,11 @@ export async function sendAsYou(opts: {
   name?: string;
   /** Who approves the wake gate restarting a live-but-stuck agent; absent (web, tidy) ⇒ refused. */
   restartLive?: RestartConsent;
+  /** `target` is an agent NAME only — never a folder/handle, whatever the cwd holds (paw cron). */
+  byName?: boolean;
 }): Promise<{ name: string }> {
-  const { space, server, target, text, model, name: nameFlag, restartLive } = opts;
-  assertUnambiguousTarget(space, target); // a bare token that's BOTH a known name and a folder here → fail loud
+  const { space, server, target, text, model, name: nameFlag, restartLive, byName } = opts;
+  if (!byName) assertUnambiguousTarget(space, target); // a bare token that's BOTH a known name and a folder here → fail loud
 
   // Pure sender: watch the roster to resolve/spawn the target, but don't register presence (the mailbox
   // beacon holds "you") and don't consume (never touch the durable inbox slot — that's `paw inbox`'s).
@@ -225,7 +242,7 @@ export async function sendAsYou(opts: {
   ep.on("error", (e: Error) => console.error(c.red("! " + e.message)));
   await ep.start();
   try {
-    const tgt = await resolveTarget(ep, space, server, target, model, nameFlag, restartLive);
+    const tgt = await resolveTarget(ep, space, server, target, model, nameFlag, restartLive, byName);
     // Attachments are paths on THIS machine — an agent running elsewhere would be told about files it can't open.
     const files = attachedPlaceholders(text);
     const away = files.length ? runsElsewhere(space, tgt.name, ep.getRoster().find((p) => p.card.id === tgt.id)?.card) : undefined;

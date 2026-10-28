@@ -18,7 +18,7 @@ import { acpConnector } from "cotal-connector-acp";
 import type { Connector, LaunchOpts, LaunchSpec } from "@cotal-ai/core";
 import { resolveAcpHost } from "./acp-host.ts";
 import { beadsDir } from "./beads-dir.ts";
-import { ADDRESSING_BRIEF, CHANNELS_BRIEF, OPERATOR_REQUESTS_BRIEF, TASKS_BRIEF, UNATTENDED_BRIEF, WAKE_BRIEF } from "./brief.ts";
+import { ADDRESSING_BRIEF, CRON_BRIEF, CHANNELS_BRIEF, OPERATOR_REQUESTS_BRIEF, TASKS_BRIEF, UNATTENDED_BRIEF, WAKE_BRIEF } from "./brief.ts";
 import { niced, remoteTlsEnv } from "./connector.ts";
 import { HUMAN_PEER, humanPeer } from "./names.ts";
 import { personaValue, readNice } from "./session.ts";
@@ -33,6 +33,7 @@ export function acpBrief(name: string, human: string = HUMAN_PEER): string {
     ...CHANNELS_BRIEF,
     ...UNATTENDED_BRIEF,
     ...WAKE_BRIEF,
+    ...CRON_BRIEF,
     ...TASKS_BRIEF,
     ...OPERATOR_REQUESTS_BRIEF,
   ].join(" ");

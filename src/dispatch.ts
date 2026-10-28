@@ -12,6 +12,7 @@
 import { existsSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
+import { cronAddHasAgent, CRON_VALUE_FLAGS } from "./cron.ts";
 import { readRemoteMesh } from "./remote-mesh.ts";
 import { DEFAULT_SPACE, resolveSpace } from "./space.ts";
 
@@ -280,9 +281,14 @@ export function sameSpaceAddress(token: string, space: string, surface: string, 
 export interface AddressSpec {
   values: string[];
   names?: string[];
-  slots: "all" | number[] | { from: number };
+  slots: "all" | number[] | { from: number } | ((positionals: string[], args: string[]) => number[]);
   atOnly?: boolean;
 }
+
+/** `paw cron add [<agent>] …`: the agent is slot 1 only when the arity says it was given (else slot 1 is
+ *  the schedule or a prompt that may itself contain "#"). */
+const cronSlots = (positionals: string[], args: string[]): number[] =>
+  positionals[0] === "add" && cronAddHasAgent(positionals.length - 1, args.includes("--in") || args.includes("--at")) ? [1] : [];
 
 const V = ["--space", "--server"];
 export const ADDRESS_ARGS: Readonly<Record<string, AddressSpec>> = {
@@ -315,6 +321,7 @@ export const ADDRESS_ARGS: Readonly<Record<string, AddressSpec>> = {
   msg: { values: V, slots: [0] },
   history: { values: [...V, "--limit", "-n"], slots: [0] },
   claude: { values: V, names: ["--name"], slots: [] },
+  cron: { values: CRON_VALUE_FLAGS, slots: cronSlots },
 };
 
 const bareAddress = (token: string, deps: AddressDeps): boolean => {
@@ -328,8 +335,19 @@ const bareAddress = (token: string, deps: AddressDeps): boolean => {
 /** `paw claude`'s own boolean flags (src/claude.ts peelArgs) — anything else begins claude's args. */
 const CLAUDE_PAW_FLAGS = ["--fg", "--foreground", "--no-attach"];
 
-const inSlot = (slots: AddressSpec["slots"], i: number): boolean =>
+const inSlot = (slots: Exclude<AddressSpec["slots"], Function> | number[], i: number): boolean =>
   slots === "all" ? true : Array.isArray(slots) ? slots.includes(i) : i >= slots.from;
+
+/** The positional words of `args` before `end`, skipping flags and their values the way the hoister does. */
+function positionalWords(spec: AddressSpec, args: string[], end: number): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < end; i++) {
+    const a = args[i];
+    if (spec.names?.includes(a) || spec.values.includes(a)) i++;
+    else if (!a.startsWith("-")) out.push(a);
+  }
+  return out;
+}
 
 /**
  * Rewrite a command's argv so every `<x>#<space>` in an address slot becomes `<x>` plus ONE
@@ -350,6 +368,7 @@ export function hoistAddressSpace(cmd: string, args: string[], deps: AddressDeps
     out[i] = prefix + r.target;
   };
   const end = out.indexOf("--") === -1 ? out.length : out.indexOf("--");
+  const slots = typeof spec.slots === "function" ? spec.slots(positionalWords(spec, out, end), out) : spec.slots;
   let pos = 0;
   for (let i = 0; i < end; i++) {
     const a = out[i];
@@ -366,12 +385,12 @@ export function hoistAddressSpace(cmd: string, args: string[], deps: AddressDeps
       if (cmd === "claude") break;
       const slot = pos++;
       if (spec.atOnly) {
-        if (a.startsWith("@") && inSlot(spec.slots, slot)) take(i);
+        if (a.startsWith("@") && inSlot(slots, slot)) take(i);
         else if (i + 1 < end && bareAddress(a, deps))
           throw new Error(`paw: "${a}" looks like <agent>#<space> — an agent is \`@\`-prefixed here: \`paw ${cmd} @${a} …\``);
         break;
       }
-      if (inSlot(spec.slots, slot)) take(i);
+      if (inSlot(slots, slot)) take(i);
     }
   }
   if (!found.length) return args;
