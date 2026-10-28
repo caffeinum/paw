@@ -10,18 +10,18 @@
  * missing bucket answers "no responders" at once, a permission refusal is an error reply — neither is
  * evidence of a latch. Healthy cost: one connect + two JetStream round-trips (~ms on localhost).
  *
- * Under PAW_AUTH the probe runs with paw's control creds (`control-caller-privileged`), which hold NO
- * `$KV`/`$JS` grant, so it can never write. Measured on a real JWT mesh (nats.js 3.x): the broker's
- * `-ERR 'Permissions Violation for Publish to "$KV.…"'` rejects the request AT ONCE as a RequestError
- * whose cause is a PermissionViolationError — never a timeout, so it can't read as latched. It is
- * reported as `not-permitted` (said out loud, never blocks a wake). The connection takes the creds'
- * scoped inbox (`_INBOX_<id>`): on the default `_INBOX.` the request died one step earlier on a
- * subscribe violation and the report named the wrong subject.
+ * Under auth (PAW_AUTH, a remote space) the probe connects with its OWN cred, signed per probe with the
+ * space's account signer (`presenceProbeCreds`, src/remote-creds.ts): publish to exactly the one throwaway key, nothing
+ * else. paw's control creds hold no `$KV` grant, so they could never probe (the old AUTH-GAP). On that
+ * path the cleanup is a KV purge (a rollup-purge marker on the same subject, gone with the bucket's
+ * max_age) rather than a stream purge, which would need `$JS.API.STREAM.PURGE` on the WHOLE presence
+ * stream. A refusal is still checked before the timeout — an answer, never a latch — and reported as
+ * `not-permitted` in one line. The connection takes the cred's scoped inbox (`_INBOX_<id>`).
  */
 import { randomBytes } from "node:crypto";
 import { idFromCreds, presenceBucket } from "@cotal-ai/core";
 import { jetstream, jetstreamManager } from "@nats-io/jetstream";
-import { connect, credsAuthenticator } from "@nats-io/transport-node";
+import { connect, credsAuthenticator, Empty, headers } from "@nats-io/transport-node";
 import { natsTls } from "./server.ts";
 
 /** How long a probe put may go unanswered before the store counts as latched. A healthy local put
@@ -53,8 +53,21 @@ function isNoResponders(e: unknown): boolean {
   return err?.name === "NoRespondersError" || err?.code === "503" || /no responders|jetstream is not enabled/i.test(err?.message ?? "");
 }
 
-export async function probePresenceWrites(space: string, server: string, creds: string | undefined, timeoutMs = PRESENCE_PROBE_MS): Promise<PresenceHealth> {
+/** A fresh throwaway presence key — one per probe, so a probe cred can be pinned to exactly it. */
+export function presenceProbeKey(): string {
+  return `paw-probe-${randomBytes(6).toString("hex")}`;
+}
+
+/** `credsFor(key)` returns the cred to probe `key` with, or undefined on an open mesh. */
+export async function probePresenceWrites(
+  space: string,
+  server: string,
+  credsFor: ((key: string) => Promise<string | undefined>) | undefined,
+  timeoutMs = PRESENCE_PROBE_MS,
+): Promise<PresenceHealth> {
   const bucket = presenceBucket(space);
+  const key = presenceProbeKey();
+  const creds = credsFor ? await credsFor(key) : undefined;
   let nc;
   try {
     nc = await connect({
@@ -68,38 +81,36 @@ export async function probePresenceWrites(space: string, server: string, creds: 
     return { kind: "unknown", message: `can't reach ${server}: ${(e as Error).message}` };
   }
   try {
-    const subject = `$KV.${bucket}.paw-probe-${randomBytes(6).toString("hex")}`;
+    const subject = `$KV.${bucket}.${key}`;
+    const js = jetstream(nc, { timeout: timeoutMs });
     try {
-      await jetstream(nc, { timeout: timeoutMs }).publish(subject, "paw presence-write probe");
+      await js.publish(subject, "paw presence-write probe");
     } catch (e) {
       if (isNoResponders(e)) return { kind: "no-bucket" };
       // Checked BEFORE the timeout: a refusal is an answer, never evidence of a latch.
-      // AUTH-GAP: under PAW_AUTH this ALWAYS fires (control creds hold no $KV grant), so latch detection is
-      // off on authed meshes. Fix: probe with creds allowed to write+purge a probe key (see authGapWarning).
       if (isPermissionViolation(e)) return { kind: "not-permitted", message: (e as Error).message };
       if (isTimeout(e)) return { kind: "latched", bucket, waitedMs: timeoutMs };
       return { kind: "unknown", message: (e as Error).message };
     }
-    const jsm = await jetstreamManager(nc, { timeout: timeoutMs });
-    await jsm.streams.purge(`KV_${bucket}`, { filter: subject });
+    if (creds) {
+      const h = headers();
+      h.set("KV-Operation", "PURGE");
+      h.set("Nats-Rollup", "sub");
+      await js.publish(subject, Empty, { headers: h });
+    } else {
+      const jsm = await jetstreamManager(nc, { timeout: timeoutMs });
+      await jsm.streams.purge(`KV_${bucket}`, { filter: subject });
+    }
     return { kind: "ok" };
   } finally {
     await nc.close().catch(() => {});
   }
 }
 
-/** The warning for a `not-permitted` probe — shown by the wake gate and `paw status`. Pure.
- *  AUTH-GAP: loud on purpose, so the gap gets closed when auth is implemented. */
-export function authGapWarning(message: string, context: string): string {
-  return [
-    `⚠ PRESENCE LATCH DETECTION IS DISABLED UNDER PAW_AUTH (${context})`,
-    `  paw's control creds (control-caller-privileged) can't write the presence KV, so the probe was refused:`,
-    `    ${message}`,
-    `  A latched broker (disk full, cotal #1356) will NOT be caught: every agent reads offline and a wake may`,
-    `  restart healthy agents into seats that can never register.`,
-    `  follow-up (AUTH-GAP, docs/notes/addressing.md#presence-latch-guard): mint probe creds allowed to write`,
-    `  AND purge a probe key in the presence bucket, and probe with those.`,
-  ].join("\n");
+/** One line for a `not-permitted` probe — shown by the wake gate and `paw status`. Pure. The probe's own
+ *  cred grants exactly its key, so a refusal means the broker doesn't honour the space's signer. */
+export function probeRefusedLine(message: string, context: string): string {
+  return `paw: presence latch probe refused by the broker (${context}) — latch detection is off for this call: ${message}`;
 }
 
 /** The refusal the wake gate throws on a latched presence store. Pure. */

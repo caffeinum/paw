@@ -13,7 +13,7 @@ import { JetStreamApiCodes, JetStreamApiError, jetstreamManager } from "@nats-io
 import { connect, credsAuthenticator } from "@nats-io/transport-node";
 import { closeSync, existsSync, openSync, readSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { agentNamesForFolder, canonicalDir, controlCreds, humanEndpointAuth, listAgents, personaFilePath, psRowAlive, terminalLost, type PsRow, wirePrincipal } from "./addressing.ts";
+import { agentNamesForFolder, canonicalDir, humanEndpointAuth, listAgents, personaFilePath, psRowAlive, terminalLost, type PsRow, wirePrincipal } from "./addressing.ts";
 import { withManagerControl, type ManagerControl } from "./control.ts";
 import { listForeground } from "./foreground.ts";
 import { ensure, ensureSpaceFor, formatHubLine, hubState, READY_PROBE_MS, readRuntimeMarker, resolveSpace, type HubState, type Runtime } from "./lifecycle.ts";
@@ -29,9 +29,9 @@ import { gitInfoMany, type GitInfo } from "./git.ts";
 import { isRemoteSpace, natsTls, pawServer } from "./server.ts";
 import { elsewhereStatus, localMachine, localManagerInstanceId, machineOf, runsElsewhere, type Elsewhere, type Machine } from "./hosted.ts";
 import { readTeleported } from "./teleport-plan.ts";
-import { lagReaderCreds } from "./remote-creds.ts";
+import { lagReaderCreds, presenceProbeCreds } from "./remote-creds.ts";
 import { pickRoster, presenceLive, readMeshRoster } from "./roster.ts";
-import { authGapWarning, probePresenceWrites } from "./presence-health.ts";
+import { probePresenceWrites, probeRefusedLine } from "./presence-health.ts";
 import { personaGlyph } from "./personality.ts";
 
 const tty = process.stdout.isTTY === true;
@@ -1158,13 +1158,13 @@ async function status(argv: string[]): Promise<void> {
     const hub = ps && hubAtProbe ? hubAtProbe : hubState(space);
     hub.catch(() => {});
     // A latched presence store makes every row read offline — say so first, beside the rows that lie.
-    const presence = controlCreds(space).then((creds) => probePresenceWrites(space, pawServer(space), creds));
+    const presence = probePresenceWrites(space, pawServer(space), (key) => presenceProbeCreds(space, key));
     presence.catch(() => {});
     const all = await collectStatus(space, ctl, { ps, git: asJson, only });
     const h = await presence;
     if (h.kind === "latched") all.errors.unshift(`paw: presence store "${h.bucket}" isn't accepting writes (latched broker, cotal #1356) — every agent reads offline; restart the mesh broker`);
     if (h.kind === "unknown") all.errors.push(`paw: couldn't probe the presence store (${h.message})`);
-    if (h.kind === "not-permitted") all.errors.push(authGapWarning(h.message, "rows below can't be checked for a latch"));
+    if (h.kind === "not-permitted") all.errors.push(probeRefusedLine(h.message, "rows below can't be checked for a latch"));
     return { all, hub: await hub };
   }, { only: ["ps"] }); // status sends nothing but ps — resolve just its contract (control.ts resolveCommands)
   const rows = selectRows(all.rows, targets, folderAgents);

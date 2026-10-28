@@ -435,8 +435,8 @@ hub.log was already stamped by the hub itself. Readers that match line STARTS go
   UNSET = `paw`; set-but-EMPTY (or whitespace) fails loud in `resolveSpace` (2026-10-26) — it used to
   fall through to the live `paw` space (the 2026-10-21 second-beacon incident).
 - `PAW_AUTH=1` — JWT-authed mesh instead of the default open localhost mesh (open needs no creds).
-  ⚠ KNOWN GAP: presence-latch detection is DISABLED under it (control creds can't write the presence KV) —
-  see [addressing.md#presence-latch-guard](addressing.md#presence-latch-guard), grep `AUTH-GAP`.
+  Presence-latch detection works under it with a per-probe one-key cred (2026-10-28) — see
+  [addressing.md#presence-latch-guard](addressing.md#presence-latch-guard).
 - `PAW_PERMISSION` — override the default `bypassPermissions` (one of default/acceptEdits/bypassPermissions/plan).
 - `PAW_MODEL` — default model for spawned agents (cotal's per-agent `--model`); a `--model` flag on
   `paw chat`/`paw open` overrides it. Blank = unset (no fabricated default).

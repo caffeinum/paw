@@ -8,10 +8,14 @@
  * bucket's `$KV.` subjects swallows the put, exactly the no-reply a latched JetStream gives. (A real
  * latch was reproduced once by hand on a 4 MB ramdisk filled to 100% — nats-server 2.14.7 logged
  * "Critical write error: no space left on device" and the probe read latched even after the disk was
- * freed — but a ramdisk is not hermetic, so it isn't run here.) Run: pnpm check:presence-latch
+ * freed — but a ramdisk is not hermetic, so it isn't run here.)
+ *
+ * Under auth: a third private broker in operator/JWT mode (cotal's own `serverConfig`, a fresh space
+ * account) proves the probe's paw-signed one-key cred can write AND clear its key, still reads a latch,
+ * and can reach nothing else — and that paw's control creds alone are refused. Run: pnpm check:presence-latch
  */
 import { spawn, type ChildProcess } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -19,11 +23,15 @@ process.env.PAW_HOME = mkdtempSync(join(tmpdir(), "paw-latch-home-"));
 const port = 20000 + Math.floor(Math.random() * 20000);
 process.env.PAW_SERVER = `nats://127.0.0.1:${port}`;
 const storeDir = mkdtempSync(join(tmpdir(), "paw-latch-js-"));
+// The authed space's signer lives here; every other space finds no auth under it (an open mesh).
+process.env.PAW_COTAL_ROOT = mkdtempSync(join(tmpdir(), "paw-latch-root-"));
 
-const { connect } = await import("@nats-io/transport-node");
-const { jetstreamManager } = await import("@nats-io/jetstream");
-const { probePresenceWrites, presenceLatchRefusal, isPermissionViolation, authGapWarning } = await import("../src/presence-health.ts");
-const { ensureAgentSpawned, ensurePersonaFile, restartAgent } = await import("../src/addressing.ts");
+const { connect, credsAuthenticator } = await import("@nats-io/transport-node");
+const { jetstream, jetstreamManager } = await import("@nats-io/jetstream");
+const { createSpaceAuth, idFromCreds, newIdentity, serverConfig, stripSpaceAuth } = await import("@cotal-ai/core");
+const { probePresenceWrites, presenceLatchRefusal, isPermissionViolation, probeRefusedLine } = await import("../src/presence-health.ts");
+const { presenceProbeCreds, presenceProbeGrants, signScopedCreds } = await import("../src/remote-creds.ts");
+const { controlCreds, ensureAgentSpawned, ensurePersonaFile, restartAgent } = await import("../src/addressing.ts");
 
 let failures = 0;
 function assert(cond: boolean, msg: string): void {
@@ -50,6 +58,19 @@ for (let i = 0; !nc; i++) {
 }
 const jsm = await jetstreamManager(nc);
 let denySrv: ChildProcess | undefined;
+let authSrv: ChildProcess | undefined;
+
+async function connectWhenUp(servers: string, creds?: string) {
+  const auth = creds ? { authenticator: credsAuthenticator(new TextEncoder().encode(creds)), inboxPrefix: `_INBOX_${idFromCreds(creds)}` } : {};
+  for (let i = 0; ; i++) {
+    try {
+      return await connect({ servers, ...auth });
+    } catch (e) {
+      if (i > 40) throw new Error(`private nats-server never came up on ${servers}: ${(e as Error).message}`);
+      await new Promise((r) => setTimeout(r, 100));
+    }
+  }
+}
 
 try {
   // --- the probe itself -------------------------------------------------------
@@ -155,8 +176,8 @@ try {
   assert(denied.kind === "not-permitted" && /permissions violation/i.test((denied as { message: string }).message), `probe: a refused put reads not-permitted (${JSON.stringify(denied)})`);
   assert(Date.now() - t < 1000, `probe: a refusal answers at once, never waits out the latch timeout (${Date.now() - t}ms)`);
   assert(isPermissionViolation(Object.assign(new Error("request failed"), { cause: Object.assign(new Error("x"), { name: "PermissionViolationError" }) })), "probe: a RequestError wrapping a PermissionViolationError is a refusal");
-  const gap = authGapWarning("Permissions Violation for Publish", "ctx");
-  assert(gap.startsWith("⚠ PRESENCE LATCH DETECTION IS DISABLED UNDER PAW_AUTH") && gap.includes("AUTH-GAP") && gap.includes("write") && gap.includes("purge") && gap.split("\n").length > 3, "auth gap: the warning is loud, multi-line, and names the follow-up");
+  const line = probeRefusedLine("Permissions Violation for Publish", "ctx");
+  assert(!line.includes("\n") && line.includes("Permissions Violation for Publish") && line.includes("ctx"), "refusal: said in ONE line, with the broker's reason");
   assert(!isPermissionViolation(Object.assign(new Error("TIMEOUT"), { name: "TimeoutError" })), "probe: a timeout is not a refusal");
 
   calls.length = 0;
@@ -180,12 +201,81 @@ try {
   });
   await Promise.race([deniedGate, new Promise((r) => setTimeout(r, 5000))]);
   assert(calls.join() === "spawn fresh" && !err.includes("isn't accepting writes"), `gate (auth refusal, real probe): proceeds — a refusal is not a latch (${calls.join() || err.split("\n")[0] || "no calls"})`);
+
+  // --- under auth (PAW_AUTH / a remote space): a real operator-mode JWT broker ------------------------
+  const space = "authed";
+  const auth = await createSpaceAuth(space);
+  mkdirSync(join(process.env.PAW_COTAL_ROOT!, ".cotal", "auth"), { recursive: true });
+  writeFileSync(join(process.env.PAW_COTAL_ROOT!, ".cotal", "auth", "auth.json"), JSON.stringify(stripSpaceAuth(auth)), { mode: 0o600 });
+  const authPort = port + 2;
+  const authServer = `nats://127.0.0.1:${authPort}`;
+  const authConf = join(storeDir, "auth.conf");
+  writeFileSync(authConf, serverConfig(auth, [auth], { port: authPort, host: "127.0.0.1", storeDir: join(storeDir, "auth-js"), transport: { kind: "plaintext" } }));
+  authSrv = spawn("nats-server", ["-c", authConf], { stdio: "ignore" });
+  // The test's own all-subjects user (signed with the same account signer) sets the bucket up.
+  const rootCreds = await signScopedCreds(space, "test-root", newIdentity(), { pub: [">"], sub: [">"] }, 600);
+  const anc = await connectWhenUp(authServer, rootCreds);
+  const ajsm = await jetstreamManager(anc);
+  // A KV bucket's stream as cotal creates the presence one (rollups allowed, 6s max_age).
+  await ajsm.streams.add({ name: `KV_cotal_presence_${space}`, subjects: [`$KV.cotal_presence_${space}.>`], max_msgs_per_subject: 1, allow_rollup_hdrs: true, deny_delete: true, max_age: 6_000_000_000 });
+
+  const control = await controlCreds(space);
+  assert(control !== undefined, "auth: the space's signer loads (paw would mint control creds)");
+  const refused = await probePresenceWrites(space, authServer, async () => control);
+  assert(refused.kind === "not-permitted", `auth: paw's control creds alone are refused — why the probe has its own cred (${refused.kind})`);
+  assert((await presenceProbeCreds("healthy", "paw-probe-ab")) === undefined, "auth: a space with no auth gets no probe cred (open mesh, unchanged)");
+
+  t = Date.now();
+  const authed = await probePresenceWrites(space, authServer, (key) => presenceProbeCreds(space, key));
+  assert(authed.kind === "ok", `auth: the probe's own cred writes and clears its key (${JSON.stringify(authed)})`);
+  assert(Date.now() - t < 1000, `auth: healthy cost is small (${Date.now() - t}ms)`);
+  const st = (await ajsm.streams.info(`KV_cotal_presence_${space}`)).state;
+  const last = await ajsm.streams.getMessage(`KV_cotal_presence_${space}`, { seq: st.last_seq });
+  assert(st.messages === 1 && last?.header.get("KV-Operation") === "PURGE", `auth: leaves only a purge marker, no live probe key (${st.messages} msg, ${last?.header.get("KV-Operation") || "a value"})`);
+
+  // Narrow: the cred reaches its one key and nothing else.
+  const g = presenceProbeGrants(space, "paw-probe-0a1b");
+  assert(g.pub.join() === "$KV.cotal_presence_authed.paw-probe-0a1b" && g.sub.length === 0, `auth: grants are exactly one presence key (${g.pub.join()})`);
+  let refusedKey = false;
+  try {
+    presenceProbeGrants(space, "evals");
+  } catch {
+    refusedKey = true;
+  }
+  assert(refusedKey, "auth: a grant for a non-probe key (a real agent's) is refused");
+  const pc = await presenceProbeCreds(space, "paw-probe-0a1b");
+  const pnc = await connectWhenUp(authServer, pc);
+  const pjs = jetstream(pnc, { timeout: 2000 });
+  for (const [what, subject] of [
+    ["another key", `$KV.cotal_presence_${space}.evals`],
+    ["another probe key", `$KV.cotal_presence_${space}.paw-probe-ffff`],
+  ] as const) {
+    let e: unknown;
+    await pjs.publish(subject, "x").catch((err: unknown) => (e = err));
+    assert(isPermissionViolation(e), `auth: the probe cred can't write ${what}`);
+  }
+  let pe: unknown;
+  await (await jetstreamManager(pnc, { timeout: 2000, checkAPI: false })).streams.purge(`KV_cotal_presence_${space}`).catch((err: unknown) => (pe = err));
+  assert(isPermissionViolation(pe), "auth: the probe cred can't purge the presence stream");
+  await pnc.close();
+
+  // A latch is still a latch under auth: the stream gone, a swallowing subscriber in its place.
+  await ajsm.streams.delete(`KV_cotal_presence_${space}`);
+  anc.subscribe(`$KV.cotal_presence_${space}.>`, { callback: () => {} });
+  await anc.flush();
+  t = Date.now();
+  const authLatched = await probePresenceWrites(space, authServer, (key) => presenceProbeCreds(space, key), 800);
+  assert(authLatched.kind === "latched", `auth: an unanswered put under a probe cred still reads latched (${JSON.stringify(authLatched)})`);
+  assert(Date.now() - t < 2500, "auth: bounded by its timeout");
+  await anc.close();
 } finally {
+  authSrv?.kill();
   denySrv?.kill();
   await nc.close().catch(() => {});
   srv.kill();
   rmSync(storeDir, { recursive: true, force: true });
   rmSync(process.env.PAW_HOME!, { recursive: true, force: true });
+  rmSync(process.env.PAW_COTAL_ROOT!, { recursive: true, force: true });
 }
 
 if (failures) {
