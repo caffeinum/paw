@@ -19,16 +19,18 @@
  */
 import { spawnSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { accessSync, constants, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { accessSync, constants, copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { delimiter, dirname, isAbsolute, join, resolve, sep } from "node:path";
+import { basename, delimiter, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { LaunchSpec } from "@cotal-ai/core";
-import { isClaudeHarness, readAgentType, readCwd, readHeadless, readSandbox, sandboxClaudeDir } from "./session.ts";
+import { isClaudeHarness, readAgentType, readCwd, readHeadless, readSandbox, sandboxClaudeDir, sandboxStateDir } from "./session.ts";
 import { isRemoteSpace } from "./server.ts";
 
 /** Where the agent's claude config dir is mounted inside the VM (the image's CLAUDE_CONFIG_DIR). */
 export const SANDBOX_CLAUDE_MOUNT = "/paw/claude";
+/** Per-launch copies of the single host files the seat reads (persona, TLS CA), read-only in the VM. */
+export const SANDBOX_SEAT_MOUNT = "/paw/seat";
 /** The seat's control socket INSIDE the VM: the MCP server listens, the plugin hooks dial — both in the VM,
  *  so the host path cotal picked (under the host's TMPDIR, absent in the VM) is replaced. */
 export const SANDBOX_CONTROL_SOCKET = "/tmp/cotal-control.sock";
@@ -230,7 +232,36 @@ export function sandboxLaunch(spec: LaunchSpec, o: SandboxLaunchOpts): LaunchSpe
   for (const a of spec.artifacts ?? []) ro.add(a);
   const seatEnv: Record<string, string> = { ...(spec.env ?? {}) };
   if (seatEnv.COTAL_LAUNCH_MATERIAL) ro.add(dirname(seatEnv.COTAL_LAUNCH_MATERIAL));
-  for (const k of ["NODE_EXTRA_CA_CERTS", "SSL_CERT_FILE"]) if (seatEnv[k]) ro.add(seatEnv[k]);
+  // Single host FILES the seat reads (its persona, a TLS CA) are COPIED into a per-launch dir mounted
+  // read-only at /paw/seat: a file's own directory may hold what the VM must not see (the CA's key, the
+  // other agents' personas).
+  const seatDir = join(sandboxStateDir(configPath), "seat");
+  rmSync(seatDir, { recursive: true, force: true });
+  mkdirSync(seatDir, { recursive: true, mode: 0o700 });
+  const copyIn = (key: string, as: string) => {
+    const host = seatEnv[key];
+    if (!host) return;
+    if (!existsSync(host)) throw new Error(`paw: ${key}=${host} does not exist — the sandboxed seat needs it`);
+    copyFileSync(host, join(seatDir, as));
+    seatEnv[key] = `${SANDBOX_SEAT_MOUNT}/${as}`;
+  };
+  copyIn("COTAL_AGENT_FILE", "agent.md");
+  // The seat's mesh creds: the launch material names a file in the space's creds dir, which also holds
+  // EVERY other agent's creds on this machine — so never that dir. A per-agent MIRROR dir holding only
+  // this agent's file is mounted read-only AT that dir's path (the material's path resolves unchanged),
+  // and the launcher re-copies it whenever the manager renews it (an atomic rename on the host, which a
+  // single-file mount would not follow). A remote space always has creds; none means a launch paw can't sandbox.
+  const material = seatEnv.COTAL_LAUNCH_MATERIAL;
+  if (!material) throw new Error("paw: the claude launch carries no COTAL_LAUNCH_MATERIAL — nothing tells the sandboxed seat its mesh creds");
+  const creds = (JSON.parse(readFileSync(material, "utf8")) as { creds?: string }).creds;
+  if (!creds || !isAbsolute(creds) || !existsSync(creds)) throw new Error(`paw: the launch material ${material} names no readable creds file (${creds ?? "none"}) — a sandboxed seat could never reach the mesh`);
+  const credsMirror = join(sandboxStateDir(configPath), "creds");
+  rmSync(credsMirror, { recursive: true, force: true });
+  mkdirSync(credsMirror, { recursive: true, mode: 0o700 });
+  copyFileSync(creds, join(credsMirror, basename(creds)));
+  const credsTarget = dirname(creds);
+  copyIn("NODE_EXTRA_CA_CERTS", "node-extra-ca.pem");
+  copyIn("SSL_CERT_FILE", "ssl-cert.pem");
   const root = seatEnv.COTAL_WORKSPACE_ROOT;
   if (root) {
     const events = join(root, ".cotal", "events");
@@ -241,6 +272,14 @@ export function sandboxLaunch(spec: LaunchSpec, o: SandboxLaunchOpts): LaunchSpe
   seatEnv.COTAL_CONTROL_SOCKET = SANDBOX_CONTROL_SOCKET;
   seatEnv.CLAUDE_CONFIG_DIR = SANDBOX_CLAUDE_MOUNT;
   seatEnv.IS_SANDBOX = "1";
+  // Every cotal var naming a host path must resolve in the VM. One paw doesn't know yet (a newer cotal's)
+  // fails HERE, loud, instead of a seat that boots and never reaches the mesh.
+  const targets = [...rw.values(), ...ro, SANDBOX_SEAT_MOUNT, credsTarget];
+  for (const [k, v] of Object.entries(seatEnv)) {
+    if (!k.startsWith("COTAL_") || HOST_ONLY_COTAL.has(k) || k === "COTAL_WORKSPACE_ROOT" || !v.startsWith("/")) continue;
+    if (v === SANDBOX_CONTROL_SOCKET || targets.some((t) => v === t || v.startsWith(`${t}/`))) continue;
+    throw new Error(`paw: cotal's launch passes ${k}=${v}, a host path the sandbox does not mount — src/sandbox.ts has to learn it`);
+  }
   const passed = [
     ...Object.keys(seatEnv).filter((k) => k.startsWith("COTAL_") && !HOST_ONLY_COTAL.has(k)),
     ...PASS_ENV.filter((k) => k === "CLAUDE_CODE_OAUTH_TOKEN" || seatEnv[k] !== undefined),
@@ -255,16 +294,20 @@ export function sandboxLaunch(spec: LaunchSpec, o: SandboxLaunchOpts): LaunchSpe
     "-m", readSandboxMemory(configPath),
     "-w", cwd,
     ...[...rw].flatMap(([h, c]) => ["-v", `${h}:${c}`]),
+    "-v", `${seatDir}:${SANDBOX_SEAT_MOUNT}:ro`,
+    "-v", `${credsMirror}:${credsTarget}:ro`,
     ...[...ro].filter((p) => ![...rw.keys()].includes(p)).flatMap((p) => ["-v", `${p}:${p}:ro`]),
     ...[...new Set(passed)].flatMap((k) => ["-e", k]),
     readSandboxImage(configPath),
-    spec.command,
+    // The IMAGE's claude, never spec.command: the manager resolves that to the HOST binary's absolute
+    // path (~/.local/bin/claude), which the VM doesn't have.
+    "claude",
     ...args,
   ];
   return {
     ...spec,
     command: process.execPath,
-    args: [SANDBOX_RUNNER, "--container", bin, "--token-file", tokenFile, "--name", name, "--space", o.space, "--agent", o.name, "--", ...run],
+    args: [SANDBOX_RUNNER, "--container", bin, "--token-file", tokenFile, "--name", name, "--space", o.space, "--agent", o.name, "--log", join(sandboxStateDir(configPath), "launcher.log"), "--mirror-src", creds, "--mirror-dst", join(credsMirror, basename(creds)), "--", ...run],
     env: seatEnv,
   };
 }

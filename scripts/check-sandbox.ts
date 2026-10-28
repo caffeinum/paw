@@ -5,7 +5,7 @@
  * `container` binary, so it runs anywhere (no VM, no mesh, no network). Run: pnpm check:sandbox
  */
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -80,6 +80,12 @@ const personas = join(home, ".paw", "spaces", SPACE, "personas");
 mkdirSync(personas, { recursive: true });
 const folder = join(home, "work", "agent-folder");
 mkdirSync(folder, { recursive: true });
+// The manager's per-space creds dir: this agent's file AND a sibling's, which the VM must never see.
+const credsDir = join(root, ".cotal", "auth", "creds", "space.abc123");
+mkdirSync(credsDir, { recursive: true });
+const agentCreds = join(credsDir, "smoke.uid1.creds");
+writeFileSync(agentCreds, "-----BEGIN NATS USER JWT----- smoke-v1", { mode: 0o600 });
+writeFileSync(join(credsDir, "sibling.uid2.creds"), "SIBLING-CREDS", { mode: 0o600 });
 const persona = (name: string, extra = "") => {
   const f = join(personas, `${name}.md`);
   writeFileSync(f, `---\nname: ${name}\ncwd: ${folder}\nresume: 11111111-2222-3333-4444-555555555555\nsandbox: container\n${extra}---\n`);
@@ -109,7 +115,7 @@ const origWarn = console.warn;
 const spec = (() => {
   console.warn = (...a: unknown[]) => void (out += `${a.join(" ")}\n`);
   try {
-    return pawConnector.buildLaunch({ space: SPACE, name: "smoke", configPath, workspaceRoot: root, servers: "tls://192.168.64.1:4222" });
+    return pawConnector.buildLaunch({ space: SPACE, name: "smoke", configPath, workspaceRoot: root, servers: "tls://192.168.64.1:4222", creds: agentCreds });
   } finally {
     console.warn = origWarn;
   }
@@ -130,7 +136,11 @@ const envs = run.flatMap((a, i) => (a === "-e" ? [run[i + 1]] : []));
   const nm = sbx.nodeModulesRoot(spec.args.find((a) => a.includes("connector-claude-code")) ?? run[run.indexOf("--plugin-dir") + 1]);
   assert(nm && vols.includes(`${nm}:${nm}:ro`), "paw's node_modules (cotal MCP + plugin hooks) is mounted READ-ONLY");
   assert(vols.includes(`${join(root, ".cotal", "events")}:${join(root, ".cotal", "events")}`), "the event WAL dir is mounted, read-write");
-  assert(!vols.some((v) => v.split(":")[0] === root || v.startsWith(`${join(root, ".cotal")}:`) || v.includes("/auth")), "the cotal root (and its signer) is NOT mounted");
+  const sources = vols.map((v) => v.split(":")[0]);
+  assert(!sources.some((s) => s === root || s === join(root, ".cotal") || s.startsWith(join(root, ".cotal", "auth"))), "no mount SOURCE is the cotal root, its .cotal or its auth dir (signer, every agent's creds)");
+  const mirror = join(home, ".paw", "spaces", SPACE, "sandbox", "smoke", "creds");
+  assert(vols.includes(`${mirror}:${credsDir}:ro`), "the creds dir path is served from this agent's own mirror, read-only");
+  assert(readdirSync(mirror).join() === "smoke.uid1.creds" && readFileSync(join(mirror, "smoke.uid1.creds"), "utf8").includes("smoke-v1"), "…which holds only ITS creds file (not the sibling's)");
   assert(!vols.some((v) => v.startsWith(`${home}:`) || v.includes(".ssh") || v.startsWith(`${join(home, ".paw")}:`) || v.startsWith(`${join(home, ".claude")}:`)), "nothing else of $HOME (~/.ssh, ~/.paw, ~/.claude) is mounted");
   const vmEnv = spec.env ?? {};
   assert(vmEnv.COTAL_CONTROL_SOCKET === sbx.SANDBOX_CONTROL_SOCKET, "the control socket moves into the VM's /tmp");
@@ -149,7 +159,7 @@ const envs = run.flatMap((a, i) => (a === "-e" ? [run[i + 1]] : []));
   const proj = join(sandboxClaudeDir(configPath), "projects", folder.replace(/[^A-Za-z0-9_]/g, "-"));
   mkdirSync(proj, { recursive: true });
   writeFileSync(join(proj, "11111111-2222-3333-4444-555555555555.jsonl"), "{}\n");
-  const again = pawConnector.buildLaunch({ space: SPACE, name: "smoke", configPath, workspaceRoot: root, servers: "tls://192.168.64.1:4222" });
+  const again = pawConnector.buildLaunch({ space: SPACE, name: "smoke", configPath, workspaceRoot: root, servers: "tls://192.168.64.1:4222", creds: agentCreds });
   assert(again.args.includes("--resume"), "restart: --resume once the sandbox store holds the session");
 }
 
@@ -164,7 +174,7 @@ console.log("cotal-only MCP config");
 console.log("refusals");
 {
   const launch = (name: string, space = SPACE, extra = "") =>
-    pawConnector.buildLaunch({ space, name, configPath: persona(name, extra), workspaceRoot: root, servers: "tls://x:1" });
+    pawConnector.buildLaunch({ space, name, configPath: persona(name, extra), workspaceRoot: root, servers: "tls://x:1", creds: agentCreds });
   assert(throwsLike(() => sbx.assertSandboxSpace("paw", "x"), /LOCAL space.*127\.0\.0\.1/), "a local space is refused (its broker is 127.0.0.1-only)");
   mkdirSync(join(home, ".paw", "spaces", "localsp", "personas"), { recursive: true });
   writeFileSync(join(home, ".paw", "spaces", "localsp", "personas", "l.md"), `---\nname: l\ncwd: ${folder}\nsandbox: container\n---\n`);
@@ -228,11 +238,16 @@ console.log("the launcher (bin/paw-sandbox-run.mjs) against a fake container");
   assert(!log().split("\n").filter((l) => l.startsWith("argv:")).some((l) => l.includes(TOKEN)), "…and never through any argv");
   const ps = spawnSync("/bin/ps", ["-A", "-o", "command="], { encoding: "utf8" }).stdout;
   assert(!ps.includes(TOKEN), "no process on this machine shows the token in its command line");
+  // The manager renews creds by an atomic rename; the launcher must carry the new file into the mirror.
+  const mirrored = join(home, ".paw", "spaces", SPACE, "sandbox", "smoke", "creds", "smoke.uid1.creds");
+  writeFileSync(`${agentCreds}.new`, "-----BEGIN NATS USER JWT----- smoke-v2", { mode: 0o600 });
+  renameSync(`${agentCreds}.new`, agentCreds);
+  assert(await until(() => readFileSync(mirrored, "utf8").includes("smoke-v2"), 12_000), "a renewed creds file (atomic rename on the host) reaches the mirror within seconds");
   child.kill("SIGTERM");
   assert(await until(() => log().includes(`argv: stop --time 2 ${cname}`) && log().includes(`argv: delete --force ${cname}`), 10_000), "SIGTERM → a detached `container stop` + `delete --force` of THIS launch's container");
   assert(await until(() => child.exitCode !== null, 10_000), "…and the launcher exits with the run CLI");
   assert(!printed.includes(TOKEN), "the launcher printed nothing carrying the token");
-  const bad = spawnSync(process.execPath, [sbx.SANDBOX_RUNNER, "--container", fake, "--token-file", join(home, "nope"), "--name", "n", "--space", "s", "--agent", "a", "--", "run"], { encoding: "utf8" });
+  const bad = spawnSync(process.execPath, [sbx.SANDBOX_RUNNER, "--container", fake, "--token-file", join(home, "nope"), "--name", "n", "--space", "s", "--agent", "a", "--log", join(home, "l.log"), "--", "run"], { encoding: "utf8" });
   assert(bad.status === 2 && /can't read the Claude OAuth token file/.test(bad.stderr), "an unreadable token file fails the launch loud");
 }
 

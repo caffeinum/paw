@@ -2,19 +2,22 @@
 /**
  * paw's sandbox launcher — the process the manager runs for a `sandbox: container` seat (src/sandbox.ts).
  *
- *   node paw-sandbox-run.mjs --container <bin> --token-file <f> --name <id> --space <s> --agent <n> -- run …
+ *   node paw-sandbox-run.mjs --container <bin> --token-file <f> --name <id> --space <s> --agent <n> --log <f> -- run …
  *
  * 1. Reads the Claude OAuth token from its 0600 file into CLAUDE_CODE_OAUTH_TOKEN for `container run -e
  *    CLAUDE_CODE_OAUTH_TOKEN` — so the token is never on any argv, in the LaunchSpec or in a log line.
  * 2. Removes this agent's leftover containers (a predecessor that was SIGKILLed before it could clean up).
- * 3. Runs `container run` on the seat's pty and exits with its code.
+ * 3. Runs `container run` on the seat's pty (stdin/stdout — the VM's tty) and exits with its code. The run
+ *    CLI's own STDERR (its progress and its errors, e.g. a missing image) goes to `--log`, beside this
+ *    launcher's own lines: the pty is claude's screen, and the manager keeps no copy of it.
  * 4. Owns the container's lifetime: killing the `container run` CLI does NOT stop the VM, so on SIGTERM /
  *    SIGHUP / SIGINT a DETACHED `container stop` + `delete --force` is started (it outlives the manager's
  *    SIGKILL 3s later) and this process exits once the run CLI does.
  * Plain node ESM, no dependencies: it starts in the manager's node without tsx.
  */
 import { spawn, spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { appendFileSync, copyFileSync, mkdirSync, openSync, readFileSync, renameSync, statSync } from "node:fs";
+import { dirname } from "node:path";
 
 const argv = process.argv.slice(2);
 const opt = {};
@@ -28,11 +31,21 @@ for (; i < argv.length; i++) {
   opt[argv[i].slice(2)] = argv[++i];
 }
 const run = argv.slice(i);
-const { container, "token-file": tokenFile, name, space, agent } = opt;
-if (!container || !tokenFile || !name || !space || !agent || run[0] !== "run") die("usage: --container <bin> --token-file <f> --name <id> --space <s> --agent <n> -- run …");
+const { container, "token-file": tokenFile, name, space, agent, log } = opt;
+if (!container || !tokenFile || !name || !space || !agent || !log || run[0] !== "run")
+  die("usage: --container <bin> --token-file <f> --name <id> --space <s> --agent <n> --log <f> -- run …");
+mkdirSync(dirname(log), { recursive: true });
 
+function note(msg) {
+  if (log) appendFileSync(log, `${new Date().toISOString()} [${process.pid}] ${msg}\n`);
+}
 function die(msg) {
   process.stderr.write(`paw sandbox: ${msg}\n`);
+  try {
+    note(`FAILED: ${msg}`);
+  } catch {
+    /* the log itself is what failed */
+  }
   process.exit(2);
 }
 
@@ -48,28 +61,61 @@ if (!token) die(`the Claude OAuth token file ${tokenFile} is empty`);
 // a live sibling of the same agent — there is none (one seat per name per manager).
 const ls = spawnSync(container, ["ls", "--all", "--format", "json"], { encoding: "utf8", timeout: 30_000 });
 if (ls.status !== 0) die(`\`container ls\` failed — is it running? \`container system start\` (${(ls.stderr || ls.error?.message || "").trim()})`);
-const stale = JSON.parse(ls.stdout || "[]")
+let listed;
+try {
+  listed = JSON.parse(ls.stdout || "[]");
+} catch {
+  die(`\`container ls --format json\` printed something that is not JSON: ${ls.stdout.slice(0, 200)}`);
+}
+const stale = listed
   .filter((c) => c.configuration?.labels?.["paw.space"] === space && c.configuration?.labels?.["paw.agent"] === agent)
   .map((c) => c.configuration.id);
 if (stale.length) {
-  process.stderr.write(`paw sandbox: removing leftover container(s) of ${agent}: ${stale.join(" ")}\n`);
+  note(`removing leftover container(s) of ${agent}#${space}: ${stale.join(" ")}`);
   spawnSync(container, ["delete", "--force", ...stale], { stdio: "ignore", timeout: 60_000 });
 }
 
-const child = spawn(container, run, { stdio: "inherit", env: { ...process.env, CLAUDE_CODE_OAUTH_TOKEN: token } });
+// The seat's creds mirror (src/sandbox.ts): the manager renews the agent's creds by an atomic rename on the
+// host, which the VM's read-only mirror dir only sees once it is copied in again — tmp + rename inside the
+// mirror, so the seat never reads half a file.
+const mirrorSrc = opt["mirror-src"];
+const mirrorDst = opt["mirror-dst"];
+if (!!mirrorSrc !== !!mirrorDst) die("--mirror-src and --mirror-dst come together");
+if (mirrorSrc) {
+  let seen = statSync(mirrorSrc).mtimeMs;
+  setInterval(() => {
+    try {
+      const at = statSync(mirrorSrc).mtimeMs;
+      if (at === seen) return;
+      copyFileSync(mirrorSrc, `${mirrorDst}.tmp`);
+      renameSync(`${mirrorDst}.tmp`, mirrorDst);
+      seen = at;
+      note(`creds renewed on the host — mirrored into the sandbox`);
+    } catch (e) {
+      note(`creds mirror: ${e.message}`);
+    }
+  }, 5_000).unref();
+}
+
+note(`starting ${name} (${agent}#${space})`);
+const child = spawn(container, run, { stdio: ["inherit", "inherit", openSync(log, "a")], env: { ...process.env, CLAUDE_CODE_OAUTH_TOKEN: token } });
 token = undefined;
 
 let stopping = false;
-const stop = () => {
+const stop = (sig) => {
   if (stopping) return;
   stopping = true;
+  note(`${sig}: stopping ${name}`);
   const reaper = spawn("/bin/sh", ["-c", '"$0" stop --time 2 "$1" >/dev/null 2>&1; "$0" delete --force "$1" >/dev/null 2>&1', container, name], {
     detached: true,
     stdio: "ignore",
   });
   reaper.unref();
 };
-for (const sig of ["SIGTERM", "SIGHUP", "SIGINT"]) process.on(sig, stop);
+for (const sig of ["SIGTERM", "SIGHUP", "SIGINT"]) process.on(sig, () => stop(sig));
 
 child.on("error", (e) => die(`couldn't start ${container}: ${e.message}`));
-child.on("exit", (code, signal) => process.exit(code ?? (signal ? 1 : 0)));
+child.on("exit", (code, signal) => {
+  note(`${name} exited (${signal ?? `code ${code}`})`);
+  process.exit(code ?? (signal ? 1 : 0));
+});
