@@ -20,6 +20,7 @@ import { cotaldViaNode, ensure, resolveSpace, stop } from "../src/lifecycle.ts";
 import { loadAllCommands, loadCommandsFor } from "../src/command-modules.ts";
 import { readRemoteMesh } from "../src/remote-mesh.ts";
 import { isRemoteSpace } from "../src/server.ts";
+import { callerSpace } from "../src/space.ts";
 
 /** Verbs bin/paw.ts answers itself without any registry Command — they load no command module. */
 const INLINE_VERBS = new Set(["cotal", "down", "create", "send"]);
@@ -172,7 +173,8 @@ try {
   if (NEEDS_MANAGER.has(cmd)) await ensure({ needMesh: true, needManager: true, ...gate });
   else if (NEEDS_MESH.has(cmd)) await ensure({ needMesh: true, ...gate });
 
-  const argv = expandEqFlags(withDefaultSpace(args, resolveSpace()));
+  // `paw cron` defaults to the CALLING agent's space (an agent on team2027 has no PAW_SPACE).
+  const argv = expandEqFlags(withDefaultSpace(args, cmd === "cron" ? callerSpace() : resolveSpace()));
   await command.run({ values: {}, positionals: [], raw: argv });
 } catch (err) {
   // Operator-facing failures should read as one clear line, not a V8 stack dump. The errors paw

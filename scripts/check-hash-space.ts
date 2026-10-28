@@ -179,6 +179,13 @@ assert(eq(h("stop", ["x", "--", "y#team2027"]), ["x", "--", "y#team2027"]), "not
   assert(cl3.name === "n" && cl3.space === "lab" && cl3.fg === true && eq(cl3.claudeArgs, ["-c"]), "claude --fg --name n#space -c");
   const cl2 = peelArgs(h("claude", ["--name=n#lab"]));
   assert(cl2.name === "n" && cl2.space === "lab", "claude --name=n#space");
+  const { parseCronArgs } = await import("../src/commands/cron.ts");
+  const cr = parseCronArgs(h("cron", ["add", "a#lab", "0 9 * * *", "check #general"]));
+  assert(eq(cr.positionals, ["a", "0 9 * * *", "check #general"]) && cr.space === "lab", "cron add a#space <cron> <prompt> (the prompt's # untouched)");
+  const cr2 = parseCronArgs(h("cron", ["add", "--in", "5m", "ping #lab"]));
+  assert(eq(cr2.positionals, ["ping #lab"]) && cr2.space === undefined, "cron add --in <t> <prompt>: no agent → the prompt is never an address");
+  const cr3 = parseCronArgs(h("cron", ["add", "a#lab", "--at", "09:00", "x"]));
+  assert(eq(cr3.positionals, ["a", "x"]) && cr3.space === "lab" && cr3.at === "09:00", "cron add a#space --at <t> <prompt>");
 }
 
 // every listed command's slot table is exercised by the CLI pass below
@@ -191,6 +198,7 @@ const CLI_ADDRESS: Record<string, string[]> = {
   msg: ["#ops#nosuch", "hi"], history: ["#ops#nosuch"], claude: ["--name", "x#nosuch"],
   teleport: ["x#nosuch", "--to", "ssh:box", "--dry-run"],
   move: ["x#nosuch", "--to-space", "other", "--dry-run"],
+  cron: ["add", "x#nosuch", "--in", "5m", "hi"],
 };
 assert(eq(Object.keys(CLI_ADDRESS).sort(), Object.keys(ADDRESS_ARGS).sort()), "the CLI pass covers every address-aware command");
 

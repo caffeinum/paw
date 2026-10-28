@@ -12,3 +12,11 @@ export function resolveSpace(): string {
   if (space.length === 0) throw new Error("paw: PAW_SPACE is set but empty — unset it or give a space");
   return space;
 }
+
+/** The default space for a verb an AGENT runs about itself (`paw cron`): `PAW_SPACE` when set, else the
+ *  space of the agent calling (cotal stamps COTAL_SPACE into its tools' env), else the default. An
+ *  agent on a remote space (team2027) has no PAW_SPACE, and `paw` would be the wrong space for it. */
+export function callerSpace(): string {
+  if (process.env.PAW_SPACE !== undefined) return resolveSpace();
+  return process.env.COTAL_SPACE?.trim() || DEFAULT_SPACE;
+}

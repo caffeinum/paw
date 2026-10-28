@@ -19,6 +19,7 @@ import { canonicalDir, ensureAgentSpawned, lookupFolderName, setFolderName, stuc
 import { resolveSpace, withEnsuredManager } from "./lifecycle.ts";
 import { optedIn, sleepSweep } from "./sleep.ts";
 import { tidySweep } from "./commands/tidy.ts";
+import { cronSweep } from "./commands/cron.ts";
 
 /** The always-on agent's fixed mesh name. Exported so other surfaces can reference it without a literal. */
 export const GLOBAL_NAME = "global";
@@ -61,6 +62,9 @@ async function globalUp(argv: string[]): Promise<void> {
     );
   }
   const name = setFolderName(space, folder, GLOBAL_NAME).name; // pin the folder→name mapping to `global`
+  // `paw cron` fires on this tick too (every space), AFTER global and even when bringing global up fails:
+  // a scheduled wake-up must not depend on the wake authority being healthy. A fire is a DM, nothing else.
+  const cronAfter = () => cronSweep().catch((e: Error) => console.error(`paw keeper: cron sweep failed: ${e.message}`));
   const { spawned, starting, stuck } = await withEnsuredManager(space, async (ctl) => {
     const r = await ensureAgentSpawned(ctl, { space, name, cwd: folder, brief: GLOBAL_BRIEF });
     // The hibernation sweep rides this 60s keeper tick. It only ever touches agents the operator OPTED IN
@@ -79,7 +83,7 @@ async function globalUp(argv: string[]): Promise<void> {
       (e: Error) => console.error(`paw keeper: tidy sweep failed: ${e.message}`),
     );
     return r;
-  });
+  }).finally(cronAfter);
   // No automatic unstick sweep here any more. The keeper pressed Esc on canary-env-52 at a permission
   // prompt (2026-09-16), rejecting the call; the operator's rule is that nothing touches a live agent
   // without their go. `paw unstick <name>` is the manual tool.

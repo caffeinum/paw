@@ -143,3 +143,8 @@ export const COTAL_TOOLS_NOTICE_BRIEF: readonly string[] = [
     `unreachable; cotal reconnects on its own, so check cotal_connection_status (cotal_reconnect forces`,
     `it) and retry the send.`,
 ];
+
+/** Durable scheduled wake-ups (src/commands/cron.ts). Shared by every paw harness with a shell. */
+export const CRON_BRIEF: readonly string[] = [
+  `To wake yourself later, use \`paw cron add "<m h dom mon dow>" "<prompt>"\` (recurring, local time) or \`paw cron add --in 20m "<prompt>"\` (one-shot); it survives restarts, unlike session crons — \`paw cron ls\` / \`paw cron rm <id>\`; a fire arrives as a DM starting "⏰ paw cron": do the work, it needs no reply.`,
+];

@@ -72,6 +72,7 @@ Each entry: what it is + the most load-bearing rule. Full notes behind the link.
 - `src/keeper.ts` — the unstick sweep on the global keeper tick (history; see the no-auto-restart rule). → [cli.md#keeper-unstick-sweep](docs/notes/cli.md#keeper-unstick-sweep)
 - `src/start.ts` — `paw start [<name>…]`: cold-start every REGISTERED agent (restart only revives live ones). → [cli.md#paw-start](docs/notes/cli.md#paw-start)
 - `src/commands/tidy.ts` — `paw tidy`: DM each live agent holding background processes (age/size floors) to ask if it still uses them; never kills itself (cotal `idle` ≠ nothing pending). → [cli.md#paw-tidy](docs/notes/cli.md#paw-tidy)
+- `src/cron.ts` + `src/commands/cron.ts` — `paw cron add [<agent>] "<cron>"|--in|--at "<prompt>"` / `ls` / `rm` / `tick`: durable agent wake-ups in `spaces/<s>/cron.json`; fired by the global keeper tick as a `paw dm`-path DM (never a restart), missed fires collapse into one, one-shots deleted after. → [cron.md](docs/notes/cron.md)
 - `src/commands/nice.ts` — `paw nice`: per-agent CPU priority (persona `nice:` > `PAW_NICE` > 10); launches run under `/usr/bin/nice`, `--apply`/`<name> <n>` renice the live tree (absolute `renice <n>`, NOT `-n` — on macOS that is an increment). → [cli.md#paw-nice](docs/notes/cli.md#paw-nice)
 - `src/pacing.ts` — `awaitSpawnHeadroom`: load-gated revival (bounded 90s), anti-thundering-herd. → [cli.md#spawn-pacing](docs/notes/cli.md#spawn-pacing)
 - `src/commands/launchd.ts` — `paw launchd`: fleet (one-shot, NO KeepAlive), web (KeepAlive), global
@@ -268,6 +269,7 @@ Each entry: what it is + the most load-bearing rule. Full notes behind the link.
 | [docs/notes/control-rail.md](docs/notes/control-rail.md) | the manager control rail (src/control.ts) |
 | [docs/notes/cotal-dependency.md](docs/notes/cotal-dependency.md) | cotal 0.58, 0.48 bump, version history back to 0.9 |
 | [docs/notes/agents.md](docs/notes/agents.md) | connector, cwd, paw claude, foreground, open/attach, waking |
+| [docs/notes/cron.md](docs/notes/cron.md) | paw cron: interface, store, keeper-tick firing, catch-up, tests |
 | [docs/notes/sleep.md](docs/notes/sleep.md) | paw sleep / sleep host |
 | [docs/notes/teleport.md](docs/notes/teleport.md) | paw teleport: transports, what moves, the continued-in chain, cutover, marker, fly specifics, e2e |
 | [docs/notes/addressing.md](docs/notes/addressing.md) | registry, adopt, rename, rm, named sessions, github, worktrees |
