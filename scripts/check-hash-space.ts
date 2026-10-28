@@ -192,6 +192,18 @@ assert(eq(h("stop", ["x", "--", "y#team2027"]), ["x", "--", "y#team2027"]), "not
   assert(eq(cr5.positionals, ["0 * * * *"]) && cr5.space === undefined, "cron add <cron> --run: no agent → nothing hoisted");
 }
 
+// a leading @ on a plain-name verb is chat's sigil, dropped (`paw start @evals-intern`, `paw restart @x`)
+{
+  assert(eq(hoistAddressSpace("start", ["@evals-intern", "--space", "team2027"], d), ["evals-intern", "--space", "team2027"]), "start @name → name");
+  assert(eq(hoistAddressSpace("restart", ["@evals-intern"], d), ["evals-intern"]), "restart @name → name");
+  assert(eq(hoistAddressSpace("start", ["@a", "@b"], d), ["a", "b"]), "start @a @b → every name slot");
+  assert(eq(hoistAddressSpace("restart", ["@evals-intern#team2027"], d), ["evals-intern", "--space", "team2027"]), "restart @name#space → name + --space");
+  assert(eq(hoistAddressSpace("stop", ["--name", "@x"], d), ["--name", "x"]), "stop --name @x → x");
+  assert(eq(hoistAddressSpace("restart", ["paw@feat"], d), ["paw@feat"]), "repo@branch is not a sigil");
+  assert(eq(hoistAddressSpace("chat", ["@x"], d), ["@x"]), "chat keeps its own @ (it reads it itself)");
+  assert(eq(hoistAddressSpace("type", ["@x", "hi"], d), ["@x", "hi"]), "type keeps its @ (atOnly)");
+}
+
 // every listed command's slot table is exercised by the CLI pass below
 const CLI_ADDRESS: Record<string, string[]> = {
   chat: ["@x#nosuch"], dm: ["x#nosuch", "hi"], open: ["x#nosuch"], attach: ["x#nosuch"], log: ["x#nosuch"],
@@ -221,6 +233,8 @@ for (const [cmd, args] of Object.entries(CLI_ADDRESS)) {
   assert(s.status === 1 && /--space says/.test(s.stderr), "short form `paw c` is hoisted too");
   const g = run(["rm", "github:o/r#main#paw"]);
   assert(g.status === 1 && /ambiguous/.test(g.stderr), "paw rm github:o/r#branch#space → ambiguity, exit 1");
+  const at = run(["persona", `@nobody#${OTHER}`]);
+  assert(at.status === 1 && at.stderr.includes(`no agent "nobody" in space "${OTHER}"`), `paw persona @nobody#<space>: the @ never reaches the command (got: ${at.stderr.trim().slice(0, 160)})`);
   const p = run(["persona", `nobody#${OTHER}`]);
   assert(p.status === 1 && p.stderr.includes(`in space "${OTHER}"`), `paw persona nobody#<space> reaches the command ON that space (got: ${p.stderr.trim().slice(0, 160)})`);
 }

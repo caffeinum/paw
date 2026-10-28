@@ -12,7 +12,7 @@
  */
 import { existsSync } from "node:fs";
 import { registry, type Command } from "@cotal-ai/core";
-import { ensureAgentSpawned, folderForName, listAgents, psRowAlive, stuckWarning, type PsRow } from "./addressing.ts";
+import { elsewhereHint, ensureAgentSpawned, folderForName, listAgents, psRowAlive, stuckWarning, type PsRow } from "./addressing.ts";
 import { resolveSpace, withEnsuredManager } from "./lifecycle.ts";
 import { awaitSpawnHeadroom } from "./pacing.ts";
 
@@ -25,6 +25,12 @@ function parseArgs(argv: string[]): { space?: string; names: string[] } {
     else out.names.push(a);
   }
   return out;
+}
+
+/** The skip line for a name with no registration here — naming the other local space that holds it. */
+export function notRegisteredSkip(space: string, name: string): string {
+  const hint = elsewhereHint(space, name);
+  return hint ? `${name} (not registered in "${space}"${hint})` : `${name} (not registered)`;
 }
 
 async function start(argv: string[]): Promise<void> {
@@ -56,7 +62,7 @@ async function start(argv: string[]): Promise<void> {
         continue;
       }
       if (!t.folder) {
-        skipped.push(`${t.name} (not registered)`);
+        skipped.push(notRegisteredSkip(space, t.name));
         continue;
       }
       if (!existsSync(t.folder)) {

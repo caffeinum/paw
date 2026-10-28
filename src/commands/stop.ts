@@ -14,6 +14,7 @@ import {
   agentRecord,
   assertUnambiguousTarget,
   canonicalDir,
+  elsewhereHint,
   folderForName,
   lookupFolderName,
   stopAgent,
@@ -59,7 +60,8 @@ function parseArgs(argv: string[]): { space?: string; target?: string; rawName?:
 /** Resolve a stop target to its agent name: a registered agent NAME first, else a folder whose
  *  registry mapping names the agent. Fails loud on an unmapped folder or an unknown token —
  *  never registers or spawns anything. */
-export function resolveStopName(space: string, target: string): string {
+export function resolveStopName(space: string, raw: string): string {
+  const target = /^@[A-Za-z0-9_]/.test(raw) ? raw.slice(1) : raw; // `@name` = that agent, as in chat/dm
   const byName = folderForName(space, target); // an agent NAME (reverse lookup)?
   if (byName) return target;
 
@@ -77,7 +79,7 @@ export function resolveStopName(space: string, target: string): string {
   // Not paw's — but the MANAGER may hold it (a `cotal_spawn` peer, an auto-numbered `web_2`), so the
   // name goes to it as-is; an unknown name then reads "isn't running", which is the truth.
   if (/^[A-Za-z0-9_-]+$/.test(target)) return target;
-  throw new Error(`paw: "${target}" is not an agent name or a folder (\`paw status\` for names)`);
+  throw new Error(`paw: "${target}" is not an agent name or a folder${elsewhereHint(space, target)} (\`paw status\` for names)`);
 }
 
 async function stop(argv: string[]): Promise<void> {
@@ -114,7 +116,7 @@ async function stop(argv: string[]): Promise<void> {
   if (done) console.log(done);
   else if (rawName === undefined && !agentRecord(space, name)) {
     // Neither registered nor held by the manager: not an agent at all, most likely a typo.
-    throw new Error(`paw: no agent "${name}" — not registered and not running (\`paw status\` for names)`);
+    throw new Error(`paw: no agent "${name}" — not registered and not running in "${space}"${elsewhereHint(space, name)} (\`paw status\` for names)`);
   } else console.log(c.dim(`"${name}" isn't running — nothing to stop`));
 }
 

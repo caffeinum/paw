@@ -70,12 +70,14 @@ function throws(fn: () => unknown, re: RegExp, msg: string): void {
     assert(re.test((e as Error).message), `${msg} — ${(e as Error).message.split("\n")[0]}`);
   }
 }
-async function rejects(p: Promise<unknown>, re: RegExp, msg: string): Promise<void> {
+async function rejects(p: Promise<unknown>, re: RegExp, msg: string): Promise<string> {
   try {
     await p;
     assert(false, `${msg} (did not reject)`);
+    return "";
   } catch (e) {
     assert(re.test((e as Error).message), `${msg} — ${(e as Error).message.split("\n")[0]}`);
+    return (e as Error).message;
   }
 }
 
@@ -415,7 +417,11 @@ console.log("persona keys + wake gate");
   setPersonaKeys(space, name, { teleportedCwd: undefined });
   const calls: string[] = [];
   const ctl = { ps: async () => (calls.push("ps"), { ok: true, data: [] }), spawn: async () => (calls.push("spawn"), { ok: true }) } as unknown as Parameters<typeof ensureAgentSpawned>[0];
-  await rejects(ensureAgentSpawned(ctl, { space, name, cwd }), /teleported to fly:2027-agents at 2026-10-22.*paw teleport proj --back/, "the wake gate refuses a teleported agent and points at --back");
+  const refusal = await rejects(ensureAgentSpawned(ctl, { space, name, cwd }), /teleported to fly:2027-agents at 2026-10-22.*paw teleport proj --back/, "the wake gate refuses a teleported agent and points at --back");
+  assert(refusal.includes(`(start it there: \`fly ssh console -a 2027-agents -C "sh -lc 'paw start proj --space ${space}'"\`)`), `…and prints the exact command that starts it there (${refusal.slice(refusal.indexOf("(start"))})`);
+  assert(plan.startThereCommand("proj", "team2027", "ssh:mini") === "ssh mini paw start proj --space team2027", "ssh: target → `ssh <host> paw start <name> --space <space>`");
+  assert(plan.startThereCommand("proj", "paw", "fly:app/abc123") === `fly ssh console -a app --machine abc123 -C "sh -lc 'paw start proj --space paw'"`, "fly:<app>/<machine> keeps the machine");
+  assert(plan.startThereCommand("proj", "paw", plan.ORIGIN) === undefined, "origin names no transport → no command (text kept)");
   assert(calls.length === 0, "…before asking the manager anything");
   setPersonaKeys(space, name, { teleported: plan.ORIGIN, teleportedWhat: undefined });
   await rejects(ensureAgentSpawned(ctl, { space, name, cwd }), /teleported back to the machine it came from/, "a brought-back copy is refused too");
