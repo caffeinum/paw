@@ -324,6 +324,16 @@ export const ADDRESS_ARGS: Readonly<Record<string, AddressSpec>> = {
   cron: { values: CRON_VALUE_FLAGS, slots: cronSlots },
 };
 
+/**
+ * Verbs whose agent slots take a plain NAME, where a leading `@` is the sigil chat/dm/open already
+ * accept (`paw start @evals-intern` used to say "not registered", `paw restart @x` "not an agent name").
+ * The hoister drops it. Not here: verbs that read `@` themselves (chat, dm, open, attach, type, cron,
+ * inbox), and ones whose slot is a channel or a session (msg, history, ask, adopt).
+ */
+export const AT_SIGIL_VERBS: ReadonlySet<string> = new Set([
+  "start", "restart", "stop", "rm", "log", "sessions", "status", "teleport", "move", "sleep", "unstick", "nice", "persona", "rename",
+]);
+
 const bareAddress = (token: string, deps: AddressDeps): boolean => {
   try {
     return splitAddressSpace(token, deps).space !== undefined;
@@ -357,11 +367,16 @@ function positionalWords(spec: AddressSpec, args: string[], end: number): string
  */
 export function hoistAddressSpace(cmd: string, args: string[], deps: AddressDeps = addressDeps()): string[] {
   const spec = Object.hasOwn(ADDRESS_ARGS, cmd) ? ADDRESS_ARGS[cmd] : undefined;
-  if (!spec || !args.some((a) => a.includes("#"))) return args;
+  const sigil = AT_SIGIL_VERBS.has(cmd);
+  if (!spec || !args.some((a) => a.includes("#") || (sigil && a.includes("@")))) return args;
   const out = [...args];
   const found: Array<{ token: string; space: string }> = [];
   const take = (i: number, prefix = ""): void => {
-    const token = out[i].slice(prefix.length);
+    let token = out[i].slice(prefix.length);
+    if (sigil && /^@[A-Za-z0-9_]/.test(token)) {
+      token = token.slice(1);
+      out[i] = prefix + token;
+    }
     const r = splitAddressSpace(token, deps);
     if (r.space === undefined) return;
     found.push({ token, space: r.space });
@@ -393,7 +408,7 @@ export function hoistAddressSpace(cmd: string, args: string[], deps: AddressDeps
       if (inSlot(slots, slot)) take(i);
     }
   }
-  if (!found.length) return args;
+  if (!found.length) return out;
   const spaces = [...new Set(found.map((f) => f.space))];
   if (spaces.length > 1)
     throw new Error(`paw: ${found.map((f) => `"${f.token}"`).join(", ")} name different spaces (${spaces.join(", ")}) — one command acts on one space`);

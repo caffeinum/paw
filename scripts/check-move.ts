@@ -213,6 +213,12 @@ console.log("cutover");
   const r2 = await mv.applyMove(again, idle, d2);
   assert(!r2.started && c2.length === 0, "not running → nothing stopped or started");
   assert(existsSync(join(bk, "worker.md")) && existsSync(join(bk, "STAMP", "worker.md")), "both backups kept");
+  // The closing line: "resumed" only when the pin has a transcript to resume.
+  assert(mv.moveStartLine(d, true, () => true) === `  live in ${B} as "worker2" (resumed its session)`, "pin with a transcript → resumed its session");
+  assert(mv.moveStartLine(d, true, () => false) === `  live in ${B} as "worker2" (fresh session — no turns yet)`, "pin with no transcript yet → fresh session, no turns yet");
+  assert(mv.moveStartLine({ ...d, pin: undefined }, true, () => true) === `  live in ${B} as "worker2" (fresh session — no turns yet)`, "no pin → fresh");
+  assert(mv.moveStartLine({ ...d, agent: "hermes" }, true, () => false).endsWith("(resumed its session)"), "a harness paw doesn't pin keeps its own line");
+  assert(mv.moveStartLine(d, false, () => true) === `  not started — \`paw start worker2#${B}\` brings it up there`, "not started → the start hint");
 }
 
 // ── hermes profile ─────────────────────────────────────────────────────────────────────────────────

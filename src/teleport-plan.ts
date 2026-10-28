@@ -343,6 +343,21 @@ export function teleportedRefusal(name: string, mark: { to: string; at?: string 
   return `paw: "${name}" was teleported to ${mark.to}${when} — it runs there now; \`paw teleport ${name} --back\` brings it back here`;
 }
 
+/** The exact command that starts a teleported `name` on the machine its marker names, or undefined when
+ *  the marker names no reachable transport (`origin`, an unparseable one). fly runs a login shell: paw is
+ *  on PATH there only through the profile (teleport-shell.ts PROFILE). */
+export function startThereCommand(name: string, space: string, to: string): string | undefined {
+  let t: Transport;
+  try {
+    t = parseTransport(to);
+  } catch {
+    return undefined;
+  }
+  const start = `paw start ${name} --space ${space}`;
+  if (t.kind === "ssh") return `ssh ${t.host} ${start}`;
+  return `fly ssh console -a ${t.app}${t.machine ? ` --machine ${t.machine}` : ""} -C "sh -lc '${start}'"`;
+}
+
 /** How many dirty paths a refusal lists before "… and N more". */
 export const DIRTY_SHOWN = 10;
 

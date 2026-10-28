@@ -312,6 +312,45 @@ assert(STARTING_GRACE_MS >= 10_000, "starting grace is generous — killing a li
   assert(withChannelGrants("---\r\nname: x\r\n---\r\nbody\r\n")?.includes('\r\nallowPublish: [">"]\r\n') === true, "grants: CRLF file keeps CRLF");
 }
 
+// `paw claude --name <n>`: the name is bound to the folder it runs in BEFORE the spawn (eas-relay, 2026-10-27).
+{
+  const { bindNameToFolder, elsewhereHint, spacesHoldingAgent } = await import("../src/addressing.ts");
+  const sp = "claude-name";
+  const base = realpathSync(mkdtempSync(join(tmpdir(), "paw-claude-name-")));
+  const relay = mkdir(base, "eas-relay");
+  const other = mkdir(base, "elsewhere");
+  bindNameToFolder(sp, relay, "eas-relay");
+  assert(agentRecord(sp, "eas-relay")?.folder === relay && agentRecord(sp, "eas-relay")?.extra === false, "claude --name <folder's own name>: cwd recorded, it IS the folder default (no paw-extra)");
+  bindNameToFolder(sp, relay, "relay-2");
+  assert(agentRecord(sp, "relay-2")?.folder === relay && agentRecord(sp, "relay-2")?.extra === true, "claude --name <other>: cwd + paw-extra: true");
+  bindNameToFolder(sp, relay, "relay-2");
+  assert(agentNamesForFolder(sp, relay).join() === "eas-relay,relay-2", "idempotent for the same folder");
+  bindNameToFolder(sp, other, "solo");
+  assert(agentRecord(sp, "solo")?.extra === true, "a name unlike the folder's basename, no default there → an extra (the default stays the basename)");
+  assert(throws(() => bindNameToFolder(sp, other, "relay-2")), "a name bound to ANOTHER folder fails loud");
+  let msg = "";
+  try { bindNameToFolder(sp, other, "relay-2"); } catch (e) { msg = (e as Error).message; }
+  assert(msg.includes(`already bound to ${relay}`) && agentRecord(sp, "relay-2")?.folder === relay, "…naming the folder it's bound to, and never rebinding");
+  setPersonaKeys(sp, "orphan", { resume: "abc" });
+  bindNameToFolder(sp, other, "orphan");
+  assert(agentRecord(sp, "orphan")?.folder === other && readFileSync(personaPath(sp, "orphan"), "utf8").includes("resume: abc"), "an orphan persona (no cwd:) gains this folder, keeping its pin");
+  assert(throws(() => bindNameToFolder(sp, relay, "bad name")), "an unsafe --name fails loud, never cleaned silently");
+
+  // `paw start <name>` in the wrong space names the space that holds it.
+  const { notRegisteredSkip } = await import("../src/start.ts");
+  const { resolveStopName } = await import("../src/commands/stop.ts");
+  setPersonaKeys("team2027-x", "evals-intern", { cwd: relay });
+  assert(spacesHoldingAgent("evals-intern", sp).join() === "team2027-x", "spacesHoldingAgent finds the other local space's persona");
+  assert(notRegisteredSkip(sp, "evals-intern") === `evals-intern (not registered in "${sp}" — it's in "team2027-x": add --space team2027-x)`, "start: skip line points at the right space");
+  assert(notRegisteredSkip(sp, "nobody") === "nobody (not registered)", "start: a name no space holds keeps the plain line");
+  assert(elsewhereHint("team2027-x", "evals-intern") === "", "no hint for the space it IS in");
+  assert(resolveStopName(sp, "@evals-intern") === "evals-intern", "stop/restart: a leading @ is the agent sigil, not part of the name");
+  let stopMsg = "";
+  try { resolveStopName(sp, "evals-intern.x"); } catch (e) { stopMsg = (e as Error).message; }
+  assert(/not an agent name or a folder/.test(stopMsg), `stop/restart: an unsafe token still fails loud (${stopMsg})`);
+  rmSync(base, { recursive: true, force: true });
+}
+
 rmSync(process.env.PAW_HOME!, { recursive: true, force: true });
 
 // wake gate busy-guard: an offline row with a recently-written transcript is BUSY, not a zombie.

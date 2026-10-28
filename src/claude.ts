@@ -19,6 +19,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { reclaimWithChild, registry, type Command } from "@cotal-ai/core";
 import {
+  bindNameToFolder,
   canonicalDir,
   ensureAgentSpawned,
   ensurePersonaFile,
@@ -219,6 +220,9 @@ export async function runClaude(argv: string[]): Promise<void> {
   // `--fg` launches claude itself, past the wake gate's own teleported check (src/teleport.ts).
   const teleported = readTeleported(personaFilePath(space, name));
   if (teleported) throw new Error(teleportedRefusal(name, teleported));
+  // An explicit --name is registered to THIS folder before anything spawns (the default name already is,
+  // by folderToName) — else the agent runs here while chat/log/status find no folder for it.
+  if (nameArg !== undefined) bindNameToFolder(space, folder, name);
 
   const intent = deriveSessionIntent(claudeArgs);
   const sessionId = deriveSessionId(folder, claudeArgs); // the operator's explicit pin (undefined = fresh/bare)

@@ -37,7 +37,8 @@ import { hermesProfileId, hermesRoot, HERMES_AGENT } from "./hermes-profile.ts";
 import { resolveSpace, withEnsuredManager } from "./lifecycle.ts";
 import { liveSessionProcs, meshIdentity } from "./named.ts";
 import { isRemoteSpace } from "./server.ts";
-import { personaTranscriptRoots, readAgentType, readCwd, readHermesHome, readResumeId, transcriptMtime } from "./session.ts";
+import { isClaudeHarness, personaTranscriptRoots, readAgentType, readCwd, readHermesHome, readResumeId, transcriptExists, transcriptMtime } from "./session.ts";
+import { KIT_AGENT } from "./kit.ts";
 import { sleepState } from "./sleep-state.ts";
 import { readTeleported } from "./teleport-plan.ts";
 import { fleetJobStarts } from "./commands/launchd.ts";
@@ -431,6 +432,16 @@ async function confirm(question: string): Promise<boolean> {
   }
 }
 
+/** The line `paw move` ends on. "resumed its session" only when its pin HAS a transcript: a pin with none
+ *  boots fresh at that id (session.ts transcriptExists). Other harnesses keep their own session, which
+ *  paw doesn't read, so their line is unchanged. */
+export function moveStartLine(d: MoveDisk, started: boolean, hasTranscript: (pin: string) => boolean): string {
+  if (!started) return `  not started — \`paw start ${d.newName}#${d.to}\` brings it up there`;
+  const pinned = isClaudeHarness(d.agent) || d.agent === KIT_AGENT;
+  const fresh = pinned && !(d.pin && hasTranscript(d.pin));
+  return `  live in ${d.to} as "${d.newName}" (${fresh ? "fresh session — no turns yet" : "resumed its session"})`;
+}
+
 export async function move(a: MoveArgs): Promise<void> {
   const from = a.space?.trim() || resolveSpace();
   const d = moveDisk({ from, to: a.to, name: a.name, ...(a.as ? { newName: a.as } : {}) });
@@ -475,7 +486,8 @@ export async function move(a: MoveArgs): Promise<void> {
       console.error(`paw: ⚠ moved, but ${e}`);
     }
   }
-  console.log(started ? `  live in ${d.to} as "${d.newName}" (resumed its session)` : `  not started — \`paw start ${d.newName}#${d.to}\` brings it up there`);
+  const personaTo = personaFilePath(d.to, d.newName);
+  console.log(moveStartLine(d, started, (pin) => transcriptExists(pin, personaTranscriptRoots(personaTo))));
 }
 
 const moveCommand: Command = {

@@ -37,7 +37,7 @@ import { readRemoteMesh } from "./remote-mesh.ts";
 import { presenceProbeCreds } from "./remote-creds.ts";
 import { withFileLock, withFileLockAsync, type LockOpts } from "./lock.ts";
 import { liveSessionProcs, meshAgentSession, meshIdentity, type LiveSessionProc } from "./named.ts";
-import { readTeleported, teleportedRefusal } from "./teleport-plan.ts";
+import { readTeleported, startThereCommand, teleportedRefusal } from "./teleport-plan.ts";
 import { checkKitArgs, ensureKitBinary, isKitProvider, KIT_AGENT, preflightKitArgs, readKitPersona } from "./kit.ts";
 import { HERMES_AGENT } from "./hermes-profile.ts";
 import { ACP_AGENT } from "./acp-agent.ts";
@@ -269,6 +269,45 @@ export function registerInstance(space: string, canonical: string, name: string)
     setPersonaKeys(space, cleaned, { cwd: canonical, "paw-extra": "true" });
     return cleaned;
   });
+}
+
+/**
+ * Bind an EXPLICIT name (`paw claude --name <n>`) to the folder it is launched from, before the spawn:
+ * `cwd:` in its persona, plus `paw-extra: true` unless the name is the one the folder's default would
+ * get. Without it the agent ran in the folder but chat/log/status said "no registered folder" (eas-relay,
+ * 2026-10-27). Idempotent for the same folder; a name already bound to ANOTHER folder fails loud — never
+ * a silent rebind. An orphan persona (no `cwd:`) is simply given this one.
+ */
+export function bindNameToFolder(space: string, canonical: string, name: string): void {
+  if (!/^[A-Za-z0-9_-]+$/.test(name)) throw new Error(`paw: --name "${name}" is not an agent name (allowed: letters, digits, _ and -)`);
+  withRegistryLock(space, () => {
+    const rec = agentRecord(space, name);
+    if (rec) {
+      if (rec.folder !== canonical)
+        throw new Error(`paw: agent name "${name}" is already bound to ${rec.folder}, not ${canonical} — run it from there, or pick a different --name`);
+      return;
+    }
+    const extra = name !== (lookupFolderName(space, canonical) ?? sanitizeAgentName(canonical));
+    setPersonaKeys(space, name, { cwd: canonical, "paw-extra": extra ? "true" : undefined });
+  });
+}
+
+/** The OTHER local spaces holding a persona for `name` (`$PAW_HOME/spaces/<s>/personas/<name>.md`). */
+export function spacesHoldingAgent(name: string, except: string): string[] {
+  if (!/^[A-Za-z0-9_-]+$/.test(name)) return [];
+  const spaces = join(process.env.PAW_HOME?.trim() || join(homedir(), ".paw"), "spaces");
+  if (!existsSync(spaces)) return [];
+  return readdirSync(spaces, { withFileTypes: true })
+    .filter((d) => d.isDirectory() && d.name !== except && existsSync(join(spaces, d.name, "personas", `${name}.md`)))
+    .map((d) => d.name)
+    .sort();
+}
+
+/** ` — it's in "team2027": add --space team2027` when `name` is registered in another local space, else "". */
+export function elsewhereHint(space: string, name: string): string {
+  const others = spacesHoldingAgent(name, space);
+  if (!others.length) return "";
+  return ` — it's in ${others.map((s) => `"${s}"`).join(", ")}: add --space ${others[0]}`;
 }
 
 /**
@@ -899,7 +938,8 @@ export async function ensureAgentSpawned(
   if (teleported) {
     const id = await presentPeerId(opts.space, opts.name);
     if (id) return { spawned: false, id };
-    throw new Error(`${teleportedRefusal(opts.name, teleported)} — and it isn't on the mesh right now (start it there)`);
+    const there = startThereCommand(opts.name, opts.space, teleported.to);
+    throw new Error(`${teleportedRefusal(opts.name, teleported)} — and it isn't on the mesh right now (start it there${there ? `: \`${there}\`` : ""})`);
   }
   if (existsSync(ownPersona)) assertOneSpace(opts.space, readResumeId(ownPersona));
   const lastWrite = (): number | undefined => {

@@ -15,6 +15,7 @@ import { existsSync } from "node:fs";
 import {
   agentRecord,
   assertUnambiguousTarget,
+  elsewhereHint,
   personaFilePath,
   psRowAlive,
   registerLivePeer,
@@ -191,7 +192,7 @@ async function restart(argv: string[]): Promise<void> {
   // swap must not boot a manager, and the persona is the whole record, so the manager isn't needed.
   if (swap !== undefined) {
     if (!agentRecord(space, agent!))
-      throw new Error(`paw: "${agent}" is not a registered agent in space ${space} — \`paw status --space ${space}\` lists them; a swap edits its persona`);
+      throw new Error(`paw: "${agent}" is not a registered agent in space ${space}${elsewhereHint(space, agent!)} — \`paw status --space ${space}\` lists them; a swap edits its persona`);
     // A manager older than kit swaps ignores `kitArgs:` and refuses a kit persona with no `provider:`
     // AFTER accepting the spawn, logging nothing: the agent was stopped and never came back while the
     // CLI sat in its readiness wait (ccswitch, 2026-10-20). Ask the manager's own code first; refuse
@@ -217,14 +218,14 @@ async function restart(argv: string[]): Promise<void> {
     // Unregistered AND no manager running → it can't be a live cotal peer either. Say so before
     // booting a manager just to find out (a typo used to start one).
     if (!agentRecord(space, agent) && managerProcs(space).length === 0) {
-      throw new Error(`paw: "${agent}" is neither a runtime (${RUNTIMES.join(", ")}) nor a known agent — \`paw status\` lists the agents`);
+      throw new Error(`paw: "${agent}" is neither a runtime (${RUNTIMES.join(", ")}) nor a known agent${elsewhereHint(space, agent)} — \`paw status\` lists the agents`);
     }
     await ensure({ needMesh: true, needManager: true, space });
     await withManagerControl(space, pawServer(space), async (ctl) => {
       const folder = await resolveAgentFolder(ctl, space, agent); // a live cotal_spawn peer counts too
       if (!folder)
         throw new Error(
-          `paw: "${agent}" is neither a runtime (${RUNTIMES.join(", ")}) nor a known agent — \`paw status\` lists the agents`,
+          `paw: "${agent}" is neither a runtime (${RUNTIMES.join(", ")}) nor a known agent${elsewhereHint(space, agent)} — \`paw status\` lists the agents`,
         );
       if (!existsSync(folder)) throw new Error(`paw: "${agent}" is registered at ${folder}, which no longer exists`);
       const pin = readResumeId(personaFilePath(space, agent));
