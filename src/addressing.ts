@@ -663,10 +663,36 @@ export type HumanRole = "agent" | "operator" | "admin";
  *  different sender and every reply land for somebody `paw inbox` never reads. A bearer secret: it
  *  is read, never printed. */
 export function remoteHumanIdentity(space: string): Identity {
-  const file = join(spaceDir(space), "human.nkey.json");
+  return persistedIdentity(join(spaceDir(space), "human.nkey.json"));
+}
+
+/** A non-human sender paw speaks as (`paw cron` fires as "cron"): its own persisted nkey on a remote
+ *  space (`<name>.nkey.json`, minted `operator` — send-only, the rows `cotal send` gets), so it is never
+ *  "you"; on a local space the same creds every "you" endpoint uses. */
+export async function senderEndpointAuth(space: string, name: string): Promise<{ creds?: string; tls?: true }> {
+  if (!readRemoteMesh(space)) return { creds: await controlCreds(space) };
+  const auth = loadSpaceAuth(authDir(pawCotalRoot(space)), space);
+  if (!auth) throw new Error(`paw: space "${space}" is remote but no signer loads under ${authDir(pawCotalRoot(space))} — see \`paw mesh add\``);
+  return { creds: await mintCreds(auth, persistedIdentity(join(spaceDir(space), `${name}.nkey.json`)), "operator"), tls: true };
+}
+
+/** A stable open-mesh principal id for the non-human sender `name` (`<name>.id` under the space). */
+export function stableSenderId(space: string, name: string): string {
+  const file = join(spaceDir(space), `${name}.id`);
+  if (existsSync(file)) {
+    const raw = readFileSync(file, "utf8").trim();
+    if (!raw) throw new Error(`paw: ${file} is empty — delete it to mint a new "${name}" id`);
+    return raw;
+  }
+  const id = humanIdToken(randomUUID());
+  writeFileSync(file, id);
+  return id;
+}
+
+function persistedIdentity(file: string): Identity {
   if (existsSync(file)) {
     const v = JSON.parse(readFileSync(file, "utf8")) as Partial<Identity>;
-    if (typeof v.id !== "string" || typeof v.seed !== "string") throw new Error(`paw: ${file} is not a {id, seed} identity — delete it to mint a new "you"`);
+    if (typeof v.id !== "string" || typeof v.seed !== "string") throw new Error(`paw: ${file} is not a {id, seed} identity — delete it to mint a new identity`);
     return { id: v.id, seed: v.seed };
   }
   const id = newIdentity();

@@ -9,6 +9,7 @@ interface where agents can schedule wake-ups for themselves … basically a cron
 paw cron add [<agent>[#space]] "<m h dom mon dow>" "<prompt>"   recurring, local time
 paw cron add [<agent>[#space]] "<cron>" "<prompt>" --once        next match only, then deleted
 paw cron add [<agent>[#space]] --in 20m|--at 09:30 "<prompt>"    one-shot (--at also "YYYY-MM-DD HH:MM")
+paw cron add [<agent>] <schedule> ["<prompt>"] --run "<cmd>" [--timeout 10m]
 paw cron ls [--all]   ·   paw cron rm <id>   ·   paw cron tick
 ```
 - Mirrors Claude Code's CronCreate: 5-field cron (`*`, lists, ranges, steps, `mon`/`jan` names, 7 = Sunday,
@@ -19,6 +20,21 @@ paw cron ls [--all]   ·   paw cron rm <id>   ·   paw cron tick
 - `<agent>#<space>`: the hoister (`ADDRESS_ARGS.cron`, arity-based `slots` fn) only treats slot 1 as an
   address when the arity says an agent was given, so a prompt containing `#` is never mangled.
 - `add` fails loud for an unregistered name or one that runs elsewhere (teleported / remote persona not here).
+
+## --run (operator, 2026-10-28)
+For hourly scripts (vibeos-cron-retry.sh, vibeos-hosted-prefer-first.sh) that should not cost a claude
+turn every hour. At fire time the KEEPER runs `<cmd>` itself (`runCommand`): `/bin/sh -c`, cwd = the
+agent's registered folder, `daemonEnv()` (PATH backfilled, harness markers stripped, no COTAL_NAME/SPACE),
+`PAW_CRON_JOB`/`PAW_CRON_AGENT` set, own process group killed at the timeout (default 10m, `--timeout`).
+- exit 0 + empty stdout ⇒ silent: nothing sent, no mesh touched (the job still counts as fired).
+- non-empty stdout ⇒ ONE DM from "cron": header + prompt (optional with --run) + stdout (first 8000 chars,
+  truncation said) + stderr tail if any.
+- non-zero exit / timeout ⇒ ONE DM: what failed + the tail (4000 chars) of stdout+stderr.
+- The hosted/registered gate runs BEFORE the command: nothing runs for an agent not hosted here.
+- A DM that then fails to deliver retries the whole fire (command re-runs) like any one-shot.
+- Arity with --run (prompt optional): cron form — the agent is whatever precedes the 5-field expression;
+  timed form — a lone single word is the agent, a multi-word lone positional is the prompt.
+- The keeper runs commands sequentially inside its tick; a long command delays later jobs and the next tick.
 
 ## Store
 `$PAW_HOME/spaces/<space>/cron.json` — `{ jobs: [...] }`, read-modify-write under `cron.json.lock`
@@ -31,8 +47,11 @@ lastFiredAt?, attempts?, lastError?}`.
   `paw cron tick` runs the same sweep by hand.
 - Claim under the lock (`lastFiredAt = now`), deliver outside it, settle under it. Due = next occurrence
   after `lastFiredAt ?? createdAt` ≤ now, so missed fires (machine asleep) collapse into ONE fire.
-- A fire is ONLY a DM: `sendAsYou({ byName: true })` (src/dm.ts) — the `paw dm` path as "you", text
-  `⏰ paw cron <id> (…, set by X; scheduled wake-up, no reply needed): <prompt>`. A stopped registered
+- A fire is ONLY a DM: `sendAsYou({ byName: true, sender: "cron" })` (src/dm.ts) — the `paw dm` path,
+  but from the peer **"cron"**, never "you", so an agent can't take a fire for the operator. Open mesh:
+  stable id `spaces/<s>/cron.id`; remote: its own nkey `spaces/<s>/cron.nkey.json` (0600) minted
+  `operator` from the signer (`senderEndpointAuth`). Text: `⏰ paw cron <id> (…, set by X; scheduled
+  wake-up, no reply needed): <prompt>`. A stopped registered
   agent wakes the way a DM wakes it (wake gate, `restartLive` absent ⇒ a live seat is never restarted);
   a sleeping one through its stand-in. `byName` skips folder/handle resolution so the keeper's cwd can
   never turn a job into a new registration.
@@ -49,6 +68,14 @@ so agents see it only after a release + restart (and their next spawn).
 
 ## Tests
 `pnpm check:cron` (hermetic: parse, next-fire, --in/--at, catch-up-once, one-shot delete/retry/drop,
-store, argv shapes, fire gate); `check:hash-space` covers the `#space` hoist. Live:
+store, argv shapes, fire gate, --run argv/messages/execution incl. timeout + process-group kill); `check:hash-space` covers the `#space` hoist. Live:
 `PAW_HOME=$(mktemp -d) PAW_SPACE=test-$$ PAW_RELEASE=dev PAW_COTAL_ROOT=$(mktemp -d) node scripts/e2e-cron.ts`
-— real mesh + manager, a listening "target" peer, the real CLI; tears down with stop + purgeTestSpace.
+— real mesh + manager, a listening "target" peer, the real CLI (incl. --run: silent sends nothing, a
+printing run and a failing run each deliver one DM); tears down with stop + purgeTestSpace.
+- `scripts/e2e-cron-agent.ts` (same env): a REAL haiku claude agent; fires driven by the keeper entry
+  `paw global --space <s>` (the plist's argv; brings up a test-space `global`). Live idle agent acts on
+  an `--in 1m` fire; then `paw sleep --now`, the next fire wakes it through the stand-in (sleep.log:
+  "woke worker — DM from cron") and it acts.
+- `COTAL_BIN=<cotal-ai@0.100.0>/dist/cotal.js node scripts/e2e-cron-remote.ts`: own JWT+TLS broker +
+  `paw mesh add`; a real claude agent hosted here acts on a fire (history shows it from `cron`), an agent
+  with no persona here is refused at add, skipped + logged at fire, and nothing is spawned for it.

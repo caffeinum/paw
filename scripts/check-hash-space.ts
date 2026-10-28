@@ -186,6 +186,10 @@ assert(eq(h("stop", ["x", "--", "y#team2027"]), ["x", "--", "y#team2027"]), "not
   assert(eq(cr2.positionals, ["ping #lab"]) && cr2.space === undefined, "cron add --in <t> <prompt>: no agent → the prompt is never an address");
   const cr3 = parseCronArgs(h("cron", ["add", "a#lab", "--at", "09:00", "x"]));
   assert(eq(cr3.positionals, ["a", "x"]) && cr3.space === "lab" && cr3.at === "09:00", "cron add a#space --at <t> <prompt>");
+  const cr4 = parseCronArgs(h("cron", ["add", "a#lab", "0 * * * *", "--run", "grep -c '#x' log"]));
+  assert(eq(cr4.positionals, ["a", "0 * * * *"]) && cr4.space === "lab" && cr4.run === "grep -c '#x' log", "cron add a#space <cron> --run <cmd> (the command's # untouched)");
+  const cr5 = parseCronArgs(h("cron", ["add", "0 * * * *", "--run", "x"]));
+  assert(eq(cr5.positionals, ["0 * * * *"]) && cr5.space === undefined, "cron add <cron> --run: no agent → nothing hoisted");
 }
 
 // every listed command's slot table is exercised by the CLI pass below

@@ -146,5 +146,5 @@ export const COTAL_TOOLS_NOTICE_BRIEF: readonly string[] = [
 
 /** Durable scheduled wake-ups (src/commands/cron.ts). Shared by every paw harness with a shell. */
 export const CRON_BRIEF: readonly string[] = [
-  `To wake yourself later, use \`paw cron add "<m h dom mon dow>" "<prompt>"\` (recurring, local time) or \`paw cron add --in 20m "<prompt>"\` (one-shot); it survives restarts, unlike session crons — \`paw cron ls\` / \`paw cron rm <id>\`; a fire arrives as a DM starting "⏰ paw cron": do the work, it needs no reply.`,
+  `To wake yourself later, use \`paw cron add "<m h dom mon dow>" "<prompt>"\` (recurring, local time) or \`paw cron add --in 20m "<prompt>"\` (one-shot), and add \`--run "<cmd>"\` to have paw run a check and wake you only if it prints or fails; it survives restarts, unlike session crons — \`paw cron ls\` / \`paw cron rm <id>\`; a fire arrives as a DM from "cron" starting "⏰ paw cron": do the work, don't reply to "cron".`,
 ];
