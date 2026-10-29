@@ -50,7 +50,7 @@ bd(srcBeads, ["dep", "add", mine2, blocker]);
 bd(srcBeads, ["dep", "add", mine1, mine2]);
 bd(srcBeads, ["comment", mine1, "a comment that travels"]);
 const done = bd(srcBeads, ["create", "mine done", "-a", "proj", "--silent"]);
-bd(srcBeads, ["close", done, "--reason", "done"]);
+bd(srcBeads, ["close", done, "--reason", "done"], "proj");
 bd(srcBeads, ["create", "filed for someone", "-a", "other", "--silent"], "proj");
 bd(srcBeads, ["create", "filed for no one", "--silent"], "proj");
 

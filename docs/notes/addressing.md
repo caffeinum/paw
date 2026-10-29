@@ -360,6 +360,55 @@ CLI-side only (ensureAgentSpawned runs in the caller) — live without a release
   source. Test: `check:move` (plan text, backup, every refusal, hermes, rollback, `--as` beads on a temp db).
 - `paw teleport` on a space only this machine serves now points at `paw move … --to-space <remote>` first.
 
+## paw relocate
+
+- `src/relocate.ts` — `paw relocate <agent>[#<space>] <new-folder> [--all] [--dry-run] [--yes]` (2026-10-28):
+  the agent's FOLDER moved (or should move) on disk; the agent follows it. Incident: `skills` ran in
+  `~/Github/team2027/2027-skills`; the operator ran `mv 2027-skills skills`; its `cwd:` was gone, so it
+  couldn't come back, and its transcript sat under `-Users-aleks-Github-team2027-2027-skills`. (`paw rename`
+  relabels the agent; `paw move` changes its space; relocate changes its folder.)
+- **Two shapes, read from the disk:** old there + new absent → paw MOVES it with one `rename(2)` (a parent
+  that doesn't exist or another filesystem refuses — never copy+delete; `mv` it yourself, then rerun to
+  re-point); old gone + new there → the operator already moved it: re-point only. Both or neither present,
+  the same folder, or a folder inside itself → refused. The new folder is `~`-expanded, resolved against the
+  cwd and real-pathed as far as it exists.
+- **What follows:** the persona's `cwd:` (only that line; other persona lines that still name the old path —
+  `claudeArgs --add-dir`, `acpCommand` — are listed, not rewritten); legacy `folders.json`/`agents.json`
+  entries in every local space (read only before `registry.v2`, kept true anyway); the session chain
+  (teleport's `sessionChain`: continued-in predecessors + successors, `<id>.jsonl` + the `<id>/` sidecar —
+  subagents, tool results) COPIED into the new folder's project dir in each transcript root (claude's, and
+  kit's store per `storage:`), with `cwd` fields rewritten by teleport's `rewriteCwdText` (a cwd under the
+  folder keeps its place; message text untouched); the auto-memory, merged into the dir the NEW folder is
+  keyed by (`claudeMemoryBase`: canonical git root — a repo root that moves takes its memory key with it,
+  plus Claude Code worktree slugs' older memory; a subfolder of a repo that stays keeps its key, "memory
+  stays"). `memoryManifest` gained an optional `base` for when the old folder is already gone.
+- **Originals stay** in the old project dirs as the backup (said in the plan and the result). A transcript
+  copy that already exists identical is skipped; a DIFFERENT file at the destination (transcript or memory)
+  blocks — never overwritten; only dream's `.last-dream` takes the newer stamp. Same id in two project dirs:
+  `transcriptPath`/`transcriptPaths` now return the NEWEST copy within a root (was readdir order), so paw's
+  readers follow the copy the agent appends to. Verified live (claude 2.1.312, 2026-10-28): `--resume <id>` from the new
+  folder appends to the new dir's copy, stamped with the new cwd; the original does not grow.
+- **Other agents** whose `cwd:` is the old folder or under it, in ANY local space, are listed and refused;
+  `--all` takes them along (each keeps its place inside the folder). Session strangers (two writers), an
+  unmanaged seat, a teleported/foreground/sleeping agent refuse as in `paw move`; a running agent whose
+  transcript was written < 10 min ago needs `--yes`.
+- **Consent + cutover** (`applyRelocate`, stop/start injected): plan first; a tty asks `[y/N]` (naming who
+  will be stopped and started), no tty refuses, `--yes` approves, `--dry-run` stops after the plan. Stop every
+  running mover and wait for its session to be let go → re-plan (the transcript grew while it ran) → `mv` →
+  copies (`wx`/`COPYFILE_EXCL`) → personas (under the registry lock) + legacy files → start whoever ran, in
+  the new folder; it resumes its pin. Any failure undoes every step in reverse (folder moved back, copies and
+  the dirs paw created removed, personas restored byte-for-byte) and starts them again where they were.
+- **Said, not done:** `~/.claude.json` per-folder settings (`mcpServers`, `allowedTools`, …) are noted, not
+  copied (claude writes that file without a lock); a moved git checkout with linked worktrees (or a moved
+  linked worktree) gets the `git -C <new> worktree repair` hint.
+- `paw rename <word> …` where the word is neither an agent nor a folder here used to die on
+  `ENOENT: lstat '…/2027-skills'`; it now says `no agent named "2027-skills"` and, when a registered agent's
+  folder by that basename is gone, points at `paw relocate <agent> <new-folder>` (`noAgentNamed`, src/rename.ts).
+- Tests: `check:relocate` (temp HOME + PAW_HOME: the incident, paw-moves, every refusal, `--all` across
+  spaces, memory clash + git-root keys, rollback, the rename message) and `scripts/e2e-relocate.ts` (own
+  nats, real haiku agent: learns a word, folder moved by hand, `relocate --yes`, same session id in the new
+  folder, still knows the word; then paw moves it again; new copy grows, backup doesn't).
+
 ## paw rm
 
 - `src/rm.ts` — `paw rm <name|folder|repo@branch|github:owner/repo>`: **forget** an agent — the set is

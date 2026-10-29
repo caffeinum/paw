@@ -249,21 +249,27 @@ export function transcriptExists(sessionId: string, roots: string[] = [claudePro
 
 /** The path to `sessionId`'s transcript in the FIRST of `roots` that holds it, or undefined if none does.
  *  `slug` (a cwd's project-dir name) is tried first within each root — a shortcut inside a root, never a
- *  reason to prefer a later root over an earlier one. */
+ *  reason to prefer a later root over an earlier one. The same id in two project dirs of one root (`paw
+ *  relocate` copies a session to the new folder's dir and keeps the original as a backup) → the NEWEST
+ *  file: the copy the agent appends to, never the frozen original readdir order happens to list first. */
 export function transcriptPath(sessionId: string, roots: string[] = [claudeProjectsRoot()], slug?: string): string | undefined {
   for (const root of roots) {
     if (!existsSync(root)) continue;
     if (slug && existsSync(join(root, slug, `${sessionId}.jsonl`))) return join(root, slug, `${sessionId}.jsonl`);
+    let best: { file: string; mtimeMs: number } | undefined;
     for (const dir of readdirSync(root)) {
       const file = join(root, dir, `${sessionId}.jsonl`);
-      if (existsSync(file)) return file;
+      if (!existsSync(file)) continue;
+      const mtimeMs = statSync(file).mtimeMs;
+      if (!best || mtimeMs > best.mtimeMs) best = { file, mtimeMs };
     }
+    if (best) return best.file;
   }
   return undefined;
 }
 
-/** {@link transcriptPath} for many sessions at once — the same answer per id (first root, then first
- *  project dir in readdir order, whose `<id>.jsonl` exists), from ONE listing of each project dir. Asked
+/** {@link transcriptPath} for many sessions at once — the same answer per id (first root, then the
+ *  NEWEST project dir copy, whose `<id>.jsonl` exists), from ONE listing of each project dir. Asked
  *  one id at a time, `paw status` probed every project dir per agent per column: ~100k existsSync. */
 export function transcriptPaths(sessionIds: Iterable<string>, roots: string[] = [claudeProjectsRoot()]): Map<string, string> {
   const want = new Set(sessionIds);
@@ -276,6 +282,7 @@ export function transcriptPaths(sessionIds: Iterable<string>, roots: string[] = 
     }
     return out;
   }
+  const done = new Set<string>(); // found in an earlier root: a later root never overrides it
   for (const root of roots) {
     if (!existsSync(root)) continue;
     for (const dir of listDir(root)) {
@@ -288,11 +295,14 @@ export function transcriptPaths(sessionIds: Iterable<string>, roots: string[] = 
       for (const n of names) {
         if (!n.endsWith(".jsonl")) continue;
         const id = n.slice(0, -".jsonl".length);
-        if (!want.has(id) || out.has(id)) continue;
+        if (!want.has(id) || done.has(id)) continue;
         const file = join(root, dir, n);
-        if (existsSync(file)) out.set(id, file);
+        if (!existsSync(file)) continue;
+        const had = out.get(id);
+        if (!had || statSync(file).mtimeMs > statSync(had).mtimeMs) out.set(id, file); // a relocated copy: newest wins, as transcriptPath
       }
     }
+    for (const id of out.keys()) done.add(id);
   }
   return out;
 }

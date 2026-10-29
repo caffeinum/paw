@@ -262,7 +262,7 @@ console.log("beads");
   const open1 = bd(["create", "open one", "-a", "worker2", "--silent"]);
   const open2 = bd(["create", "open two", "-a", "worker2", "--silent"]);
   const done = bd(["create", "done one", "-a", "worker2", "--silent"]);
-  bd(["close", done, "--reason", "done"]);
+  bd(["close", done, "--reason", "done", "--actor", "worker2"]);
   const other = bd(["create", "someone else's", "-a", "other", "--silent"]);
   const { openTaskIds } = await import("../src/tasks.ts");
   const ids = await openTaskIds("worker2");

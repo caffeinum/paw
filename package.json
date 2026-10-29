@@ -62,6 +62,7 @@
     "check:boot": "node scripts/check-boot.ts",
     "check:teleport": "node scripts/check-teleport.ts",
     "check:move": "node scripts/check-move.ts",
+    "check:relocate": "node scripts/check-relocate.ts",
     "check:connect-diag": "node scripts/check-connect-diag.ts",
     "check:log-stamp": "node scripts/check-log-stamp.ts",
     "check:mailbox": "node scripts/check-mailbox.ts",
