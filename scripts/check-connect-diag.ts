@@ -3,7 +3,7 @@
  * trace, then diagnoseConnect against throwaway localhost listeners that each fail one step.
  * Hermetic: loopback sockets and an injected DNS lookup only. Run: pnpm check:connect-diag
  */
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type Server, type Socket } from "node:net";
 import { tmpdir } from "node:os";
@@ -231,6 +231,80 @@ console.log("ensure() on a remote space whose broker accepts and never answers (
   assert(/TCP \d+ms; then no NATS INFO greeting within 3s/.test(msg) && msg.includes("broker is not serving them"), "and the message names the stalled step", msg);
   await close(srv);
   for (const d of [process.env.PAW_HOME, process.env.COTAL_HOME, root]) rmSync(d, { recursive: true, force: true });
+}
+
+console.log("ensure() on a remote space with a manager probe: the probe's answer proves the broker");
+{
+  process.env.PAW_HOME = mkdtempSync(join(tmpdir(), "paw-diag-home-"));
+  process.env.COTAL_HOME = mkdtempSync(join(tmpdir(), "paw-diag-cotal-"));
+  process.env.PAW_COTAL_HUB = "0";
+  delete process.env.PAW_SERVER;
+  delete process.env.PAW_COTAL_ROOT;
+  const space = `test-diag-probe-${process.pid}`;
+  const { createSpaceAuth, stripSpaceAuth } = await import("@cotal-ai/core");
+  const { writeRemoteMesh } = await import("../src/remote-mesh.ts");
+  const { ensure, mailboxArgs, mailboxProcs } = await import("../src/lifecycle.ts");
+  const root = mkdtempSync(join(tmpdir(), "paw-diag-root-"));
+  mkdirSync(join(root, ".cotal", "auth"), { recursive: true });
+  writeFileSync(join(root, ".cotal", "auth", "auth.json"), JSON.stringify(stripSpaceAuth(await createSpaceAuth(space))), { mode: 0o600 });
+  // A beacon of THIS home already up (a sleeper carrying the mailbox signature), so ensure() adopts it
+  // through the one-listing scan instead of spawning a real one at a broker that doesn't exist.
+  const bin = mkdtempSync(join(tmpdir(), "paw-diag-bin-"));
+  writeFileSync(join(bin, "paw.ts"), "setInterval(() => {}, 1 << 30);\n");
+  const beacon = spawn(process.execPath, [join(bin, "paw.ts"), ...mailboxArgs(space)], { stdio: "ignore" });
+  for (let i = 0; i < 50 && !mailboxProcs(space).includes(beacon.pid!); i++) await new Promise((r) => setTimeout(r, 50));
+  try {
+    let dials = 0;
+    const { srv, port } = await listen((s) => {
+      dials++;
+      keep(s);
+    });
+    writeRemoteMesh({ space, server: `tls://127.0.0.1:${port}`, root, ts: new Date().toISOString() });
+    let probes = 0;
+    let meshUp = 0;
+    let msg = "";
+    try {
+      await ensure({ space, needMesh: true, needManager: true, managerProbe: async () => (probes++, true), onMeshUp: () => meshUp++ });
+    } catch (e) {
+      msg = (e as Error).message;
+    }
+    assert(msg === "", "a probe that answers → ensure() succeeds", msg);
+    assert(dials === 0, "…without its own connect probe at the broker", `${dials} dial(s)`);
+    assert(probes === 1, "…asking the caller's probe exactly once", `${probes}`);
+    assert(meshUp === 1, "…and onMeshUp fired once, so chat's inbox + endpoint ran beside it", `${meshUp}`);
+    const after = mailboxProcs(space);
+    assert(after.length === 1 && after[0] === beacon.pid, "…the running beacon adopted from the same listing (no second one spawned)", after.join(","));
+    await close(srv);
+
+    // A probe that does NOT answer: the full proof runs, so the broker fault is still said step by step.
+    const dead = await listen(() => {});
+    await close(dead.srv); // nothing listens on this port now: connection refused
+    writeRemoteMesh({ space, server: `tls://127.0.0.1:${dead.port}`, root, ts: new Date().toISOString() });
+    probes = 0;
+    meshUp = 0;
+    msg = "";
+    try {
+      await ensure({ space, needMesh: true, needManager: true, managerProbe: async () => (probes++, false), onMeshUp: () => meshUp++ });
+    } catch (e) {
+      msg = (e as Error).message;
+    }
+    assert(msg.includes(`remote mesh "${space}"`) && msg.includes("paw never starts a remote broker"), "a probe that fails → the remote-mesh diagnosis, not a manager timeout", msg);
+    assert(/refused|ECONNREFUSED/i.test(msg), "…naming the step that failed (TCP refused)", msg);
+    assert(probes === 1, "…after one probe", `${probes}`);
+
+    // A path with no manager probe after it keeps its own connect probe (unchanged).
+    msg = "";
+    try {
+      await ensure({ space, needMesh: true });
+    } catch (e) {
+      msg = (e as Error).message;
+    }
+    assert(msg.includes(`remote mesh "${space}"`), "no manager probe → ensure() still proves the broker itself", msg);
+  } finally {
+    beacon.kill("SIGKILL");
+    delete process.env.PAW_COTAL_HUB;
+    for (const d of [process.env.PAW_HOME, process.env.COTAL_HOME, root, bin]) rmSync(d!, { recursive: true, force: true });
+  }
 }
 
 for (const s of sockets) s.destroy();

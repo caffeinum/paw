@@ -983,6 +983,97 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
   assert(handler.length > 0 && !/statusBadge\(ev\.presence\.status\)/.test(handler) && /picked it up/.test(handler), "footer: the presence handler prints only picked-it-up receipts — no line per status flip");
 }
 
+// Startup runs ensure() beside the inbox + endpoint; a failure anywhere releases what the others got.
+{
+  const { concurrentStartup } = await import("../src/chat-startup.ts");
+  const { CHAT_STARTUP_COMMANDS } = await import("../src/chat.ts");
+  const tick = () => new Promise((r) => setTimeout(r, 5));
+  /** One scripted startup: which step fails, and when ensure() signals the mesh. Returns the event log. */
+  async function run(o: { ensureFails?: "before" | "after"; inboxFails?: boolean; epFails?: boolean; noSignal?: boolean; releaseFails?: boolean }) {
+    const log: string[] = [];
+    let error: string | undefined;
+    let got: unknown;
+    try {
+      got = await concurrentStartup<string, string>({
+        ensure: async (meshUp) => {
+          log.push("ensure:start");
+          await tick();
+          if (o.ensureFails === "before") throw new Error("ensure boom");
+          if (!o.noSignal) meshUp();
+          await tick(); // the manager + mailbox steps, while the chain runs
+          await tick();
+          log.push("ensure:end");
+          if (o.ensureFails === "after") throw new Error("ensure boom");
+        },
+        openInbox: async () => {
+          log.push("inbox:open");
+          await tick();
+          if (o.inboxFails) throw new Error("inbox boom");
+          return "INBOX";
+        },
+        releaseInbox: async (i) => {
+          log.push(`inbox:release:${i}`);
+          if (o.releaseFails) throw new Error("release boom");
+        },
+        startEndpoint: async (i) => {
+          log.push(`ep:start:${i}`);
+          await tick();
+          if (o.epFails) throw new Error("ep boom");
+          return "EP";
+        },
+        stopEndpoint: async (e) => void log.push(`ep:stop:${e}`),
+        report: (m) => log.push(`report:${m}`),
+      });
+    } catch (e) {
+      error = (e as Error).message;
+    }
+    return { log, error, got };
+  }
+  {
+    const r = await run({});
+    assert(eq(r.got, { inbox: "INBOX", endpoint: "EP" }) && r.error === undefined, "startup: all ok → the inbox and the endpoint, nothing released");
+    assert(r.log.indexOf("inbox:open") < r.log.indexOf("ensure:end"), `startup: the inbox opens WHILE ensure() is still running (${r.log.join(" ")})`);
+    assert(!r.log.some((l) => /release|stop/.test(l)), "startup: …and a success releases nothing");
+  }
+  {
+    const r = await run({ ensureFails: "before" });
+    assert(r.error === "ensure boom" && eq(r.log, ["ensure:start"]), `startup: ensure() fails before the mesh is up → nothing opened, its error thrown (${r.log.join(" ")})`);
+  }
+  {
+    const r = await run({ ensureFails: "after" });
+    assert(r.error === "ensure boom", "startup: ensure() fails after the chain started → ensure's error is the one thrown");
+    assert(r.log.includes("ep:stop:EP") && r.log.includes("inbox:release:INBOX"), `startup: …and the endpoint is stopped and the inbox retired (${r.log.join(" ")})`);
+    assert(r.log.indexOf("ep:stop:EP") < r.log.indexOf("inbox:release:INBOX"), "startup: …endpoint first, then its inbox durables");
+  }
+  {
+    const r = await run({ epFails: true });
+    assert(r.error === "ep boom" && r.log.includes("inbox:release:INBOX") && !r.log.some((l) => l.startsWith("ep:stop")), `startup: the endpoint fails → the inbox is retired, the endpoint never counted as acquired (${r.log.join(" ")})`);
+  }
+  {
+    const r = await run({ inboxFails: true });
+    assert(r.error === "inbox boom" && !r.log.some((l) => /release|stop|ep:start/.test(l)), `startup: the inbox fails → its error, nothing to release (${r.log.join(" ")})`);
+  }
+  {
+    const r = await run({ ensureFails: "after", epFails: true });
+    assert(r.error === "ensure boom" && r.log.includes("inbox:release:INBOX"), "startup: both fail → ensure's error (it names the cause), the inbox still retired");
+  }
+  {
+    const r = await run({ ensureFails: "after", releaseFails: true });
+    assert(r.error === "ensure boom" && r.log.includes("report:release boom"), "startup: a failed release is reported, never swallowed, never replaces the cause");
+  }
+  {
+    const r = await run({ noSignal: true });
+    assert(eq(r.got, { inbox: "INBOX", endpoint: "EP" }) && r.log.indexOf("inbox:open") > r.log.indexOf("ensure:end"), "startup: an ensure() that never signals still opens the chain once it resolves");
+  }
+  // The narrowed startup resolve must hold every command the wake gate sends on that handle.
+  assert(eq([...CHAT_STARTUP_COMMANDS].sort(), ["despawn", "inspect", "ps", "spawn"]), "startup: the chat control resolves ps/spawn/inspect/despawn");
+  const { readFileSync } = await import("node:fs");
+  const addressing = readFileSync(new URL("../src/addressing.ts", import.meta.url), "utf8");
+  const sent = new Set([...addressing.matchAll(/\bctl\.(\w+)\(/g)].map((m) => m[1]));
+  const outside = [...sent].filter((op) => !(CHAT_STARTUP_COMMANDS as readonly string[]).includes(op));
+  assert(outside.length === 0, `startup: every ctl.<op> addressing.ts sends is in the narrowed set (outside: ${outside.join(", ") || "none"})`);
+}
+
 rmSync(process.env.PAW_HOME as string, { recursive: true, force: true });
 
 if (failures > 0) {
