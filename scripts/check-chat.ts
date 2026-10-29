@@ -386,6 +386,24 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
   assert(r2.answered?.id === "m2" && r2.answered.at === 5000 && r2.remaining === 0, "second reply answers m2, timed from m2's send");
   assert(t.reply("kit", undefined).answered === undefined, "an unsolicited DM answers nothing");
 }
+// The 2026-10-28 "(7472s)" reply: several lines over hours, one turn drains them, one reply answers all.
+{
+  const { AwaitTracker } = await import("../src/chat-awaiting.ts");
+  const t = new AwaitTracker();
+  t.sent("relay", "h1", 1_000, "working");
+  t.sent("relay", "h2", 3_000_000, "working");
+  t.sent("relay", "hey", 7_400_000, "idle");
+  assert(eq(t.presence("relay", "working").map((p) => p.id), ["h1", "h2", "hey"]), "the turn picks up every line sent before it");
+  t.sent("relay", "later", 7_401_000, "working");
+  const r = t.reply("relay", undefined);
+  assert(r.answered?.id === "hey" && r.answered.at === 7_400_000, "one reply answers the whole picked batch, timed from the NEWEST line");
+  assert(r.remaining === 1 && t.pendingFor("relay")[0]?.id === "later", "a line queued after the turn began stays pending");
+  const u = new AwaitTracker();
+  u.sent("x", "a", 1, undefined);
+  u.sent("x", "b", 2, undefined);
+  const ru = u.reply("x", undefined);
+  assert(ru.answered?.id === "b" && ru.remaining === 0, "no turn seen → a reply covers every pending line, timed from the newest");
+}
 {
   const { AwaitTracker } = await import("../src/chat-awaiting.ts");
   const t = new AwaitTracker();

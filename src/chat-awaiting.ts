@@ -64,19 +64,22 @@ export class AwaitTracker {
   }
 
   /**
-   * A reply from `name`. Answers the message it names in `replyTo` when that is one of ours, else the
-   * OLDEST pending message to that agent — its elapsed time is measured from that message's send.
+   * A reply from `name`. Answers the message it names in `replyTo` when that is one of ours. Otherwise
+   * (a plain cotal_dm names none) it answers every message the agent's turn already picked up — a turn
+   * drains the whole inbox, so one reply covers them all — or every pending one when no turn was seen.
+   * Messages still queued for a later turn stay pending. `answered` is the NEWEST message covered, so the
+   * elapsed time reads from your latest line, not from one sent hours ago (the 7472s "hey" of 2026-10-28).
    */
   reply(name: string, replyTo: string | undefined): ReplyOutcome {
     const k = this.key(name);
     const list = this.pending.get(k) ?? [];
-    let idx = replyTo ? list.findIndex((p) => p.id === replyTo) : -1;
-    if (idx === -1 && list.length) idx = 0;
-    if (idx === -1) return { remaining: 0 };
-    const [answered] = list.splice(idx, 1);
-    if (list.length) this.pending.set(k, list);
+    if (!list.length) return { remaining: 0 };
+    const named = replyTo ? list.find((p) => p.id === replyTo) : undefined;
+    const covered = named ? [named] : list.some((p) => p.picked) ? list.filter((p) => p.picked) : list;
+    const rest = list.filter((p) => !covered.includes(p));
+    if (rest.length) this.pending.set(k, rest);
     else this.pending.delete(k);
-    return { answered, remaining: list.length };
+    return { answered: covered[covered.length - 1], remaining: rest.length };
   }
 
   pendingFor(name: string): readonly PendingMessage[] {
