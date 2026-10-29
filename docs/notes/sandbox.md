@@ -13,12 +13,12 @@ container system start                     # once per boot (Apple's services; `p
 paw sandbox build                          # build paw's image (src/sandbox/Containerfile), then stop the builder VM
 cd <folder> && paw claude --sandbox --space <remote space> --name <n>
 paw start|stop|restart <n>#<s> · paw chat @<n>#<s> · paw dm <n>#<s> "…" · paw attach <n>#<s> · paw log <n>#<s>
-paw sandbox ls                             # every paw container on THIS machine: agent#space, state, mem used/limit, launcher live|orphan, home
+paw sandbox ls                             # every paw container on THIS machine: agent#space, state, mem used/limit, launcher live|orphan, home, forwarded ports
 ```
 
 Persona keys: `sandbox: container` (any other value throws — a typo never boots the agent unsandboxed),
 `sandboxImage:` (default `paw-sandbox:<sha256(Containerfile)[:12]>`, so a recipe change asks for a rebuild),
-`sandboxMemory:` (default `2G`). `paw claude --sandbox` writes `sandbox: container` once; it is never cleared
+`sandboxMemory:` (default `2G`), `sandboxForward: false` (turns off [port forwarding](#port-forwarding); default on). `paw claude --sandbox` writes `sandbox: container` once; it is never cleared
 by paw (un-sandboxing is a deliberate persona edit). Auth: the Claude OAuth token at
 `$PAW_HOME/secrets/claude-oauth-token` (`PAW_CLAUDE_TOKEN_FILE` overrides), a 0600 regular file.
 `PAW_CONTAINER` pins the `container` binary (else the first on PATH).
@@ -70,7 +70,39 @@ does NOT stop the VM (verified), so on SIGTERM/SIGHUP/SIGINT it starts a DETACHE
 `delete --force` (it outlives the manager's SIGKILL 3s later), and when the run CLI dies any other way it
 deletes the container itself. One fresh container id per launch (`paw-<space>-<name>-<6 hex>`), so a late
 cleanup of the previous launch can never stop its successor. Only a SIGKILL of the launcher itself leaves an
-orphan VM — `paw sandbox ls` marks it `orphan`, the agent's next launch removes it.
+orphan VM — `paw sandbox ls` marks it `orphan`, the agent's next launch removes it. It also forwards the VM's
+listening ports to the host's loopback ([below](#port-forwarding)).
+
+## Port forwarding
+
+Like OrbStack / VS Code: every TCP port something LISTENS on inside the VM is offered on the HOST's loopback at
+the SAME port number. Why: CLIs in the VM (`neonctl auth`, `gh auth login`, …) do OAuth by starting a callback
+server on `localhost:<random port>` and printing a URL the operator opens in the host browser — the redirect to
+`http://localhost:<port>/callback` has to reach the VM. `container run -p` only publishes ports fixed at launch.
+
+`bin/paw-sandbox-forward.mjs`, run by the launcher (`--forward on|off` from the persona, default on):
+- **Discovery**: `container exec <id> cat /proc/net/tcp /proc/net/tcp6` every 1.5 s (the image has no ss/netstat;
+  ~45 ms per exec), state `0A` = LISTEN, deduped across v4/v6. Before the VM is up the exec fails — logged once.
+- **Transport**: per host connection, one `container exec -i <id> node -e <relay> <addr> <port>` piping stdio to
+  the server's own listen address in the VM (wildcard/loopback binds → `127.0.0.1`/`::1`). So a server bound to
+  the VM's 127.0.0.1 — the usual OAuth callback, unreachable via the VM's IP — works, and nothing depends on the
+  vmnet IP. One exec per connection is ~100 ms of setup: fine for callbacks and dev servers, not a data path.
+- **Host side**: binds `127.0.0.1` (and `::1` when free, so `localhost` resolving to either lands in the VM) —
+  NEVER a wildcard. A port already taken on the host's 127.0.0.1 is skipped, never stolen or renumbered, logged
+  once in `launcher.log` (`NOT forwarded — host 127.0.0.1:<p> is taken`) and picked up once the host frees it. A
+  port that stops listening in the VM is closed on the next poll; everything closes when the VM ends.
+- **State**: `…/sandbox/<n>/forwards.json` (`{container, ports, skipped}`), removed on exit; `paw sandbox ls`
+  shows it in PORTS (`3000,53682(host busy)`) for the matching container only.
+
+Threat model: any process on the host can connect to a VM service through its forwarded port — that is the
+point (the host is the more trusted side). Nothing is reachable from the LAN (loopback only). The VM gains
+nothing on the host: forwarding is host→VM only, and the ports are the VM's own. Not forwarded: UDP; a
+connection lives in its relay, so a VM-side server going away mid-request just ends it.
+
+Verified on the mini (container 1.6.0): a throwaway container's `node` http server on the VM's 127.0.0.1:<p>
+answered `curl http://127.0.0.1:<p>/callback?code=x` and `http://localhost:<p>/` on the host, via the forwarder
+directly (`PAW_FORWARD_SMOKE=<container id> pnpm check:sandbox-forward`) and through the launcher itself
+(forwards.json written, removed on SIGTERM); the host port closed when the VM server stopped.
 
 ## Refusals (all fail loud, `check:sandbox`)
 

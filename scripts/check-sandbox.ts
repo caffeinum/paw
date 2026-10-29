@@ -129,6 +129,7 @@ const envs = run.flatMap((a, i) => (a === "-e" ? [run[i + 1]] : []));
 {
   assert(spec.command === process.execPath && spec.args[0] === sbx.SANDBOX_RUNNER, "runs paw's launcher under the manager's node");
   assert(!all.includes(TOKEN) && !out.includes(TOKEN), "the token is NOWHERE in the LaunchSpec (args, env) or the printed warnings");
+  assert(spec.args[spec.args.indexOf("--forward") + 1] === "on" && spec.args.indexOf("--forward") < runAt, "port forwarding is on by default (launcher flag, before the run argv)");
   assert(spec.args.includes("--token-file") && spec.args[spec.args.indexOf("--token-file") + 1] === tokenFile, "the launcher gets the token FILE path");
   assert(run[0] === "run" && run.includes("--rm") && run.includes("-t") && run.includes("--init"), "container run --rm -i -t --init");
   assert(envs.includes("CLAUDE_CODE_OAUTH_TOKEN") && envs.every((e) => !e.includes("=")), "-e passes NAMES only (values inherit from the launcher's env)");
