@@ -14,11 +14,11 @@
  */
 import "../src/log-stamp-boot.ts"; // first: timestamps a log-redirected daemon's lines (src/log-stamp.ts)
 import { registry, type Command } from "@cotal-ai/core";
-import { spawnSync } from "node:child_process";
 import { downSpace, explicitSpace, expandEqFlags, expandShortForm, failureLine, hoistAddressSpace, oneShotReplyNote, remoteCotalArgv, SHORT_FORMS, stripCotalNamespace, withDefaultSpace } from "../src/dispatch.ts";
 import { cotaldViaNode, ensure, resolveSpace, stop } from "../src/lifecycle.ts";
 import { loadAllCommands, loadCommandsFor } from "../src/command-modules.ts";
 import { readRemoteMesh } from "../src/remote-mesh.ts";
+import { runCotalPassthrough } from "../src/cotal-tee.ts";
 import { isRemoteSpace } from "../src/server.ts";
 import { callerSpace } from "../src/space.ts";
 
@@ -100,12 +100,10 @@ try {
           `paw: --creds dropped — a raw creds file can't make control calls; cotal mints the one-shot instrument from ${remote.root}/.cotal/auth\n`,
         );
       const [exec, args] = cotaldViaNode(remoteArgv);
-      const res = spawnSync(exec, args, { stdio: "inherit", cwd: remote.root });
-      process.exit(res.status ?? 1);
+      process.exit(await runCotalPassthrough(rest[0], exec, args, { cwd: remote.root, space: remote.space, remote: true }));
     }
     const [exec, args] = cotaldViaNode(space ? withDefaultSpace(rest, space) : rest);
-    const res = spawnSync(exec, args, { stdio: "inherit" });
-    process.exit(res.status ?? 1);
+    process.exit(await runCotalPassthrough(rest[0], exec, args, { space, remote: false }));
   }
 
   if (cmd === "claude") {

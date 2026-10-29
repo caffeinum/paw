@@ -58,6 +58,7 @@
     "check:wake-gate": "node scripts/check-wake-gate.ts",
     "check:prune": "node scripts/check-prune.ts",
     "check:remote": "node scripts/check-remote.ts",
+    "check:contract-mismatch": "node scripts/check-contract-mismatch.ts",
     "check:bypass-consent": "node scripts/check-bypass-consent.ts",
     "check:hash-space": "node scripts/check-hash-space.ts",
     "check:boot": "node scripts/check-boot.ts",

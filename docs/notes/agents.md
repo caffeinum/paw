@@ -255,7 +255,8 @@ a throwaway copy could rotate the operator's refresh token.
 - `src/open.ts` — `paw open [folder|name|repo@branch]`: resolve the folder's agent (spawn if absent)
   then attach — **runtime-aware** (branches on the `manager.runtime` marker via `readRuntimeMarker`),
   because the manager only serves a pty session for `pty` agents (tmux/cmux are watched natively, their
-  `attach` op throws by design): **pty** → runs **cotal's own `attach`** (`bin/cotald.ts attach`, a
+  `attach` op throws by design): **pty** → runs **cotal's own `attach`** (pinned `--on` this machine's
+  manager when it hosts the seat on a remote space — [contract mismatch](#contract-mismatch-mixed-cotal-versions-in-one-space-2026-10-28)) (`bin/cotald.ts attach`, a
   subprocess with the tty inherited; Ctrl-] detaches, the agent keeps running) — see
   [pty attach](#pty-attach-cotal-084); **tmux** → spawn
   then `attachTmux` (src/native-attach.ts) drops you into the agent's real window; **cmux** → prints
@@ -297,6 +298,36 @@ backs `paw cotal <verb> --space <remote>`: it ensures THAT space, drops `--space
 attach` refuses (points at `paw log -f`). `check:remote` covers the argv/cwd + cotal's resolution of a
 signer root; `scripts/e2e-remote.ts` (remote) and `scripts/e2e-attach-local.ts` (local open) drive a real attach
 under node-pty (`COTAL_BIN=<cotal-ai@0.84.0>/dist/cotal.js node scripts/e2e-…`).
+
+### contract mismatch (mixed cotal versions in one space, 2026-10-28)
+
+`paw attach evals-intern#team2027` failed with `could not establish where "evals-intern" is … 2 refused
+the read rather than answering (fp7em3…: pinned digests …/89813c… do not match the served contract
+…/3b805c…)`, and `paw cotal ps --space team2027` said "manager fp7em3… serves a different ps contract"
+— fp7em3 being THIS machine's manager, hosting the seat. **Not paw release skew** (that was the first
+guess): the manager contract digests are cotal's static cluster document, so every paw release on cotal
+0.100.0 serves ps output `3b805c…` (revision 37) and every release on 0.81–0.84 serves `89813c…`
+(revision 27) — checked across all of `~/.paw/releases/*`; the running 0f2edb and current f43e6c
+releases are byte-identical there. The CLI's own code doesn't pin anything either: a scattered read
+(`ps`, attach's `locateSeat`) `describe`s the endpoint on the CLASS route, takes the digests of
+WHICHEVER manager answers first (`resolveService`), and sends them to every instance; an instance on
+another version refuses (SPEC 13.7). team2027 has a manager on another host (`3tmx3c…`, no seats) still
+on cotal ≤0.84, so ps/attach flip per call: measured 4 runs, 2 with this Mac + the MacBook refused, 2
+with 3tmx refused. `paw restart` here cannot fix it; that host has to upgrade (or be deregistered if dead).
+
+paw's own rail never hits it: on a remote space `ManagerControl` pins describe AND commands to this
+machine's instance (`pinFor`, src/control.ts), so `paw status`/`top`/spawn/stop only ever talk to a
+manager that agrees with itself. What changed:
+- `paw attach` (`attachPty`): `localSeatPin` asks this machine's manager (pinned `inspect`) whether it
+  hosts the seat; if so `cotal attach` gets `--on <this instance>`, which skips cotal's scatter (the
+  pinned describe is answered by that manager alone — `ps --on fp7em3…` answered 4/4 live). A seat on
+  another host still goes through cotal's locate.
+- cotal's stderr is teed (`src/cotal-tee.ts`: stdin/stdout stay inherited, so the tty and colour are
+  untouched) for `paw attach` and `paw cotal ps|slots|inspect|attach|stop|input`; a mismatch is followed
+  by ONE paw line (`contractMismatchHint`, src/contract-mismatch.ts) saying which side is odd, that a
+  local restart won't help, and what will. On a LOCAL space (one manager by construction) it says a
+  leftover manager is answering and `paw restart --space <s>` leaves one.
+Test: `check:contract-mismatch` (the live texts, the pin decision, the `--on` argv, the tee).
 
 ## native attach
 
