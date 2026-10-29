@@ -17,7 +17,7 @@ import {
   assertUnambiguousTarget,
   elsewhereHint,
   personaFilePath,
-  psRowAlive,
+  psRowRunning,
   registerLivePeer,
   resolveAgentFolder,
   restartAgent,
@@ -49,12 +49,14 @@ import { resolveStopName } from "./stop.ts";
 import {
   clearReviveList,
   describeFailedRestart,
+  describeRevival,
   pendingNames,
   readLeftState,
+  RevivalLedger,
   reviveAgents,
   revivalFailure,
+  revivalPlan,
   withReviveLock,
-  writeReviveList,
   type Skipped,
 } from "../revive.ts";
 
@@ -113,31 +115,33 @@ export function parseArgs(argv: string[], verb: string): RestartArgs {
   return out;
 }
 
-/** The names of agents live under the manager RIGHT NOW (reachable ps rows) — captured before a
- *  bounce so we can bring exactly them back, not the whole registry. Empty if the manager's down:
- *  with no manager the ps control request gets "no responders", which just means "nobody live to
- *  revive" — so `paw restart` from a cold state STARTS a manager rather than aborting here. */
-async function liveAgentNames(space: string): Promise<string[]> {
+/** The manager's seats RIGHT NOW — captured before a bounce so we can bring back exactly the ones that
+ *  were running, not the whole registry. Empty if the manager's down: with no manager the ps control
+ *  request gets "no responders", which just means "nobody to revive" — so `paw restart` from a cold
+ *  state STARTS a manager rather than aborting here. */
+async function managedRows(space: string): Promise<PsRow[]> {
   try {
     return await withManagerControl(space, pawServer(space), async (ctl) => {
       const ps = await ctl.ps();
       if (!ps.ok) return [];
-      // A live agent paw never spawned (`cotal_spawn`) is registered from its ps row NOW, while its
-      // process still names its session — after the bounce the manager forgets it and so would we.
-      const live = ((ps.data as PsRow[]) ?? []).filter(psRowAlive);
-      for (const row of live) registerLivePeer(space, row);
-      return live.map((r) => r.name);
+      const rows = ((ps.data as PsRow[]) ?? []).filter((r) => typeof r?.name === "string" && r.name.length > 0);
+      registerRunning(space, rows);
+      return rows;
     });
   } catch {
     return [];
   }
 }
 
-/** One line summarising a revive pass, or nothing when there was nobody to bring back. */
-function reportRevival(before: string[], revived: string[], skipped: Skipped[]): void {
-  if (!before.length) return;
-  const tail = skipped.length ? c.dim(` (skipped: ${skipped.map((x) => x.name).join(", ")})`) : "";
-  console.log(c.dim(`  brought back ${revived.length}/${before.length} agent(s)${tail}`));
+/** A running agent paw never spawned (`cotal_spawn`) is registered from its ps row NOW, while its
+ *  process still names its session — after the bounce the manager forgets it and so would we. Off-mesh
+ *  seats too: their process runs, and they come back like the rest. */
+function registerRunning(space: string, rows: PsRow[]): void {
+  for (const row of rows) if (psRowRunning(row)) registerLivePeer(space, row);
+}
+
+function reportRevival(owed: string[], revived: string[], skipped: Skipped[], leftDown: Skipped[] = []): void {
+  for (const l of describeRevival(owed, revived, skipped, leftDown)) console.log(l.startsWith("left down") ? c.yellow(`  ${l}`) : c.dim(`  ${l}`));
 }
 
 /** `paw runtime` (no arg): the preference + what the manager is ACTUALLY running (live process
@@ -161,7 +165,8 @@ async function runtime(argv: string[]): Promise<void> {
   }
   assertRuntimeUsable(r); // refuse cmux-without-a-surface BEFORE writing the preference or bouncing the manager
   const before = actualManagerRuntime(space); // live-process truth — a stale marker must not fake "already running"
-  const liveBefore = await liveAgentNames(space); // capture who's up so a switch brings them back
+  const plan = revivalPlan(await managedRows(space)); // capture who's running so a switch brings them back
+  const liveBefore = plan.revive;
   writeRuntimePreference(space, r);
   // ensure() resolves the NEW preference; ensureManagerUp restarts on a mismatch (with the rollback net).
   await ensure({ needMesh: true, needManager: true, space, switchRuntime: true });
@@ -172,7 +177,7 @@ async function runtime(argv: string[]): Promise<void> {
   // A switch bounced the manager and dropped its agents — bring the previously-live ones back (in the
   // NEW runtime). No-op when nothing bounced (ensureAgentSpawned reuses live agents).
   const { revived, skipped } = await reviveAgents(space, liveBefore);
-  reportRevival(liveBefore, revived, skipped);
+  reportRevival(liveBefore, revived, skipped, before === r ? [] : plan.down);
   if (skipped.length) throw new Error(revivalFailure(space, liveBefore.length, skipped));
 }
 
@@ -277,19 +282,29 @@ async function restart(argv: string[]): Promise<void> {
   const outcome = await withReviveLock(
     space,
     async () => {
-      const liveBefore = await liveAgentNames(space); // capture who's up so the bounce brings them back
-      const owed = writeReviveList(space, liveBefore)?.names ?? [];
+      // Two looks, one ledger: the seats running now (the list is on disk even if the despawn never
+      // gets to ps), then the exact rows the despawn takes down — so the revive set IS the despawned set
+      // (minus seats whose process had already exited, named), presence or not.
+      const ledger = new RevivalLedger(space);
+      ledger.record(await managedRows(space));
       try {
-        await restartManager({ space });
+        await restartManager({
+          space,
+          onDespawnTargets: (rows) => {
+            registerRunning(space, rows as PsRow[]);
+            ledger.record(rows);
+          },
+        });
       } catch (e) {
         throw new Error(describeFailedRestart((e as Error).message, readLeftState(space, pendingNames(space))));
       }
+      const owed = pendingNames(space);
       const now = actualManagerRuntime(space) ?? readRuntimePreference(space) ?? "pty";
       console.log(c.green(`✓ manager restarted (${now})`));
-      // The bounce dropped every agent — re-spawn the ones that were live (each resumes its session), so
-      // `paw restart` brings everyone back without a manual `dm`/`chat` probe.
+      // The bounce dropped every agent — re-spawn the ones that were running (each resumes its session),
+      // so `paw restart` brings everyone back without a manual `dm`/`chat` probe.
       const { revived, skipped } = await reviveAgents(space, owed);
-      reportRevival(owed, revived, skipped);
+      reportRevival(owed, revived, skipped, ledger.leftDown());
       clearReviveList(space);
       return { owed, skipped };
     },

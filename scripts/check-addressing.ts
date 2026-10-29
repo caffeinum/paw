@@ -20,6 +20,7 @@ const {
   resolveModel,
   assertUnambiguousTarget,
   psRowAlive,
+  psRowRunning,
   spawnAction,
   STARTING_GRACE_MS,
   registerInstance,
@@ -244,6 +245,9 @@ assert(psRowAlive({ name: "x", status: "exited", mesh: "idle" }), "psRowAlive: e
 assert(psRowAlive({ name: "x", status: "exited", mesh: "working" }), "psRowAlive: exited but `working` is alive");
 assert(spawnAction([{ name: "evals", status: "exited", mesh: "idle" }], "evals") === "reuse", "spawnAction: the split-tmux case REUSES (was: restart a live agent)");
 assert(!psRowAlive({ name: "x", status: "exited", mesh: "absent" }), "psRowAlive: exited and never reached the mesh is dead");
+assert(psRowRunning({ status: "running", mesh: "offline" }), "psRowRunning: a running seat off the mesh is still running (restart revives it)");
+assert(psRowRunning({ status: "exited", mesh: "idle" }) && psRowRunning({ status: "running", mesh: "absent" }), "psRowRunning: heartbeating or mid-start is running");
+assert(!psRowRunning({ status: "exited", mesh: "offline" }), "psRowRunning: exited AND offline is down");
 {
   const { tmuxSplitAdvice } = await import("../src/native-attach.ts");
   const adv = tmuxSplitAdvice("evals", { agentServer: 30256, socketServer: 57464, socketPath: "/private/tmp/tmux-501/default" });

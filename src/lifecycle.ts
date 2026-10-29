@@ -1492,18 +1492,24 @@ export interface DespawnRail {
   despawn(name: string, timeoutMs?: number): Promise<{ ok: boolean; error?: string }>;
 }
 
+/** A ps row the pre-stop despawn takes down (the fields the revive decision reads). */
+export type DespawnTarget = { name: string; pid?: unknown; status?: string; mesh?: string };
+
 /** Despawn every agent the manager lists, in parallel. Returns who went down and who didn't; never
  *  throws on a per-agent refusal (one stuck seat must not keep the rest up), and says each failure
  *  out loud — that agent will be SPARED by the signal that follows, i.e. left running unmanaged. */
 export async function despawnManagedAgents(
   ctl: DespawnRail,
-  opts: { exitWaitMs?: number; isAlive?: (pid: number) => boolean } = {},
+  opts: { exitWaitMs?: number; isAlive?: (pid: number) => boolean; onTargets?: (rows: DespawnTarget[]) => void } = {},
 ): Promise<{ stopped: string[]; failed: string[]; lingering: number[] }> {
   const ps = await ctl.ps(4000);
   if (!ps.ok) throw new Error(`ps refused: ${ps.error ?? "no reason given"}`);
   const rows = ((ps.data as Array<{ name?: unknown; pid?: unknown }>) ?? []).filter(
-    (r): r is { name: string; pid?: unknown } => typeof r.name === "string" && r.name.length > 0,
+    (r): r is DespawnTarget => typeof r.name === "string" && r.name.length > 0,
   );
+  // The exact rows about to go down, BEFORE any goes: `paw restart` records its revive list from
+  // these, so it brings back the set it despawned — not a second, earlier ps filtered by presence.
+  opts.onTargets?.(rows);
   const names = rows.map((r) => r.name);
   // A despawn reply is not exit proof (measured on 0.58: the seat is still alive for a moment after
   // it). Wait on the pids the rows carry (pty; tmux rows carry none — its session reap follows), so
@@ -1541,7 +1547,7 @@ export async function despawnManagedAgents(
  *  (bounded ~4s), SIGKILL any straggler, then drop the now-secondary pid + runtime markers. A process
  *  gone is stronger than "stopped answering ps", so a following start binds a free control subject.
  *  Best-effort, never throws. */
-async function stopOwnedManager(space: string): Promise<void> {
+async function stopOwnedManager(space: string, onTargets?: (rows: DespawnTarget[]) => void): Promise<void> {
   const pids = managerProcs(space);
   if (pids.length) {
     // cotal ≥0.49: a SIGTERM'd manager SPARES its agents — they keep running, stay on the mesh, and
@@ -1550,7 +1556,7 @@ async function stopOwnedManager(space: string): Promise<void> {
     // can't see it in ps, and its two-writer guard then REFUSES to revive it (its session is held).
     // So despawn every managed agent explicitly first. A manager that won't answer falls through to
     // the signal (and the runtime UI reap) — the old behaviour.
-    await withManagerControl(space, pawServer(space), (ctl) => despawnManagedAgents(ctl)).catch((e: Error) =>
+    await withManagerControl(space, pawServer(space), (ctl) => despawnManagedAgents(ctl, { onTargets })).catch((e: Error) =>
       console.error(`paw: couldn't despawn agents before stopping the manager (${e.message}) — signalling it anyway`),
     );
     signalProcs(pids, "SIGTERM");
@@ -2073,7 +2079,7 @@ export async function withEnsuredManager<T>(
  * mailbox beacon. Fails loud if paw doesn't OWN the running manager — paw can only restart a daemon
  * it started (`paw down` won't help either; the operator must stop a foreign manager themselves).
  */
-export async function restartManager(opts: { space?: string } = {}): Promise<void> {
+export async function restartManager(opts: { space?: string; onDespawnTargets?: (rows: DespawnTarget[]) => void } = {}): Promise<void> {
   const space = opts.space ?? resolveSpace();
   const server = pawServer(space);
   assertRuntimeUsable(resolveRuntime(space)); // fail loud BEFORE stopping the manager (else a cmux-no-surface restart strands us)
@@ -2093,7 +2099,7 @@ export async function restartManager(opts: { space?: string } = {}): Promise<voi
     const running = readRuntimeMarker(space);
     if (wasRunning) {
       const uiNames = running === "cmux" ? await managerAgentNames(space, server) : [];
-      await stopOwnedManager(space);
+      await stopOwnedManager(space, opts.onDespawnTargets);
       reapRuntimeUi(space, running, uiNames); // old UI gone before ensureManagerUp + revival create the new
     }
     // A restart renews the hub too, so it runs the code the new manager's connector expects.

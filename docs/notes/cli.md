@@ -85,7 +85,8 @@ Moved verbatim from CLAUDE.md (2026-10-02 split). Index: [CLAUDE.md](../../CLAUD
   bin/paw.ts's mesh/manager gating so they self-ensure AFTER writing the preference; a pre-ensure would
   boot the STALE runtime). **Restart-revival:** a manager bounce drops all agents (the manager comes up
   empty; paw's registry is paw's, not the manager's), so both `paw restart` and a `paw runtime` SWITCH
-  capture the live agent names FIRST (`liveAgentNames`, ps rows passing `psRowAlive`), then `reviveAgents`
+  capture the RUNNING seats FIRST (`managedRows` → `revivalPlan`: ps rows passing `psRowRunning` —
+  process up, mesh presence or not; `psRowAlive` dropped off-mesh seats, 2026-10-28), then `reviveAgents`
   re-spawns exactly those from the folder→name registry after the bounce (each resumes its pinned session
   → warm). Idempotent (ensureAgentSpawned reuses a live agent), so a no-op switch doesn't churn; a
   registry-less or vanished-folder name is skipped + reported, never fabricated. This is what makes
