@@ -1,6 +1,7 @@
 /**
  * `paw chat [folder|name]` — the headline. Joins the mesh as a PERSISTENT human peer (named by
- * HUMAN_PEER), wakes the folder's REGISTERED agent if it isn't live (never creates one — that's --fresh), and opens an interactive
+ * HUMAN_PEER), wakes the folder's REGISTERED agent if it isn't live (never creates one — that's --fresh — except for a
+ * github repo handle, which clones and births its agent), and opens an interactive
  * loop: what you type is direct-messaged to that agent, and its replies (and any other DMs) stream
  * back in real time. This is what closes the human↔agent loop that `paw dm` couldn't — `dm` is
  * fire-and-forget (a throwaway "send" peer that publishes and vanishes), so an agent had nowhere to
@@ -376,6 +377,15 @@ export function noAgentMessage(folder: string, typed: string, registered: string
   );
 }
 
+/**
+ * A github repo handle (`github:o/r`, `gh:o/r`, a pasted https://github.com/o/r URL) is an explicit ask to
+ * clone AND chat — unlike a mistyped name or a bare dotted host, it can't land somewhere by accident — so
+ * chat births its agent when none exists (operator, 2026-10-28: "clone and chat in one command").
+ */
+export function isExplicitRepoHandle(target: string): boolean {
+  return /^(github:|gh:)/.test(target) || /^https?:\/\/(www\.)?github\.com\/[^/]+\/[^/]+/.test(target);
+}
+
 function requireExistingAgent(space: string, folder: string, typed: string): void {
   if (agentNamesForFolder(space, folder).length) return;
   throw new Error(noAgentMessage(folder, typed, listAgents(space).map((a) => a.name)));
@@ -559,7 +569,7 @@ async function chat(argv: string[]): Promise<void> {
         }
         const addr = resolveAddress(target);
         folder = addr.cwd;
-        if (!nameFlag && agentFlag === undefined) requireExistingAgent(space, folder, target); // --agent is an explicit ask to create
+        if (!nameFlag && agentFlag === undefined && !isExplicitRepoHandle(target)) requireExistingAgent(space, folder, target); // --agent / a repo handle is an explicit ask to create
         // --name pins a 2nd+ EXTRA instance at the resolved folder (its own persona), overriding the address's
         // own name hint and the folder default; otherwise honour the hint, else mint the folder default.
         name = nameFlag
