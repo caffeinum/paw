@@ -262,6 +262,40 @@ then waits for the browser callback — the URL shows while it still runs. The R
 `container exec -i -t -w <folder> <id> bash -l` (the seeded `~/.profile` sources BASH_ENV, which reads `~/.bashrc`). `check:sandbox-bang`
 (fake `container`); `PAW_SANDBOX_BANG_SMOKE=1` adds a real run against a THROWAWAY labelled container.
 
+## Mesh reconnect
+
+**Incident (2026-10-29, team2027).** A broker/path blip at ~03:15 and again at ~03:33 dropped the remote mesh
+for every seat. Host agents were back within minutes; the sandboxed `neon`/`fly`/`vercel` (and two host
+agents) stayed `seat offline on the mesh … process running`. At 03:15 they were restarted by hand at 03:23;
+at 03:33 `neon` was left alone and came back by itself at **03:50:51 — 17 minutes later**, never sooner.
+
+**Root cause (confirmed): nats.js never redials a stale connection whose write buffer is backed up.** The
+heartbeat/presence owner in the VM is the cotal MCP server (`node …/connector-claude-code/dist/mcp.cjs`, a
+child of claude), one resident NATS connection, nats.js defaults (`pingInterval` 2 min, `maxPingOut` 2,
+reconnect on, `reconnectTimeWait` 2s). On a stale PING the client calls `transport.disconnect()`, whose
+`_closed()` first `await`s a zero-byte "goodbye" `socket.write` — and a write callback only fires once
+everything queued before it reaches the kernel. With the peer gone and the socket's send buffer full
+(neon: `/proc/net/tcp` tx_queue stuck at 66937 bytes, timer `01` = retransmit, retrnsmt climbing to 14),
+that never happens, so the stale connection is never closed and no redial starts. It ends only when the
+KERNEL abandons the socket: Linux `tcp_retries2=15` ≈ 15–17 min (neon redialed on a new local port right
+after its 15th retransmit). The host agents' macOS sockets die sooner (RST from the far side / macOS's
+shorter retransmit budget), which is why they "recover" and the VM ones look dead forever. Reproduced on
+loopback with no VM at all (fake server that stops reading, 32MB of queued publishes): `staleConnection`
+fires and nothing follows; unpatched upstream `@nats-io/transport-node` 3.4.1-0 has the same `_closed`.
+
+Not the cause: an idle vmnet NAT timeout (the broker PINGs every 2 min, the outage hit host seats too —
+the retransmits going unanswered does suggest the vmnet NAT forgot the flow during the blip, which is
+what keeps the Linux socket alive instead of getting an RST, but it is not proven); IPv6 (the VM has no v6
+default route; the connection and the redial are IPv4 168.220.88.45).
+
+**Fix: bound the goodbye flush to 1s** (pnpm patches `@nats-io/transport-node@3.4.0` — manager, mailbox,
+chat — and `@cotal-ai/connector-claude-code@0.100.0`, whose `dist/mcp.cjs` BUNDLES its own copy of the
+transport). A stale connection now redials ~1s after nats.js detects it (≤ ~6 min with the defaults),
+host or VM, with no restart of anything. `pnpm check:nats-reconnect` runs the black-hole repro against
+the patched transport and asserts the bundled copy is patched. Re-key the connector patch on every cotal
+bump; drop both once nats.js ships a bounded close. Cutover = `pnpm install` (a changed patch needs a fresh
+`node_modules`), `paw release`, then each agent picks it up on its next (operator-approved) restart.
+
 ## Why remote spaces only (v1) — and the local plan
 
 The local open `paw` broker listens on 127.0.0.1, which a VM can't reach. The VM reaches the host at the

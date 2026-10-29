@@ -26,6 +26,12 @@ allowBuilds:
 #   while every closure still compiles in its own fresh Ajv with the exact profile options. A cold
 #   full manager resolve (66 compiles) went 441ms → 113ms. Re-key on every cotal bump; drop it when
 #   upstream ships the same fix. → docs/notes/cotal-dependency.md#core-meta-validator-patch
+# '@nats-io/transport-node' + '@cotal-ai/connector-claude-code' — reconnect fix: nats.js's stale-connection
+#   close awaited a goodbye write that never completes when the link dies with the socket's write buffer
+#   backed up, so the client never reconnected until the kernel killed the socket (~15 min in a sandbox
+#   VM). Bounded to 1s. The connector's dist/mcp.cjs (the per-agent cotal MCP server) BUNDLES its own copy
+#   of the transport, hence two patches; re-key the connector one on every cotal bump. Drop when nats.js
+#   ships the fix. → docs/notes/sandbox.md#mesh-reconnect
 verifyDepsBeforeRun: false
 # minimumReleaseAgeExclude — the operator explicitly approved cotal 0.100.0 on 2026-10-23, inside
 #   the global 7-day minimum-release-age window. Exempted by EXACT version only (every other package
@@ -45,3 +51,5 @@ minimumReleaseAgeExclude:
   - '@cotal-ai/workspace@0.100.0'
 patchedDependencies:
   '@cotal-ai/core@0.100.0': patches/@cotal-ai__core@0.100.0.patch
+  '@cotal-ai/connector-claude-code@0.100.0': patches/@cotal-ai__connector-claude-code@0.100.0.patch
+  '@nats-io/transport-node@3.4.0': patches/@nats-io__transport-node@3.4.0.patch

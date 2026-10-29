@@ -1,0 +1,27 @@
+diff --git a/dist/mcp.cjs b/dist/mcp.cjs
+--- a/dist/mcp.cjs
++++ b/dist/mcp.cjs
+@@ -20523,12 +20523,22 @@
+         }
+         this.closeError = err3;
+         if (!err3 && this.socket && internal) {
++          // paw patch: bound the goodbye flush. A link that dies with the socket's write buffer backed up never
++          // drains, so awaiting this write left a stale connection (PING timeout) un-closed until the kernel gave up
++          // on the socket (Linux: ~15 min) — no reconnect meanwhile. docs/notes/sandbox.md#mesh-reconnect
++          const flushed = this._send(new TextEncoder().encode(""));
++          flushed.catch(() => {});
++          let flushTimer;
+           try {
+-            await this._send(new TextEncoder().encode(""));
++            await Promise.race([flushed, new Promise((resolve) => {
++              flushTimer = setTimeout(resolve, 1e3);
++            })]);
+           } catch (err4) {
+             if (this.options.debug) {
+               console.log("transport close terminated with an error", err4);
+             }
++          } finally {
++            clearTimeout(flushTimer);
+           }
+         }
+         try {

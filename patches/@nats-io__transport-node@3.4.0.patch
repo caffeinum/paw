@@ -1,0 +1,29 @@
+diff --git a/lib/node_transport.js b/lib/node_transport.js
+--- a/lib/node_transport.js
++++ b/lib/node_transport.js
+@@ -407,13 +407,22 @@
+         // only try to flush the outbound buffer if we got no error and
+         // the close is internal, if the transport closed, we are done.
+         if (!err && this.socket && internal) {
++            // paw patch: bound the goodbye flush. A link that dies with the socket's write buffer backed up never
++            // drains, so awaiting this write left a stale connection (PING timeout) un-closed until the kernel gave up
++            // on the socket (Linux: ~15 min) — no reconnect meanwhile. docs/notes/sandbox.md#mesh-reconnect
++            const flushed = this._send(new TextEncoder().encode(""));
++            flushed.catch(() => {});
++            let flushTimer;
+             try {
+-                await this._send(new TextEncoder().encode(""));
+-            }
+-            catch (err) {
++                await Promise.race([flushed, new Promise((resolve) => {
++                    flushTimer = setTimeout(resolve, 1e3);
++                })]);
++            } catch (err) {
+                 if (this.options.debug) {
+                     console.log("transport close terminated with an error", err);
+                 }
++            } finally {
++                clearTimeout(flushTimer);
+             }
+         }
+         try {

@@ -5,7 +5,9 @@ settings:
   excludeLinksFromLockfile: false
 
 patchedDependencies:
+  '@cotal-ai/connector-claude-code@0.100.0': 15fafee32cd36f95ade80f0848e2c3d3f00aa819c221c6a2c9278befc5c27f0c
   '@cotal-ai/core@0.100.0': 9c7cefcdc91f8660dfe89cfd7965bba1890d22ab82fb3978b35857cf0a2db4e8
+  '@nats-io/transport-node@3.4.0': ede15edbd9f8a1316e377cfd578eabd75f247211c205eb756a7d4b6edcb4217e
 
 importers:
 
@@ -19,7 +21,7 @@ importers:
         version: 0.100.0(@cotal-ai/core@0.100.0(patch_hash=9c7cefcdc91f8660dfe89cfd7965bba1890d22ab82fb3978b35857cf0a2db4e8))
       '@cotal-ai/connector-claude-code':
         specifier: 0.100.0
-        version: 0.100.0(@cotal-ai/core@0.100.0(patch_hash=9c7cefcdc91f8660dfe89cfd7965bba1890d22ab82fb3978b35857cf0a2db4e8))
+        version: 0.100.0(patch_hash=15fafee32cd36f95ade80f0848e2c3d3f00aa819c221c6a2c9278befc5c27f0c)(@cotal-ai/core@0.100.0(patch_hash=9c7cefcdc91f8660dfe89cfd7965bba1890d22ab82fb3978b35857cf0a2db4e8))
       '@cotal-ai/connector-codex':
         specifier: 0.100.0
         version: 0.100.0(@cotal-ai/core@0.100.0(patch_hash=9c7cefcdc91f8660dfe89cfd7965bba1890d22ab82fb3978b35857cf0a2db4e8))
@@ -52,7 +54,7 @@ importers:
         version: 2.0.3
       '@nats-io/transport-node':
         specifier: ^3.4.0
-        version: 3.4.0
+        version: 3.4.0(patch_hash=ede15edbd9f8a1316e377cfd578eabd75f247211c205eb756a7d4b6edcb4217e)
       cotal-connector-acp:
         specifier: file:vendor/cotal-connector-acp-0.1.0.tgz
         version: file:vendor/cotal-connector-acp-0.1.0.tgz(@cotal-ai/core@0.100.0(patch_hash=9c7cefcdc91f8660dfe89cfd7965bba1890d22ab82fb3978b35857cf0a2db4e8))
@@ -688,7 +690,7 @@ snapshots:
       '@nats-io/jetstream': 3.4.0
       '@nats-io/kv': 3.4.0
       '@nats-io/obj': 3.4.0
-      '@nats-io/transport-node': 3.4.0
+      '@nats-io/transport-node': 3.4.0(patch_hash=ede15edbd9f8a1316e377cfd578eabd75f247211c205eb756a7d4b6edcb4217e)
       ink: 6.8.0(react@19.2.7)
       react: 19.2.7
       ws: 8.21.0
@@ -711,7 +713,7 @@ snapshots:
     dependencies:
       '@cotal-ai/core': 0.100.0(patch_hash=9c7cefcdc91f8660dfe89cfd7965bba1890d22ab82fb3978b35857cf0a2db4e8)
 
-  '@cotal-ai/connector-claude-code@0.100.0(@cotal-ai/core@0.100.0(patch_hash=9c7cefcdc91f8660dfe89cfd7965bba1890d22ab82fb3978b35857cf0a2db4e8))':
+  '@cotal-ai/connector-claude-code@0.100.0(patch_hash=15fafee32cd36f95ade80f0848e2c3d3f00aa819c221c6a2c9278befc5c27f0c)(@cotal-ai/core@0.100.0(patch_hash=9c7cefcdc91f8660dfe89cfd7965bba1890d22ab82fb3978b35857cf0a2db4e8))':
     dependencies:
       '@cotal-ai/core': 0.100.0(patch_hash=9c7cefcdc91f8660dfe89cfd7965bba1890d22ab82fb3978b35857cf0a2db4e8)
 
@@ -735,7 +737,7 @@ snapshots:
       '@nats-io/nats-core': 3.4.0
       '@nats-io/nkeys': 2.0.3
       '@nats-io/obj': 3.4.0
-      '@nats-io/transport-node': 3.4.0
+      '@nats-io/transport-node': 3.4.0(patch_hash=ede15edbd9f8a1316e377cfd578eabd75f247211c205eb756a7d4b6edcb4217e)
       acorn: 8.19.0
       ajv: 8.20.0
       json-canonicalize: 2.0.0
@@ -750,7 +752,7 @@ snapshots:
       '@lydell/node-pty': 1.2.0-beta.12
       '@nats-io/jetstream': 3.4.0
       '@nats-io/kv': 3.4.0
-      '@nats-io/transport-node': 3.4.0
+      '@nats-io/transport-node': 3.4.0(patch_hash=ede15edbd9f8a1316e377cfd578eabd75f247211c205eb756a7d4b6edcb4217e)
       '@xterm/addon-attach': 0.11.0(@xterm/xterm@5.5.0)
       '@xterm/addon-fit': 0.10.0(@xterm/xterm@5.5.0)
       '@xterm/addon-serialize': 0.13.0(@xterm/xterm@5.5.0)
@@ -940,7 +942,7 @@ snapshots:
       '@nats-io/nats-core': 3.4.0
       js-sha256: 0.11.1
 
-  '@nats-io/transport-node@3.4.0':
+  '@nats-io/transport-node@3.4.0(patch_hash=ede15edbd9f8a1316e377cfd578eabd75f247211c205eb756a7d4b6edcb4217e)':
     dependencies:
       '@nats-io/nats-core': 3.4.0
       '@nats-io/nkeys': 2.0.3

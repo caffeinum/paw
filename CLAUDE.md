@@ -34,8 +34,11 @@ This file is the INDEX. The full design notes, incident narratives and rationale
 
 ## cotal 0.100.0 (2026-10-23)
 Pinned **0.100.0** (all `@cotal-ai/*` exact; age-gate exemption in pnpm-workspace.yaml, delete after
-2026-10-30). ONE pnpm patch re-keyed every bump: the core meta-validator perf patch (regenerated for
-0.100's dist — a stale hunk offset fails `pnpm install` with ERR_PNPM_PATCH_FAILED). Since 0.85 the claude
+2026-10-30). pnpm patches re-keyed every bump: the core meta-validator perf patch (regenerated for
+0.100's dist — a stale hunk offset fails `pnpm install` with ERR_PNPM_PATCH_FAILED) and the connector's
+bundled-nats reconnect patch (+ `@nats-io/transport-node@3.4.0`: a stale link with a backed-up write
+buffer never redialed — the sandboxed 15-min mesh outages; `check:nats-reconnect`,
+[sandbox.md#mesh-reconnect](docs/notes/sandbox.md#mesh-reconnect)). Since 0.85 the claude
 launch carries `confirmReady` (input-screen texts), which runtimes refuse without `confirm` — headless
 launches drop `confirm`, `confirmBefore` AND `confirmReady`. Since 0.95 the embedded cotal CLI sends
 opt-out usage telemetry (`COTAL_TELEMETRY_DISABLED=1` turns it off; paw leaves it to the operator) and
