@@ -347,6 +347,13 @@ export function agentTranscriptFile(dir: string, id: string, roots: string[] = [
   return undefined;
 }
 
+/** "Nothing written YET" — the agent exists but its first turn hasn't landed (a fresh agent, a sandboxed
+ *  one still booting its VM). One-shot readers (`paw log`) report it; a FOLLOWER (paw chat's logs view)
+ *  keeps retrying instead of giving up for the session — `retryable` is the structural flag it reads. */
+export class TranscriptNotYet extends Error {
+  readonly retryable = true;
+}
+
 /** Pick which transcript id to show for an agent. A PINNED agent's transcript is authoritative: if it
  *  doesn't exist yet (the agent booted but wrote no turns), fail LOUD rather than fall back to the
  *  folder's newest session — that fallback can surface an UNRELATED, live session (e.g. the human's
@@ -365,7 +372,7 @@ export function chooseTranscriptId(
     // The pin may be stored under ANOTHER project dir (claude started in a worktree, then cd'd): the
     // session id is unique, so any project holding it is this agent's transcript.
     if (agentTranscriptFile(dir, pinned, roots)) return pinned;
-    throw new Error(`paw: "${name}" is pinned to session ${pinned} but it has no transcript yet (the agent hasn't written a turn) — nothing to show.`);
+    throw new TranscriptNotYet(`paw: "${name}" is pinned to session ${pinned} but it has no transcript yet (the agent hasn't written a turn) — nothing to show yet.`);
   }
   if (!writesClaudeTranscript(agentType)) {
     throw new Error(
@@ -374,7 +381,7 @@ export function chooseTranscriptId(
     );
   }
   const id = latestSession(dir);
-  if (!id) throw new Error(`paw: no claude transcript for "${name}" yet (looked in ${dir})`);
+  if (!id) throw new TranscriptNotYet(`paw: no claude transcript for "${name}" yet (looked in ${dir})`);
   return id;
 }
 

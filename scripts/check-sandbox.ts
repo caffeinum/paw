@@ -5,7 +5,7 @@
  * `container` binary, so it runs anywhere (no VM, no mesh, no network). Run: pnpm check:sandbox
  */
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -204,6 +204,73 @@ console.log("the persistent home ($PAW_HOME/containers/<name>)");
   assert(b.stdout.startsWith(`from-dotenv|${fakeRoot}/.local/bin:`), `bash with BASH_ENV: ~/.env exported to children, ~/.local/bin first on PATH${b.stderr ? ` (${b.stderr.trim()})` : ""}`);
   const nb = spawnSync("/bin/bash", ["-c", 'echo "[$NEON_API_KEY]"'], { encoding: "utf8", env: { HOME: join(home, "nowhere"), BASH_ENV: rc, PATH: "/usr/bin:/bin" } });
   assert(nb.status === 0 && nb.stdout.trim() === "[]", "no ~/.env ⇒ nothing sourced, no error");
+  assert(readFileSync(join(homeDir, ".profile"), "utf8") === sbx.SANDBOX_SEED_PROFILE, "…and a ~/.profile that sends login shells (bash -l) through BASH_ENV");
+}
+
+console.log("~/.bashrc is honored by every bash in the VM (real bash, fake HOME)");
+{
+  // Seen live: fly's installer put flyctl in ~/.fly/bin and its PATH line in ~/.bashrc; `!fly auth login`
+  // (bash -lc) said "fly: command not found" — neither a login shell nor BASH_ENV read ~/.bashrc.
+  const rc = join(home, "bashrc-check", "bashenv.sh");
+  mkdirSync(join(home, "bashrc-check"), { recursive: true });
+  const seat = (text: string, root: string) => text.replaceAll(sbx.SANDBOX_BASH_ENV, rc).replaceAll("/root", root);
+  writeFileSync(rc, sbx.sandboxBashEnv());
+  let n = 0;
+  /** A home as paw seeds it (+ the agent's own lines appended to ~/.bashrc, as an installer does). */
+  const mkHome = (o: { bashrc?: string; profile?: boolean; env?: string } = {}): string => {
+    const h = join(home, "bashrc-check", `h${n++}`);
+    mkdirSync(join(h, ".fly", "bin"), { recursive: true });
+    writeFileSync(join(h, ".fly", "bin", "flyx"), "#!/bin/sh\necho flyx-ran\n", { mode: 0o755 });
+    writeFileSync(join(h, ".bashrc"), `${seat(sbx.SANDBOX_SEED_BASHRC, h)}${o.bashrc ?? ""}echo loaded >> "$HOME/rc-count"\n` + 'export FLYCTL_INSTALL="$HOME/.fly"; export PATH="$FLYCTL_INSTALL/bin:$PATH"\n');
+    if (o.profile !== false) writeFileSync(join(h, ".profile"), seat(sbx.SANDBOX_SEED_PROFILE, h));
+    if (o.env) writeFileSync(join(h, ".env"), o.env);
+    return h;
+  };
+  const sh = (h: string, argv: string[], input?: string) => {
+    if (existsSync(join(h, "rc-count"))) writeFileSync(join(h, "rc-count"), "");
+    const r = spawnSync(argv[0], argv.slice(1), { encoding: "utf8", input, env: { HOME: h, BASH_ENV: rc, ENV: rc, PATH: "/usr/bin:/bin" } });
+    const loads = existsSync(join(h, "rc-count")) ? readFileSync(join(h, "rc-count"), "utf8").split("\n").filter(Boolean).length : 0;
+    return { out: r.stdout.trim(), err: r.stderr.trim(), status: r.status, loads };
+  };
+  const h = mkHome({ env: "TOKEN=from-env\n", bashrc: 'export TOKEN="rc-saw-$TOKEN"\n' });
+  const flyx = `${h}/.fly/bin/flyx`;
+  const lc = sh(h, ["/bin/bash", "-lc", 'command -v flyx; echo "$TOKEN"']);
+  assert(lc.out === `${flyx}\nrc-saw-from-env` && lc.status === 0, `bash -lc (the !cmd shape): ~/.bashrc's PATH line resolves, after ~/.env (got ${JSON.stringify(lc.out)}${lc.err ? `, stderr ${lc.err}` : ""})`);
+  assert(lc.loads === 1, `…~/.bashrc loaded ONCE although both ~/.profile and BASH_ENV lead to it (got ${lc.loads})`);
+  const c = sh(h, ["/bin/bash", "-c", "command -v flyx"]);
+  assert(c.out === flyx && c.loads === 1, `bash -c with BASH_ENV (claude's Bash tool): resolves, ~/.bashrc once (got ${JSON.stringify(c.out)}, ${c.loads})`);
+  const l = sh(h, ["/bin/bash", "-l"], "command -v flyx\n");
+  assert(l.out === flyx && l.loads === 1, `bash -l reading commands (paw sandbox shell's shape): resolves, ~/.bashrc once (got ${JSON.stringify(l.out)}, ${l.loads})`);
+  const i = sh(h, ["/bin/bash", "-i", "-c", "command -v flyx"]);
+  assert(i.out.endsWith(flyx) && i.loads === 1, `interactive bash (reads ~/.bashrc itself, which sources BASH_ENV): no recursion, once (got ${i.loads})`);
+  const nested = sh(h, ["/bin/bash", "-c", "bash -c 'command -v flyx'"]);
+  assert(nested.out === flyx && nested.loads === 2, `a child bash loads ~/.bashrc again (its functions/aliases aren't inherited) — once per shell (got ${nested.loads})`);
+  const old = mkHome({ profile: false });
+  const o = sh(old, ["/bin/bash", "-lc", "command -v flyx"]);
+  assert(o.out === `${old}/.fly/bin/flyx` && o.loads === 1, `a home seeded before ~/.profile existed (the live ones): bash -lc still resolves via BASH_ENV (got ${JSON.stringify(o.out)})`);
+  const broken = mkHome({ bashrc: "nosuchcmd_paw_check\nif then\n" });
+  const bk = sh(broken, ["/bin/bash", "-c", "echo still-ran"]);
+  assert(bk.out === "still-ran" && bk.status === 0 && /\.bashrc/.test(bk.err), `an error in ~/.bashrc shows on stderr (naming it) and the command still runs (stderr: ${bk.err.split("\n")[0]})`);
+  const deb = mkHome({ bashrc: "case $- in *i*) ;; *) return;; esac\n" });
+  const db = sh(deb, ["/bin/bash", "-c", "echo ran"]);
+  assert(db.out === "ran" && db.status === 0 && db.err === "", "a Debian-style early `return` in ~/.bashrc just ends ~/.bashrc — no error, the command runs");
+  if (existsSync("/bin/dash")) {
+    const d = sh(h, ["/bin/dash", "-i"], "echo dash-ok\n");
+    assert(d.out.includes("dash-ok") && d.loads === 0 && !/Bad substitution|bashrc/.test(d.err), `dash via ENV: PATH/~/.env only, ~/.bashrc (bash syntax) never sourced (stderr: ${JSON.stringify(d.err)})`);
+  }
+  // Seeding never touches the agent's own login files.
+  const sbh = sbx.sandboxHomeDir("rcseed");
+  mkdirSync(sbh, { recursive: true });
+  writeFileSync(join(sbh, ".bash_profile"), "# mine\n");
+  sbx.claimSandboxHome(SPACE, "rcseed");
+  assert(!existsSync(join(sbh, ".profile")) && readFileSync(join(sbh, ".bash_profile"), "utf8") === "# mine\n", "an agent's own ~/.bash_profile: no ~/.profile seeded beside it (bash would ignore it), its file untouched");
+  const sbp = sbx.sandboxHomeDir("rcseed2");
+  mkdirSync(sbp, { recursive: true });
+  writeFileSync(join(sbp, ".profile"), "# mine too\n");
+  sbx.claimSandboxHome(SPACE, "rcseed2");
+  assert(readFileSync(join(sbp, ".profile"), "utf8") === "# mine too\n", "an agent's own ~/.profile is never overwritten");
+}
+{
   // One home per NAME across spaces: another space's sandboxed "smoke" is refused, loud.
   const otherSpace = "sbxother";
   writeRemoteMesh({ space: otherSpace, server: "tls://192.168.64.1:4222", root, ts: new Date().toISOString() });
@@ -215,6 +282,106 @@ console.log("the persistent home ($PAW_HOME/containers/<name>)");
     "a second space's sandboxed agent of the same name is refused (it would share the first's secrets)",
   );
   assert(throwsLike(() => sbx.assertSandboxable(otherSpace, "smoke", otherPersona), /share its secrets/), "…already at the CLI-side precheck");
+}
+
+console.log("the operator's skills + plugins, read-only (src/sandbox-skills.ts)");
+{
+  const claude = join(home, ".claude");
+  const sk = join(claude, "skills");
+  const mk = (dir: string, files: Record<string, string>) => {
+    for (const [f, body] of Object.entries(files)) {
+      mkdirSync(join(dir, f, ".."), { recursive: true });
+      writeFileSync(join(dir, f), body);
+    }
+    return dir;
+  };
+  mk(join(sk, "real-skill"), { "SKILL.md": "real" });
+  mk(join(home, ".agents", "skills", "linked"), { "SKILL.md": "linked" });
+  mk(join(home, "elsewhere", "abs"), { "SKILL.md": "abs" });
+  symlinkSync("../../.agents/skills/linked", join(sk, "linked"));
+  symlinkSync(join(home, "elsewhere", "abs"), join(sk, "abs"));
+  symlinkSync(join(home, "no-such-skill"), join(sk, "gone"));
+  symlinkSync("..", join(sk, "evil"));
+  writeFileSync(join(claude, "SKILL.md"), "bait");
+  writeFileSync(join(claude, ".credentials.json"), "CLAUDE-CREDS-SECRET");
+  mk(join(sk, ".trash", "old"), { "SKILL.md": "trashed" });
+  mk(join(sk, "notaskill"), { "README.md": "x" });
+  const cache = join(claude, "plugins", "cache", "mk");
+  const plug = (n: string, files: Record<string, string>) => mk(join(cache, n, "1.0.0"), { ".claude-plugin/plugin.json": JSON.stringify({ name: n }), ...files });
+  plug("pure", { "skills/a/SKILL.md": "a" });
+  plug("cmds", { "commands/c.md": "c", "agents/x.md": "x" });
+  plug("hooky", { "skills/h/SKILL.md": "h", "hooks/hooks.json": "{}" });
+  plug("mcpy", { "skills/m/SKILL.md": "m", ".mcp.json": "{}" });
+  mk(join(cache, "chan", "1.0.0"), { ".claude-plugin/plugin.json": JSON.stringify({ name: "chan", channels: [{ server: "x" }] }), "skills/c/SKILL.md": "c" });
+  plug("off", { "skills/o/SKILL.md": "o" });
+  plug("projonly", { "skills/p/SKILL.md": "p" });
+  const entry = (n: string, scope = "user") => [{ scope, installPath: join(cache, n, "1.0.0"), version: "1.0.0" }];
+  writeFileSync(join(claude, "plugins", "installed_plugins.json"), JSON.stringify({ version: 2, plugins: Object.fromEntries(["pure", "cmds", "hooky", "mcpy", "chan", "off"].map((n) => [`${n}@mk`, entry(n)]).concat([["projonly@mk", entry("projonly", "project")], ["ghost@mk", [{ scope: "user", installPath: join(cache, "ghost", "9"), version: "9" }]]])) }));
+  writeFileSync(join(claude, "settings.json"), JSON.stringify({ enabledPlugins: { "pure@mk": true, "cmds@mk": true, "hooky@mk": true, "mcpy@mk": true, "chan@mk": true, "off@mk": false, "projonly@mk": true, "ghost@mk": true } }));
+
+  const launchRun = (name: string, extra = "") => {
+    const cp = persona(name, extra);
+    const sp = pawConnector.buildLaunch({ space: SPACE, name, configPath: cp, workspaceRoot: root, servers: "tls://192.168.64.1:4222", creds: agentCreds });
+    const r = sp.args.slice(sp.args.indexOf("--") + 1);
+    return { cp, r, vols: r.flatMap((a, i) => (a === "-v" ? [r[i + 1]] : [])), pluginDirs: r.flatMap((a, i) => (a === "--plugin-dir" ? [r[i + 1]] : [])), state: join(home, ".paw", "spaces", SPACE, "sandbox", name) };
+  };
+  const off = launchRun("skoff", "sandboxSkills: false\n");
+  const on = launchRun("skon");
+  const added = on.vols.filter((v) => v.includes(":/paw/claude/skills/") || v.includes(":/paw/plugins/"));
+  assert(on.vols.length - added.length === off.vols.length, "…and no other mount than those differs from a skills-off launch");
+  const expected = [
+    `${join(home, "elsewhere", "abs")}:/paw/claude/skills/abs:ro`,
+    `${join(home, ".agents", "skills", "linked")}:/paw/claude/skills/linked:ro`,
+    `${join(sk, "real-skill")}:/paw/claude/skills/real-skill:ro`,
+    `${join(cache, "cmds", "1.0.0")}:/paw/plugins/cmds:ro`,
+    `${join(cache, "pure", "1.0.0")}:/paw/plugins/pure:ro`,
+  ];
+  const exact = JSON.stringify([...added].sort()) === JSON.stringify([...expected].sort());
+  assert(exact, `exactly the expected read-only skill/plugin mounts, symlinks resolved on the host${exact ? "" : ` (got ${added.join(" ")})`}`);
+  assert(on.vols.indexOf(`${sandboxClaudeDir(on.cp)}:/paw/claude`) < on.vols.findIndex((v) => v.includes(":/paw/claude/skills/")), "…after /paw/claude, so they nest inside it");
+  const fromClaude = on.vols.map((v) => v.split(":")[0]).filter((src) => src === claude || src.startsWith(`${claude}/`));
+  assert(fromClaude.every((src) => src === join(sk, "real-skill") || src.startsWith(`${cache}/`)) && on.vols.filter((v) => v.startsWith(`${claude}`)).every((v) => v.endsWith(":ro")), "nothing of the host's ~/.claude but skill/plugin dirs, all :ro (no ~/.claude, credentials, settings, transcripts)");
+  assert(!on.vols.some((v) => v.split(":")[0] === claude || v.includes(".trash") || v.includes("notaskill") || v.includes("gone") || v.includes("/hooky/") || v.includes("/mcpy/") || v.includes("/chan/") || v.includes("/off/") || v.includes("/projonly/")), ".trash, non-skills, dangling, ~/.claude itself, hook/MCP/channel plugins, disabled and project-scope ones are not mounted");
+  const cotalPluginDir = off.pluginDirs;
+  assert(JSON.stringify(on.pluginDirs.filter((d) => !cotalPluginDir.includes(d))) === JSON.stringify(["/paw/plugins/cmds", "/paw/plugins/pure"]), "pure plugins load via --plugin-dir at their in-VM path");
+  const log = readFileSync(join(on.state, "launcher.log"), "utf8");
+  assert(/skill gone NOT mounted — its target is missing/.test(log) && /skill evil NOT mounted — .*contains the host's claude config dir/.test(log), "a dangling symlink and one resolving to ~/.claude are skipped, logged in launcher.log");
+  assert(/plugin hooky@mk NOT mounted — ships hooks/.test(log) && /plugin mcpy@mk NOT mounted — ships MCP servers/.test(log) && /plugin chan@mk NOT mounted — ships channels/.test(log) && /plugin ghost@mk NOT mounted — its installPath .* is missing/.test(log), "hook / MCP / channel plugins and a missing installPath are excluded and logged");
+  const state = JSON.parse(readFileSync(join(on.state, "skills.json"), "utf8")) as { mounts: Array<{ name: string }>; skipped: Array<{ name: string }> };
+  assert(state.mounts.length === 5 && state.skipped.some((x) => x.name === "hooky@mk"), "skills.json records what was mounted and skipped (paw sandbox ls)");
+  const { readSkillsState } = await import("../src/commands/sandbox.ts");
+  assert(readSkillsState(join(home, ".paw"), SPACE, "skon")?.mounts.length === 5, "…which `paw sandbox ls` reads");
+  assert(!off.vols.some((v) => v.includes("/paw/claude/skills/") || v.includes("/paw/plugins/")) && /skills: off/.test(readFileSync(join(off.state, "launcher.log"), "utf8")), "sandboxSkills: false mounts none");
+  const only = launchRun("skonly", "sandboxSkills: [linked, pure]\n");
+  assert(only.vols.filter((v) => v.includes("/paw/claude/skills/") || v.includes("/paw/plugins/")).sort().join() === [`${join(home, ".agents", "skills", "linked")}:/paw/claude/skills/linked:ro`, `${join(cache, "pure", "1.0.0")}:/paw/plugins/pure:ro`].join(), "sandboxSkills: [linked, pure] mounts only those");
+  assert(throwsLike(() => launchRun("sknope", "sandboxSkills: [nope]\n"), /sandboxSkills: names nope/), "an allow-list name that matches nothing throws");
+  assert(throwsLike(() => launchRun("skbad", "sandboxSkills: yes\n"), /sandboxSkills: .*expected true, false or an inline list/), "a malformed sandboxSkills: throws");
+  // The mount point the VM made in the agent's own skills dir (empty on the host) is cleaned; a real own skill is shadowed, logged.
+  const ownSkills = join(sandboxClaudeDir(on.cp), "skills");
+  mkdirSync(join(ownSkills, "abs"), { recursive: true });
+  mk(join(ownSkills, "real-skill"), { "SKILL.md": "the agent's own" });
+  mk(join(ownSkills, "mine"), { "SKILL.md": "mine" });
+  launchRun("skon");
+  assert(!existsSync(join(ownSkills, "abs")) && existsSync(join(ownSkills, "mine", "SKILL.md")), "empty mount points from the last launch are removed; the agent's own skills stay");
+  assert(/own skill \/paw\/claude\/skills\/real-skill is shadowed/.test(readFileSync(join(on.state, "launcher.log"), "utf8")), "an own skill of the same name is shadowed by the operator's, logged");
+}
+
+console.log("the VM's own MCP servers (sandboxOwnMcp)");
+{
+  const launchRun = (name: string, extra = "") => {
+    const cp = persona(name, extra);
+    const sp = pawConnector.buildLaunch({ space: SPACE, name, configPath: cp, workspaceRoot: root, servers: "tls://192.168.64.1:4222", creds: agentCreds });
+    return { cp, r: sp.args.slice(sp.args.indexOf("--") + 1) };
+  };
+  const own = launchRun("mcpown");
+  const mcp = JSON.parse(own.r[own.r.indexOf("--mcp-config") + 1]) as { mcpServers: Record<string, unknown> };
+  assert(!own.r.includes("--strict-mcp-config") && Object.keys(mcp.mcpServers).join() === "cotal", "default: no --strict-mcp-config (the VM's user/project servers load), --mcp-config still cotal only");
+  const settings = JSON.parse(readFileSync(join(sandboxClaudeDir(own.cp), "settings.json"), "utf8"));
+  assert(settings.enableAllProjectMcpServers === true && settings.disableClaudeAiConnectors === true, "its settings.json pre-approves the folder's .mcp.json and keeps claude.ai connectors off");
+  const strict = launchRun("mcpstrict", "sandboxOwnMcp: false\n");
+  assert(strict.r.includes("--strict-mcp-config"), "sandboxOwnMcp: false keeps --strict-mcp-config");
+  assert(throwsLike(() => launchRun("mcpbad", "sandboxOwnMcp: maybe\n"), /sandboxOwnMcp/), "a bad sandboxOwnMcp: throws");
+  assert(spec.args.includes("--strict-mcp-config") === false, "the main smoke launch dropped it too");
 }
 
 console.log("cotal-only MCP config");

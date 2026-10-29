@@ -149,10 +149,13 @@ Each entry: what it is + the most load-bearing rule. Full notes behind the link.
 - `src/sandbox.ts` + `bin/paw-sandbox-run.mjs` + `src/commands/sandbox.ts` — persona `sandbox: container`: the claude
   launch runs in an Apple `container` VM (folder rw; own claude store at /paw/claude; node_modules + launch dirs ro;
   only ITS creds via a mirror; token file → env, never argv; persistent private HOME `$PAW_HOME/containers/<name>` → /root,
-  `~/.env` auto-sourced via BASH_ENV, installers default into it, one owner space per name); remote spaces only (v1); `paw claude --sandbox`,
+  `~/.env` then `~/.bashrc` auto-sourced via BASH_ENV by every bash (seeded `~/.profile` for login shells), installers default into it, one owner space per name); remote spaces only (v1); `paw claude --sandbox`,
   `paw sandbox build|ls|shell`; `!cmd` (chat/web) for a sandboxed agent runs IN its VM via `container exec` (src/sandbox-exec.ts),
   never a host fallback; `check:sandbox`, `check:sandbox-bang`. VM listening ports → host 127.0.0.1/::1 same port (`bin/paw-sandbox-forward.mjs`,
-  `container exec` relay per connection, busy host port skipped, `sandboxForward: false` opts out; `check:sandbox-forward`). → [sandbox.md](docs/notes/sandbox.md)
+  `container exec` relay per connection, busy host port skipped, `sandboxForward: false` opts out; `check:sandbox-forward`). The operator's
+  skills ro (src/sandbox-skills.ts): each `~/.claude/skills/<n>` realpath'd → `/paw/claude/skills/<n>`, pure enabled plugins → `/paw/plugins/<p>` +
+  `--plugin-dir` (hooks/MCP/LSP/channel plugins excluded, logged), never `~/.claude` itself; `sandboxSkills: false|[…]`. No `--strict-mcp-config`
+  in the VM (its own user/project MCP load; `--mcp-config` stays cotal-only; `sandboxOwnMcp: false` restores). → [sandbox.md](docs/notes/sandbox.md)
 - `src/session.ts` — `readResumeId`, `transcriptExists`; leaf module. → [agents.md#srcsessionts](docs/notes/agents.md#srcsessionts)
 - **Two-writer guard** — never start an agent whose pinned session a standalone claude holds. → [agents.md#two-writer-guard](docs/notes/agents.md#two-writer-guard)
 - `src/open.ts` — `paw open`/`paw attach`: runtime-aware; tmux → real window, cmux → names the tab, pty
@@ -222,7 +225,8 @@ Each entry: what it is + the most load-bearing rule. Full notes behind the link.
 ### paw chat → [chat.md](docs/notes/chat.md)
 - `src/chat.ts` — the headline REPL as a persistent human peer; bare `paw chat` = `.`, `--all` global,
   `@agent` filtered (hidden messages never marked read), `#channel`; `--fresh` is the birth verb (fails
-  if an agent exists); follows the conversation only when input is empty. → [chat.md#srcchatts](docs/notes/chat.md#srcchatts)
+  if an agent exists); follows the conversation only when input is empty; the logs view keeps retrying a
+  not-yet-written transcript (`TranscriptNotYet`), never gives up for the session. → [chat.md#srcchatts](docs/notes/chat.md#srcchatts)
 - `src/chat-own.ts` — chat's echo tap + tasks seed; remote: only "you"'s own send subjects (narrow
   `chat-echo`/`chat-history` creds), never the space wildcard. → [remote-mesh.md#paw-chat--paw-web-taps](docs/notes/remote-mesh.md#paw-chat--paw-web-taps)
 - `src/conn-state.ts` — mesh connection state for chat / inbox --watch / web: cotal's per-event `warning`/`error`

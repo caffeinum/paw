@@ -131,6 +131,30 @@ console.log("a sandboxed agent's !cmd runs in its VM via container exec");
   assert(JSON.stringify(sx.sandboxShellArgv(id, folder)) === JSON.stringify(["exec", "-i", "-t", "-w", folder, id, "bash", "-l"]), "`paw sandbox shell` = container exec -it -w <folder> <id> bash -l");
 }
 
+console.log("the in-VM shells read ~/.bashrc (the argv tails run by a real bash, fake HOME)");
+{
+  // Seen live: `!fly auth login` → "fly: command not found" — fly's installer had put its PATH line in
+  // ~/.bashrc, which neither the bang's login bash nor BASH_ENV read. What `container exec` runs after the
+  // container id is exactly this tail; run it with the VM's env shape against a seeded home.
+  const sbx = await import("../src/sandbox.ts");
+  const sx = await import("../src/sandbox-exec.ts");
+  const h = join(home, "vm-root");
+  const rc = join(home, "vm-seat-bashenv.sh");
+  mkdirSync(join(h, ".fly", "bin"), { recursive: true });
+  writeFileSync(join(h, ".fly", "bin", "flyx"), "#!/bin/sh\necho flyx-ran\n", { mode: 0o755 });
+  writeFileSync(rc, sbx.sandboxBashEnv());
+  writeFileSync(join(h, ".bashrc"), sbx.SANDBOX_SEED_BASHRC.replaceAll(sbx.SANDBOX_BASH_ENV, rc) + 'export FLYCTL_INSTALL="$HOME/.fly"; export PATH="$FLYCTL_INSTALL/bin:$PATH"\n');
+  writeFileSync(join(h, ".profile"), sbx.SANDBOX_SEED_PROFILE.replaceAll(sbx.SANDBOX_BASH_ENV, rc));
+  const vmEnv = { HOME: h, BASH_ENV: rc, ENV: rc, PATH: "/usr/bin:/bin" };
+  const tail = (argv: string[]) => argv.slice(argv.indexOf("bash"));
+  const bang = tail(sx.sandboxBashArgv("cid", home, "flyx"));
+  const b = spawnSync(bang[0], bang.slice(1), { encoding: "utf8", cwd: home, env: vmEnv });
+  assert(b.status === 0 && b.stdout.trim() === "flyx-ran", `!flyx (${bang.slice(0, 2).join(" ")} …) finds a tool ~/.bashrc put on PATH${b.stderr ? ` (stderr: ${b.stderr.trim()})` : ""}`);
+  const shell = tail(sx.sandboxShellArgv("cid", home));
+  const s2 = spawnSync(shell[0], shell.slice(1), { encoding: "utf8", cwd: home, env: vmEnv, input: "flyx\n" });
+  assert(s2.status === 0 && s2.stdout.trim() === "flyx-ran", `paw sandbox shell (${shell.join(" ")}) finds it too`);
+}
+
 console.log("every `!cmd` surface goes through the sandbox-aware runner");
 {
   for (const f of ["src/chat.ts", "src/web.ts"]) {
