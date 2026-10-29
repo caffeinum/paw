@@ -4,7 +4,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { HUMAN_PEER, humanPeer } from "./names.ts";
 import { permissionMode } from "./bypass-consent.ts";
-import { ADDRESSING_BRIEF, BACKGROUND_BASH_BRIEF, CRON_BRIEF, CHANNELS_BRIEF, COTAL_TOOLS_NOTICE_BRIEF, FILES_BRIEF, OPERATOR_REQUESTS_BRIEF, TASKS_BRIEF, UNATTENDED_BRIEF, WAKE_BRIEF } from "./brief.ts";
+import { ADDRESSING_BRIEF, BACKGROUND_BASH_BRIEF, CRON_BRIEF, CHANNELS_BRIEF, COTAL_TOOLS_NOTICE_BRIEF, FILES_BRIEF, OPERATOR_REQUESTS_BRIEF, SANDBOX_BRIEF, TASKS_BRIEF, UNATTENDED_BRIEF, WAKE_BRIEF } from "./brief.ts";
 import { beadsDir } from "./beads-dir.ts";
 import { voiceLineFor } from "./personality.ts";
 import { personaTranscriptRoots, readClaudeArgs, readCwd, readHeadless, readNice, readResumeId, readSandbox, transcriptExists } from "./session.ts";
@@ -187,7 +187,7 @@ export const pawConnector: Connector = {
 
     // The personality's VOICE line (src/personality.ts) rides right after the identity line; a malformed
     // vibe/emoji/hue throws here, at spawn, rather than reaching the model half-read.
-    appendSystemPrompt(args, meshBrief(opts.name, voiceLineFor(opts.configPath), humanPeer(opts.space)));
+    appendSystemPrompt(args, [meshBrief(opts.name, voiceLineFor(opts.configPath), humanPeer(opts.space)), ...(sandboxed ? [SANDBOX_BRIEF.join("\n")] : [])].join("\n\n"));
 
     // Durable session pin: paw writes a stable `resume:` id into every persona (minted at birth, or
     // a real past id via `adopt`). If its transcript exists → resume it; if not, this is the first

@@ -148,3 +148,13 @@ export const COTAL_TOOLS_NOTICE_BRIEF: readonly string[] = [
 export const CRON_BRIEF: readonly string[] = [
   `To wake yourself later, use \`paw cron add "<m h dom mon dow>" "<prompt>"\` (recurring, local time) or \`paw cron add --in 20m "<prompt>"\` (one-shot), and add \`--run "<cmd>"\` to have paw run a check and wake you only if it prints or fails; it survives restarts, unlike session crons — \`paw cron ls\` / \`paw cron rm <id>\`; a fire arrives as a DM from "cron" starting "⏰ paw cron": do the work, don't reply to "cron".`,
 ];
+
+/** For a `sandbox: container` seat only (src/sandbox.ts): what survives a launch, and where secrets and tools go. */
+export const SANDBOX_BRIEF: readonly string[] = [
+    `YOU RUN IN A SANDBOX: a Linux VM whose filesystem is WIPED on every launch, except your folder, your`,
+    `claude store and your HOME (/root, persistent, private to you). Keep everything that must survive in`,
+    `~: your secrets in ~/.env (KEY=value lines — every bash command sources it automatically), dotfiles in`,
+    `~/.bashrc, tools via plain installs (\`npm i -g x\`, \`pip install x\`, \`cargo install x\` already land in ~`,
+    `and on PATH). apt packages do NOT survive — ask the operator for a custom image instead. Never write a`,
+    `secret into your folder, a message or a log: ~/.env is the place.`,
+];
