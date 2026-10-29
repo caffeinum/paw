@@ -74,7 +74,8 @@
     "check:log-stamp": "node scripts/check-log-stamp.ts",
     "check:mailbox": "node scripts/check-mailbox.ts",
     "check:restart": "node scripts/check-restart.ts",
-    "check:cron": "node scripts/check-cron.ts"
+    "check:cron": "node scripts/check-cron.ts",
+    "check:kv-consumer-perms": "node scripts/check-kv-consumer-perms.ts"
   },
   "dependencies": {
     "@cotal-ai/cli": "0.100.0",
