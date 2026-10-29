@@ -53,7 +53,8 @@ Each entry: what it is + the most load-bearing rule. Full notes behind the link.
 - `bin/paw.ts` — endpoint-native composition root: imports ONLY @cotal-ai/core + paw command modules;
   own dispatch loading ONLY the verb's module (`src/command-modules.ts`, map checked by check:dispatch),
   NEEDS_MESH/NEEDS_MANAGER pre-gating, `paw cotal <cmd>` → cotald subprocess; unknown
-  command fails loud. → [cli.md#binpawts](docs/notes/cli.md#binpawts)
+  command fails loud. Core-free above its `// FAST PATH` marker (core/lifecycle are `await import`s):
+  `paw chat` on a tty paints its pre-shell first (check:chat walks the graph). → [cli.md#binpawts](docs/notes/cli.md#binpawts)
 - `bin/paw.mjs` — package `bin` shim: native TS on node ≥22.18, else node → repo tsx (no dist/ build); every launcher's no-bun fallback = `node bin/paw.mjs`, never tsx. → [cli.md#binpawmjs](docs/notes/cli.md#binpawmjs)
 - `bin/cotald.ts` — cotal composition root (runCli + manager + paw connector aliased as the default
   agent type); **only ever a subprocess**; the only file allowed to import @cotal-ai/cli/manager. → [cli.md#bincotaldts](docs/notes/cli.md#bincotaldts)
@@ -213,6 +214,11 @@ Each entry: what it is + the most load-bearing rule. Full notes behind the link.
 - `src/chat.ts` — the headline REPL as a persistent human peer; bare `paw chat` = `.`, `--all` global,
   `@agent` filtered (hidden messages never marked read), `#channel`; `--fresh` is the birth verb (fails
   if an agent exists); follows the conversation only when input is empty. → [chat.md#srcchatts](docs/notes/chat.md#srcchatts)
+- `src/chat-preshell.ts` + `chat-banner.ts` + `chat-boot.ts` + `chat-consent.ts` — the instant UI: frame at
+  ~25ms, keys from ~250ms, connect behind it; loaders (`◌`) never guessed values (no `offline` from an
+  unread roster); lines typed early queue + replay in order; a lost target REFUSES plain lines (never
+  #general); restart consent only from a line typed after the question; remote inbox LEDGERED before
+  provisioning (`chat-inboxes/<uid>.json`, swept by the next chat). → [chat.md#instant-ui](docs/notes/chat.md#instant-ui)
 - `src/chat-own.ts` — chat's echo tap + tasks seed; remote: only "you"'s own send subjects (narrow
   `chat-echo`/`chat-history` creds), never the space wildcard. → [remote-mesh.md#paw-chat--paw-web-taps](docs/notes/remote-mesh.md#paw-chat--paw-web-taps)
 - `src/conn-state.ts` — mesh connection state for chat / inbox --watch / web: cotal's per-event `warning`/`error`

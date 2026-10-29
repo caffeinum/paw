@@ -26,6 +26,13 @@ Moved verbatim from CLAUDE.md (2026-10-02 split). Index: [CLAUDE.md](../../CLAUD
   whose entry is missing/stale still resolves via a load-all retry — slower, not broken.
   `check:dispatch` loads each entry ALONE in a fresh node and diffs the map against the full set, so
   a new command file must add its verb there. Saved ~150–250ms native on every non-help verb.
+  **The `paw chat` fast path (2026-10-28):** everything above the `// FAST PATH` marker is core-free
+  (`log-stamp-boot`, `dispatch.ts`, `remote-mesh.ts`, `space.ts`, and `import type` only); core,
+  lifecycle, command-modules and `server.ts` are `await import`s below it. For verb `chat` (short
+  forms expand first, so `paw c` too) with stdin AND stdout on a tty, bin loads `src/chat-preshell.ts`
+  and paints chat's skeleton frame + puts the tty in raw mode (~25ms from process start under bun,
+  ~80ms under node) before the ~200ms core import. `check:chat` walks that import graph and fails on
+  any `@cotal-ai/*`/`@nats-io/*` above the marker. Every other verb behaves exactly as before.
 
 ## bin/paw.mjs
 

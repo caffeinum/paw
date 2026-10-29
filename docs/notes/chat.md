@@ -47,18 +47,102 @@ Moved verbatim from CLAUDE.md (2026-10-02 split). Index: [CLAUDE.md](../../CLAUD
   operator Ctrl-C, which is what left the stuck lock above). Now prints `connecting to <name>…` before
   the wait, plus `cold start — this can take up to Ns` when it actually spawned one. Written straight
   to stdout because the readline that owns `emit` isn't up yet.
-- **Startup runs concurrently (`src/chat-startup.ts`, 2026-10-28).** `connecting to <typed target>…`
-  prints BEFORE ensure() (the resolved name again only if it differs). Then ensure() runs beside the
-  human inbox + chat endpoint: ensure's `onMeshUp` starts the inbox → endpoint chain, and all of it is
-  awaited before the target is resolved or spawned. Any failure releases what the others acquired
-  (endpoint stopped, the remote inbox durables retired) and throws the first failure in startup order
-  (ensure's first — it names the broker fault); a target-resolution throw after startup also releases
-  them (`abandon`). Conn-state lines from the endpoint's start are held and printed once the REPL's
-  state exists (an unheard `error` event would crash the process). The startup control resolves only
-  `CHAT_STARTUP_COMMANDS` (ps/spawn/inspect/despawn — `check:chat` greps addressing.ts's `ctl.<op>`
-  calls against it). Measured (pty, Ctrl-D after the header, median): remote team2027 2.63s → 1.84s,
-  local 0.73s → 0.65s; the remote floor is now the inbox chain (provision ~0.6–1s + endpoint connect
-  ~0.3–0.5s), not ensure. `check:chat` covers the cleanup matrix.
+- **Startup runs concurrently (`src/chat-startup.ts`, 2026-10-28).** ensure() runs beside the human
+  inbox + chat endpoint: ensure's `onMeshUp` starts the inbox → endpoint chain. Any failure releases
+  what the others acquired (endpoint stopped, the remote inbox durables retired) and throws the first
+  failure in startup order (ensure's first — it names the broker fault). The startup control resolves
+  only `CHAT_STARTUP_COMMANDS` (ps/spawn/inspect/despawn — `check:chat` greps addressing.ts's
+  `ctl.<op>` calls against it). Measured then: remote team2027 2.63s → 1.84s, local 0.73s → 0.65s —
+  and that was still the time to a PROMPT, which the instant UI below took off the critical path.
+
+## instant UI
+
+"It's still slow — I want to be able to type right after it. The UI should show instantly, maybe with
+loaders everywhere" (operator, 2026-10-28, on a laggy wifi with 200–800ms RTT spikes). So the network is
+no longer between `paw chat` and a prompt that takes keys. Three moments, in a terminal:
+
+1. **First frame (~25ms bun / ~80ms node from process start)** — `bin/paw.ts`'s fast path loads the
+   core-free `src/chat-preshell.ts` BEFORE @cotal-ai/core: it lexes the target from argv (no
+   validation), paints the banner + `you → <label> ◌>` through the same pure `renderBanner`
+   (`src/chat-banner.ts`) chat uses, and puts the tty in raw mode — keys typed now wait in the kernel
+   (not cooked-echoed, not lost) until readline reads them. Ctrl-C does nothing during the ~200ms
+   import (known cost). `PAW_CHAT_PRESHELL=0` skips it.
+2. **Readline live (~250ms, the core import floor)** — chat.ts resolves a READ-ONLY target from the
+   registry (an unknown/ambiguous name still fails loud here, before any network; the pre-shell frame
+   is erased first), adopts the frame (erase + repaint in one write), creates readline and prompts.
+   Typed-ahead keys echo now.
+3. **Ready (connect + wake, seconds on a remote space)** — `boot()` runs behind the prompt:
+   `concurrentStartup` → mutating target resolution (`--fresh`/`--name`/`--agent`/a cloning URL still
+   resolve here, after ensure, as before) → wake gate → `waitForPeerId` → `ready`.
+
+**Loaders, never guesses.** Each banner field is a `Slot` (`src/chat-boot.ts`): loading = dim `◌`,
+ok = the value, err = red `✕ why`. The machine (`on …`) waits for the presence view's FIRST read on
+every space; the footer's peer status is `<name> ◌` until then — `peerStatusTag` never says `offline`
+from a roster that was never read. The footer's left label is `bootLabel` (`◌ starting mesh 2s`,
+`◌ opening inbox`, `◌ connecting`, `◌ waking <n>`, `◌ waiting for <n>`, `✕ not connected —
+/reconnect · /quit`). The banner is a LIVE history entry: repainted where it stands while it is the
+last thing painted (`canRepaintInPlace`: tty, chat view, no picker/paste, no resize since, fits on
+screen); otherwise each change is ONE dim delta line (`  status: reusing live agent`). Repaints are
+coalesced (one `setImmediate` flush) and held while a paste is arriving. `PAW_CHAT_TIMING=<file>`
+writes JSONL marks (`preshell chat prompt meshUp inbox roster endpoint agent ready settled`).
+
+**Lines typed before ready** (`lineNeedsMesh`): `/imgs /noimg /paste /nopaste /help /quit /exit quit
+exit /conn /reconnect` run at once; everything else (plain, `@…`, `#…`, `!…`, other `/cmd`) is
+queued (`DeferredQueue`) WITH the attachments/pastes staged for it, said as `◌ queued — sends when
+connected`, counted in the prompt badge + footer. On ready they replay in typed order through the SAME
+`handleLine`, so `@bob x` then a plain line sends both to bob. Rules that keep a queued line from going
+somewhere it wasn't typed for:
+- a backlog/early DM never retargets while anything is queued (`shouldFollowDm` `holding`);
+- a target that can't be reached sets `targetLost`; the plain-line branch is now `else if (curName)` —
+  it REFUSES (`✕ not sent to <n>: <why> — text kept (↑ to recall)`; a live line is put back in the
+  buffer) instead of ever falling through to `sendPost(room)`. Broadcasts stay explicit. The target
+  coming up later clears it; `@other` recovers;
+- `@name` and `/who` after ready wait (≤5s, `waitForPresenceSnapshot`) for the roster's first read,
+  and never respawn an agent on the word of a roster that hasn't loaded.
+
+**Restart consent** (`src/chat-consent.ts`): the wake gate's `restart it? [y/N]` is asked IN the REPL
+(the old second readline on stdin would race the first). The draft is stashed, the prompt becomes
+`restart <n>? [y/N]>`, and only a line typed into an empty buffer whose first key came ≥300ms after
+the question, not pasted, not a replay, answers it; anything earlier is type-ahead (queued as a
+message). Quit answers no and restores the draft. `--restart` still means allow; pipes never ask.
+
+**Listener gap.** `startEndpoint` attaches `message`, `presence`, `presence-view`, the conn state and
+the own-send tap (`tapOwnSubject`) BEFORE `startResilient` — a DM landing the moment the inbox binds is
+shown and acked, not redelivered a minute later. The remote half of the echo (`startEcho`, a second
+narrowly-signed connection) starts after ready and is never awaited: another session's DMs in chat's
+first ~0.5s are not echoed (they are in `paw history`).
+
+**Quit during startup, and the inbox ledger.** `shutdown()` is the one way out (`/quit`, Ctrl-D,
+Ctrl-C via readline's SIGINT, SIGTERM): abort boot, restore the terminal + console, print everything
+unsent IN FULL (queued lines, outbox pending/failed, the draft), then wait (≤10s, saying so) for an
+in-flight startup to settle — `concurrentStartup` never interrupts a step; it skips what hasn't
+started, lets the rest settle, releases, and throws AbortError. Exit 1 when it never reached ready. A
+second Ctrl-C leaves at once: `left chat inbox <uid> on <space> — the next paw chat retires it`. That
+is true because a remote inbox is LEDGERED before it exists: `prepareHumanInbox` (local work only)
+writes `$PAW_HOME/spaces/<s>/chat-inboxes/<uid>.json {pid, server, channels, startedAt}`, its release
+is registered before `provision()` dials, release deletes the entry once retired, and every chat that
+reaches ready runs `sweepOrphanInboxes` (dead pids only; a failure is shown, never swallowed).
+`retireHumanInbox` tolerates a footprint that was never (fully) made.
+
+**Pipe mode** (stdin or stdout not a tty) keeps today's order: connect + resolve, then the banner, then
+read lines; a failure throws. `check:chat-tty` (isolated space, real pty, a bare `echoer` peer)
+covers type-ahead delivery (once, in order, nothing to #general), `@ghost` refusal, an unreachable
+target, a DM at join, Ctrl-C at +80/+400ms, and pipe mode. `pnpm measure:chat -- chat @x` measures it
+(read-only: one early key, Ctrl-U + Ctrl-D, never Enter; `--repo <dir>` measures another checkout).
+
+Measured 2026-10-28 (pty 120×40, bun, n=5 medians, ms from spawn; baseline c68b1ae typed AT the prompt
+since earlier keys were not shown):
+
+| | first frame | prompt | typed key echoed | ready |
+|---|---|---|---|---|
+| remote `@queue-ea#team2027`, before | 223 | 1533 (p90 3030) | 1539 | = prompt |
+| remote, after | 38 | 38 | 251 | 1562 (p90 2971) |
+| local `@skills`, before | 219 | 622 | 629 | = prompt |
+| local, after | 40 | 40 | 255 | 648 |
+| local under node (`bin/paw.mjs`), after | 103 | 103 | 412 | 775 |
+
+The ~230ms before readline is the @cotal-ai/core import (`scripts/lean/import-cost.ts`); wifi now only
+decides how long the `◌` loaders stay up.
 
 ## images
 
