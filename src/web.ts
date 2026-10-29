@@ -103,7 +103,8 @@ import type { Block } from "./transcript.ts";
 import { randomBytes } from "node:crypto";
 import { imagesDir } from "./images.ts";
 import { prInfo, prInfoByUrl, prInfoMany } from "./git.ts";
-import { bashMessage, runBash } from "./bash.ts";
+import { bashMessage } from "./bash.ts";
+import { bangPlace, runBang } from "./sandbox-exec.ts";
 import { bangNoFolder, elsewhereBang, runsElsewhere } from "./hosted.ts";
 import { isRemoteSpace, pawServer } from "./server.ts";
 import { logConn } from "./conn-state.ts";
@@ -1878,7 +1879,8 @@ async function web(argv: string[]): Promise<void> {
           throw new Error(`paw: no agent named "${agent}" — \`paw status\` lists them`);
         }
         if (!existsSync(cwd)) throw new Error(`paw: "${agent}" is registered at ${cwd}, which no longer exists`);
-        return runBash(command, cwd);
+        // a sandboxed agent's command runs in its VM; its VM not running throws (never a host fallback)
+        return runBang(command, cwd, bangPlace(space, agent));
       },
     });
   } catch (e) {

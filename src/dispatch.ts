@@ -323,6 +323,7 @@ export const ADDRESS_ARGS: Readonly<Record<string, AddressSpec>> = {
   history: { values: [...V, "--limit", "-n"], slots: [0] },
   claude: { values: V, names: ["--name"], slots: [] },
   cron: { values: CRON_VALUE_FLAGS, slots: cronSlots },
+  sandbox: { values: V, slots: (pos) => (pos[0] === "shell" ? [1] : []) },
 };
 
 /**

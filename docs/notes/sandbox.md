@@ -120,6 +120,29 @@ agent runs as the same macOS user: any of them can `cat ~/.paw/containers/neon/.
 the VM. Keychain-gating was rejected (prompts). Real isolation from other agents = a separate macOS user (or
 machine) for the sandboxed agent's paw.
 
+## `!cmd` and a shell in the VM (src/sandbox-exec.ts)
+
+Seen live: `!neon auth login` in `paw chat @neon` ran on the HOST (`zsh:1: command not found: neon`, exit 127) —
+neon had installed `neonctl` in its VM, and its tools, `~/.env` and PATH exist only there. Now every "run in the
+agent's folder" path (`paw chat`'s `!cmd`, `paw web`'s `!cmd`) asks `bangPlace(space, name)`: no `sandbox:` in the
+persona → the host, exactly as before; `sandbox: container` → its ONE running container (labels `paw.space`/
+`paw.agent`, as `paw sandbox ls` finds them). Not running (or a stopped one only) → fails loud naming
+`paw start <n>#<s>`; two running → refuses to guess. **Never a host fallback** — that was the bug.
+
+The command runs as `container exec -w <folder> <id> timeout -s KILL <secs> bash -lc <command>` — the command one
+argv element (no host shell ever sees it), the folder at the same path in the VM, and the container's own env
+(`container exec` inherits it: HOME, PATH, BASH_ENV → `~/.env`; verified 1.6.0). `timeout` is load-bearing:
+killing the `container exec` CLI does NOT stop the process in the VM (verified — a `sleep 200` survived its CLI's
+SIGKILL), so the 60s bang timeout is enforced inside; its exit 137 reads as "timed out". The chat echoes
+`$ <cmd>  (in <name>'s VM: <folder>)`, the agent's transcript says "I ran this in your sandbox VM, in <folder>", the
+web hint adds "· ran in <name>'s VM".
+
+Output STREAMS in `paw chat` (both host and VM, batched per ~100ms of complete lines): a login prints its URL,
+then waits for the browser callback — the URL shows while it still runs. The REPL still waits for the command
+(same 60s timeout as before). For a real TTY (a login that wants input, a REPL): `paw sandbox shell <n>[#<s>]` =
+`container exec -i -t -w <folder> <id> bash -l` (the seeded `~/.bashrc` sources BASH_ENV). `check:sandbox-bang`
+(fake `container`); `PAW_SANDBOX_BANG_SMOKE=1` adds a real run against a THROWAWAY labelled container.
+
 ## Why remote spaces only (v1) — and the local plan
 
 The local open `paw` broker listens on 127.0.0.1, which a VM can't reach. The VM reaches the host at the

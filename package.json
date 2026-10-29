@@ -11,6 +11,7 @@
     "build": "tsc -p tsconfig.json",
     "check:acp": "node scripts/check-acp.ts",
     "check:sandbox": "node scripts/check-sandbox.ts",
+    "check:sandbox-bang": "node scripts/check-sandbox-bang.ts",
     "check:addressing": "node scripts/check-addressing.ts",
     "check:web": "node scripts/check-web.ts",
     "check:transcript": "node scripts/check-transcript.ts",

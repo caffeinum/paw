@@ -4,6 +4,8 @@
  *   machine view: the `--space` the dispatcher appends to every verb is accepted and ignored): agent#space, state,
  *   memory in use / limit, its persistent home ($PAW_HOME/containers/<name>), and whether a paw launcher still owns it (an `orphan` is a VM whose launcher was
  *   SIGKILLed — the agent's next launch removes it, or `container delete --force <id>` now).
+ * `paw sandbox shell <agent>[#space]` — an interactive login bash in the agent's RUNNING VM, in its folder
+ *   (`container exec -it`): the VM's PATH, HOME and ~/.env, a real TTY (OAuth logins, REPLs). Not running → fails loud.
  * docs/notes/sandbox.md.
  */
 import { execFileSync, spawnSync } from "node:child_process";
@@ -11,8 +13,12 @@ import { dirname } from "node:path";
 import { registry, type Command } from "@cotal-ai/core";
 import { CONTAINERFILE, containerBin, defaultSandboxImage, listSandboxContainers, readSandboxHomeOwner, sandboxHomeDir, type SandboxContainer } from "../sandbox.ts";
 import { writeJson, writeOut } from "../stdout.ts";
+import { existsSync } from "node:fs";
+import { personaFilePath } from "../addressing.ts";
+import { liveSandboxContainer, sandboxShellArgv } from "../sandbox-exec.ts";
+import { readCwd, readSandbox } from "../session.ts";
 
-const USAGE = "sandbox build | sandbox ls [--json]";
+const USAGE = "sandbox build | sandbox ls [--json] | sandbox shell <agent>[#space]";
 
 /** Drop the `--space <s>` bin/paw.ts appends to every verb (withDefaultSpace): both subcommands are per machine. */
 function dropSpace(argv: string[]): string[] {
@@ -85,13 +91,35 @@ function ls(argv: string[]): void {
   if (orphans.length) writeOut(`\n${orphans.length} orphan(s): no paw launcher owns them — the agent's next launch removes them, or now: container delete --force ${orphans.map((o) => o.id).join(" ")}\n`);
 }
 
+function shell(argv: string[]): void {
+  let space: string | undefined;
+  const pos: string[] = [];
+  for (let i = 0; i < argv.length; i++) {
+    if (argv[i] === "--space" && argv[i + 1] !== undefined) space = argv[++i];
+    else if (argv[i].startsWith("-")) throw new Error(`paw: unknown flag "${argv[i]}" — ${USAGE}`);
+    else pos.push(argv[i]);
+  }
+  if (pos.length !== 1 || !space) throw new Error(`paw: \`sandbox shell\` takes one agent — ${USAGE}`);
+  const name = pos[0];
+  const persona = personaFilePath(space, name);
+  if (!existsSync(persona)) throw new Error(`paw: no agent "${name}" on space "${space}" (no persona at ${persona})`);
+  if (!readSandbox(persona)) throw new Error(`paw: "${name}" is not sandboxed (no \`sandbox: container\` in ${persona}) — its folder is on this machine; just cd there`);
+  const cwd = readCwd(persona);
+  if (!cwd) throw new Error(`paw: "${name}"'s persona ${persona} has no cwd:`);
+  const bin = containerBin();
+  const r = spawnSync(bin, sandboxShellArgv(liveSandboxContainer(space, name, bin), cwd), { stdio: "inherit" });
+  if (r.error) throw new Error(`paw: could not run \`${bin} exec\`: ${r.error.message}`);
+  process.exitCode = r.status ?? 1;
+}
+
 const sandboxCommand: Command = {
   kind: "command",
   name: "sandbox",
   group: "Lifecycle",
-  summary: "sandboxed agents (Apple container VMs) — sandbox build | sandbox ls",
+  summary: "sandboxed agents (Apple container VMs) — sandbox build | sandbox ls | sandbox shell <agent>",
   usage: USAGE,
   run: async (a) => {
+    if (a.raw[0] === "shell") return shell(a.raw.slice(1));
     const [sub, ...rest] = dropSpace([...a.raw]);
     if (sub === "build") return build(rest);
     if (sub === "ls") return ls(rest);

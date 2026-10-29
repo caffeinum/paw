@@ -50,7 +50,8 @@ import {
 } from "./addressing.ts";
 import { isAddressHandle, resolveAddress } from "./address.ts";
 import { HOST_RE } from "./url.ts";
-import { bashMessage, parseBang, runBash } from "./bash.ts";
+import { bashMessage, parseBang } from "./bash.ts";
+import { bangPlace, bangWhere, runBang, type BangPlace } from "./sandbox-exec.ts";
 import { ManagerControl, withManagerControl } from "./control.ts";
 import { advanceCursor } from "./cursor.ts";
 import { attachConn, shortReason, type ConnLine, type ConnPhase } from "./conn-state.ts";
@@ -2083,13 +2084,39 @@ async function chat(argv: string[]): Promise<void> {
     const cwd = folderForName(space, curName);
     if (!cwd) return void emit(c.red(`! ${bangNoFolder(space, curName, ep.getRoster().find((p) => p.card.id === curId)?.card)}`));
     if (!existsSync(cwd)) return void emit(c.red(`! "${curName}" is registered at ${cwd}, which no longer exists`));
-    emit(c.dim(`$ ${command}  (in ${cwd})`), "you", true);
-    const result = await runBash(command, cwd, undefined, true); // paw chat is a real terminal → source the operator's shell rc
-    const body = result.output.trim() || "(no output)";
+    // A sandboxed agent's command runs in ITS VM (its tools, ~/.env, PATH live only there); its VM not
+    // running is an error here — never a silent run on this machine (src/sandbox-exec.ts).
+    let place: BangPlace;
+    try {
+      place = bangPlace(space, curName);
+    } catch (e) {
+      return void emit(c.red(`! ${(e as Error).message}`));
+    }
+    emit(c.dim(`$ ${command}  (${bangWhere(curName, cwd, place)})`), "you", true);
+    // Output STREAMS while the command runs (a login prints its URL, then waits for the browser), batched
+    // per ~100ms of complete lines: emit redraws the prompt after each call, and a 200-line build log
+    // emitted line by line is 200 prompt redraws.
+    let partial = "";
+    let ready: string[] = [];
+    let timer: NodeJS.Timeout | undefined;
+    const flushLines = (): void => {
+      timer = undefined;
+      if (ready.length) emit(ready.map((l) => `  ${l}`).join("\n"), "you", true);
+      ready = [];
+    };
+    const onOutput = (chunk: string): void => {
+      const lines = (partial + chunk).split("\n");
+      partial = lines.pop()!;
+      ready.push(...lines);
+      if (ready.length && !timer) timer = setTimeout(flushLines, 100);
+    };
+    const result = await runBang(command, cwd, place, { interactive: true, onOutput }); // paw chat is a real terminal → the host path sources the operator's shell rc
+    if (timer) clearTimeout(timer);
+    if (partial) ready.push(partial);
+    const streamed = result.output.trim() !== "";
     const status = result.timedOut ? "timed out" : result.code === 0 || result.code === null ? undefined : `exit ${result.code}`;
-    // One emit for the whole block: emit redraws the prompt after each call, and a 200-line build
-    // log emitted line by line is 200 prompt redraws.
-    emit(body.split("\n").map((l) => `  ${l}`).join("\n") + (status ? `\n${c.yellow(`  (${status})`)}` : ""), "you");
+    const tail = [...ready.map((l) => `  ${l}`), ...(streamed ? [] : ["  (no output)"]), ...(status ? [c.yellow(`  (${status})`)] : [])];
+    if (tail.length) emit(tail.join("\n"), "you");
     refreshTarget();
     sendDm(curName, curId!, bashMessage(result));
   }
