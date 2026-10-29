@@ -491,8 +491,10 @@ export async function listComments(id: string): Promise<TaskComment[]> {
   return parseComments(await bdRead(["comments", id, "--json"], { urgent: true }));
 }
 
+/** `--force`: every paw close is the operator's deliberate call, and bd ≥1.3.1 refuses to close a bead
+ *  assigned to anyone but the actor. It also overrides bd's open-blocker, pinned and gate refusals. */
 export async function closeTask(id: string, reason?: string, actor?: string): Promise<void> {
-  const args = ["close", id];
+  const args = ["close", id, "--force"];
   if (actor) args.push("--actor", actor);
   if (reason) args.push("--reason", reason);
   await bd(args);
