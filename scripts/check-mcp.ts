@@ -15,14 +15,16 @@
  *
  * Run: pnpm check:mcp
  */
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 process.env.PAW_HOME = mkdtempSync(join(tmpdir(), "paw-mcp-home-"));
 
-const { PAW_CONNECTOR, withServer, withoutServer, buildSpec, isValidServerName, agentsSharing, withShareTools, readConfig } =
+const { PAW_CONNECTOR, withServer, withoutServer, buildSpec, isValidServerName, agentsSharing, withShareTools, readConfig, withOptInMark, optInServers, withGrant, serversByAgent, changedAgents, whoLine } =
   await import("../src/commands/mcp.ts");
+const { shareSelection, effectiveServers, readOptIn, OPT_IN_KEY, GRANT_KEY } = await import("../src/mcp-select.ts");
+const { readCotalConfigFile, loadCotalConfig, connectorServers } = await import("@cotal-ai/core");
 const { readShareTools, readAgentType } = await import("../src/session.ts");
 
 let failures = 0;
@@ -103,7 +105,10 @@ assert(who.find((w) => w.name === "default")?.shares === true, "no selection ⇒
 assert(who.find((w) => w.name === "picky")?.shares === true, "a selection naming it ⇒ gets it");
 assert(who.find((w) => w.name === "other")?.shares === false, "a selection NOT naming it ⇒ doesn't get it");
 assert(who.find((w) => w.name === "opted-out")?.shares === false, "`none` is a real choice, distinct from absent");
-assert(agentsSharing("github", [{ name: "x", share: "GitHub, tavily" }])[0].shares, "selections match case-insensitively and tolerate spaces");
+assert(agentsSharing("github", [{ name: "x", share: "tavily , github" }])[0].shares, "selections tolerate spaces around names");
+// cotal looks a selected name up EXACTLY (connectorServers: Object.hasOwn), so the listing must not claim
+// a case-mismatched selection shares — that spawn fails, it doesn't get the server.
+assert(!agentsSharing("github", [{ name: "x", share: "GitHub" }])[0].shares, "a case-mismatched selection does NOT share (cotal matches names exactly)");
 
 // 6. The persona round-trip: written, read back, and removable without disturbing the rest.
 const persona = "---\nname: evals\nresume: 1234\nallowPublish: [\">\"]\n---\nbody text\n";
@@ -143,6 +148,90 @@ assert(readShareTools(join(process.env.PAW_HOME!, "gone.md")) === undefined, "a 
   assert(resolve("evals", "github") === "agent=evals sel=github", "agent-first with a server name is a selection");
   assert(resolve("nope", "alsonope") === "error", "two unknown tokens fail loud rather than guessing");
   assert(resolve("github", "nope") === "error", "a server with a non-agent second fails loud");
+}
+
+// 6c. OPT-IN servers (`add --only`, `only`): the selection math shared by the listing and the spawn.
+{
+  const declared = ["github", "tavily", "secret"];
+  const optIn = ["secret"];
+  const sel = (share: string | undefined, grants?: string) => shareSelection({ declared, optIn, share, grants, agent: "a" });
+  // With no opt-in server and no grant the persona passes through UNCHANGED — a fleet that never used
+  // --only launches exactly as before (absent stays absent ⇒ cotal's own "every declared server").
+  assert(shareSelection({ declared, optIn: [], share: undefined, grants: undefined, agent: "a" }) === undefined, "no opt-in anywhere ⇒ absent selection still sends nothing");
+  assert(JSON.stringify(shareSelection({ declared, optIn: [], share: "none", grants: undefined, agent: "a" })) === "[]", "no opt-in ⇒ `none` still parses to []");
+  assert(JSON.stringify(shareSelection({ declared, optIn: [], share: "tavily", grants: undefined, agent: "a" })) === '["tavily"]', "no opt-in ⇒ a list passes through");
+  // The core rule: absent ⇒ every declared server EXCEPT opt-in, as an explicit list (cotal knows no opt-in).
+  assert(JSON.stringify(sel(undefined)) === '["github","tavily"]', "absent selection ⇒ explicit list of every NON-opt-in server");
+  assert(JSON.stringify(sel(undefined, "secret")) === '["github","tavily","secret"]', "absent + granted ⇒ shared servers + the opt-in one");
+  assert(JSON.stringify(sel("none")) === "[]", "`none` ⇒ nothing");
+  assert(JSON.stringify(sel("none", "secret")) === '["secret"]', "`none` + granted ⇒ just the opt-in one (--only names the agent explicitly)");
+  assert(JSON.stringify(sel("tavily", "secret")) === '["tavily","secret"]', "a list + granted ⇒ the list plus the grant");
+  assert(JSON.stringify(sel("secret")) === '["secret"]', "a shareTools list naming an opt-in server is an explicit grant too");
+  assert(JSON.stringify(sel("tavily", "tavily")) === '["tavily"]', "a grant of a shared server never duplicates it");
+  assert(throws(() => sel(undefined, "gone")), "a grant naming an undeclared server fails the spawn LOUD, never launches without it silently");
+  // A mark naming a server that is no longer declared is inert — nothing to hide.
+  assert(shareSelection({ declared, optIn: ["gone"], share: undefined, grants: undefined, agent: "a" }) === undefined, "a dangling opt-in mark changes nothing");
+  // Every selection paw computes must be one cotal ACCEPTS and resolves to what paw lists: run it through
+  // cotal's own resolver.
+  const cfg = { connectors: { claude: { mcpServers: { github: { command: "g" }, tavily: { command: "t" }, secret: { command: "s" } }, [OPT_IN_KEY]: optIn } } } as never;
+  for (const [share, grants] of [[undefined, undefined], [undefined, "secret"], ["none", "secret"], ["tavily", "secret"]] as const) {
+    const got = Object.keys(connectorServers(cfg, "claude", sel(share, grants))).join(",");
+    assert(got === effectiveServers({ declared, optIn, share, grants, agent: "a" }).join(","), `cotal resolves ${share ?? "absent"}+${grants ?? "-"} to exactly what paw lists (${got || "nothing"})`);
+  }
+
+  // The mark: written beside the definitions, removed with the server, and tolerated by cotal's reader.
+  const base = withServer(withServer({} as never, "github", { command: "g" }), "secret", { command: "s" });
+  const marked = withOptInMark(base, "secret", true);
+  assert(JSON.stringify(optInServers(marked, "x")) === '["secret"]', "only / add --only marks the server opt-in");
+  assert(JSON.stringify(withOptInMark(marked, "secret", true).connectors?.claude) === JSON.stringify(marked.connectors?.claude), "marking twice is idempotent");
+  assert(!(OPT_IN_KEY in (withOptInMark(marked, "secret", false).connectors!.claude as object)), "unmarking the last one removes the key — a file that stopped using opt-in looks untouched");
+  const gone = withoutServer(marked, "secret")!;
+  assert(optInServers(gone, "x").length === 0, "rm drops the opt-in mark in the SAME write — a re-add under that name starts shared, as add says");
+  assert(gone.connectors?.claude?.mcpServers?.github !== undefined, "rm keeps the other servers");
+  const cfgFile = join(process.env.PAW_HOME!, "cotal.json");
+  writeFileSync(cfgFile, JSON.stringify(marked));
+  assert(!throws(() => readCotalConfigFile(cfgFile)), "cotal's own config reader accepts a connector carrying the mark (no unknown-key refusal)");
+  process.env.XDG_CONFIG_HOME = join(process.env.PAW_HOME!, "xdg");
+  mkdirSync(join(process.env.XDG_CONFIG_HOME, "cotal"), { recursive: true });
+  writeFileSync(join(process.env.XDG_CONFIG_HOME, "cotal", "config.json"), JSON.stringify(marked));
+  const root = join(process.env.PAW_HOME!, "root");
+  assert(JSON.stringify(readOptIn(loadCotalConfig(root).connectors?.claude, "merged")) === '["secret"]', "the mark survives cotal's merge of operator + space config (what the spawn site reads)");
+  assert(Object.keys(connectorServers(loadCotalConfig(root), "claude", undefined)).includes("secret"), "…and cotal itself still shares it with an ABSENT selection — which is why paw must always send a list");
+  delete process.env.XDG_CONFIG_HOME;
+  assert(throws(() => readOptIn({ [OPT_IN_KEY]: "secret" }, "x")), "a malformed mark (a string, not a list) fails loud — reading it as none would share it with everyone");
+  assert(throws(() => readOptIn({ [OPT_IN_KEY]: [""] }, "x")), "an empty name in the mark fails loud");
+
+  // Grants in the persona: added, de-duplicated, removed, the line gone when empty, the rest kept.
+  const p0 = "---\nname: evals\nshareTools: none\n---\nbody\n";
+  const p1 = withGrant(p0, "secret", true);
+  assert(new RegExp(`^${GRANT_KEY}: secret$`, "m").test(p1), "share/only writes the grant into the frontmatter");
+  assert(withGrant(p1, "secret", true) === p1, "granting twice changes nothing");
+  const p2 = withGrant(p1, "other", true);
+  assert(new RegExp(`^${GRANT_KEY}: secret,other$`, "m").test(p2), "a second grant appends");
+  assert(!new RegExp(`${GRANT_KEY}:`).test(withGrant(withGrant(p2, "secret", false), "other", false)), "removing the last grant removes the line");
+  assert(withGrant(p1, "secret", false).includes("shareTools: none") && withGrant(p1, "secret", false).includes("body"), "grant edits keep shareTools and the body");
+
+  // The listing and the restart hints use the same math.
+  const fleet = [
+    { name: "alice", share: undefined, grants: "secret" },
+    { name: "bob", share: undefined, grants: undefined },
+    { name: "carol", share: "none", grants: undefined },
+  ];
+  const by = serversByAgent(declared, optIn, fleet);
+  assert(by.get("alice")!.servers.join(",") === "github,tavily,secret", "listing: the named agent gets the opt-in server");
+  assert(by.get("bob")!.servers.join(",") === "github,tavily", "listing: an unnamed default agent does not — and keeps every shared one");
+  assert(agentsSharing("secret", fleet, declared, optIn).filter((w) => w.shares).map((w) => w.name).join(",") === "alice", "agentsSharing names only the opted-in agent");
+  assert(!!serversByAgent(declared, optIn, [{ name: "x", share: undefined, grants: "gone" }]).get("x")!.error, "a dangling grant is REPORTED by the listing instead of crashing it");
+  // Flipping secret back to shared changes bob (gains it), not alice (had it) or carol (none).
+  assert(changedAgents(by, serversByAgent(declared, [], fleet)).join(",") === "bob", "only the agents whose set changed are told to restart");
+
+  // The listing stays short on a big fleet (stdout is not a tty here, so no colour codes).
+  const fleetNames = Array.from({ length: 152 }, (_, i) => `a${i}`);
+  assert(whoLine(fleetNames, fleetNames, false, false) === "all agents (152)", "a shared server on every agent is one count, not 152 names");
+  assert(whoLine(fleetNames.slice(2), fleetNames, false, false) === "all agents (152) except a0, a1", "a few left out are named as the exceptions");
+  assert(whoLine(["a3"], fleetNames, true, false) === "1/152: a3", "an opt-in server names who has it");
+  assert(/^20\/152: a0, .* \+12 more \(--verbose\)$/.test(whoLine(fleetNames.slice(0, 20), fleetNames, true, false)), "a long name list is capped with +N more");
+  assert(whoLine(fleetNames.slice(0, 20), fleetNames, true, true).split(", ").length === 20, "--verbose prints every name");
 }
 
 // 7. A config we can't parse is never overwritten: half of it may be settings paw knows nothing about.

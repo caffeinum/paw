@@ -78,3 +78,10 @@ Moved verbatim from CLAUDE.md (2026-10-02 split). Index: [CLAUDE.md](../../CLAUD
   — cotal's real `mcp.cjs` over stdio on a PRIVATE broker that it SIGKILLs and restarts: the server survives
   the outage with its tool set intact and rejoins by itself (open mesh — not JWT renewal); see
   [agents.md](agents.md#the-cotal-tools-disconnected-2026-10-24--the-mcp-server-was-fine). ~2min.
+  `scripts/e2e-mcp-optin.ts` (`PAW_HOME=$(mktemp -d) PAW_SPACE=test-$$ PAW_RELEASE=dev PAW_COTAL_ROOT=$(mktemp -d)
+  node scripts/e2e-mcp-optin.ts`) — opt-in MCP servers on two REAL haiku claudes. It uses a throwaway cotal
+  config (`XDG_CONFIG_HOME` is set inside the script, which refuses to run unless `globalConfigPath()`
+  lands in it). It reads the `--mcp-config` each claude launched with, found by its COTAL_NAME. Probe
+  servers record which claude listed their tools. Proves: alice (`--only`) has the server, bob doesn't
+  but keeps the shared one, `only --all` restarts nobody and names bob, and a respawned bob gets it.
+  ~2min. See [cli.md#paw-mcp](cli.md#paw-mcp).
