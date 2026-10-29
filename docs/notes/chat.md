@@ -277,6 +277,9 @@ Moved verbatim from CLAUDE.md (2026-10-02 split). Index: [CLAUDE.md](../../CLAUD
   prepended stdin listener (the picker/paste pattern): the `!` check runs after readline folds the key in
   (`setImmediate`, `rl.line === "!"`), Backspace is read BEFORE readline eats it against an already-empty
   buffer. Verified under node-pty: `!` → prompt flips; BS → back; `echo MODE_OK` ran + DM landed; Esc kept `abc`.
+  **A sandboxed agent's `!cmd` runs in ITS VM (2026-10-28)** — `container exec … bash -lc`, never the host; its
+  VM down fails loud; output now streams (batched ~100ms) so a login's URL shows while it waits.
+  → [sandbox.md](sandbox.md#cmd-and-a-shell-in-the-vm-srcsandbox-exects)
   **The shell is DETACHED from the chat's tty (`runBash`, 2026-09-11):** `!gs` killed `paw chat` with
   `EIO: i/o error, read` ("happened a few times"). Reproduced deterministically under node-pty: an
   interactive zsh (`-ic`, needed for aliases) that INHERITS the chat's controlling tty runs its

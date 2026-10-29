@@ -1887,7 +1887,7 @@ async function runCommand(agent, command) {
     // Say what actually happened to BOTH halves: a command can succeed and still fail to reach the
     // agent, and reporting only the exit code would hide that the point of running it was missed.
     const status = r.timedOut ? "timed out" : r.code === 0 ? "ok" : `exit ${r.code}`;
-    $("hint").textContent = `${command} — ${status}${r.delivered === false ? " · couldn't hand it to the agent" : ""}`;
+    $("hint").textContent = `${command} — ${status}${r.vm ? ` · ran in ${agent}'s VM` : ""}${r.delivered === false ? " · couldn't hand it to the agent" : ""}`;
     await loadInbox();
     render();
   } catch (e) {
