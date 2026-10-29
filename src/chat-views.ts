@@ -182,6 +182,8 @@ export interface FollowSource {
  * - `banner` — the header, shown in every view.
  * - `chat` — anything emit() printed. `from` is set for an inbound DM, and only then: the logs view
  *   needs to know whose mail it is (see entryVisible). `onlyLogs` marks a note ABOUT the logs.
+ *   `bannerDelta` marks a banner field filled in AFTER the banner scrolled (`status: …`): a redraw
+ *   repaints the banner with that value, so it skips these lines rather than say each one twice.
  * - `echo` — a line you typed, exactly as readline echoed it. readline prints it, not emit, so without
  *   recording it here your own half of the conversation would vanish on the first redraw.
  * - `log` — a batch of the target's transcript blocks, stored RAW: which blocks show depends on the view
@@ -189,7 +191,7 @@ export interface FollowSource {
  */
 export type Entry =
   | { kind: "banner"; text: string }
-  | { kind: "chat"; text: string; side: "you" | "peer" | "sys"; tight: boolean; from?: string; onlyLogs?: boolean }
+  | { kind: "chat"; text: string; side: "you" | "peer" | "sys"; tight: boolean; from?: string; onlyLogs?: boolean; bannerDelta?: boolean }
   | { kind: "echo"; text: string }
   | { kind: "log"; agent: string; blocks: Block[]; backfill: boolean; note?: string };
 

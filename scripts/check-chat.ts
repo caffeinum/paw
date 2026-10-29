@@ -1138,6 +1138,20 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
   const drained = q.drain();
   assert(eq(drained.map((d) => d.text), ["one", "@bob two", "ls -la"]) && q.count === 0, "DeferredQueue: drain is FIFO and empties the queue");
   assert(eq(drained[0]!.pending, ["img1"]) && eq(drained[1]!.pastes, ["p1"]) && drained[1]!.stagedFor === "kit", "DeferredQueue: each line keeps the attachments staged for it");
+  {
+    // Replay takes ONE line at a time: a line queued while an earlier one is still running lands behind
+    // it (never ahead), and whatever is left is still there for a quit to list.
+    const r = new DeferredQueue<string, string>();
+    r.push({ text: "a", pending: [], pastes: [], bang: false, at: 1 });
+    r.push({ text: "b", pending: [], pastes: [], bang: false, at: 2 });
+    const order: string[] = [];
+    for (let it = r.shift(); it; it = r.shift()) {
+      order.push(it.text);
+      if (it.text === "a") r.push({ text: "typed during a", pending: [], pastes: [], bang: false, at: 3 });
+      if (it.text === "b") assert(eq(r.unsentLines(), ["typed during a"]), "DeferredQueue: mid-replay, the not-yet-run lines are still listed for a quit");
+    }
+    assert(eq(order, ["a", "b", "typed during a"]) && r.count === 0, "DeferredQueue: shift-replay keeps typed order, including lines queued during the replay");
+  }
 
   // Replay semantics, modelled on chat's handler: typed-time `@name` switches for the lines after it.
   {
@@ -1200,34 +1214,27 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
 {
   const { consentAnswer, PendingConsent, ARM_MS } = await import("../src/chat-consent.ts");
   const armed = 1000;
-  assert(consentAnswer({ text: "y", startedAt: armed - 200, pasted: false, replay: false }, armed) === "typeahead", "consent: a `y` started before the question was armed is type-ahead");
-  assert(consentAnswer({ text: "y", startedAt: armed + 100, pasted: true, replay: false }, armed) === "typeahead", "consent: a pasted `y` never answers");
-  assert(consentAnswer({ text: "yes", startedAt: armed + 100, pasted: false, replay: true }, armed) === "typeahead", "consent: a replayed line never answers");
-  assert(consentAnswer({ text: "y", startedAt: undefined, pasted: false, replay: false }, armed) === "typeahead", "consent: a line with no known first key never answers");
-  assert(consentAnswer({ text: " Yes ", startedAt: armed + 1, pasted: false, replay: false }, armed) === "yes" && consentAnswer({ text: "nah", startedAt: armed + 1, pasted: false, replay: false }, armed) === "no", "consent: a line typed after arming answers y/yes → yes, anything else → no");
+  assert(consentAnswer({ text: "y", startedAt: armed - 200, pasted: false, replay: false }, armed) === "message", "consent: a `y` started before the question was armed is a message");
+  assert(consentAnswer({ text: "y", startedAt: armed + 100, pasted: true, replay: false }, armed) === "message", "consent: a pasted `y` never answers");
+  assert(consentAnswer({ text: "yes", startedAt: armed + 100, pasted: false, replay: true }, armed) === "message", "consent: a replayed line never answers");
+  assert(consentAnswer({ text: "y", startedAt: undefined, pasted: false, replay: false }, armed) === "message", "consent: a line with no known first key never answers");
+  assert(consentAnswer({ text: " Yes ", startedAt: armed + 1, pasted: false, replay: false }, armed) === "yes", "consent: y/yes typed after arming → yes");
+  assert(["n", "No", "", "  "].every((t) => consentAnswer({ text: t, startedAt: armed + 1, pasted: false, replay: false }, armed) === "no"), "consent: n/no/an empty Enter typed after arming → no");
+  assert(consentAnswer({ text: "lo there", startedAt: armed + 1, pasted: false, replay: false }, armed) === "message" && consentAnswer({ text: "nah", startedAt: armed + 1, pasted: false, replay: false }, armed) === "message", "consent: any other line is a MESSAGE, never swallowed as no");
   let now = 0;
   const events: string[] = [];
-  let draft = "half a message";
   const host = {
-    stashDraft: () => {
-      const d = draft;
-      draft = "";
-      events.push(`stash:${d}`);
-      return () => {
-        draft = d;
-        events.push(`restore:${d}`);
-      };
-    },
     ask: (q: string, p: string) => events.push(`ask:${q}|${p}`),
     done: () => events.push("done"),
     now: () => now,
   };
   const pc = new PendingConsent(host);
   const answer = pc.consent("kit looks stuck (off the mesh). restart it? [y/N] ");
-  assert(pc.open && events[0] === "stash:half a message" && /restart kit\? \[y\/N\]> /.test(events[1]!), "consent: asking stashes the draft and sets the restart prompt");
+  assert(pc.open && /restart kit\? \[y\/N\]> /.test(events[0]!) && pc.prompt === "restart kit? [y/N]> ", "consent: asking sets the restart prompt, and exposes it while open (no draft is touched)");
   assert(!pc.offer({ text: "y", startedAt: 100, pasted: false, replay: false }), `consent: \`y\` at +100ms (< ${ARM_MS}ms) is not an answer — it stays a message`);
+  assert(!pc.offer({ text: "hello there", startedAt: 400, pasted: false, replay: false }) && pc.open, "consent: an ordinary line after arming stays a message and the question stays open");
   assert(pc.open && pc.offer({ text: "y", startedAt: 400, pasted: false, replay: false }), "consent: `y` at +400ms answers");
-  assert((await answer) === true && !pc.open && draft === "half a message" && events.includes("done"), "consent: …yes, and the draft is restored");
+  assert((await answer) === true && !pc.open && pc.prompt === undefined && events.includes("done"), "consent: …yes, and the prompt is released");
   const second = pc.consent("kit looks stuck. restart it? [y/N] ");
   pc.cancel();
   assert((await second) === false && !pc.open, "consent: quit/close answers no");
@@ -1238,6 +1245,8 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
   assert(eq(lexChatArgs(["@kit", "--space", "team2027"], "/x/repo"), { space: "team2027", label: "kit", mode: "agent", only: true }), "preshell lex: @name → filtered agent, --space read");
   assert(eq(lexChatArgs([], "/x/repo"), { label: "repo", mode: "agent", only: false }), "preshell lex: bare → this folder's basename");
   assert(eq(lexChatArgs(["--model", "opus", "."], "/x/repo"), { label: "repo", mode: "agent", only: false }), "preshell lex: a flag's value is never the target");
+  assert(eq(lexChatArgs(["--space=team2027", "echoer"], "/x/repo"), { space: "team2027", label: "echoer", mode: "agent", only: false }), "preshell lex: --space=X is --space X (never the default space's frame)");
+  assert(eq(lexChatArgs(["--model=opus", "@kit"], "/x/repo"), { label: "kit", mode: "agent", only: true }), "preshell lex: --flag=value is skipped whole");
   assert(lexChatArgs(["--all"], "/x").mode === "all" && lexChatArgs(["#ops"], "/x").label === "ops", "preshell lex: --all, #channel");
 }
 
@@ -1299,6 +1308,20 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
   assert(direct === 7, `chat: direct endpoint reads stay inside the guarded helpers (7 expected, found ${direct})`);
   // Listeners before the endpoint connects: every e.on/e.tap in startEndpoint precedes startResilient(e).
   const se = src.slice(src.indexOf("const startEndpoint = async"), src.indexOf("await startResilient(e);"));
+  // An open restart question owns the prompt: every prompt goes through promptFor(), which shows it.
+  const setPrompts = [...src.matchAll(/setPrompt\(([^)]*\)?)\)/g)].map((m) => m[1]);
+  assert(setPrompts.length > 0 && setPrompts.every((a) => a === "promptFor()"), `chat: every setPrompt goes through promptFor() (found: ${[...new Set(setPrompts)].join(", ")})`);
+  assert(/const promptFor = \(\): string => \{\s*(\/\/[^\n]*\n\s*)*if \(consent\.prompt\) return/.test(src), "chat: promptFor() returns the restart question first while it is open");
+  // While the queue replays, every non-quit line joins it, and a DM can't retarget it.
+  assert(/\(replaying && !quits\)/.test(src) && /holding = !ready \|\| replaying \|\|/.test(src), "chat: lines typed during the replay queue behind it; a DM mid-replay doesn't move the target");
+  // A failed or stopped endpoint is forgotten whole — /reconnect never trusts a dead endpoint's roster.
+  const drop = src.slice(src.indexOf("const dropEndpoint = (): void => {"), src.indexOf("const startEndpoint = async"));
+  assert(/rosterSeen = false/.test(drop) && /ep = undefined/.test(drop) && /me = undefined/.test(drop) && /peerHold = new PresenceHold/.test(drop) && /if \(ep === x\.ep\) dropEndpoint\(\)/.test(src), "chat: stopping a startup endpoint resets ep/conn/me/rosterSeen/peerHold");
+  // Banner deltas are skipped on redraw (the repainted banner already says them).
+  assert(/e\.kind === "chat" && e\.bannerDelta && bannerEntry\) continue/.test(src), "chat: a redraw doesn't repeat banner field lines under the banner that now shows them");
+  // The pre-shell turns bracketed paste on BEFORE raw mode, and off on exit.
+  const pre = readFileSync(new URL("../src/chat-preshell.ts", import.meta.url), "utf8");
+  assert(pre.indexOf("write(ENABLE_BRACKETED_PASTE)") > 0 && pre.indexOf("write(ENABLE_BRACKETED_PASTE)") < pre.indexOf("setRawMode(true)") && /writeSync\(1, DISABLE_BRACKETED_PASTE\)/.test(pre), "preshell: bracketed paste is on before the first key can be read, off on exit");
   assert(/e\.on\("message", onMessage\)/.test(se) && /e\.on\("presence", onPresence\)/.test(se) && /tapOwnSubject\(e,/.test(se) && /attachConn\(e,/.test(se), "chat: message/presence/tap/conn listeners are attached BEFORE startResilient");
   // The plain-line branch never falls back to the room while a target is set.
   const plain = src.slice(src.indexOf("} else if (curName) {\n        // The sticky target."), src.indexOf("/** Run the queued lines"));

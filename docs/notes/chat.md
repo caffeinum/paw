@@ -65,8 +65,16 @@ no longer between `paw chat` and a prompt that takes keys. Three moments, in a t
    core-free `src/chat-preshell.ts` BEFORE @cotal-ai/core: it lexes the target from argv (no
    validation), paints the banner + `you → <label> ◌>` through the same pure `renderBanner`
    (`src/chat-banner.ts`) chat uses, and puts the tty in raw mode — keys typed now wait in the kernel
-   (not cooked-echoed, not lost) until readline reads them. Ctrl-C does nothing during the ~200ms
-   import (known cost). `PAW_CHAT_PRESHELL=0` skips it.
+   (not cooked-echoed, not lost) until readline reads them. Bracketed paste is switched on in the
+   SAME write, before raw mode: a paste landing before chat.ts has loaded still arrives marked (one
+   `[Pasted text #1]`, never N messages or a pasted `!…` line run as a command); chat.ts's stdin
+   wrapper splits a chunk after the paste's end marker, so keys the kernel hands over in the same
+   chunk land after the paste is staged. `--space=X` is lexed like `--space X`. A frame that would not
+   fit on screen (banner + prompt ≥ rows) is ONE line (`🐾 paw chat ◌ loading`) — a taller one's top
+   would scroll out of erase's reach and strand a copy in the scrollback. A failure before chat's own
+   banner (bad argv, unknown name) erases the frame first (`eraseFrame`, idempotent, also called from
+   bin/paw.ts's failure handler). Ctrl-C does nothing during the ~200ms import (known cost).
+   `PAW_CHAT_PRESHELL=0` skips it.
 2. **Readline live (~250ms, the core import floor)** — chat.ts resolves a READ-ONLY target from the
    registry (an unknown/ambiguous name still fails loud here, before any network; the pre-shell frame
    is erased first), adopts the frame (erase + repaint in one write), creates readline and prompts.
@@ -82,7 +90,10 @@ from a roster that was never read. The footer's left label is `bootLabel` (`◌ 
 `◌ opening inbox`, `◌ connecting`, `◌ waking <n>`, `◌ waiting for <n>`, `✕ not connected —
 /reconnect · /quit`). The banner is a LIVE history entry: repainted where it stands while it is the
 last thing painted (`canRepaintInPlace`: tty, chat view, no picker/paste, no resize since, fits on
-screen); otherwise each change is ONE dim delta line (`  status: reusing live agent`). Repaints are
+screen); otherwise each change is ONE dim delta line (`  status: reusing live agent`) — including a
+field that resolved to NOTHING (`on: no machine known`, `model: no reading here`), or its `◌` would
+read as loading forever — marked `bannerDelta`, which a ←/→ redraw skips (the repainted banner says it
+already). Repaints are
 coalesced (one `setImmediate` flush) and held while a paste is arriving. `PAW_CHAT_TIMING=<file>`
 writes JSONL marks (`preshell chat prompt meshUp inbox roster endpoint agent ready settled`).
 
@@ -90,21 +101,31 @@ writes JSONL marks (`preshell chat prompt meshUp inbox roster endpoint agent rea
 exit /conn /reconnect` run at once; everything else (plain, `@…`, `#…`, `!…`, other `/cmd`) is
 queued (`DeferredQueue`) WITH the attachments/pastes staged for it, said as `◌ queued — sends when
 connected`, counted in the prompt badge + footer. On ready they replay in typed order through the SAME
-`handleLine`, so `@bob x` then a plain line sends both to bob. Rules that keep a queued line from going
-somewhere it wasn't typed for:
-- a backlog/early DM never retargets while anything is queued (`shouldFollowDm` `holding`);
+`handleLine`, so `@bob x` then a plain line sends both to bob. Replay takes ONE line at a time
+(`DeferredQueue.shift`) until the queue is empty, and while it runs (`replaying`) every line but a quit
+joins the queue behind it — a replayed line can wait seconds (presence, a respawn, a `!cmd`), and a
+line typed then must neither jump ahead nor take its attachments. The replayed line's attachments sit
+in `pending`/`pastes`; anything staged meanwhile goes to `liveStage` (`stage()`), merged back after.
+Rules that keep a queued line from going somewhere it wasn't typed for:
+- a backlog/early DM never retargets while anything is queued or replaying (`shouldFollowDm` `holding`);
 - a target that can't be reached sets `targetLost`; the plain-line branch is now `else if (curName)` —
   it REFUSES (`✕ not sent to <n>: <why> — text kept (↑ to recall)`; a live line is put back in the
-  buffer) instead of ever falling through to `sendPost(room)`. Broadcasts stay explicit. The target
-  coming up later clears it; `@other` recovers;
+  buffer) instead of ever falling through to `sendPost(room)`. Broadcasts stay explicit. A REPLAYED
+  refusal goes back into the input (attachments still staged) when the input is empty and the line is
+  one line; otherwise it is kept whole (pastes + image lines composed in) in `keptUnsent` and printed
+  on quit — never "↑ to recall" for a line readline's history doesn't hold. The target coming up later
+  clears it; `@other` recovers;
 - `@name` and `/who` after ready wait (≤5s, `waitForPresenceSnapshot`) for the roster's first read,
   and never respawn an agent on the word of a roster that hasn't loaded.
 
 **Restart consent** (`src/chat-consent.ts`): the wake gate's `restart it? [y/N]` is asked IN the REPL
-(the old second readline on stdin would race the first). The draft is stashed, the prompt becomes
-`restart <n>? [y/N]>`, and only a line typed into an empty buffer whose first key came ≥300ms after
-the question, not pasted, not a replay, answers it; anything earlier is type-ahead (queued as a
-message). Quit answers no and restores the draft. `--restart` still means allow; pipes never ask.
+(the old second readline on stdin would race the first). The draft is LEFT ALONE (stashing it split a
+half-typed message in two), the prompt becomes `restart <n>? [y/N]>` — via `promptFor()`, so every
+prompt redraw (a queued line, a staged paste, a hidden-DM badge) keeps showing it — and only a line
+typed into an empty buffer whose first key came ≥300ms after the question, not pasted, not a replay,
+not in `!` mode, AND that is `y`/`yes`/`n`/`no`/an empty Enter answers it. Any other line is an
+ordinary message (never swallowed as "no") and the question stays open. Quit answers no. `--restart`
+still means allow; pipes never ask.
 
 **Listener gap.** `startEndpoint` attaches `message`, `presence`, `presence-view`, the conn state and
 the own-send tap (`tapOwnSubject`) BEFORE `startResilient` — a DM landing the moment the inbox binds is
@@ -124,10 +145,17 @@ is registered before `provision()` dials, release deletes the entry once retired
 reaches ready runs `sweepOrphanInboxes` (dead pids only; a failure is shown, never swallowed).
 `retireHumanInbox` tolerates a footprint that was never (fully) made.
 
+**Endpoint state on failure.** A startup endpoint that is stopped (`concurrentStartup`'s failure path)
+or fails to start is forgotten whole (`dropEndpoint`: `ep`, `conn`, `me`, `rosterSeen`, `peerHold`), and
+a boot failure after the concurrent startup tears down what it acquired — so `/reconnect` never trusts
+a dead endpoint's roster (a live agent shown `offline`, `@name` "no peer") nor leaks a first inbox.
+
 **Pipe mode** (stdin or stdout not a tty) keeps today's order: connect + resolve, then the banner, then
 read lines; a failure throws. `check:chat-tty` (isolated space, real pty, a bare `echoer` peer)
 covers type-ahead delivery (once, in order, nothing to #general), `@ghost` refusal, an unreachable
-target, a DM at join, Ctrl-C at +80/+400ms, and pipe mode. `pnpm measure:chat -- chat @x` measures it
+target, a DM at join, Ctrl-C at +80/+400ms, pipe mode, an early multi-line paste (one message), a
+refused multi-line queued line (kept, printed on quit), an argv error (frame erased first) and a
+14-row terminal (one-line frame). `pnpm measure:chat -- chat @x` measures it
 (read-only: one early key, Ctrl-U + Ctrl-D, never Enter; `--repo <dir>` measures another checkout).
 
 Measured 2026-10-28 (pty 120×40, bun, n=5 medians, ms from spawn; baseline c68b1ae typed AT the prompt
@@ -140,6 +168,10 @@ since earlier keys were not shown):
 | local `@skills`, before | 219 | 622 | 629 | = prompt |
 | local, after | 40 | 40 | 255 | 648 |
 | local under node (`bin/paw.mjs`), after | 103 | 103 | 412 | 775 |
+
+Re-measured after the review fixes (same rig, branch vs a c68b1ae copy, n=5–6 medians): remote
+`@queue-ea#team2027` first frame 40 · key echoed 260 · ready 1082 (p90 1472) vs main's prompt 1406
+(p90 3156); local isolated `--all` 40 · 252 · ready 406 vs main's prompt 382; node 100 · 409 · 529.
 
 The ~230ms before readline is the @cotal-ai/core import (`scripts/lean/import-cost.ts`); wifi now only
 decides how long the `◌` loaders stay up.

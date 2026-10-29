@@ -197,6 +197,8 @@ try {
   const argv = expandEqFlags(withDefaultSpace(args, cmd === "cron" ? callerSpace() : resolveSpace()));
   await command.run({ values: {}, positionals: [], raw: argv });
 } catch (err) {
+  // A `paw chat` that failed before its banner: the skeleton frame promised a chat — take it down first.
+  if (cmd === "chat") (await import("../src/chat-preshell.ts")).eraseFrame();
   // Operator-facing failures should read as one clear line, not a V8 stack dump. The errors paw
   // throws are already actionable; keep the full stack behind PAW_DEBUG for when it isn't.
   // Never exit 1 SILENTLY: an error with an empty message (or a thrown non-Error) used to print a blank

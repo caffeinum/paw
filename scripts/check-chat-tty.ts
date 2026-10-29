@@ -12,7 +12,11 @@
  *   4. echoer DMs "you" the moment its presence appears: the DM renders (listeners attach before connect);
  *   5. Ctrl-C at +80ms and at +400ms: exits within the startup-settle bound, bracketed paste turned off,
  *      a line queued before the quit is printed in full;
- *   6. pipe mode (`… | paw chat echoer`) delivers once — today's order, unchanged.
+ *   6. pipe mode (`… | paw chat echoer`) delivers once — today's order, unchanged;
+ *   7. a multi-line bracketed paste landing at ~60ms (before chat.ts has loaded) is ONE message;
+ *   8. a multi-line queued line refused at replay is kept and printed in full on quit (never lost);
+ *   9. an argv error after the skeleton was painted erases it before the error prints;
+ *  10. a 14-row terminal gets a one-line skeleton (a full one would strand its top in the scrollback).
  */
 import { spawn as ptySpawn } from "@lydell/node-pty";
 import { spawn } from "node:child_process";
@@ -68,9 +72,9 @@ echoer.on("presence", (ev: { type: string; presence: { card: { id: string; name:
 await echoer.start();
 
 /** One `paw chat` under a pty. `script` runs against it; returns the plain output and exit code. */
-async function chat(args: string[], script: (io: { write(s: string): void; out(): string; t(): number; waitFor(re: RegExp, ms: number): Promise<boolean> }) => Promise<void>, budgetMs = 30_000) {
+async function chat(args: string[], script: (io: { write(s: string): void; out(): string; t(): number; waitFor(re: RegExp, ms: number): Promise<boolean> }) => Promise<void>, budgetMs = 30_000, rows = 40) {
   const t0 = Date.now();
-  const p = ptySpawn(exe, [...pre, "chat", ...args], { name: "xterm-256color", cols: 120, rows: 40, cwd: REPO, env: { ...(process.env as Record<string, string>), FORCE_COLOR: "1" } });
+  const p = ptySpawn(exe, [...pre, "chat", ...args], { name: "xterm-256color", cols: 120, rows, cwd: REPO, env: { ...(process.env as Record<string, string>), FORCE_COLOR: "1" } });
   let raw = "";
   p.onData((d) => (raw += d));
   const exited = new Promise<number>((r) => p.onExit(({ exitCode }) => r(exitCode)));
@@ -136,8 +140,8 @@ try {
     general.length = 0;
     const r = await chat(["nosuch"], async (io) => {
       setTimeout(() => io.write("hi-nobody\r"), 30);
-      const refused = await io.waitFor(/✕ not sent to nosuch: .* text kept/, 20_000);
-      ok("3. a line to an unreachable target is refused and kept", refused, io.out().split("\n").slice(-6).join(" | "));
+      const refused = await io.waitFor(/✕ not sent to nosuch: [\s\S]*that line is back in the input/, 20_000);
+      ok("3. a line to an unreachable target is refused and put back in the input", refused, io.out().split("\n").slice(-6).join(" | "));
       await sleep(300);
       ok("3. …the chat is still up", !/\$ $/.test(io.out()) && /you → .*nosuch/.test(io.out()));
       io.write("\x15/quit\r");
@@ -187,6 +191,58 @@ try {
     await new Promise((r) => child.on("exit", r));
     ok("6. pipe mode delivers once", dms.filter((d) => d === "piped-line").length === 1, JSON.stringify(dms));
     ok("6. …banner after the connect (today's order)", strip(out).indexOf("connecting to echoer") < strip(out).indexOf("paw chat") && /status: reusing live agent/.test(strip(out)), strip(out).slice(0, 200));
+  }
+
+  // 7. a multi-line paste in the first ~60ms arrives bracketed (the pre-shell turned 2004 on) → ONE DM.
+  {
+    dms.length = 0;
+    const r = await chat(["echoer"], async (io) => {
+      setTimeout(() => io.write("\x1b[200~p-one\rp-two\rp-three\x1b[201~"), 60);
+      setTimeout(() => io.write(" tail-word\r"), 120);
+      const end = Date.now() + 20_000;
+      while (Date.now() < end && !dms.some((d) => /tail-word/.test(d))) await sleep(50);
+      await sleep(500);
+      io.write("/quit\r");
+    });
+    const hits = dms.filter((d) => /p-one|p-two|p-three|tail-word/.test(d));
+    ok("7. an early multi-line paste is ONE message with all its lines", hits.length === 1 && /p-one[\s\S]*p-two[\s\S]*p-three/.test(hits[0]!) && /tail-word/.test(hits[0]!), JSON.stringify(hits));
+    ok("7. …the pre-shell enabled bracketed paste before the first prompt", r.raw.indexOf("\x1b[?2004h") >= 0 && r.raw.indexOf("\x1b[?2004h") < r.raw.indexOf("you → "));
+  }
+
+  // 8. a continued (multi-line) line to an unreachable target: refused at replay, kept, printed on quit.
+  {
+    general.length = 0;
+    const r = await chat(["nosuch"], async (io) => {
+      setTimeout(() => io.write("line-one\\\r"), 30);
+      setTimeout(() => io.write("line-two\r"), 60);
+      await io.waitFor(/that line is kept, not sent/, 20_000);
+      await sleep(200);
+      io.write("\x04");
+    });
+    const tail = r.plain.slice(Math.max(0, r.plain.lastIndexOf("quitting with")));
+    ok("8. a refused multi-line queued line is kept, not lost", /that line is kept, not sent/.test(r.plain), r.plain.split("\n").slice(-8).join(" | "));
+    ok("8. …and printed in full on quit", /quitting with 1 message/.test(tail) && /line-one[\s\S]*line-two/.test(tail), tail.slice(0, 200));
+    ok("8. …#general stayed silent", general.length === 0);
+  }
+
+  // 9. an argv error after the skeleton was painted: the frame is erased (cleared down) before the error.
+  {
+    const r = await chat(["echoer", "--personality", "calm"], async () => {}, 15_000);
+    const errAt = r.raw.indexOf("--personality is for a new agent");
+    const before = r.raw.slice(0, errAt);
+    ok("9. an argv error exits 1 with its message", r.code === 1 && errAt > 0, `exit ${r.code}`);
+    ok("9. …after the skeleton was cleared (never glued onto the loader prompt)", before.lastIndexOf("\x1b[0J") > before.lastIndexOf("you → ") && before.lastIndexOf("you → ") > 0);
+  }
+
+  // 10. a short terminal: the first frame is one line, so erasing it can reach every row.
+  {
+    const r = await chat(["echoer"], async (io) => {
+      await io.waitFor(/status: reusing live agent|status: ✕/, 20_000);
+      await sleep(200);
+      io.write("/quit\r");
+    }, 30_000, 14);
+    const first = strip(r.raw.slice(0, r.raw.indexOf("\x1b[0J")));
+    ok("10. a 14-row terminal gets a one-line skeleton", /◌ loading/.test(first) && !/agent:/.test(first), JSON.stringify(first.slice(0, 160)));
   }
 } finally {
   await echoer.stop().catch(() => {});

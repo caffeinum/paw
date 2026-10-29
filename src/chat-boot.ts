@@ -83,6 +83,12 @@ export class DeferredQueue<A, P> {
     this.items.push(line);
   }
 
+  /** Take the oldest queued line (undefined when empty). Replay takes one at a time, so a line queued
+   *  while an earlier one is still running lands behind it, and a quit mid-replay still lists the rest. */
+  shift(): DeferredLine<A, P> | undefined {
+    return this.items.shift();
+  }
+
   /** Take every queued line, oldest first, leaving the queue empty. */
   drain(): DeferredLine<A, P>[] {
     return this.items.splice(0, this.items.length);

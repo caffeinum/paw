@@ -6,7 +6,10 @@
  * typed as the start of a message, or a pasted line, must never restart a live agent. So the answer is
  * the REPL's own next line, and only one that was clearly typed AS the answer: into an empty buffer, its
  * first key pressed after the question had been on screen for {@link ARM_MS}, not pasted, not a replay
- * of a queued line. Anything earlier is type-ahead and stays a message.
+ * of a queued line — and only `y`/`yes`/`n`/`no`/an empty Enter. Anything else is an ordinary message:
+ * the operator who keeps typing the next message never has it swallowed as "no". The draft being typed
+ * when the question appears is left alone (never cut, never restored half-way); the question just takes
+ * over the prompt until it is answered.
  */
 export const ARM_MS = 300;
 
@@ -18,16 +21,19 @@ export interface ConsentLine {
   replay: boolean;
 }
 
-/** `yes`/`no` when the line answers the question, `typeahead` when it was typed before it was asked. */
-export function consentAnswer(line: ConsentLine, armedAt: number): "yes" | "no" | "typeahead" {
-  if (line.replay || line.pasted || line.startedAt === undefined || line.startedAt < armedAt) return "typeahead";
-  return /^y(es)?$/i.test(line.text.trim()) ? "yes" : "no";
+/** `yes`/`no` when the line answers the question; `message` when it is ordinary input — typed before
+ *  the question was asked, pasted, replayed, or simply not a y/n. */
+export function consentAnswer(line: ConsentLine, armedAt: number): "yes" | "no" | "message" {
+  if (line.replay || line.pasted || line.startedAt === undefined || line.startedAt < armedAt) return "message";
+  const t = line.text.trim();
+  if (/^y(es)?$/i.test(t)) return "yes";
+  if (/^(no?)?$/i.test(t)) return "no";
+  return "message";
 }
 
-/** The REPL hooks the question needs: the line being edited, the prompt, and a sink for the question. */
+/** The REPL hooks the question needs: the prompt, and a sink for the question. */
 export interface ConsentHost {
-  /** Stash and clear whatever is being typed; returns a function that puts it back. */
-  stashDraft(): () => void;
+  /** Say the question and switch the prompt to `prompt` (it stays until done()). */
   ask(question: string, prompt: string): void;
   /** Restore the ordinary prompt. */
   done(): void;
@@ -41,7 +47,7 @@ export interface ConsentHost {
 export class PendingConsent {
   private resolve?: (yes: boolean) => void;
   private armedAt = Infinity;
-  private restore?: () => void;
+  private shownPrompt?: string;
 
   private readonly host: ConsentHost;
 
@@ -53,12 +59,17 @@ export class PendingConsent {
     return this.resolve !== undefined;
   }
 
+  /** The question's prompt while it is open — every prompt redraw must show this, not the ordinary one. */
+  get prompt(): string | undefined {
+    return this.shownPrompt;
+  }
+
   /** The RestartConsent function the wake gate calls. One question at a time. */
   readonly consent = (question: string): Promise<boolean> => {
     if (this.resolve) throw new Error("paw chat: a restart question is already open");
-    this.restore = this.host.stashDraft();
     const name = question.split(" ")[0] ?? "it";
-    this.host.ask(question.trim(), `restart ${name}? [y/N]> `);
+    this.shownPrompt = `restart ${name}? [y/N]> `;
+    this.host.ask(question.trim(), this.shownPrompt);
     this.armedAt = this.host.now() + ARM_MS;
     return new Promise<boolean>((r) => (this.resolve = r));
   };
@@ -66,12 +77,12 @@ export class PendingConsent {
   offer(line: ConsentLine): boolean {
     if (!this.resolve) return false;
     const a = consentAnswer(line, this.armedAt);
-    if (a === "typeahead") return false;
+    if (a === "message") return false;
     this.finish(a === "yes");
     return true;
   }
 
-  /** Quit or close: the answer is no, and the draft comes back. */
+  /** Quit or close: the answer is no. */
   cancel(): void {
     if (this.resolve) this.finish(false);
   }
@@ -80,9 +91,8 @@ export class PendingConsent {
     const r = this.resolve!;
     this.resolve = undefined;
     this.armedAt = Infinity;
+    this.shownPrompt = undefined;
     this.host.done();
-    this.restore?.();
-    this.restore = undefined;
     r(yes);
   }
 }

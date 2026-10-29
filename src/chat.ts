@@ -105,6 +105,7 @@ import {
   DISABLE_BRACKETED_PASTE,
   ENABLE_BRACKETED_PASTE,
   makeBlock,
+  PASTE_END,
   PASTE_ICON,
   PasteScanner,
   pastePreview,
@@ -681,6 +682,7 @@ async function chat(argv: string[]): Promise<void> {
     let out = CLEAR_ALL;
     for (const e of history.entries) {
       if (!entryVisible(e, view, curName, readable)) continue;
+      if (e.kind === "chat" && e.bannerDelta && bannerEntry) continue; // the banner below says it now
       const text = painter.paint(e, view);
       out += text;
       if (text) lastPainted = e;
@@ -915,21 +917,11 @@ async function chat(argv: string[]): Promise<void> {
     return rosterSeen;
   };
   /** The wake gate's restart question, asked in this REPL (src/chat-consent.ts). */
+  // The draft being typed stays as it is: a line started before the question is never its answer.
   const consent = new PendingConsent({
-    stashDraft: () => {
-      const line = rl?.line ?? "";
-      lineStartedAt = undefined;
-      if (rl && line) {
-        rl.write(null, { ctrl: true, name: "u" });
-        rl.write(null, { ctrl: true, name: "k" });
-      }
-      return () => {
-        if (rl && !closing && line) rl.write(line);
-      };
-    },
-    ask: (question, prompt) => {
+    ask: (question) => {
       emit(c.yellow(`? ${question}`));
-      rl?.setPrompt(c.yellow(prompt));
+      rl?.setPrompt(promptFor()); // promptFor() shows the question while it is open
       if (rl && !closing) rl.prompt(true);
     },
     done: () => {
@@ -950,6 +942,18 @@ async function chat(argv: string[]): Promise<void> {
    *  placeholder sits in the line you're editing, the payload rides along on the next send. */
   const pastes: PasteBlock[] = [];
 
+  /**
+   * While the queued lines replay, `pending`/`pastes` hold the REPLAYED line's attachments — a line can
+   * wait seconds (a respawn, a `!cmd`, presence loading) between staging them and sending. Whatever the
+   * operator stages meanwhile goes here instead, and lines typed meanwhile join the queue behind the
+   * replayed ones (`replaying`), so nothing jumps the queue and nothing rides on someone else's line.
+   */
+  let liveStage: { pending: Attachment[]; pastes: PasteBlock[]; stagedFor?: string; bang: boolean } | undefined;
+  const stage = (): { pending: Attachment[]; pastes: PasteBlock[] } => liveStage ?? { pending, pastes };
+  let replaying = false;
+  /** Queued lines refused at replay that could not go back into the input: printed in full on quit. */
+  const keptUnsent: { to: string; text: string }[] = [];
+
   /** The prompt reflects where plain lines go right now: a sticky target, or the broadcast room —
    *  plus what's riding along with your next message. */
   /** Command mode, entered by typing `!` on an empty line with an agent targeted (the web composer's
@@ -960,8 +964,12 @@ async function chat(argv: string[]): Promise<void> {
   let hiddenCount = 0;
   const bangPrompt = (): string => `${c.yellow("$ >")} `;
   const promptFor = (): string => {
+    // An open restart question owns the prompt: every redraw (a staged paste, a queued line, a hidden
+    // DM's badge) must keep asking it, or the next line answers a question nobody can see.
+    if (consent.prompt) return c.yellow(consent.prompt);
     if (bang && curName) return bangPrompt();
-    const badges = [deferred.count ? `${deferred.count} queued` : "", pending.length ? `${pending.length} img` : "", pastes.length ? `${pastes.length} pasted` : "", elsewhereBadge(hiddenCount)].filter(Boolean);
+    const st = stage();
+    const badges = [deferred.count ? `${deferred.count} queued` : "", st.pending.length ? `${st.pending.length} img` : "", st.pastes.length ? `${st.pastes.length} pasted` : "", elsewhereBadge(hiddenCount)].filter(Boolean);
     const narrow = (process.stdout.columns || 80) < 40;
     const state = targetLost && curName && targetLost.name === curName ? ` ${c.red("✕")}` : !ready && bootPhase !== "failed" && (curName || pendingName()) ? ` ${c.dim(LOADER)}` : "";
     const tail = c.dim(`${curName && filter?.kind === "agent" && !narrow ? " (only)" : ""}${badges.length ? ` [${badges.join(" · ")}]` : ""}`) + state + c.dim("> ");
@@ -1100,8 +1108,10 @@ async function chat(argv: string[]): Promise<void> {
     const out = new Map<string, string>();
     if (st.mode === "agent") {
       if (st.status.s !== "loading") out.set("status", `status: ${slotText(st.status, (s) => s, c)}`);
-      if (st.machine.s === "ok" && st.machine.v) out.set("machine", `on ${st.machine.v}`);
-      if (st.info.s === "ok" && st.info.v) out.set("info", `model: ${st.info.v.model} · context: ${st.info.v.context}`);
+      // A field that loaded to NOTHING still gets its line: the banner on screen shows a loader for it,
+      // and without a line saying it resolved that loader would read as loading forever.
+      if (st.machine.s === "ok") out.set("machine", st.machine.v ? `on ${st.machine.v}` : "on: no machine known");
+      if (st.info.s === "ok") out.set("info", st.info.v ? `model: ${st.info.v.model} · context: ${st.info.v.context}` : "model: no reading here");
       if (st.info.s === "err") out.set("info", `model: ${c.red(`✕ ${st.info.msg}`)}`);
     } else if (st.mode === "all" && st.roster.s === "ok") {
       out.set("roster", st.roster.v.length ? `${st.roster.v.length} live: ${st.roster.v.map((n) => c.cyan(n)).join(c.dim(" · "))}` : "no agents live yet");
@@ -1153,7 +1163,7 @@ async function chat(argv: string[]): Promise<void> {
       bannerRows = paintedRows(next, cols);
       rl.prompt(true);
     } else {
-      for (const [, line] of changed) emit(c.dim(`  ${line}`));
+      for (const [, line] of changed) show({ kind: "chat", text: c.dim(`  ${line}`), side: "sys", tight: false, bannerDelta: true });
     }
     markSettled();
   }
@@ -1255,7 +1265,7 @@ async function chat(argv: string[]): Promise<void> {
       // with no visible reason (the critic reproduced it: DM hidden, announcement hidden, trace changed).
       // Never while lines typed before the connect are waiting to replay: they were typed for the target
       // on screen THEN, and a backlog DM must not retarget them.
-      const holding = !ready || deferred.count > 0;
+      const holding = !ready || replaying || deferred.count > 0;
       if (!filter && view === "chat" && shouldFollowDm({ from, curName, typed: rl?.line ?? "", held: held.length, staged: pending.length + pastes.length, historical: !!meta.historical, ageMs: Date.now() - m.ts, holding })) {
         const peer = findPeer(from);
         curId = peer?.card.id ?? m.from.id;
@@ -1355,7 +1365,7 @@ async function chat(argv: string[]): Promise<void> {
   type Card = Presence["card"];
   const presenceQuiet = (now: number): boolean =>
     !ep || !conn || conn.phase(now) !== "connected" || !ep.presenceView().fresh || ep.presenceWriteFailure()?.stuck === true;
-  const peerHold = new PresenceHold<Card, PresenceStatus>();
+  let peerHold = new PresenceHold<Card, PresenceStatus>();
   const printPeerLines = (lines: PresenceLine<Card, PresenceStatus>[]): void => {
     for (const l of lines) {
       if (!presenceVisible(filter, l.card.name)) continue;
@@ -1600,7 +1610,7 @@ async function chat(argv: string[]): Promise<void> {
   /** Park a captured paste: placeholder into the line you're editing, preview onto the screen. */
   const stagePaste = (block: PasteBlock, prefix: string): void => {
     if (!rl || closing) return;
-    pastes.push(block);
+    stage().pastes.push(block);
     rl.write(null, { ctrl: true, name: "u" }); // drop the paste's trailing segment…
     rl.write(null, { ctrl: true, name: "k" }); // …from both sides of the cursor
     rl.setPrompt(promptFor());
@@ -2028,7 +2038,19 @@ async function chat(argv: string[]): Promise<void> {
     process.stdin.emit = ((event: string | symbol, ...args: unknown[]): boolean => {
       if (event !== "data") return stdinEmit(event, ...args);
       const chunk = args[0] as Buffer | string;
-      const text = typeof chunk === "string" ? chunk : chunk.includes("\x1b[<") ? chunk.toString("utf8") : undefined;
+      const text = typeof chunk === "string" ? chunk : chunk.includes("\x1b[<") || chunk.includes(PASTE_END) ? chunk.toString("utf8") : undefined;
+      // Keys typed after a paste's END marker in the SAME chunk — what the kernel hands over at once for
+      // everything typed while chat was still loading — are cut off and re-emitted a tick later: the
+      // paste is staged on a setImmediate (readline is mid-chunk), and an Enter folded into the same
+      // chunk would otherwise submit the paste's trailing segment as a message of its own.
+      const endAt = text === undefined ? -1 : text.indexOf(PASTE_END);
+      if (text !== undefined && endAt >= 0 && endAt + PASTE_END.length < text.length) {
+        const head = text.slice(0, endAt + PASTE_END.length);
+        const rest = text.slice(endAt + PASTE_END.length);
+        const handled = process.stdin.emit("data", typeof chunk === "string" ? head : Buffer.from(head, "utf8"));
+        setImmediate(() => process.stdin.emit("data", typeof chunk === "string" ? rest : Buffer.from(rest, "utf8")));
+        return handled;
+      }
       if (text === undefined || !text.includes("\x1b[<")) return stdinEmit(event, ...args);
       const { rest, events } = stripMouse(text);
       for (const e of events) onMouse(e);
@@ -2087,7 +2109,7 @@ async function chat(argv: string[]): Promise<void> {
         setImmediate(() => { rl!.setPrompt(promptFor()); rl!.prompt(true); });
         return;
       }
-      if (!bang && curName && raw === "!") {
+      if (!bang && curName && raw === "!" && !consent.open && !replaying) {
         setImmediate(() => {
           if (!rl || rl.line !== "!" || bang) return;
           bang = true;
@@ -2157,7 +2179,7 @@ async function chat(argv: string[]): Promise<void> {
           setImmediate(() => { if (rl && !closing) rl.prompt(true); });
           continue;
         }
-        const block = makeBlock(pastes.length + 1, text);
+        const block = makeBlock(stage().pastes.length + 1, text);
         // Only the lines still to come: the ones already eaten while the paste was open are accounted
         // for by `pasteFired`, and counting them twice would swallow real input typed afterwards.
         const remaining = submittedLineCount(text) - pasteFired;
@@ -2206,16 +2228,17 @@ async function chat(argv: string[]): Promise<void> {
         if (bang) return;
         const cur = rl.line;
         if (!cur || !cur.includes("/")) return; // cheap gate: no separator ⇒ no path ⇒ no stat calls
-        const peeled = peelLine(cur, undefined, pending.length + 1);
+        const into = stage().pending;
+        const peeled = peelLine(cur, undefined, into.length + 1);
         if (!peeled.paths.length) return;
         const staged: Attachment[] = [];
         try {
-          for (const src of peeled.paths) staged.push(stageAttachment(space, src, pending.length + staged.length + 1));
+          for (const src of peeled.paths) staged.push(stageAttachment(space, src, into.length + staged.length + 1));
         } catch (e) {
           emit(c.red("! " + (e as Error).message));
           return; // leave the raw path in the buffer — never silently swallow the drop
         }
-        pending.push(...staged);
+        into.push(...staged);
         rl.write(null, { ctrl: true, name: "u" }); // kill to line start
         rl.write(null, { ctrl: true, name: "k" }); // kill to line end
         // Trailing space when the body ends in a placeholder, so you can keep typing your message
@@ -2326,18 +2349,30 @@ async function chat(argv: string[]): Promise<void> {
     lineStartedAt = undefined;
     const pasted = pastedIntoLine;
     pastedIntoLine = false;
+    // The wake gate's restart question takes only a line typed AS its answer (src/chat-consent.ts) —
+    // y/yes, or n/no/an empty Enter; any other line is a message and the question stays open.
+    if (!bang && consent.offer({ text: typed, startedAt, pasted, replay: false })) return;
     if (!typed) {
       if (!closing) rl!.prompt();
       return;
     }
-    // The wake gate's restart question takes only a line typed AS its answer (src/chat-consent.ts).
-    if (consent.offer({ text: typed, startedAt, pasted, replay: false })) return;
-    // Not connected yet: a line that needs the mesh waits, in order, with what was staged for it.
-    if (!ready && lineNeedsMesh(bang ? `!${typed}` : typed)) {
-      deferred.push({ text: typed, pending: pending.splice(0), pastes: pastes.splice(0), ...(stagedFor !== undefined ? { stagedFor } : {}), bang, at: Date.now() });
-      stagedFor = undefined;
-      bang = false;
-      emit(c.dim(`${LOADER} queued — sends when connected`), "you");
+    // Not connected yet: a line that needs the mesh waits, in order, with what was staged for it. While
+    // the queue replays, EVERY line but a quit joins it behind the lines typed before it.
+    const quits = /^\/?(quit|exit)$/i.test(typed);
+    // During the replay `bang`/`stagedFor` are the REPLAYED line's; the operator's own are in liveStage.
+    const lineBang = liveStage ? liveStage.bang : bang;
+    if ((!ready && lineNeedsMesh(lineBang ? `!${typed}` : typed)) || (replaying && !quits)) {
+      const st = stage();
+      const boundTo = liveStage ? liveStage.stagedFor : stagedFor;
+      deferred.push({ text: typed, pending: st.pending.splice(0), pastes: st.pastes.splice(0), ...(boundTo !== undefined ? { stagedFor: boundTo } : {}), bang: lineBang, at: Date.now() });
+      if (liveStage) {
+        liveStage.stagedFor = undefined;
+        liveStage.bang = false;
+      } else {
+        stagedFor = undefined;
+        bang = false;
+      }
+      emit(c.dim(replaying ? `${LOADER} queued — sends after the lines before it` : `${LOADER} queued — sends when connected`), "you");
       rl!.setPrompt(promptFor());
       if (!closing) rl!.prompt();
       return;
@@ -2350,7 +2385,10 @@ async function chat(argv: string[]): Promise<void> {
    * lines typed before the mesh was up (`replay`). Same handler either way, so `@name`, attachments and
    * every refusal mean exactly what they meant when the line was typed.
    */
-  async function handleLine(typed: string, opts: { replay?: boolean }): Promise<void> {
+  async function handleLine(typed: string, opts: { replay?: boolean }): Promise<{ refusedTo: string; body: string } | undefined> {
+    /** The line was refused whole (its target can't be reached): nothing of it was sent. `body` is the
+     *  line with its dragged paths already swapped for placeholders (they are staged). */
+    let refused: { refusedTo: string; body: string } | undefined;
     try {
       if (bang) {
         bang = false; // one command per entry; the next line starts as a message again
@@ -2591,8 +2629,14 @@ async function chat(argv: string[]): Promise<void> {
         refreshTarget();
         const lost = targetLost?.name === curName ? targetLost : undefined;
         if (!curId || lost) {
-          emit(c.red(`✕ not sent to ${curName}: ${lost?.reason ?? "it isn't reachable on the mesh"} — text kept (↑ to recall)`));
-          if (!opts.replay && rl && !closing) setImmediate(() => rl && !closing && rl.write(text));
+          refused = { refusedTo: curName, body: text };
+          const why = `✕ not sent to ${curName}: ${lost?.reason ?? "it isn't reachable on the mesh"}`;
+          // A replayed line's keeping is said by replayDeferred, which knows where it put it.
+          if (opts.replay) emit(c.red(why));
+          else {
+            emit(c.red(`${why} — text kept (↑ to recall)`));
+            if (rl && !closing) setImmediate(() => rl && !closing && rl.write(text));
+          }
         } else sendDm(curName, curId, flush(text, curName));
       } else {
         sendPost(room, flush(text, `#${room}`)); // no sticky target — post to the room this session opened
@@ -2601,23 +2645,60 @@ async function chat(argv: string[]): Promise<void> {
       emit(c.red("! " + (e as Error).message));
     }
     if (!closing) rl!.prompt();
+    return refused;
   }
 
-  /** Run the queued lines, oldest first, each with the attachments staged for it when it was typed. */
+  /**
+   * Run the queued lines, oldest first, each with the attachments staged for it when it was typed —
+   * until the queue is EMPTY, including lines typed while it ran (`replaying` queues them), so the
+   * typed order is the sent order. A line refused here (its target can't be reached) is never dropped:
+   * it goes back into an empty input with its attachments still staged — exactly as a refused live
+   * line does — or, when the input is in use or it spans lines, it is kept and printed in full on quit.
+   */
   async function replayDeferred(): Promise<void> {
-    for (const it of deferred.drain()) {
-      if (closing) return;
-      const keep = { pending: pending.splice(0), pastes: pastes.splice(0), stagedFor, bang };
-      pending.push(...it.pending);
-      pastes.push(...it.pastes);
-      stagedFor = it.stagedFor;
-      bang = it.bang;
-      await handleLine(it.text, { replay: true });
-      // What the line left staged (a held-back attachment) stays, ahead of what was staged since.
-      pending.push(...keep.pending);
-      pastes.push(...keep.pastes);
-      stagedFor ??= keep.stagedFor;
-      bang = keep.bang;
+    if (replaying) return;
+    replaying = true;
+    const live: NonNullable<typeof liveStage> = { pending: pending.splice(0), pastes: pastes.splice(0), ...(stagedFor !== undefined ? { stagedFor } : {}), bang };
+    liveStage = live;
+    stagedFor = undefined;
+    try {
+      for (let it = deferred.shift(); it && !closing; it = deferred.shift()) {
+        pending.push(...it.pending);
+        pastes.push(...it.pastes);
+        stagedFor = it.stagedFor;
+        bang = it.bang;
+        const outcome = await handleLine(it.text, { replay: true });
+        bang = false;
+        if (outcome) {
+          const { refusedTo: to, body } = outcome;
+          const single = !body.includes("\n");
+          if (single && rl && !closing && rl.line === "" && !held.length && !live.pending.length && !live.pastes.length) {
+            // Back into the input; its attachments stay staged with it (the prompt counts them).
+            live.pending.push(...pending.splice(0));
+            live.pastes.push(...pastes.splice(0));
+            setImmediate(() => rl && !closing && rl.write(body));
+            emit(c.dim("  that line is back in the input — edit it, or @name to send it elsewhere"));
+          } else {
+            const full = composeMessage(composePastes(body, pastes.splice(0)), pending.splice(0));
+            keptUnsent.push({ to, text: full });
+            emit(c.dim("  that line is kept, not sent — it is printed in full when you quit"));
+          }
+          stagedFor = undefined;
+        }
+        // What a line left staged (an attachment held back for another agent) stays, ahead of what was
+        // staged since, still bound to whom it was for.
+        live.pending.unshift(...pending.splice(0));
+        live.pastes.unshift(...pastes.splice(0));
+        if (stagedFor !== undefined) live.stagedFor ??= stagedFor;
+        stagedFor = undefined;
+      }
+    } finally {
+      pending.push(...live.pending);
+      pastes.push(...live.pastes);
+      stagedFor = live.stagedFor;
+      liveStage = undefined;
+      bang = live.bang;
+      replaying = false;
     }
     rl?.setPrompt(promptFor());
     if (rl && !closing) rl.prompt(true);
@@ -2634,8 +2715,20 @@ async function chat(argv: string[]): Promise<void> {
   let everReady = false;
   const setPhase = (p: BootPhase): void => {
     bootPhase = p;
-    if (rl && !closing) rl.setPrompt(consent.open ? rl.getPrompt() : promptFor());
+    if (rl && !closing) rl.setPrompt(promptFor());
     refreshFooter();
+  };
+  /**
+   * Forget an endpoint that is gone (stopped after a failed startup, or never started): its roster,
+   * "you"'s id and the presence seed all described IT. Left set, a `/reconnect` trusted the dead
+   * endpoint's roster as already read — live agents showed `offline` and `@name` said "no peer".
+   */
+  const dropEndpoint = (): void => {
+    ep = undefined;
+    conn = undefined;
+    me = undefined;
+    rosterSeen = false;
+    peerHold = new PresenceHold<Card, PresenceStatus>();
   };
   /** The endpoint, with every listener attached BEFORE it connects (no DM lands unheard). */
   const startEndpoint = async (i: HumanInbox): Promise<{ ep: CotalEndpoint; conn: ReturnType<typeof attachConn> }> => {
@@ -2659,6 +2752,7 @@ async function chat(argv: string[]): Promise<void> {
     // cotal's endpoint reports trouble one event at a time (src/conn-state.ts); the conn state listens
     // before the endpoint starts (an unheard "error" event crashes the process).
     const cs = attachConn(e, Date.now, (lines) => emitConn(lines), (raw) => emit(c.dim(raw)));
+    dropEndpoint(); // a new endpoint's roster is unread until IT reads it
     me = e.card.id;
     ep = e;
     conn = cs;
@@ -2669,8 +2763,7 @@ async function chat(argv: string[]): Promise<void> {
     try {
       await startResilient(e);
     } catch (err) {
-      ep = undefined;
-      conn = undefined;
+      dropEndpoint();
       await e.stop().catch(() => {});
       throw describeInboxBindFailure(space, humanAuth.lifecycleUid, err as Error);
     }
@@ -2682,7 +2775,7 @@ async function chat(argv: string[]): Promise<void> {
   async function teardown(): Promise<void> {
     await stopOwnTap?.().catch(() => {});
     await ep?.stop().catch(() => {});
-    ep = undefined;
+    dropEndpoint();
     await inboxRelease?.().catch((e: Error) => consoleOrig.error(c.red(e.message)));
     inboxRelease = undefined;
   }
@@ -2715,7 +2808,10 @@ async function chat(argv: string[]): Promise<void> {
           return p;
         },
         startEndpoint,
-        stopEndpoint: (x) => x.ep.stop(),
+        stopEndpoint: async (x) => {
+          if (ep === x.ep) dropEndpoint();
+          await x.ep.stop();
+        },
         report: (m) => emit(c.red(m)),
         signal,
         onPhase: (p) => {
@@ -2809,6 +2905,9 @@ async function chat(argv: string[]): Promise<void> {
         await teardown();
         throw e;
       }
+      // Whatever this attempt acquired after the concurrent startup (endpoint, inbox) goes now, so a
+      // `/reconnect` starts clean instead of leaking the first inbox behind a second.
+      await teardown();
       bootPhase = "failed";
       fields.status = failedSlot("not connected");
       emit(c.red(`✕ ${(e as Error).message}`));
@@ -2827,9 +2926,10 @@ async function chat(argv: string[]): Promise<void> {
   function printUnsent(draft: string): void {
     const queued = deferred.unsentLines();
     const out = [...outbox.pending(), ...outbox.failed()];
-    const n = queued.length + out.length;
+    const n = keptUnsent.length + queued.length + out.length;
     if (n) {
       writeOut(c.red(`\n✕ quitting with ${n} message${n === 1 ? "" : "s"} not sent:\n`));
+      for (const k of keptUnsent) writeOut(c.dim(`   → ${k.to} (refused): `) + `${k.text}\n`);
       for (const t of queued) writeOut(c.dim(`   → ${curName ?? pendingName() ?? `#${room}`} (queued): `) + `${t}\n`);
       for (const it of out) writeOut(c.dim(`   → ${it.label}: `) + `${textOf(it.msg.msg)}${it.lastError ? c.dim(` (${shortReason(it.lastError)})`) : ""}\n`);
     }
