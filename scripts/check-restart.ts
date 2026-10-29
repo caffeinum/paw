@@ -12,6 +12,9 @@
  *      consumed by the next run (revivePending, injected reviver) and deleted; a stale list is dropped
  *      out loud; a malformed one throws; a held lock makes ensure()'s pass skip, leaving the list.
  *   5. the failed-restart message: manager down, mailbox release (old vs new), pending names, how to finish.
+ *   6. the revive set IS the despawned set (team2027, 2026-10-28: 11 despawned, 8 back — the 3 were
+ *      running but off the mesh, some sandboxed): a fake rail lists running+offline and sandboxed seats;
+ *      every running one is owed, an exited one is left down BY NAME, the summary names both.
  *
  * Hermetic: temp PAW_HOME, PAW_SPACE=test-restart-<pid>, PAW_RELEASE=dev. No mesh, no manager, no agent.
  */
@@ -34,7 +37,7 @@ function assert(cond: boolean, msg: string): void {
   }
 }
 
-const { classifyManagerFailure, startWithRetry, explainManagerFailure, MANAGER_RETRY_BACKOFF_MS, reviveListPath, logSince } = await import("../src/lifecycle.ts");
+const { classifyManagerFailure, startWithRetry, explainManagerFailure, MANAGER_RETRY_BACKOFF_MS, reviveListPath, logSince, despawnManagedAgents } = await import("../src/lifecycle.ts");
 const revive = await import("../src/revive.ts");
 
 try {
@@ -188,6 +191,57 @@ try {
   const ok = revive.describeFailedRestart("x", { ...base, manager: { pids: [9], root: "/h/releases/new" }, mailbox: { pids: [7], root: "/h/releases/new" }, pending: [] }, describe);
   assert(ok.includes("manager: running (pid 9, release new)") && ok.includes("mailbox: running on release new (the new release)") && ok.includes("nothing to revive"), "a mailbox on the new release and an empty list read as such");
   assert(revive.mailboxRootFromCommand("/n/node /h/releases/abc/bin/paw.ts mailbox --space s --home /h") === "/h/releases/abc", "a beacon's code root is read from its command line");
+
+  // ---- 6. revive set == despawned set ----
+  {
+    const rows = [
+      { name: "ok", status: "running", mesh: "idle" },
+      { name: "offmesh", status: "running", mesh: "offline" }, // presence lost in a broker stall, process up
+      { name: "mcp-intern", status: "running", mesh: "offline" },
+      { name: "neon", status: "running", mesh: "offline", sandbox: "container" }, // sandboxed, link dropped
+      { name: "booting", status: "running", mesh: "absent" },
+      { name: "termlost", status: "exited", mesh: "idle" }, // terminal gone, agent heartbeating
+      { name: "dead", status: "exited", mesh: "offline" }, // stopped/died before the restart
+    ];
+    const despawned: string[] = [];
+    const ledger = new revive.RevivalLedger(SPACE);
+    // the pre-bounce capture saw an OLDER, presence-filtered world (only "ok" looked live)…
+    ledger.record([{ name: "ok", status: "running", mesh: "idle" }]);
+    // …the despawn's own rows are what count
+    const realErr = console.error;
+    console.error = () => {};
+    try {
+      await despawnManagedAgents(
+        { ps: async () => ({ ok: true, data: rows }), despawn: async (n: string) => (despawned.push(n), { ok: true }) },
+        { onTargets: (t) => void ledger.record(t), exitWaitMs: 0 },
+      );
+    } finally {
+      console.error = realErr;
+    }
+    const owed = revive.pendingNames(SPACE);
+    const runningDespawned = despawned.filter((n) => n !== "dead");
+    assert(despawned.length === rows.length, "the despawn takes every listed seat");
+    assert([...owed].sort().join() === [...runningDespawned].sort().join(), `the revive list == the despawned running set (got ${owed.join(",")})`);
+    for (const n of ["offmesh", "mcp-intern", "neon"]) assert(owed.includes(n), `running-but-off-mesh ${n} is owed a revive`);
+    assert(!owed.includes("dead"), "a seat whose process had already exited is NOT revived");
+    const down = ledger.leftDown();
+    assert(down.length === 1 && down[0].name === "dead" && down[0].why.includes("already exited"), "…it is named, with why");
+    const lines = revive.describeRevival(owed, owed.filter((n) => n !== "neon"), [{ name: "neon", why: "the container would not start" }], down);
+    assert(lines[0].includes(`brought back ${owed.length - 1}/${owed.length}`) && lines[0].includes("mcp-intern") && lines[0].includes("NOT back: neon"), "the summary names who came back and who didn't");
+    assert(lines.some((l) => l.startsWith("left down: dead") && l.includes("paw start dead")), "the summary names who was left down and how to start it");
+    assert(revive.revivalFailure(SPACE, owed.length, [{ name: "neon", why: "the container would not start" }]).includes("neon: the container would not start"), "a despawned agent that didn't come back fails loud with its reason");
+    // a name seen running in either look stays owed, even if the other look saw it exited
+    const l2 = new revive.RevivalLedger(SPACE);
+    revive.clearReviveList(SPACE);
+    l2.record([{ name: "x", status: "running", mesh: "offline" }]);
+    l2.record([{ name: "x", status: "exited", mesh: "offline" }]);
+    assert(revive.pendingNames(SPACE).join() === "x" && l2.leftDown().length === 0, "seen running once → owed, not left down");
+    assert(revive.revivalPlan([]).revive.length === 0 && revive.describeRevival([], [], []).length === 0, "nobody listed → nothing owed, nothing said");
+    revive.clearReviveList(SPACE);
+    const rt = (await import("node:fs")).readFileSync(join(import.meta.dirname, "..", "src", "commands", "runtime.ts"), "utf8");
+    assert(!rt.includes("psRowAlive"), "runtime.ts no longer filters the revive set by mesh presence");
+    assert(/onDespawnTargets:[\s\S]{0,200}ledger\.record\(rows\)/.test(rt), "paw restart records the despawn's own rows into the revive list");
+  }
 } finally {
   rmSync(HOME, { recursive: true, force: true });
 }

@@ -17,14 +17,14 @@
  */
 import { existsSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
-import { ensureAgentSpawned, folderForName } from "./addressing.ts";
+import { ensureAgentSpawned, folderForName, psRowRunning } from "./addressing.ts";
 import { withManagerControl } from "./control.ts";
 import { awaitSpawnHeadroom } from "./pacing.ts";
 import { pawServer } from "./server.ts";
 import { withFileLockAsync } from "./lock.ts";
 import { codeRootFromCommand, describeCodeRoot } from "./manager-features.ts";
 import { daemonRoot } from "./release.ts";
-import { mailboxProcs, managerProcs, reviveListPath } from "./lifecycle.ts";
+import { mailboxProcs, managerProcs, reviveListPath, type DespawnTarget } from "./lifecycle.ts";
 
 export const REVIVE_FRESH_MS = 24 * 60 * 60 * 1000;
 
@@ -83,6 +83,46 @@ export function writeReviveList(space: string, names: string[], now = new Date()
   return list;
 }
 
+/** Which of the seats a bounce despawns come back: every one whose process was running, mesh presence
+ *  or not (an off-mesh seat is still up — see psRowRunning). A seat whose process had already exited
+ *  is left down — the operator stopped it, or it died — and NAMED, never silently dropped. Pure. */
+export function revivalPlan(rows: Array<Pick<DespawnTarget, "name" | "status" | "mesh">>): { revive: string[]; down: Skipped[] } {
+  const revive: string[] = [];
+  const down: Skipped[] = [];
+  for (const r of rows) {
+    if (psRowRunning(r)) revive.push(r.name);
+    else down.push({ name: r.name, why: `its process had already exited before the restart (status=${r.status ?? "?"}, mesh=${r.mesh ?? "?"})` });
+  }
+  return { revive: [...new Set(revive)], down };
+}
+
+/** Accumulates `paw restart`'s revive decision across its two looks at the manager (the capture before
+ *  the bounce and the despawn's own rows), keeping the on-disk list a superset of everything despawned
+ *  that was running. A name seen running in either look is owed a revive. */
+export class RevivalLedger {
+  private readonly owed = new Set<string>();
+  private readonly downs = new Map<string, string>();
+  private readonly space: string;
+  private readonly write: typeof writeReviveList;
+  constructor(space: string, write: typeof writeReviveList = writeReviveList) {
+    this.space = space;
+    this.write = write;
+  }
+
+  /** Fold `rows` in and rewrite the list (merged with any pending one). Returns the names now owed. */
+  record(rows: Array<Pick<DespawnTarget, "name" | "status" | "mesh">>): string[] {
+    const plan = revivalPlan(rows);
+    for (const n of plan.revive) this.owed.add(n);
+    for (const d of plan.down) this.downs.set(d.name, d.why);
+    return this.write(this.space, [...this.owed])?.names ?? [];
+  }
+
+  /** Seats seen ONLY as exited — left down on purpose, said by name. */
+  leftDown(): Skipped[] {
+    return [...this.downs].filter(([n]) => !this.owed.has(n)).map(([name, why]) => ({ name, why }));
+  }
+}
+
 /** One process at a time revives a list. `wait: false` (ensure()) skips when another holds it. */
 export async function withReviveLock<T>(space: string, fn: () => Promise<T>, wait: boolean): Promise<T | undefined> {
   const path = `${reviveListPath(space)}.lock`;
@@ -135,6 +175,18 @@ export async function reviveAgents(
     }
   });
   return { revived, skipped };
+}
+
+/** What a revive pass did, one line each: who came back BY NAME, who was owed and didn't (the loud
+ *  failure follows), and who was left down on purpose. Nothing when nobody was owed or left. Pure. */
+export function describeRevival(owed: string[], revived: string[], skipped: Skipped[], leftDown: Skipped[] = []): string[] {
+  const out: string[] = [];
+  if (owed.length) {
+    const back = `brought back ${revived.length}/${owed.length} agent(s)${revived.length ? `: ${revived.join(", ")}` : ""}`;
+    out.push(skipped.length ? `${back} — NOT back: ${skipped.map((x) => x.name).join(", ")}` : back);
+  }
+  for (const d of leftDown) out.push(`left down: ${d.name} — ${d.why}; \`paw start ${d.name}\` if it should run`);
+  return out;
 }
 
 /** The loud end of a revival that left someone down. Pure. */

@@ -296,6 +296,15 @@ Moved verbatim from CLAUDE.md (2026-10-02 split). Index: [CLAUDE.md](../../CLAUD
      then deletes it. One lock (`restart-revive.json.lock`) spans restart's write → bounce → revive, and
      ensure()'s pass skips while it's held, so a list is never consumed mid-bounce. Agents that can't
      start are named loud (restart exits 1; ensure() prints but doesn't fail the unrelated command).
+  2b. **The revive set IS the despawned set (2026-10-28).** team2027 `paw restart` said "despawned 11 …
+     brought back 8/8": the capture filtered ps by `psRowAlive`, which treats `mesh: offline` as dead,
+     while the despawn took every row — so seats whose PROCESS ran but whose presence heartbeat was lost
+     in a broker stall (mcp-intern; sandboxed neon/fly/vercel) were despawned and never revived. Now a
+     `RevivalLedger` records twice: the capture before the bounce, then the despawn's own rows
+     (`restartManager({ onDespawnTargets })` → `despawnManagedAgents({ onTargets })`, called before any
+     despawn), each through `revivalPlan` (`psRowRunning`: status ≠ exited OR live presence). Only a seat
+     whose process had already exited AND is off the mesh stays down — printed `left down: <name> — why`.
+     The summary names who came back and who didn't. `paw restart <agent>` (restartAgent) never filtered.
   3. `restartManager` re-arms the mailbox EVEN WHEN the manager start failed — the beacon needs the
      mesh (proved first), not the lease — so a failed restart no longer leaves the old release's beacon.
   Test: `check:restart`.

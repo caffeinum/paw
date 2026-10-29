@@ -844,6 +844,15 @@ export function psRowAlive(row: PsRow): boolean {
   return row.status !== "exited" && row.mesh !== "offline";
 }
 
+/** Is this seat's PROCESS running — whatever its mesh presence says? Wider than {@link psRowAlive}: a
+ *  `running` seat that lost its presence heartbeat (`mesh: "offline"` during a broker stall, or a
+ *  sandboxed seat whose mesh link dropped) is still an agent the operator left up. `paw restart`
+ *  despawns it, so it must revive it (team2027, 2026-10-28: 11 despawned, 8 brought back). Only a seat
+ *  whose terminal exited AND that publishes no live presence is down. */
+export function psRowRunning(row: { status?: string; mesh?: string }): boolean {
+  return LIVE_PRESENCE.has(row.mesh ?? "") || row.status !== "exited";
+}
+
 /** The manager says the agent's terminal is gone, but the agent is heartbeating on the mesh — the
  *  terminal is unreachable, not the agent (see psRowAlive). Worth saying wherever an agent is shown. */
 export function terminalLost(row: PsRow): boolean {
