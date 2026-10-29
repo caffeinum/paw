@@ -13,11 +13,14 @@
  * 4. Owns the container's lifetime: killing the `container run` CLI does NOT stop the VM, so on SIGTERM /
  *    SIGHUP / SIGINT a DETACHED `container stop` + `delete --force` is started (it outlives the manager's
  *    SIGKILL 3s later) and this process exits once the run CLI does.
+ * 5. Forwards every TCP port listening in the VM to the same port on the host's loopback (./paw-sandbox-forward.mjs;
+ *    `--forward off` = persona `sandboxForward: false`), listing them in `forwards.json` beside `--log`.
  * Plain node ESM, no dependencies: it starts in the manager's node without tsx.
  */
 import { spawn, spawnSync } from "node:child_process";
 import { appendFileSync, copyFileSync, mkdirSync, openSync, readFileSync, renameSync, statSync } from "node:fs";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
+import { containerTransport, startForwarder } from "./paw-sandbox-forward.mjs";
 
 const argv = process.argv.slice(2);
 const opt = {};
@@ -31,7 +34,8 @@ for (; i < argv.length; i++) {
   opt[argv[i].slice(2)] = argv[++i];
 }
 const run = argv.slice(i);
-const { container, "token-file": tokenFile, name, space, agent, log } = opt;
+const { container, "token-file": tokenFile, name, space, agent, log, forward = "on" } = opt;
+if (forward !== "on" && forward !== "off") die(`--forward is on|off, not "${forward}"`);
 if (!container || !tokenFile || !name || !space || !agent || !log || run[0] !== "run")
   die("usage: --container <bin> --token-file <f> --name <id> --space <s> --agent <n> --log <f> -- run …");
 mkdirSync(dirname(log), { recursive: true });
@@ -101,10 +105,16 @@ note(`starting ${name} (${agent}#${space})`);
 const child = spawn(container, run, { stdio: ["inherit", "inherit", openSync(log, "a")], env: { ...process.env, CLAUDE_CODE_OAUTH_TOKEN: token } });
 token = undefined;
 
+const forwarder =
+  forward === "on"
+    ? startForwarder({ transport: containerTransport(container, name), note, stateFile: join(dirname(log), "forwards.json"), container: name })
+    : undefined;
+
 let stopping = false;
 const stop = (sig) => {
   if (stopping) return;
   stopping = true;
+  forwarder?.stop();
   note(`${sig}: stopping ${name}`);
   const reaper = spawn("/bin/sh", ["-c", '"$0" stop --time 2 "$1" >/dev/null 2>&1; "$0" delete --force "$1" >/dev/null 2>&1', container, name], {
     detached: true,
@@ -116,6 +126,7 @@ for (const sig of ["SIGTERM", "SIGHUP", "SIGINT"]) process.on(sig, () => stop(si
 
 child.on("error", (e) => die(`couldn't start ${container}: ${e.message}`));
 child.on("exit", (code, signal) => {
+  forwarder?.stop();
   note(`${name} exited (${signal ?? `code ${code}`})`);
   // The run CLI dying (a crash, a SIGKILL) leaves the VM running — an unmanaged agent still on the mesh.
   // `--rm` already removed a container that stopped on its own; this catches the rest.

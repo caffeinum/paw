@@ -90,6 +90,13 @@ export function readSandboxMemory(configPath: string | undefined): string {
   if (!/^\d+[KMGT]?$/i.test(v)) throw new Error(`paw: sandboxMemory: in ${configPath} is "${v}" — expected an amount like 2G or 1536M`);
   return v;
 }
+/** Persona `sandboxForward:` — `false` turns off forwarding the VM's listening ports to the host's loopback (default on). */
+export function readSandboxForward(configPath: string | undefined): boolean {
+  const v = scalarKey(configPath, "sandboxForward");
+  if (v === undefined || v === "true") return true;
+  if (v === "false") return false;
+  throw new Error(`paw: sandboxForward: in ${configPath} is "${v}" — expected true or false`);
+}
 function scalarKey(configPath: string | undefined, key: string): string | undefined {
   if (!configPath || !existsSync(configPath)) return undefined;
   const line = readFileSync(configPath, "utf8").match(/^---\n([\s\S]*?)\n---/)?.[1].split("\n").find((l) => l.startsWith(`${key}:`));
@@ -307,7 +314,7 @@ export function sandboxLaunch(spec: LaunchSpec, o: SandboxLaunchOpts): LaunchSpe
   return {
     ...spec,
     command: process.execPath,
-    args: [SANDBOX_RUNNER, "--container", bin, "--token-file", tokenFile, "--name", name, "--space", o.space, "--agent", o.name, "--log", join(sandboxStateDir(configPath), "launcher.log"), "--mirror-src", creds, "--mirror-dst", join(credsMirror, basename(creds)), "--", ...run],
+    args: [SANDBOX_RUNNER, "--container", bin, "--token-file", tokenFile, "--name", name, "--space", o.space, "--agent", o.name, "--log", join(sandboxStateDir(configPath), "launcher.log"), "--forward", readSandboxForward(configPath) ? "on" : "off", "--mirror-src", creds, "--mirror-dst", join(credsMirror, basename(creds)), "--", ...run],
     env: seatEnv,
   };
 }
