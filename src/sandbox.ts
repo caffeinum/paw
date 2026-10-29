@@ -71,18 +71,46 @@ export const SANDBOX_VM_ENV: Readonly<Record<string, string>> = {
   ENV: SANDBOX_BASH_ENV,
 };
 
-/** BASH_ENV's body. Re-prepends the home's PATH (a login bash's /etc/profile resets PATH before BASH_ENV
- *  runs) and exports the agent's own `~/.env`. Holds no value of its own — the secrets stay in the home. */
+/** BASH_ENV's body — the ONE place a bash in the VM gets its setup, in this order:
+ *  1. the home's tool dirs back on PATH (a login bash's /etc/profile resets PATH before BASH_ENV runs);
+ *  2. the agent's own `~/.env`, exported;
+ *  3. the agent's `~/.bashrc`, LAST, so an installer's PATH line there wins (fly's install.sh appends
+ *     `export PATH="$HOME/.fly/bin:$PATH"` to it — `!fly auth login` was "command not found" without this).
+ *  The whole file runs ONCE per shell (`bash -lc` reaches it twice: the seeded `~/.profile`, then BASH_ENV —
+ *  a second pass would re-read `~/.env` over what `~/.bashrc` set). Step 3 is bash-only (not dash via ENV,
+ *  not bash in POSIX mode) and skipped while bash is already reading `~/.bashrc` (an interactive shell, or
+ *  a `~/.bashrc` that sources this file — paw's seeded one does): no recursion, no double load.
+ *  The guard is NOT exported: a child bash loads `~/.bashrc` again, as its functions/aliases need. An error
+ *  in `~/.bashrc` prints on stderr (bash names the file and line) and the command still runs. Holds no
+ *  value of its own — the secrets stay in the home. */
 export function sandboxBashEnv(): string {
   return [
-    "# paw (src/sandbox.ts): every bash in this sandbox sources this via BASH_ENV. Your own setup goes in",
-    "# ~/.bashrc / ~/.env — your home persists across launches; the rest of the VM's filesystem does not.",
-    `case ":$PATH:" in *":${HOME_PATH[0]}:"*) ;; *) PATH="${HOME_PATH.join(":")}:$PATH" ;; esac`,
-    "export PATH",
-    'if [ -f "$HOME/.env" ]; then set -a; . "$HOME/.env"; set +a; fi',
+    "# paw (src/sandbox.ts): every bash in this sandbox sources this — via BASH_ENV, and login shells via the",
+    "# ~/.profile paw seeds when you have none. Your own setup goes in ~/.bashrc / ~/.env (both read here, in",
+    "# that order after PATH) — your home persists across launches; the rest of the VM's filesystem does not.",
+    'if [ -z "${__paw_bashenv:-}" ]; then',
+    "  __paw_bashenv=1",
+    `  case ":$PATH:" in *":${HOME_PATH[0]}:"*) ;; *) PATH="${HOME_PATH.join(":")}:$PATH" ;; esac`,
+    "  export PATH",
+    '  if [ -f "$HOME/.env" ]; then set -a; . "$HOME/.env"; set +a; fi',
+    '  if [ -n "${BASH_VERSION:-}" ] && ! shopt -oq posix; then',
+    '    case " ${BASH_SOURCE[*]} " in',
+    '      *" $HOME/.bashrc "*) ;;',
+    '      *) if [ -f "$HOME/.bashrc" ]; then . "$HOME/.bashrc"; fi ;;',
+    "    esac",
+    "  fi",
+    "fi",
     "",
   ].join("\n");
 }
+
+/** Seeded `~/.bashrc` (only when absent): an interactive non-login bash reads it, and it pulls in BASH_ENV. */
+export const SANDBOX_SEED_BASHRC = `# interactive shells (container exec … bash): the same PATH + ~/.env as the agent's own\n[ -f ${SANDBOX_BASH_ENV} ] && . ${SANDBOX_BASH_ENV}\n`;
+/** Seeded `~/.profile` (only when the home has no login file at all — bash reads the FIRST of
+ *  ~/.bash_profile, ~/.bash_login, ~/.profile): a login bash (`!cmd`'s `bash -lc`, `paw sandbox shell`'s
+ *  `bash -l`) reads no `~/.bashrc` on its own; this sends it through BASH_ENV, which does. */
+export const SANDBOX_SEED_PROFILE = `# login shells (bash -l: !cmd from paw chat/web, paw sandbox shell): the same PATH, ~/.env and ~/.bashrc as every bash here\n[ -f ${SANDBOX_BASH_ENV} ] && . ${SANDBOX_BASH_ENV}\n`;
+const LOGIN_FILES = [".bash_profile", ".bash_login", ".profile"];
 
 function pawHomeDir(env: NodeJS.ProcessEnv = process.env): string {
   return env.PAW_HOME?.trim() || join(homedir(), ".paw");
@@ -113,7 +141,8 @@ export function assertSandboxHomeOwner(space: string, name: string, env: NodeJS.
         `Pick another name, or (if ${name}#${owner} is gone for good) delete ${sandboxHomeDir(name, env)} and ${sandboxHomeOwnerFile(name, env)}`,
     );
 }
-/** Create (0700) and claim the agent's home; seed a `~/.bashrc` that sources BASH_ENV for interactive shells. */
+/** Create (0700) and claim the agent's home; seed `~/.bashrc` (interactive shells) and `~/.profile` (login
+ *  shells) that source BASH_ENV — each only when the agent has none of its own, never overwritten. */
 export function claimSandboxHome(space: string, name: string, env: NodeJS.ProcessEnv = process.env): string {
   assertSandboxHomeOwner(space, name, env);
   const dir = sandboxHomeDir(name, env);
@@ -123,7 +152,8 @@ export function claimSandboxHome(space: string, name: string, env: NodeJS.Proces
   chmodSync(dir, 0o700);
   if (!existsSync(sandboxHomeOwnerFile(name, env))) writeFileSync(sandboxHomeOwnerFile(name, env), `${space}\n`, { mode: 0o600 });
   const rc = join(dir, ".bashrc");
-  if (!existsSync(rc)) writeFileSync(rc, `# interactive shells (container exec … bash): the same PATH + ~/.env as the agent's own\n[ -f ${SANDBOX_BASH_ENV} ] && . ${SANDBOX_BASH_ENV}\n`, { mode: 0o600 });
+  if (!existsSync(rc)) writeFileSync(rc, SANDBOX_SEED_BASHRC, { mode: 0o600 });
+  if (!LOGIN_FILES.some((f) => existsSync(join(dir, f)))) writeFileSync(join(dir, ".profile"), SANDBOX_SEED_PROFILE, { mode: 0o600 });
   return dir;
 }
 

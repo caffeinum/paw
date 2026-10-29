@@ -70,7 +70,9 @@ Moved verbatim from CLAUDE.md (2026-10-02 split). Index: [CLAUDE.md](../../CLAUD
   goes through `chooseTranscriptId`: a PINNED agent's transcript is authoritative — if its file doesn't
   exist yet (booted, no turns) it **fails loud** rather than falling back to the folder's newest, which
   could surface an UNRELATED live session (the `paw log aleks`→human's-own-session bug); only an
-  UNPINNED *claude* agent falls back to its latest. Opencode/codex never consult claude jsonl — falling
+  UNPINNED *claude* agent falls back to its latest. Both "nothing written yet" cases throw `TranscriptNotYet`
+  (`retryable`): one-shot readers report it, `paw chat`'s logs follower keeps re-opening until turn one lands
+  ([chat.md#views](chat.md#views)). Opencode/codex never consult claude jsonl — falling
   back would print a SIBLING in the same folder (`paw log personal-grok` → `personal`'s perkmal-55).
   Missing session for that harness fails loud naming it. Test: `check:log`.
   The sessions command flags a pinned

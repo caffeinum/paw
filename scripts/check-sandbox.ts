@@ -204,6 +204,73 @@ console.log("the persistent home ($PAW_HOME/containers/<name>)");
   assert(b.stdout.startsWith(`from-dotenv|${fakeRoot}/.local/bin:`), `bash with BASH_ENV: ~/.env exported to children, ~/.local/bin first on PATH${b.stderr ? ` (${b.stderr.trim()})` : ""}`);
   const nb = spawnSync("/bin/bash", ["-c", 'echo "[$NEON_API_KEY]"'], { encoding: "utf8", env: { HOME: join(home, "nowhere"), BASH_ENV: rc, PATH: "/usr/bin:/bin" } });
   assert(nb.status === 0 && nb.stdout.trim() === "[]", "no ~/.env ⇒ nothing sourced, no error");
+  assert(readFileSync(join(homeDir, ".profile"), "utf8") === sbx.SANDBOX_SEED_PROFILE, "…and a ~/.profile that sends login shells (bash -l) through BASH_ENV");
+}
+
+console.log("~/.bashrc is honored by every bash in the VM (real bash, fake HOME)");
+{
+  // Seen live: fly's installer put flyctl in ~/.fly/bin and its PATH line in ~/.bashrc; `!fly auth login`
+  // (bash -lc) said "fly: command not found" — neither a login shell nor BASH_ENV read ~/.bashrc.
+  const rc = join(home, "bashrc-check", "bashenv.sh");
+  mkdirSync(join(home, "bashrc-check"), { recursive: true });
+  const seat = (text: string, root: string) => text.replaceAll(sbx.SANDBOX_BASH_ENV, rc).replaceAll("/root", root);
+  writeFileSync(rc, sbx.sandboxBashEnv());
+  let n = 0;
+  /** A home as paw seeds it (+ the agent's own lines appended to ~/.bashrc, as an installer does). */
+  const mkHome = (o: { bashrc?: string; profile?: boolean; env?: string } = {}): string => {
+    const h = join(home, "bashrc-check", `h${n++}`);
+    mkdirSync(join(h, ".fly", "bin"), { recursive: true });
+    writeFileSync(join(h, ".fly", "bin", "flyx"), "#!/bin/sh\necho flyx-ran\n", { mode: 0o755 });
+    writeFileSync(join(h, ".bashrc"), `${seat(sbx.SANDBOX_SEED_BASHRC, h)}${o.bashrc ?? ""}echo loaded >> "$HOME/rc-count"\n` + 'export FLYCTL_INSTALL="$HOME/.fly"; export PATH="$FLYCTL_INSTALL/bin:$PATH"\n');
+    if (o.profile !== false) writeFileSync(join(h, ".profile"), seat(sbx.SANDBOX_SEED_PROFILE, h));
+    if (o.env) writeFileSync(join(h, ".env"), o.env);
+    return h;
+  };
+  const sh = (h: string, argv: string[], input?: string) => {
+    if (existsSync(join(h, "rc-count"))) writeFileSync(join(h, "rc-count"), "");
+    const r = spawnSync(argv[0], argv.slice(1), { encoding: "utf8", input, env: { HOME: h, BASH_ENV: rc, ENV: rc, PATH: "/usr/bin:/bin" } });
+    const loads = existsSync(join(h, "rc-count")) ? readFileSync(join(h, "rc-count"), "utf8").split("\n").filter(Boolean).length : 0;
+    return { out: r.stdout.trim(), err: r.stderr.trim(), status: r.status, loads };
+  };
+  const h = mkHome({ env: "TOKEN=from-env\n", bashrc: 'export TOKEN="rc-saw-$TOKEN"\n' });
+  const flyx = `${h}/.fly/bin/flyx`;
+  const lc = sh(h, ["/bin/bash", "-lc", 'command -v flyx; echo "$TOKEN"']);
+  assert(lc.out === `${flyx}\nrc-saw-from-env` && lc.status === 0, `bash -lc (the !cmd shape): ~/.bashrc's PATH line resolves, after ~/.env (got ${JSON.stringify(lc.out)}${lc.err ? `, stderr ${lc.err}` : ""})`);
+  assert(lc.loads === 1, `…~/.bashrc loaded ONCE although both ~/.profile and BASH_ENV lead to it (got ${lc.loads})`);
+  const c = sh(h, ["/bin/bash", "-c", "command -v flyx"]);
+  assert(c.out === flyx && c.loads === 1, `bash -c with BASH_ENV (claude's Bash tool): resolves, ~/.bashrc once (got ${JSON.stringify(c.out)}, ${c.loads})`);
+  const l = sh(h, ["/bin/bash", "-l"], "command -v flyx\n");
+  assert(l.out === flyx && l.loads === 1, `bash -l reading commands (paw sandbox shell's shape): resolves, ~/.bashrc once (got ${JSON.stringify(l.out)}, ${l.loads})`);
+  const i = sh(h, ["/bin/bash", "-i", "-c", "command -v flyx"]);
+  assert(i.out.endsWith(flyx) && i.loads === 1, `interactive bash (reads ~/.bashrc itself, which sources BASH_ENV): no recursion, once (got ${i.loads})`);
+  const nested = sh(h, ["/bin/bash", "-c", "bash -c 'command -v flyx'"]);
+  assert(nested.out === flyx && nested.loads === 2, `a child bash loads ~/.bashrc again (its functions/aliases aren't inherited) — once per shell (got ${nested.loads})`);
+  const old = mkHome({ profile: false });
+  const o = sh(old, ["/bin/bash", "-lc", "command -v flyx"]);
+  assert(o.out === `${old}/.fly/bin/flyx` && o.loads === 1, `a home seeded before ~/.profile existed (the live ones): bash -lc still resolves via BASH_ENV (got ${JSON.stringify(o.out)})`);
+  const broken = mkHome({ bashrc: "nosuchcmd_paw_check\nif then\n" });
+  const bk = sh(broken, ["/bin/bash", "-c", "echo still-ran"]);
+  assert(bk.out === "still-ran" && bk.status === 0 && /\.bashrc/.test(bk.err), `an error in ~/.bashrc shows on stderr (naming it) and the command still runs (stderr: ${bk.err.split("\n")[0]})`);
+  const deb = mkHome({ bashrc: "case $- in *i*) ;; *) return;; esac\n" });
+  const db = sh(deb, ["/bin/bash", "-c", "echo ran"]);
+  assert(db.out === "ran" && db.status === 0 && db.err === "", "a Debian-style early `return` in ~/.bashrc just ends ~/.bashrc — no error, the command runs");
+  if (existsSync("/bin/dash")) {
+    const d = sh(h, ["/bin/dash", "-i"], "echo dash-ok\n");
+    assert(d.out.includes("dash-ok") && d.loads === 0 && !/Bad substitution|bashrc/.test(d.err), `dash via ENV: PATH/~/.env only, ~/.bashrc (bash syntax) never sourced (stderr: ${JSON.stringify(d.err)})`);
+  }
+  // Seeding never touches the agent's own login files.
+  const sbh = sbx.sandboxHomeDir("rcseed");
+  mkdirSync(sbh, { recursive: true });
+  writeFileSync(join(sbh, ".bash_profile"), "# mine\n");
+  sbx.claimSandboxHome(SPACE, "rcseed");
+  assert(!existsSync(join(sbh, ".profile")) && readFileSync(join(sbh, ".bash_profile"), "utf8") === "# mine\n", "an agent's own ~/.bash_profile: no ~/.profile seeded beside it (bash would ignore it), its file untouched");
+  const sbp = sbx.sandboxHomeDir("rcseed2");
+  mkdirSync(sbp, { recursive: true });
+  writeFileSync(join(sbp, ".profile"), "# mine too\n");
+  sbx.claimSandboxHome(SPACE, "rcseed2");
+  assert(readFileSync(join(sbp, ".profile"), "utf8") === "# mine too\n", "an agent's own ~/.profile is never overwritten");
+}
+{
   // One home per NAME across spaces: another space's sandboxed "smoke" is refused, loud.
   const otherSpace = "sbxother";
   writeRemoteMesh({ space: otherSpace, server: "tls://192.168.64.1:4222", root, ts: new Date().toISOString() });

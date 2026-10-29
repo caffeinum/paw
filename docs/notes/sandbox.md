@@ -125,9 +125,36 @@ and `~` is what tools assume). The rootfs is wiped every launch; the home is not
 
 - **secrets**: `~/.env` (`KEY=value` lines). Every bash in the VM sources it, exported: `BASH_ENV` (and `ENV`)
   = `/paw/seat/bashenv.sh`, paw's rc file, which also re-prepends the home's tool dirs to `PATH` (a login bash's
-  `/etc/profile` resets PATH before BASH_ENV runs). A seeded `~/.bashrc` (written only if absent) sources the same
-  file for interactive `container exec … bash`. The values never touch argv, the LaunchSpec, a persona, a log,
+  `/etc/profile` resets PATH before BASH_ENV runs). The values never touch argv, the LaunchSpec, a persona, a log,
   `vm.env` or the seat dir — `check:sandbox` asserts it with a sentinel.
+- **`~/.bashrc` is honored by every bash in the VM** — the agent's own Bash tool (non-interactive → BASH_ENV),
+  `!cmd` (`bash -lc`), `paw sandbox shell` (`bash -l`) and an interactive `container exec … bash`. Seen live: fly's
+  installer (`curl -L https://fly.io/install.sh | sh`) put flyctl in `~/.fly/bin` and appended
+  `export FLYCTL_INSTALL="$HOME/.fly"; export PATH="$FLYCTL_INSTALL/bin:$PATH"` to `~/.bashrc`; `!fly auth login`
+  said `fly: command not found` — a login non-interactive bash reads no `~/.bashrc`, and BASH_ENV sourced only
+  `~/.env`. Now `bashenv.sh` does, in this order: PATH defaults, `~/.env`, then `~/.bashrc` LAST (so an installer's
+  PATH line wins). How each shell gets there:
+  - non-interactive (`bash -c`, claude's Bash tool) → BASH_ENV → `bashenv.sh` → `~/.bashrc`;
+  - login (`bash -l`/`-lc`) → `/etc/profile` → the seeded `~/.profile` → `bashenv.sh` → `~/.bashrc` (then BASH_ENV
+    again for `-lc`, a no-op: the file runs once per shell, so a second `~/.env` pass can't undo what `~/.bashrc` set);
+  - interactive non-login → `~/.bashrc` itself → the seeded line sources `bashenv.sh`, which sees `~/.bashrc` already
+    on `BASH_SOURCE` and doesn't source it back (no recursion, no double load).
+  Kept the bang's `bash -lc` rather than switching to `bash -c`: a login shell is what a real terminal (and
+  `paw sandbox shell`) gives, `/etc/profile.d` runs, and the seeded `~/.profile` covers installers that write
+  there too (rustup, uv). Both seeds are written only when absent — `~/.bashrc` if missing, `~/.profile` only if
+  the home has NO login file (bash reads only the first of `~/.bash_profile`, `~/.bash_login`, `~/.profile`, so a
+  seed beside the agent's own `.bash_profile` would be dead). Never overwritten. Homes seeded before this have
+  no `~/.profile`: their bangs still work (BASH_ENV), and their next launch seeds it. The guard is a NON-exported
+  shell variable: a child bash loads `~/.bashrc` again, as its functions/aliases need. `~/.bashrc` is bash-only —
+  dash (`/bin/sh`, via `ENV` when interactive) and bash in POSIX mode skip it. An error in `~/.bashrc` prints on
+  stderr (bash names file + line) and the command still runs; a Debian-style early `return`
+  (`case $- in *i*) ;; *) return;; esac`) just ends `~/.bashrc` for non-interactive shells — paw never fakes
+  interactivity, so lines below such a guard apply only to interactive shells (paw's seeded `~/.bashrc` has none).
+  An `exit` in `~/.bashrc` would end every command — don't. `check:sandbox` runs all of the above with a real bash
+  and a fake HOME; `check:sandbox-bang` runs the bang's and the shell's argv tails. Verified with the image's
+  bash 5.2 in a throwaway container (not a live agent): `bash -lc`, `bash -c`, `bash -l`, `bash -i` all resolve a
+  `~/.bashrc` PATH entry, `~/.bashrc` loaded once each, dash untouched. Live agents get it on their next launch
+  (the seat's `bashenv.sh` is rewritten per launch — release + manager restart, then the agent's restart).
 - **tools**: the VM env points every installer's default into the home — `NPM_CONFIG_PREFIX=~/.local` (so
   `npm i -g neonctl` → `~/.local/bin`), `PNPM_HOME=~/.local/share/pnpm`, `PIP_USER=1` + `PYTHONUSERBASE=~/.local`,
   `CARGO_HOME=~/.cargo`, `GOPATH=~/go`, `BUN_INSTALL=~/.bun`, `XDG_{CONFIG,DATA,CACHE}_HOME` under `~` (CLIs keep
@@ -163,7 +190,7 @@ persona → the host, exactly as before; `sandbox: container` → its ONE runnin
 
 The command runs as `container exec -w <folder> <id> timeout -s KILL <secs> bash -lc <command>` — the command one
 argv element (no host shell ever sees it), the folder at the same path in the VM, and the container's own env
-(`container exec` inherits it: HOME, PATH, BASH_ENV → `~/.env`; verified 1.6.0). `timeout` is load-bearing:
+(`container exec` inherits it: HOME, PATH, BASH_ENV → `~/.env` + `~/.bashrc`; verified 1.6.0). `timeout` is load-bearing:
 killing the `container exec` CLI does NOT stop the process in the VM (verified — a `sleep 200` survived its CLI's
 SIGKILL), so the bang timeout is enforced inside; its exit 137 reads as "timed out". An in-VM bang gets **5 min**
 (`SANDBOX_BASH_TIMEOUT_MS`), not the host's 60s — `!neon auth login` waits while you finish OAuth in the browser —
@@ -174,7 +201,7 @@ web hint adds "· ran in <name>'s VM".
 Output STREAMS in `paw chat` (both host and VM, batched per ~100ms of complete lines): a login prints its URL,
 then waits for the browser callback — the URL shows while it still runs. The REPL still waits for the command
 (60s on the host as before, 5 min in a VM). For a real TTY (a login that wants input, a REPL): `paw sandbox shell <n>[#<s>]` =
-`container exec -i -t -w <folder> <id> bash -l` (the seeded `~/.bashrc` sources BASH_ENV). `check:sandbox-bang`
+`container exec -i -t -w <folder> <id> bash -l` (the seeded `~/.profile` sources BASH_ENV, which reads `~/.bashrc`). `check:sandbox-bang`
 (fake `container`); `PAW_SANDBOX_BANG_SMOKE=1` adds a real run against a THROWAWAY labelled container.
 
 ## Why remote spaces only (v1) — and the local plan

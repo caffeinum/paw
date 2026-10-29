@@ -337,6 +337,20 @@ Moved verbatim from CLAUDE.md (2026-10-02 split). Index: [CLAUDE.md](../../CLAUD
   are filters over one `History`, reprinted on a switch (`\e[2J\e[3J` + replay through the shared
   `Painter`); `tasks` shows NOTHING from the history (`entryVisible` is false for every entry there).
   The hint under the prompt names the current view and where each arrow goes from here.
+- **A transcript that isn't written YET is followed, not given up on (2026-10-28).** Operator: "i dont think
+  logs view works for the containers, why?" — `paw log fly#team2027` showed fly's trace, chat's logs view
+  never did. Cause (from the live timestamps): `paw chat @fly` / `@vercel` were opened as the sandboxed agents
+  were born — chat 19:39:50, fly's transcript file born 19:39:55 (vercel: 19:44:58 vs 19:46:14; a VM cold start
+  is 10–20s before turn one). `openAgentLog` correctly threw "pinned to session … but it has no transcript
+  yet", and `LogFollower` treated EVERY open error as final for the chat session (`failed` was sticky), so
+  the logs view stayed at that one note forever. Nothing sandbox-specific in the reading itself —
+  `personaTranscriptRoots` already pointed at `spaces/<s>/sandbox/<n>/claude/projects`; any freshly born agent
+  had the same hole, a VM just makes the window long enough to hit every time. Fix: log.ts throws
+  `TranscriptNotYet` (`retryable = true`) for "pinned, nothing written" and "unpinned, no session yet"; the
+  follower re-opens such a target on every pump (no redraw, the note still shown once, worded "Following —
+  its trace shows here once written"), and backfills the moment turn one lands. Other errors stay final.
+  `paw web`'s trace (`traceBlocks` → `blocksForAgent`) was checked for the same bug and doesn't have it: it
+  is stateless and re-polled every 5s. `check:chat` covers the follower and an end-to-end sandboxed persona.
 - **The tasks view (`src/chat-tasks.ts`, pure; wired in chat.ts `paintTasks`)** — top: the target's
   beads (`assignee` = the agent; with no target, the operator's own via `operatorName()` plus "pick an
   agent with ↓"): in_progress ◐ → blocked ⊘ → open ○ → deferred ◌ (priority, then most recently

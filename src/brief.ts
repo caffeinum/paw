@@ -153,8 +153,10 @@ export const CRON_BRIEF: readonly string[] = [
 export const SANDBOX_BRIEF: readonly string[] = [
     `YOU RUN IN A SANDBOX: a Linux VM whose filesystem is WIPED on every launch, except your folder, your`,
     `claude store and your HOME (/root, persistent, private to you). Keep everything that must survive in`,
-    `~: your secrets in ~/.env (KEY=value lines — every bash command sources it automatically), dotfiles in`,
-    `~/.bashrc, tools via plain installs (\`npm i -g x\`, \`pip install x\`, \`cargo install x\` already land in ~`,
-    `and on PATH). apt packages do NOT survive — ask the operator for a custom image instead. Never write a`,
+    `~: your secrets in ~/.env (KEY=value lines — every bash command sources it automatically), shell setup in`,
+    `~/.bashrc (every bash here reads it too — your Bash tool, the operator's !cmd and \`paw sandbox shell\` — so an`,
+    `installer that adds its PATH line there, like fly's, just works), tools via plain installs (\`npm i -g x\`,`,
+    `\`pip install x\`, \`cargo install x\` already land in ~ and on PATH). Keep ~/.bashrc quiet (it runs before`,
+    `every command; its errors print on stderr). apt packages do NOT survive — ask the operator for a custom image instead. Never write a`,
     `secret into your folder, a message or a log: ~/.env is the place.`,
 ];
