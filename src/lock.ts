@@ -30,12 +30,16 @@ function holderPid(lockPath: string): number | undefined {
 
 function holderAlive(lockPath: string): boolean | undefined {
   const pid = holderPid(lockPath);
-  if (pid === undefined) return undefined;
+  return pid === undefined ? undefined : pidAlive(pid);
+}
+
+/** Signal 0: is `pid` running? EPERM = alive, someone else's; ESRCH = gone. */
+export function pidAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
     return true;
   } catch (err) {
-    return (err as NodeJS.ErrnoException).code === "EPERM"; // EPERM = alive, someone else's; ESRCH = gone
+    return (err as NodeJS.ErrnoException).code === "EPERM";
   }
 }
 

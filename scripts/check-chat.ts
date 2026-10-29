@@ -1041,7 +1041,7 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
   assert(peerStatusTag(undefined, roster("idle").map((p) => ({ ...p, status: "idle" })), "me") === undefined, "footer: nobody working → nothing");
   const { readFileSync } = await import("node:fs");
   const src = readFileSync(new URL("../src/chat.ts", import.meta.url), "utf8");
-  const handler = src.slice(src.indexOf('ep.on("presence"'), src.indexOf("// Tab-complete `@name` mentions"));
+  const handler = src.slice(src.indexOf('const onPresence = '), src.indexOf("// Tab-complete `@name` mentions"));
   assert(handler.length > 0 && !/statusBadge\(ev\.presence\.status\)/.test(handler) && /picked it up/.test(handler), "footer: the presence handler prints only picked-it-up receipts — no line per status flip");
 }
 
@@ -1051,15 +1051,26 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
   const { CHAT_STARTUP_COMMANDS } = await import("../src/chat.ts");
   const tick = () => new Promise((r) => setTimeout(r, 5));
   /** One scripted startup: which step fails, and when ensure() signals the mesh. Returns the event log. */
-  async function run(o: { ensureFails?: "before" | "after"; inboxFails?: boolean; epFails?: boolean; noSignal?: boolean; releaseFails?: boolean }) {
+  async function run(o: {
+    ensureFails?: "before" | "after";
+    inboxFails?: boolean;
+    epFails?: boolean;
+    noSignal?: boolean;
+    releaseFails?: boolean;
+    abortAt?: "beforeMeshUp" | "midProvision" | "betweenInboxAndEndpoint" | "afterEndpoint";
+  }) {
     const log: string[] = [];
     let error: string | undefined;
+    let errorName: string | undefined;
     let got: unknown;
+    const ac = new AbortController();
     try {
-      got = await concurrentStartup<string, string>({
+      const r = await concurrentStartup<string, string>({
+        signal: ac.signal,
         ensure: async (meshUp) => {
           log.push("ensure:start");
           await tick();
+          if (o.abortAt === "beforeMeshUp") ac.abort();
           if (o.ensureFails === "before") throw new Error("ensure boom");
           if (!o.noSignal) meshUp();
           await tick(); // the manager + mailbox steps, while the chain runs
@@ -1067,35 +1078,50 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
           log.push("ensure:end");
           if (o.ensureFails === "after") throw new Error("ensure boom");
         },
-        openInbox: async () => {
-          log.push("inbox:open");
-          await tick();
-          if (o.inboxFails) throw new Error("inbox boom");
-          return "INBOX";
-        },
-        releaseInbox: async (i) => {
-          log.push(`inbox:release:${i}`);
-          if (o.releaseFails) throw new Error("release boom");
+        prepareInbox: async () => {
+          log.push("inbox:prepare");
+          return {
+            release: async () => {
+              log.push("inbox:release");
+              if (o.releaseFails) throw new Error("release boom");
+            },
+            provision: async () => {
+              log.push("inbox:provision");
+              if (o.abortAt === "midProvision") ac.abort();
+              await tick();
+              if (o.inboxFails) throw new Error("inbox boom");
+              if (o.abortAt === "betweenInboxAndEndpoint") ac.abort();
+              log.push("inbox:provisioned");
+              return "INBOX";
+            },
+          };
         },
         startEndpoint: async (i) => {
           log.push(`ep:start:${i}`);
           await tick();
           if (o.epFails) throw new Error("ep boom");
+          if (o.abortAt === "afterEndpoint") ac.abort();
           return "EP";
         },
         stopEndpoint: async (e) => void log.push(`ep:stop:${e}`),
         report: (m) => log.push(`report:${m}`),
+        onPhase: (p) => log.push(`phase:${p}`),
       });
+      got = { inbox: r.inbox, endpoint: r.endpoint };
     } catch (e) {
       error = (e as Error).message;
+      errorName = (e as Error).name;
     }
-    return { log, error, got };
+    return { log, error, errorName, got };
   }
+  const count = (log: string[], x: string) => log.filter((l) => l === x).length;
   {
     const r = await run({});
     assert(eq(r.got, { inbox: "INBOX", endpoint: "EP" }) && r.error === undefined, "startup: all ok → the inbox and the endpoint, nothing released");
-    assert(r.log.indexOf("inbox:open") < r.log.indexOf("ensure:end"), `startup: the inbox opens WHILE ensure() is still running (${r.log.join(" ")})`);
+    assert(r.log.indexOf("inbox:provision") < r.log.indexOf("ensure:end"), `startup: the inbox opens WHILE ensure() is still running (${r.log.join(" ")})`);
     assert(!r.log.some((l) => /release|stop/.test(l)), "startup: …and a success releases nothing");
+    assert(r.log.indexOf("inbox:prepare") < r.log.indexOf("inbox:provision"), "startup: the inbox's release is registered (prepare) before provisioning dials");
+    assert(eq(r.log.filter((l) => l.startsWith("phase:")), ["phase:inbox", "phase:endpoint"]), "startup: onPhase names the slow step (inbox, then endpoint)");
   }
   {
     const r = await run({ ensureFails: "before" });
@@ -1104,20 +1130,20 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
   {
     const r = await run({ ensureFails: "after" });
     assert(r.error === "ensure boom", "startup: ensure() fails after the chain started → ensure's error is the one thrown");
-    assert(r.log.includes("ep:stop:EP") && r.log.includes("inbox:release:INBOX"), `startup: …and the endpoint is stopped and the inbox retired (${r.log.join(" ")})`);
-    assert(r.log.indexOf("ep:stop:EP") < r.log.indexOf("inbox:release:INBOX"), "startup: …endpoint first, then its inbox durables");
+    assert(r.log.includes("ep:stop:EP") && r.log.includes("inbox:release"), `startup: …and the endpoint is stopped and the inbox retired (${r.log.join(" ")})`);
+    assert(r.log.indexOf("ep:stop:EP") < r.log.indexOf("inbox:release"), "startup: …endpoint first, then its inbox durables");
   }
   {
     const r = await run({ epFails: true });
-    assert(r.error === "ep boom" && r.log.includes("inbox:release:INBOX") && !r.log.some((l) => l.startsWith("ep:stop")), `startup: the endpoint fails → the inbox is retired, the endpoint never counted as acquired (${r.log.join(" ")})`);
+    assert(r.error === "ep boom" && r.log.includes("inbox:release") && !r.log.some((l) => l.startsWith("ep:stop")), `startup: the endpoint fails → the inbox is retired, the endpoint never counted as acquired (${r.log.join(" ")})`);
   }
   {
     const r = await run({ inboxFails: true });
-    assert(r.error === "inbox boom" && !r.log.some((l) => /release|stop|ep:start/.test(l)), `startup: the inbox fails → its error, nothing to release (${r.log.join(" ")})`);
+    assert(r.error === "inbox boom" && count(r.log, "inbox:release") === 1 && !r.log.some((l) => /stop|ep:start/.test(l)), `startup: provisioning fails → its error, and whatever it half-made is retired once (${r.log.join(" ")})`);
   }
   {
     const r = await run({ ensureFails: "after", epFails: true });
-    assert(r.error === "ensure boom" && r.log.includes("inbox:release:INBOX"), "startup: both fail → ensure's error (it names the cause), the inbox still retired");
+    assert(r.error === "ensure boom" && r.log.includes("inbox:release"), "startup: both fail → ensure's error (it names the cause), the inbox still retired");
   }
   {
     const r = await run({ ensureFails: "after", releaseFails: true });
@@ -1125,7 +1151,29 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
   }
   {
     const r = await run({ noSignal: true });
-    assert(eq(r.got, { inbox: "INBOX", endpoint: "EP" }) && r.log.indexOf("inbox:open") > r.log.indexOf("ensure:end"), "startup: an ensure() that never signals still opens the chain once it resolves");
+    assert(eq(r.got, { inbox: "INBOX", endpoint: "EP" }) && r.log.indexOf("inbox:provision") > r.log.indexOf("ensure:end"), "startup: an ensure() that never signals still opens the chain once it resolves");
+  }
+  // The quit-during-startup matrix: nothing in flight is interrupted, each release runs once, no
+  // endpoint is started after the abort, and the caller gets an AbortError.
+  {
+    const r = await run({ abortAt: "beforeMeshUp" });
+    assert(r.errorName === "AbortError" && !r.log.some((l) => /inbox|ep:/.test(l)), `abort before the mesh is up → the chain never starts (${r.log.join(" ")})`);
+  }
+  {
+    const r = await run({ abortAt: "midProvision" });
+    assert(r.errorName === "AbortError" && r.log.includes("inbox:provisioned") && count(r.log, "inbox:release") === 1 && !r.log.some((l) => l.startsWith("ep:")), `abort mid-provision → provisioning settles, no endpoint, released once (${r.log.join(" ")})`);
+  }
+  {
+    const r = await run({ abortAt: "betweenInboxAndEndpoint" });
+    assert(r.errorName === "AbortError" && !r.log.some((l) => l.startsWith("ep:")) && count(r.log, "inbox:release") === 1, `abort between inbox and endpoint → startEndpoint skipped, inbox released once (${r.log.join(" ")})`);
+  }
+  {
+    const r = await run({ abortAt: "afterEndpoint" });
+    assert(r.errorName === "AbortError" && count(r.log, "ep:stop:EP") === 1 && count(r.log, "inbox:release") === 1, `abort after the endpoint → endpoint stopped and inbox released, once each (${r.log.join(" ")})`);
+  }
+  {
+    const r = await run({ abortAt: "midProvision", releaseFails: true });
+    assert(r.errorName === "AbortError" && r.log.includes("report:release boom"), "abort + a failing release → the failure is reported, the abort is what's thrown");
   }
   // The narrowed startup resolve must hold every command the wake gate sends on that handle.
   assert(eq([...CHAT_STARTUP_COMMANDS].sort(), ["despawn", "inspect", "ps", "spawn"]), "startup: the chat control resolves ps/spawn/inspect/despawn");
@@ -1134,6 +1182,242 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
   const sent = new Set([...addressing.matchAll(/\bctl\.(\w+)\(/g)].map((m) => m[1]));
   const outside = [...sent].filter((op) => !(CHAT_STARTUP_COMMANDS as readonly string[]).includes(op));
   assert(outside.length === 0, `startup: every ctl.<op> addressing.ts sends is in the narrowed set (outside: ${outside.join(", ") || "none"})`);
+}
+
+// ── instant UI: the pure half (src/chat-boot.ts, src/chat-banner.ts, src/chat-consent.ts) ──────────
+{
+  const { lineNeedsMesh, DeferredQueue, bootLabel, slotText, loading, ok, failed } = await import("../src/chat-boot.ts");
+  const local = ["/imgs", "/noimg", "/paste", "/nopaste", "/help", "/quit", "/exit", "quit", "exit", "/conn", "/reconnect", " /QUIT "];
+  const mesh = ["hi", "@bob hi", "@bob", "#general hi", "!ls", "/who", "/ps", "/retry", "/dm bob hi", "exit now"];
+  assert(local.every((l) => !lineNeedsMesh(l)), `lineNeedsMesh: local commands run at once (${local.filter((l) => lineNeedsMesh(l)).join(", ") || "all"})`);
+  assert(mesh.every((l) => lineNeedsMesh(l)), `lineNeedsMesh: sends, names, channels, !cmd and other /cmds wait (${mesh.filter((l) => !lineNeedsMesh(l)).join(", ") || "all"})`);
+
+  const q = new DeferredQueue<string, string>();
+  q.push({ text: "one", pending: ["img1"], pastes: [], bang: false, at: 1 });
+  q.push({ text: "@bob two", pending: [], pastes: ["p1"], stagedFor: "kit", bang: false, at: 2 });
+  q.push({ text: "ls -la", pending: [], pastes: [], bang: true, at: 3 });
+  assert(q.count === 3 && eq(q.unsentLines(), ["one", "@bob two", "!ls -la"]), "DeferredQueue: counts, and unsentLines is the full text (a `!` line keeps its `!`)");
+  const drained = q.drain();
+  assert(eq(drained.map((d) => d.text), ["one", "@bob two", "ls -la"]) && q.count === 0, "DeferredQueue: drain is FIFO and empties the queue");
+  assert(eq(drained[0]!.pending, ["img1"]) && eq(drained[1]!.pastes, ["p1"]) && drained[1]!.stagedFor === "kit", "DeferredQueue: each line keeps the attachments staged for it");
+  {
+    // Replay takes ONE line at a time: a line queued while an earlier one is still running lands behind
+    // it (never ahead), and whatever is left is still there for a quit to list.
+    const r = new DeferredQueue<string, string>();
+    r.push({ text: "a", pending: [], pastes: [], bang: false, at: 1 });
+    r.push({ text: "b", pending: [], pastes: [], bang: false, at: 2 });
+    const order: string[] = [];
+    for (let it = r.shift(); it; it = r.shift()) {
+      order.push(it.text);
+      if (it.text === "a") r.push({ text: "typed during a", pending: [], pastes: [], bang: false, at: 3 });
+      if (it.text === "b") assert(eq(r.unsentLines(), ["typed during a"]), "DeferredQueue: mid-replay, the not-yet-run lines are still listed for a quit");
+    }
+    assert(eq(order, ["a", "b", "typed during a"]) && r.count === 0, "DeferredQueue: shift-replay keeps typed order, including lines queued during the replay");
+  }
+
+  // Replay semantics, modelled on chat's handler: typed-time `@name` switches for the lines after it.
+  {
+    let target = "kit";
+    const sent: string[] = [];
+    for (const line of ["plain", "@bob x", "plain again"]) {
+      if (line.startsWith("@")) {
+        const [to, ...rest] = line.slice(1).split(" ");
+        target = to!;
+        if (rest.length) sent.push(`${target}:${rest.join(" ")}`);
+      } else sent.push(`${target}:${line}`);
+    }
+    assert(eq(sent, ["kit:plain", "bob:x", "bob:plain again"]), `replay [plain, @bob x, plain] → kit, bob, bob (got ${sent.join(", ")})`);
+  }
+
+  const st = { dim: (s: string) => `<d>${s}</d>`, red: (s: string) => `<r>${s}</r>` };
+  assert(slotText(loading(), String, st) === "<d>◌</d>" && slotText(ok(5), (v) => `v${v}`, st) === "v5" && slotText(failed("down"), String, st) === "<r>✕ down</r>", "slotText: loader / value / red ✕");
+  assert(bootLabel("mesh", 2300) === "◌ starting mesh 2s" && bootLabel("inbox", 0) === "◌ opening inbox 0s" && bootLabel("endpoint", 999) === "◌ connecting 0s", "bootLabel: what is loading, with seconds counting up");
+  assert(bootLabel("agent", 4000, "kit") === "◌ waking kit 4s" && bootLabel("roster", 1000, "kit") === "◌ waiting for kit 1s", "bootLabel: the agent steps name it");
+  assert(bootLabel("failed", 0).startsWith("✕ not connected") && bootLabel("ready", 0) === "", "bootLabel: failed says how out; ready says nothing");
+}
+
+{
+  const { peerStatusTag, shouldFollowDm } = await import("../src/chat.ts");
+  assert(eq(peerStatusTag("kit", undefined, undefined), { text: "kit ◌", status: "loading" }), "footer: an unread roster → the target is LOADING, never offline");
+  assert(peerStatusTag(undefined, undefined, undefined) === undefined, "footer: an unread roster with no target says nothing");
+  const base = { from: "evals", curName: "research", typed: "", held: 0, staged: 0, historical: false, ageMs: 1000 };
+  assert(shouldFollowDm(base) && !shouldFollowDm({ ...base, holding: true }), "follow: a DM never retargets while queued lines wait to replay (holding)");
+}
+
+{
+  const { renderBanner, paintedRows, canRepaintInPlace, PLAIN } = await import("../src/chat-banner.ts");
+  const { loading, ok, failed } = await import("../src/chat-boot.ts");
+  const agent = (o: Record<string, unknown> = {}) => ({ mode: "agent" as const, space: "s", remote: true, agent: "kit", where: "", status: loading<string>(), machine: loading<string | undefined>(), info: loading<{ model: string; context: string } | undefined>(), only: false, bang: true, ...o });
+  const loadingText = renderBanner(agent(), PLAIN);
+  assert(/status: ◌/.test(loadingText) && /on ◌/.test(loadingText) && /model:  ◌/.test(loadingText) && /context: ◌/.test(loadingText), "banner: every unknown field is a loader");
+  assert(!/offline|this machine|reusing|not running|idle|working/.test(loadingText), "banner: a loading banner fabricates nothing (no offline / this machine / status words)");
+  const okText = renderBanner(agent({ status: ok("reusing live agent"), machine: ok("mini"), info: ok({ model: "opus", context: "12k" }) }), PLAIN);
+  assert(/status: reusing live agent/.test(okText) && /mesh s \(remote\) · on mini/.test(okText) && /model:  opus/.test(okText) && !okText.includes("◌"), "banner: loaded fields show their values, no loader left");
+  const noInfo = renderBanner(agent({ status: ok("x"), machine: ok(undefined), info: ok(undefined) }), PLAIN);
+  assert(!/model:|· on/.test(noInfo), "banner: ok(undefined) machine/info omit the row — nothing is not a loader");
+  const errText = renderBanner(agent({ status: failed("no live agent named kit"), machine: ok(undefined), info: failed("transcript unreadable") }), PLAIN);
+  assert(/status: ✕ no live agent named kit/.test(errText) && /model:  ✕ transcript unreadable/.test(errText), "banner: a failed field says ✕ and why");
+  const all = renderBanner({ mode: "all", space: "s", remote: false, room: "general", roster: loading() }, PLAIN);
+  assert(/◌ loading who's live/.test(all) && !/no agents live yet/.test(all), "banner (--all): loading roster ≠ empty roster");
+  assert(/2 live: a · b/.test(renderBanner({ mode: "all", space: "s", remote: false, room: "general", roster: ok(["a", "b"]) }, PLAIN)), "banner (--all): the live list once read");
+  assert(/channel: #ops/.test(renderBanner({ mode: "channel", space: "s", remote: false, room: "ops" }, PLAIN)), "banner (#channel): names the channel");
+  assert(/showing: this agent only/.test(renderBanner(agent({ only: true }), PLAIN)), "banner (@name): says it is filtered");
+
+  assert(paintedRows("a\nb\n\n", 80) === 3, "paintedRows: lines + the blank one, cursor below");
+  assert(paintedRows(`${"x".repeat(100)}\n`, 80) === 2 && paintedRows(`${"x".repeat(100)}\n`, 40) === 3 && paintedRows(`${"x".repeat(100)}\n`, 20) === 5, "paintedRows: a long line counts every row it wraps onto (80/40/20 cols)");
+  assert(paintedRows(`${"🐾".repeat(30)}\n`, 40) === 2, "paintedRows: emoji are two columns wide");
+  assert(paintedRows(`${"x".repeat(80)}\n`, 80) === 1, "paintedRows: a line exactly the width is one row");
+  const can = { bannerIsLast: true, resizedSince: false, tty: true, chatView: true, picking: false, pasting: false, bannerRows: 20, promptRows: 2, screenRows: 40 };
+  assert(canRepaintInPlace(can), "repaint in place: the banner is last, fits, nothing open");
+  assert(!canRepaintInPlace({ ...can, bannerIsLast: false }) && !canRepaintInPlace({ ...can, resizedSince: true }) && !canRepaintInPlace({ ...can, screenRows: 22 }), "repaint in place: not after another entry, a resize, or when too tall");
+  assert(!canRepaintInPlace({ ...can, picking: true }) && !canRepaintInPlace({ ...can, pasting: true }) && !canRepaintInPlace({ ...can, chatView: false }), "repaint in place: not with the picker/paste open or in another view");
+}
+
+{
+  const { consentAnswer, PendingConsent, ARM_MS } = await import("../src/chat-consent.ts");
+  const armed = 1000;
+  assert(consentAnswer({ text: "y", startedAt: armed - 200, pasted: false, replay: false }, armed) === "message", "consent: a `y` started before the question was armed is a message");
+  assert(consentAnswer({ text: "y", startedAt: armed + 100, pasted: true, replay: false }, armed) === "message", "consent: a pasted `y` never answers");
+  assert(consentAnswer({ text: "yes", startedAt: armed + 100, pasted: false, replay: true }, armed) === "message", "consent: a replayed line never answers");
+  assert(consentAnswer({ text: "y", startedAt: undefined, pasted: false, replay: false }, armed) === "message", "consent: a line with no known first key never answers");
+  assert(consentAnswer({ text: " Yes ", startedAt: armed + 1, pasted: false, replay: false }, armed) === "yes", "consent: y/yes typed after arming → yes");
+  assert(["n", "No", "", "  "].every((t) => consentAnswer({ text: t, startedAt: armed + 1, pasted: false, replay: false }, armed) === "no"), "consent: n/no/an empty Enter typed after arming → no");
+  assert(consentAnswer({ text: "lo there", startedAt: armed + 1, pasted: false, replay: false }, armed) === "message" && consentAnswer({ text: "nah", startedAt: armed + 1, pasted: false, replay: false }, armed) === "message", "consent: any other line is a MESSAGE, never swallowed as no");
+  let now = 0;
+  const events: string[] = [];
+  const host = {
+    ask: (q: string, p: string) => events.push(`ask:${q}|${p}`),
+    done: () => events.push("done"),
+    now: () => now,
+  };
+  const pc = new PendingConsent(host);
+  const answer = pc.consent("kit looks stuck (off the mesh). restart it? [y/N] ");
+  assert(pc.open && /restart kit\? \[y\/N\]> /.test(events[0]!) && pc.prompt === "restart kit? [y/N]> ", "consent: asking sets the restart prompt, and exposes it while open (no draft is touched)");
+  assert(!pc.offer({ text: "y", startedAt: 100, pasted: false, replay: false }), `consent: \`y\` at +100ms (< ${ARM_MS}ms) is not an answer — it stays a message`);
+  assert(!pc.offer({ text: "hello there", startedAt: 400, pasted: false, replay: false }) && pc.open, "consent: an ordinary line after arming stays a message and the question stays open");
+  assert(pc.open && pc.offer({ text: "y", startedAt: 400, pasted: false, replay: false }), "consent: `y` at +400ms answers");
+  assert((await answer) === true && !pc.open && pc.prompt === undefined && events.includes("done"), "consent: …yes, and the prompt is released");
+  const second = pc.consent("kit looks stuck. restart it? [y/N] ");
+  pc.cancel();
+  assert((await second) === false && !pc.open, "consent: quit/close answers no");
+}
+
+{
+  const { lexChatArgs } = await import("../src/chat-preshell.ts");
+  assert(eq(lexChatArgs(["@kit", "--space", "team2027"], "/x/repo"), { space: "team2027", label: "kit", mode: "agent", only: true }), "preshell lex: @name → filtered agent, --space read");
+  assert(eq(lexChatArgs([], "/x/repo"), { label: "repo", mode: "agent", only: false }), "preshell lex: bare → this folder's basename");
+  assert(eq(lexChatArgs(["--model", "opus", "."], "/x/repo"), { label: "repo", mode: "agent", only: false }), "preshell lex: a flag's value is never the target");
+  assert(eq(lexChatArgs(["--space=team2027", "echoer"], "/x/repo"), { space: "team2027", label: "echoer", mode: "agent", only: false }), "preshell lex: --space=X is --space X (never the default space's frame)");
+  assert(eq(lexChatArgs(["--model=opus", "@kit"], "/x/repo"), { label: "kit", mode: "agent", only: true }), "preshell lex: --flag=value is skipped whole");
+  assert(lexChatArgs(["--all"], "/x").mode === "all" && lexChatArgs(["#ops"], "/x").label === "ops", "preshell lex: --all, #channel");
+}
+
+// ── the remote inbox's cleanup ledger (src/human-inbox.ts) ───────────────────────────────────────
+{
+  const { writeRemoteMesh } = await import("../src/remote-mesh.ts");
+  const { writeLedger, readLedger, sweepOrphanInboxes, inboxLedgerDir } = await import("../src/human-inbox.ts");
+  const { existsSync, readFileSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const space = "ledgertest";
+  writeRemoteMesh({ space, server: "tls://127.0.0.1:9", root: process.env.PAW_HOME as string, ts: new Date().toISOString() });
+  writeLedger(space, "uiddead", { pid: 999_999, server: "tls://127.0.0.1:9", channels: ["ops"], startedAt: 1 });
+  writeLedger(space, "uidlive", { pid: 4242, server: "tls://127.0.0.1:9", channels: [], startedAt: 2 });
+  writeLedger(space, "uidmine", { pid: process.pid, server: "tls://127.0.0.1:9", channels: [], startedAt: 3 });
+  assert(eq(readLedger(space).map((l) => l.uid).sort(), ["uiddead", "uidlive", "uidmine"]), "ledger: entries are written atomically and read back");
+  const retired: string[] = [];
+  const r = await sweepOrphanInboxes(space, (pid) => pid === 4242, async (_s, server, uid, channels) => {
+    retired.push(`${uid}@${server}#${channels.join(",")}`);
+    const { rmSync } = await import("node:fs");
+    rmSync(join(inboxLedgerDir(space), `${uid}.json`));
+  });
+  assert(eq(retired, ["uiddead@tls://127.0.0.1:9#ops"]) && eq(r.retired, ["uiddead"]) && eq(r.skipped.sort(), ["uidlive", "uidmine"]), "sweep: a dead pid's inbox is retired (its server + channels); a live one and our own are skipped");
+  assert(!existsSync(join(inboxLedgerDir(space), "uiddead.json")) && existsSync(join(inboxLedgerDir(space), "uidlive.json")), "sweep: the retired entry leaves the ledger, the live one stays");
+  writeLedger(space, "uidbroken", { pid: 999_998, server: "tls://127.0.0.1:9", channels: [], startedAt: 4 });
+  let threw = "";
+  await sweepOrphanInboxes(space, () => false, async (_s, _v, uid) => {
+    if (uid === "uidbroken") throw new Error("broker down");
+  }).catch((e: Error) => (threw = e.message));
+  assert(/uidbroken: broker down/.test(threw) && existsSync(join(inboxLedgerDir(space), "uidbroken.json")), "sweep: a failed retire is thrown (never swallowed) and its entry kept for the next sweep");
+  // The release exists before provisioning dials: the ledger write precedes `provision` in prepareHumanInbox.
+  const hi = readFileSync(new URL("../src/human-inbox.ts", import.meta.url), "utf8");
+  const prep = hi.slice(hi.indexOf("  const lifecycleUid = mintLifecycleUid();", hi.indexOf("export async function prepareHumanInbox")));
+  assert(prep.indexOf("writeLedger(space, lifecycleUid") < prep.indexOf("provision: async"), "prepare: the ledger entry is written before provisioning can start");
+  const local = await sweepOrphanInboxes("nosuchremote", () => false, async () => {
+    throw new Error("must not run");
+  });
+  assert(eq(local, { retired: [], skipped: [] }), "sweep: a local (open-mesh) space has nothing to retire");
+}
+
+// ── structure guards ─────────────────────────────────────────────────────────────────────────────
+{
+  const { readFileSync } = await import("node:fs");
+  const { dirname, resolve } = await import("node:path");
+  const { fileURLToPath } = await import("node:url");
+  const src = readFileSync(new URL("../src/chat.ts", import.meta.url), "utf8");
+  const code = src
+    .split("\n")
+    .filter((l) => !/^\s*(\/\/|\*|\/\*\*)/.test(l))
+    .join("\n");
+  // Every endpoint read goes through roster()/needEp(): a bare `ep.` would crash (or lie) before connect.
+  const bare = [...code.matchAll(/(?<![\w.])ep\.(\w+)/g)].map((m) => m[1]);
+  const allowed = new Set(["getRoster", "presenceView", "presenceWriteFailure", "stop", "card"]);
+  const outside = bare.filter((m) => !allowed.has(m!));
+  assert(outside.length === 0, `chat: no bare ep.<x> outside the guarded helpers (found: ${outside.join(", ") || "none"})`);
+  // …and the few direct reads left are the guarded helpers themselves: roster(), the presence-quiet
+  // predicate, the first-read latch and /conn (each checks `ep` first). A new one must be added here
+  // on purpose.
+  const direct = [...code.matchAll(/(?<![\w.])ep\.(getRoster|presenceView|presenceWriteFailure)\(/g)].length;
+  assert(direct === 7, `chat: direct endpoint reads stay inside the guarded helpers (7 expected, found ${direct})`);
+  // Listeners before the endpoint connects: every e.on/e.tap in startEndpoint precedes startResilient(e).
+  const se = src.slice(src.indexOf("const startEndpoint = async"), src.indexOf("await startResilient(e);"));
+  // An open restart question owns the prompt: every prompt goes through promptFor(), which shows it.
+  const setPrompts = [...src.matchAll(/setPrompt\(([^)]*\)?)\)/g)].map((m) => m[1]);
+  assert(setPrompts.length > 0 && setPrompts.every((a) => a === "promptFor()"), `chat: every setPrompt goes through promptFor() (found: ${[...new Set(setPrompts)].join(", ")})`);
+  assert(/const promptFor = \(\): string => \{\s*(\/\/[^\n]*\n\s*)*if \(consent\.prompt\) return/.test(src), "chat: promptFor() returns the restart question first while it is open");
+  // While the queue replays, every non-quit line joins it, and a DM can't retarget it.
+  assert(/\(replaying && !quits\)/.test(src) && /holding = !ready \|\| replaying \|\|/.test(src), "chat: lines typed during the replay queue behind it; a DM mid-replay doesn't move the target");
+  // A failed or stopped endpoint is forgotten whole — /reconnect never trusts a dead endpoint's roster.
+  const drop = src.slice(src.indexOf("const dropEndpoint = (): void => {"), src.indexOf("const startEndpoint = async"));
+  assert(/rosterSeen = false/.test(drop) && /ep = undefined/.test(drop) && /me = undefined/.test(drop) && /peerHold = new PresenceHold/.test(drop) && /if \(ep === x\.ep\) dropEndpoint\(\)/.test(src), "chat: stopping a startup endpoint resets ep/conn/me/rosterSeen/peerHold");
+  // Banner deltas are skipped on redraw (the repainted banner already says them).
+  assert(/e\.kind === "chat" && e\.bannerDelta && bannerEntry\) continue/.test(src), "chat: a redraw doesn't repeat banner field lines under the banner that now shows them");
+  // The pre-shell turns bracketed paste on BEFORE raw mode, and off on exit.
+  const pre = readFileSync(new URL("../src/chat-preshell.ts", import.meta.url), "utf8");
+  assert(pre.indexOf("write(ENABLE_BRACKETED_PASTE)") > 0 && pre.indexOf("write(ENABLE_BRACKETED_PASTE)") < pre.indexOf("setRawMode(true)") && /writeSync\(1, DISABLE_BRACKETED_PASTE\)/.test(pre), "preshell: bracketed paste is on before the first key can be read, off on exit");
+  assert(/e\.on\("message", onMessage\)/.test(se) && /e\.on\("presence", onPresence\)/.test(se) && /tapOwnSubject\(e,/.test(se) && /attachConn\(e,/.test(se), "chat: message/presence/tap/conn listeners are attached BEFORE startResilient");
+  // The plain-line branch never falls back to the room while a target is set.
+  const plain = src.slice(src.indexOf("} else if (curName) {\n        // The sticky target."), src.indexOf("/** Run the queued lines"));
+  assert(/✕ not sent to/.test(plain) && /sendPost\(room/.test(plain) && plain.indexOf("✕ not sent to") < plain.indexOf("sendPost(room"), "chat: a target that can't be reached refuses the line — #room only with no target");
+
+  // Core-free first frame: walk the static import graph of the pre-shell, the banner, and bin/paw.ts above
+  // its fast path. Any @cotal-ai/* there costs the ~200ms the pre-shell exists to hide.
+  const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+  const importsOf = (file: string, text = readFileSync(file, "utf8")): string[] =>
+    [...text.matchAll(/^import\s+(?!type\b)(?:[^"';]*?from\s+)?["']([^"']+)["']/gm)].map((m) => m[1]!);
+  const walk = (entry: string, text?: string): string[] => {
+    const seen = new Set<string>();
+    const bad: string[] = [];
+    const visit = (file: string, t?: string) => {
+      if (seen.has(file)) return;
+      seen.add(file);
+      for (const spec of importsOf(file, t)) {
+        if (spec.startsWith("@cotal-ai/") || spec.startsWith("@nats-io/")) bad.push(`${file.slice(root.length + 1)} → ${spec}`);
+        else if (spec.startsWith(".")) visit(resolve(dirname(file), spec));
+      }
+    };
+    visit(entry, text);
+    return bad;
+  };
+  for (const f of ["src/chat-preshell.ts", "src/chat-banner.ts", "src/chat-boot.ts", "src/chat-consent.ts"]) {
+    const bad = walk(resolve(root, f));
+    assert(bad.length === 0, `core-free: ${f}'s import graph has no @cotal-ai/* (${bad.join(", ") || "clean"})`);
+  }
+  const bin = readFileSync(resolve(root, "bin/paw.ts"), "utf8");
+  const above = bin.slice(0, bin.indexOf("// FAST PATH"));
+  const binBad = walk(resolve(root, "bin/paw.ts"), above);
+  assert(above.length > 0 && binBad.length === 0, `core-free: bin/paw.ts above the fast path imports no @cotal-ai/* (${binBad.join(", ") || "clean"})`);
+  const { SHORT_FORMS } = await import("../src/dispatch.ts");
+  assert(SHORT_FORMS.c === "chat" && /cmd === "chat" && process\.stdin\.isTTY && process\.stdout\.isTTY/.test(bin) && bin.indexOf("expandShortForm(raw[0])") < bin.indexOf("// FAST PATH"), "fast path: `paw c` reaches it too (short forms expand first)");
 }
 
 rmSync(process.env.PAW_HOME as string, { recursive: true, force: true });

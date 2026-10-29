@@ -56,13 +56,28 @@ export function historyConsumerNames(space: string, me: Principal, nonce: string
  * failure of the remote echo connection — loud, never swallowed.
  */
 export async function tapOwnSends(ep: CotalEndpoint, space: string, server: string, handler: TapHandler, onError: (e: Error) => void): Promise<() => Promise<void>> {
-  if (!isRemoteSpace(space)) {
-    ep.tap(handler);
-    return async () => {};
-  }
-  const { chat, dm } = ownSendSubjects(space, principalOfId(ep.card.id));
-  ep.tap(handler, { subject: chat });
+  tapOwnSubject(ep, space, handler);
+  return startEcho(ep, space, server, handler, onError);
+}
 
+/**
+ * The half of the echo that rides the chat endpoint's own connection: a plain `ep.tap`, bound on
+ * connect — so `paw chat` attaches it BEFORE starting the endpoint and misses no frame. Sync.
+ */
+export function tapOwnSubject(ep: CotalEndpoint, space: string, handler: TapHandler): void {
+  if (!isRemoteSpace(space)) ep.tap(handler);
+  else ep.tap(handler, { subject: ownSendSubjects(space, principalOfId(ep.card.id)).chat });
+}
+
+/**
+ * The remote half: "you"'s own outbound DMs over a second, narrowly-signed connection. Off chat's
+ * critical path — started once the chat is ready, never awaited by it — so a DM another session sends
+ * in chat's first moments is not echoed (it is still in `paw history`). A no-op on an open mesh, where
+ * the space-wide tap already sees them.
+ */
+export async function startEcho(ep: CotalEndpoint, space: string, server: string, handler: TapHandler, onError: (e: Error) => void): Promise<() => Promise<void>> {
+  if (!isRemoteSpace(space)) return async () => {};
+  const { dm } = ownSendSubjects(space, principalOfId(ep.card.id));
   const identity = newIdentity();
   const sign = () => signScopedCreds(space, "chat-echo", identity, echoGrants(dm), ECHO_TTL_SEC);
   let creds = await sign();
