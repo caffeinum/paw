@@ -55,7 +55,10 @@ installer prefixes and `BASH_ENV` (see [Private home](#private-home)). `COTAL_CO
 `/tmp/cotal-control.sock` in the VM (the MCP server listens, the hooks dial — both inside). Any OTHER
 `COTAL_*` value that is an absolute host path not under a mount fails the launch loud (a future cotal var
 must be taught, not silently missing). `--mcp-config` is cut to the cotal server alone: servers `paw mcp`
-shares run host commands with host secrets in their env.
+shares run host commands with host secrets in their env. The agent's OWN servers go in its VM's claude user
+scope — `paw mcp add <name> --to <n>#<s> <https://url>|-- <cmd>` writes `/paw/claude/.claude.json` and restarts it
+(`--no-restart`; busy → not without `--now`), `paw mcp ls|rm … --to`; OAuth via `paw sandbox shell` →
+`claude mcp login <name>` → [cli.md#a-sandboxed-agents-own-servers-paw-mcp----to-agent-2026-10-28](cli.md#a-sandboxed-agents-own-servers-paw-mcp----to-agent-2026-10-28).
 
 **The token** is read by the launcher from its file into its own env for `container run`, so it is never
 on an argv, in the LaunchSpec, a persona or a log line (`check:sandbox` asserts all four, plus `ps`).

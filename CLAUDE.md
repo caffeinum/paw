@@ -64,6 +64,11 @@ Each entry: what it is + the most load-bearing rule. Full notes behind the link.
   Opt-in servers (`add --only a,b`, `only <s> a,b|--all`) are marked `connectors.claude.pawOptIn` in the same
   file and granted by persona `mcpOptIn:`. `src/mcp-select.ts` holds the math, and the spawn sends an explicit
   list once any opt-in exists. → [cli.md#paw-mcp](docs/notes/cli.md#paw-mcp)
+- `src/mcp-sandbox.ts` — `paw mcp add|ls|rm … --to <agent>[#s]`: a SANDBOXED agent's own servers (stdio/http/sse,
+  `--header`, `--transport`) written into its VM's claude user scope (`sandbox/<n>/claude/.claude.json`, claude's
+  own `mcp add` shape, atomic, clash → `--force`); RESTARTS that one live agent (the operator's go; `--no-restart`,
+  busy → refused unless `--now`), then `claude mcp get` in the VM. Host agent → refused. `check:mcp-sandbox`.
+  → [cli.md#a-sandboxed-agents-own-servers-paw-mcp----to-agent-2026-10-28](docs/notes/cli.md#a-sandboxed-agents-own-servers-paw-mcp----to-agent-2026-10-28)
 - `src/commands/files.ts` — `paw files`: pure observer of `#files` (`ai.cotal.file` FileEntry, absolute
   paths, no bytes on the mesh). → [cli.md#paw-files](docs/notes/cli.md#paw-files)
 - `src/commands/bind.ts` — `paw bind`: one-time Telegram bind code minted over the mesh, as a distinct

@@ -43,6 +43,7 @@
     "plugin:install": "pnpm plugin:build && cotal ext add ./plugin",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "check:mcp": "node scripts/check-mcp.ts",
+    "check:mcp-sandbox": "node scripts/check-mcp-sandbox.ts",
     "check:bash-tty": "node scripts/check-bash-tty.ts",
     "check:top": "node scripts/check-top.ts",
     "check:tidy": "node scripts/check-tidy.ts",
