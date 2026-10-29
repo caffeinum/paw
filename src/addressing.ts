@@ -66,7 +66,7 @@ export type Kind = "folder" | "worktree" | "repo" | "pr" | "web";
 
 /** paw's per-space state dir under ~/.paw (mirrors lifecycle.ts so chat/open and the daemon
  *  lifecycle agree on where paw keeps its bookkeeping). PAW_HOME overrides the root. */
-function spaceDir(space: string): string {
+export function spaceDir(space: string): string {
   const root = process.env.PAW_HOME?.trim() || join(homedir(), ".paw");
   const dir = join(root, "spaces", space);
   mkdirSync(dir, { recursive: true });
@@ -940,8 +940,11 @@ export async function ensureAgentSpawned(
     progress?: (line: string) => void;
     /** Who approves restarting a seat whose PROCESS IS ALIVE (the zombie restart). Absent = nobody: refuse. */
     restartLive?: RestartConsent;
+    /** Where the gate's notes go (stderr by default; `paw chat` puts them in its transcript, above the prompt). */
+    say?: (line: string) => void;
   },
 ): Promise<SpawnOutcome> {
+  const say = opts.say ?? ((line: string) => console.error(line));
   const graceMs = opts.timing?.graceMs ?? STARTING_GRACE_MS;
   const readyMs = opts.timing?.readyMs ?? SPAWN_READY_MS;
   // A FOREGROUND `paw claude` agent already owns this name in the operator's own terminal (its process
@@ -969,7 +972,7 @@ export async function ensureAgentSpawned(
   // Seen live: the automatic-restart history (backoff + "needs a human" cap) starts over.
   const live = (): { spawned: false } => {
     clearRestartHistory(opts.space, opts.name);
-    return healSleep(opts.space, opts.name);
+    return healSleep(opts.space, opts.name, say);
   };
   return withFileLockAsync(spawnLockPath(opts.space, opts.name), async () => {
     const ps = await ctl.ps();
@@ -993,7 +996,7 @@ export async function ensureAgentSpawned(
       const row = rows.find((r) => r.name === opts.name);
       const activeMs = lastWrite();
       if (seatBooting(row, activeMs, Date.now())) {
-        console.error(
+        say(
           `paw: "${opts.name}" is still starting (process running, transcript written ${Math.round((Date.now() - (activeMs as number)) / 1000)}s ago) — NOT restarting; messages wait in its durable inbox`,
         );
         return { spawned: false, starting: true, ...(row?.id ? { id: wirePrincipal(row.id) } : {}) };
@@ -1011,7 +1014,7 @@ export async function ensureAgentSpawned(
       // not the seat's: the seat just hasn't reached the mesh yet. 2026-10-11 the sleep host's own wake read
       // exactly this and restarted the seat `paw chat @evals` had spawned seconds before. Judge it like
       // `starting…`: a bounded wait, then the restart below if it never comes up.
-      console.error(
+      say(
         `paw: "${opts.name}" is ${sleeping} — its ps row reads offline through the sleep stand-in, not its own presence; giving the seat ${Math.round(STARTING_GRACE_MS / 1000)}s to reach the mesh before judging it`,
       );
       if (await waitForMeshLive(ctl, opts.name, STARTING_GRACE_MS, watchStartup().poll)) return live();
@@ -1020,12 +1023,12 @@ export async function ensureAgentSpawned(
     const reuseUnmanaged = action === "start" && opts.reuseUnmanaged !== false;
     if (reuseUnmanaged) {
       const live = await findUnmanagedAgent(opts.space, opts.name);
-      if (live) return reuseUnmanagedAgent(opts.space, opts.name, live);
+      if (live) return reuseUnmanagedAgent(opts.space, opts.name, live, say);
     }
     // Every "offline" above is only as good as the presence plane. A latched presence store (disk-full
     // broker, cotal #1356) makes EVERY agent read offline, and a restart then kills a healthy agent into
     // a seat that can never register (evals, 2026-10-14). Prove presence accepts writes before acting.
-    await refuseOnPresenceLatch(opts.space, opts.name, opts.probePresence);
+    await refuseOnPresenceLatch(opts.space, opts.name, opts.probePresence, say);
     if (action === "restart") {
       // The manager still LISTS this agent but it's dead on the mesh (process exited, or mesh offline —
       // a zombie left by a crash/bounce). The old gate reused ANY listed name, so `paw dm`/`paw chat`
@@ -1040,7 +1043,7 @@ export async function ensureAgentSpawned(
       const row = rows.find((r) => r.name === opts.name);
       const activeMs = lastWrite();
       if (row?.status !== "exited" && !restartDespiteOffline(activeMs, Date.now())) {
-        console.error(
+        say(
           `paw: "${opts.name}" reads ${row?.mesh ?? "?"} on the mesh but wrote its transcript ${Math.round((Date.now() - (activeMs as number)) / 1000)}s ago — busy, not a zombie; NOT restarting (the message waits in its inbox)`,
         );
         return { spawned: false, busy: true };
@@ -1049,7 +1052,7 @@ export async function ensureAgentSpawned(
       // reads offline with it, the presence plane is what's sick, and the new seat couldn't register either.
       if (row && row.status !== "exited" && presencePlaneSuspect(rows, opts.name)) {
         const others = rows.filter((r) => r.name !== opts.name && r.status !== "exited");
-        console.error(
+        say(
           `paw: "${opts.name}" reads ${row.mesh ?? "?"} but its process runs, and so do ${others.filter((r) => r.mesh === "offline").length}/${others.length} other running agents — ` +
             `the presence plane is lagging (a loaded or latched broker), not this agent; NOT restarting (the message waits in its inbox)`,
         );
@@ -1061,7 +1064,7 @@ export async function ensureAgentSpawned(
         const now = Date.now();
         const verdict = restartVerdict(readRestartHistory(opts.space, opts.name), now);
         if (verdict.kind === "wait") {
-          console.error(
+          say(
             `paw: "${opts.name}" reads ${row.mesh ?? "?"} with its process running, and was restarted ${verdict.restarts.length}× in the last ${Math.round((now - verdict.restarts[0]) / 60_000)}m without reaching the mesh — ` +
               `NOT restarting again for ${Math.ceil((verdict.nextAt - now) / 60_000)}m (backoff); messages wait in its durable inbox`,
           );
@@ -1074,7 +1077,7 @@ export async function ensureAgentSpawned(
           const watch = watchStartup();
           watch.poll();
           const stuck = `⚠ ${opts.name} is stuck — restarted ${verdict.restarts.length}× (first ${Math.round((now - verdict.restarts[0]) / 60_000)}m ago) without reaching the mesh, needs a human`;
-          console.error(
+          say(
             `paw: "${opts.name}" NOT restarted (stuck since ${Math.round((now - verdict.since) / 60_000)}m ago): ps status=${row.status ?? "?"} mesh=${row.mesh ?? "?"}, ` +
               `transcript last written ${activeMs ? Math.round((now - activeMs) / 1000) + "s ago" : "never/unknown"}${watch.cause()} — ` +
               `\`paw open ${opts.name}\` shows its screen (an MCP server or prompt it hangs on), \`paw log ${opts.name}\` its last turns, \`paw restart ${opts.name}\` retries and resets the count`,
@@ -1089,7 +1092,7 @@ export async function ensureAgentSpawned(
         if (!go) return { spawned: false, starting: true, stuck: restartRefusal(opts.name, opts.space, reason), ...(row.id ? { id: wirePrincipal(row.id) } : {}) };
         recordRestart(opts.space, opts.name, now);
       }
-      console.error(
+      say(
         `paw: restarting "${opts.name}" — ps row status=${row?.status ?? "?"} mesh=${row?.mesh ?? "?"}, transcript last written ${activeMs ? Math.round((Date.now() - activeMs) / 1000) + "s ago" : "never/unknown"}; its in-flight command (if any) will die`,
       );
       restartedFrom = { status: row?.status, mesh: row?.mesh, quietMs: activeMs ? Date.now() - activeMs : undefined };
@@ -1102,7 +1105,7 @@ export async function ensureAgentSpawned(
     // cotal #43), passing the canonical path so the dir claude runs in matches the trust key.
     // A HIBERNATED agent (`paw sleep`): flip it to waking; the sleep host keeps its stand-in up until this
     // seat is on the mesh, then hands it the DMs that arrived while it slept.
-    if (prepareWake(opts.space, opts.name)) console.error(`paw: waking "${opts.name}" from sleep`);
+    if (prepareWake(opts.space, opts.name)) say(`paw: waking "${opts.name}" from sleep`);
     const config = ensurePersonaFile(opts.space, opts.name, { brief: opts.brief, kind: opts.kind });
     // Two-writer guard: if the agent's pinned session is open in a standalone claude (a hand-run
     // TUI, not a mesh agent), resuming it would put two writers on one transcript and can corrupt
@@ -1121,7 +1124,7 @@ export async function ensureAgentSpawned(
         // A mesh agent running as THIS name on its own pin is not a second writer to refuse — it is the
         // agent, alive outside the current manager. Reach it instead of failing.
         const own = foreign.every((p) => p.mesh && p.identity?.name === opts.name && p.identity?.space === opts.space);
-        if (own && reuseUnmanaged) return reuseUnmanagedAgent(opts.space, opts.name, { pids: foreign.map((p) => p.pid) });
+        if (own && reuseUnmanaged) return reuseUnmanagedAgent(opts.space, opts.name, { pids: foreign.map((p) => p.pid) }, say);
         // The usual reason a MESH agent holds this session without the manager knowing: it is this very
         // agent, running in a tmux server the socket no longer reaches (2026-09-23). Then no duplicate
         // exists to find — say what actually happened and how to get the terminal back.
@@ -1188,7 +1191,7 @@ export async function ensureAgentSpawned(
       // always select none now, whatever the persona says.
       args.shareTools = [];
       if (share && parseShareSelection(share)?.length)
-        console.error(`paw: "${opts.name}" runs on kit, which has no MCP client — its shareTools: ${share} is not shared to it`);
+        say(`paw: "${opts.name}" runs on kit, which has no MCP client — its shareTools: ${share} is not shared to it`);
       // The rest of what the connector would refuse inside the manager (equally silent there) is
       // refused HERE, loud: the persona read the connector does, and kit's own parse of the kitArgs.
       const persona = readKitPersona(config);
@@ -1284,7 +1287,7 @@ export async function ensureAgentSpawned(
       const gone = after.ok && (!row || row.status === "exited");
       if (after.ok && !gone && !watch.stuck()) {
         const activeMs = lastWrite();
-        console.error(
+        say(
           `paw: "${opts.name}" isn't on the mesh after ${Math.round(readyMs / 1000)}s but its process is running` +
             (activeMs ? ` (transcript written ${Math.round((Date.now() - activeMs) / 1000)}s ago)` : "") +
             ` — still starting; messages wait in its durable inbox`,
@@ -1333,11 +1336,11 @@ export async function ensureAgentSpawned(
 
 /** Throw (nothing stopped, nothing spawned) when the space's presence store refuses writes. A probe that
  *  can't tell (auth grants, unreachable) is said out loud and the gate proceeds as before. */
-async function refuseOnPresenceLatch(space: string, name: string, probe?: () => Promise<PresenceHealth>): Promise<void> {
+async function refuseOnPresenceLatch(space: string, name: string, probe?: () => Promise<PresenceHealth>, say: (line: string) => void = (l) => console.error(l)): Promise<void> {
   const h = probe ? await probe() : await probePresenceWrites(space, pawServer(space), (key) => presenceProbeCreds(space, key));
   if (h.kind === "latched") throw new Error(presenceLatchRefusal(name, h, pawServer(space)));
-  if (h.kind === "unknown") console.error(`paw: couldn't probe the presence store before starting "${name}" (${h.message}) — proceeding`);
-  if (h.kind === "not-permitted") console.error(probeRefusedLine(h.message, `starting "${name}" anyway`));
+  if (h.kind === "unknown") say(`paw: couldn't probe the presence store before starting "${name}" (${h.message}) — proceeding`);
+  if (h.kind === "not-permitted") say(probeRefusedLine(h.message, `starting "${name}" anyway`));
 }
 
 /**
@@ -1346,8 +1349,8 @@ async function refuseOnPresenceLatch(space: string, name: string, probe?: () => 
  * beside it forever and its backlog would be overwritten by the next sleep. Flip the record to waking:
  * the sleep host then lowers the stand-in, forwards the backlog to this seat and clears the record.
  */
-function healSleep(space: string, name: string): { spawned: false } {
-  if (prepareWake(space, name)) console.error(`paw: "${name}" is live but was recorded asleep — handing its backlog over`);
+function healSleep(space: string, name: string, say: (line: string) => void = (l) => console.error(l)): { spawned: false } {
+  if (prepareWake(space, name)) say(`paw: "${name}" is live but was recorded asleep — handing its backlog over`);
   return { spawned: false };
 }
 
@@ -1452,10 +1455,9 @@ export function unmanagedNote(name: string): string {
   return `${name} is running but not managed by the current manager — talking to it directly; \`paw restart ${name}\` re-adopts it`;
 }
 
-function reuseUnmanagedAgent(space: string, name: string, live: UnmanagedAgent): SpawnOutcome {
-  const note = unmanagedNote(name);
-  console.error(process.stderr.isTTY ? `\x1b[2m${note}\x1b[22m` : note);
-  healSleep(space, name);
+function reuseUnmanagedAgent(space: string, name: string, live: UnmanagedAgent, say: (line: string) => void = (l) => console.error(process.stderr.isTTY ? `\x1b[2m${l}\x1b[22m` : l)): SpawnOutcome {
+  say(unmanagedNote(name));
+  healSleep(space, name, say);
   return { spawned: false, unmanaged: true, ...(live.id ? { id: live.id } : {}) };
 }
 
@@ -1679,13 +1681,13 @@ export async function stopAgent(ctl: ManagerControl, name: string): Promise<bool
 /** Poll the endpoint's roster until a present peer named `name` appears, returning its mesh id, or
  *  undefined on timeout. Used to address an already-running agent (its id isn't in `ps`, only the
  *  roster). Case-insensitive, mirroring cotal's own name resolution. */
-export async function waitForPeerId(ep: CotalEndpoint, name: string, timeoutMs: number): Promise<string | undefined> {
+export async function waitForPeerId(ep: CotalEndpoint, name: string, timeoutMs: number, signal?: AbortSignal): Promise<string | undefined> {
   const want = name.toLowerCase();
   const deadline = Date.now() + timeoutMs;
   for (;;) {
     const peer = ep.getRoster().find((p) => p.card.name.toLowerCase() === want && p.status !== "offline");
     if (peer) return peer.card.id;
-    if (Date.now() >= deadline) return undefined;
+    if (Date.now() >= deadline || signal?.aborted) return undefined;
     await sleep(200);
   }
 }

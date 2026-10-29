@@ -13,14 +13,39 @@
  * the machine-wide default --space so the operator never types it.
  */
 import "../src/log-stamp-boot.ts"; // first: timestamps a log-redirected daemon's lines (src/log-stamp.ts)
-import { registry, type Command } from "@cotal-ai/core";
+// Above the fast path below: ONLY core-free modules (check:chat walks this graph). Everything that pulls
+// in @cotal-ai/* is a dynamic import after it, so `paw chat` paints its first frame before ~200ms of
+// module loading instead of after.
+import type { Command } from "@cotal-ai/core";
 import { spawnSync } from "node:child_process";
 import { downSpace, explicitSpace, expandEqFlags, expandShortForm, failureLine, hoistAddressSpace, oneShotReplyNote, remoteCotalArgv, SHORT_FORMS, stripCotalNamespace, withDefaultSpace } from "../src/dispatch.ts";
-import { cotaldViaNode, ensure, resolveSpace, stop } from "../src/lifecycle.ts";
-import { loadAllCommands, loadCommandsFor } from "../src/command-modules.ts";
 import { readRemoteMesh } from "../src/remote-mesh.ts";
-import { isRemoteSpace } from "../src/server.ts";
 import { callerSpace } from "../src/space.ts";
+
+// A short form (`paw a` = `paw attach`) is expanded HERE, before anything reads the verb, so the
+// mesh/manager gating, --space injection and the command lookup all see the real name.
+const raw = [...process.argv.slice(2)];
+if (raw.length) raw[0] = expandShortForm(raw[0]) as string;
+const cmd = raw[0];
+
+// FAST PATH: `paw chat` on a terminal paints its skeleton frame and holds the keyboard now
+// (src/chat-preshell.ts); chat.ts adopts the frame once it has loaded. A failure to lex argv here is
+// not ours to report — the real dispatch below says it properly.
+if (cmd === "chat" && process.stdin.isTTY && process.stdout.isTTY) {
+  const { paintPreshell } = await import("../src/chat-preshell.ts");
+  let args: string[] | undefined;
+  try {
+    args = hoistAddressSpace(cmd, raw.slice(1));
+  } catch {
+    args = undefined; // reported by the dispatch below, with its real message
+  }
+  if (args) paintPreshell(args);
+}
+
+const { registry } = await import("@cotal-ai/core");
+const { cotaldViaNode, ensure, resolveSpace, stop } = await import("../src/lifecycle.ts");
+const { loadAllCommands, loadCommandsFor } = await import("../src/command-modules.ts");
+const { isRemoteSpace } = await import("../src/server.ts");
 
 /** Verbs bin/paw.ts answers itself without any registry Command — they load no command module. */
 const INLINE_VERBS = new Set(["cotal", "down", "create", "send"]);
@@ -63,11 +88,6 @@ function help(): string {
   ].join("\n");
 }
 
-// A short form (`paw a` = `paw attach`) is expanded HERE, before anything reads the verb, so the
-// mesh/manager gating, --space injection and the command lookup all see the real name.
-const raw = [...process.argv.slice(2)];
-if (raw.length) raw[0] = expandShortForm(raw[0]) as string;
-const cmd = raw[0];
 // Only the verb's own module is evaluated (src/command-modules.ts) — loading all ~43 was most of a
 // short command's startup. help, completion and an unknown word still load every one.
 if (cmd === undefined || !INLINE_VERBS.has(cmd)) await loadCommandsFor(cmd);
