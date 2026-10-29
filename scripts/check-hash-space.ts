@@ -204,6 +204,14 @@ assert(eq(h("stop", ["x", "--", "y#team2027"]), ["x", "--", "y#team2027"]), "not
   assert(eq(hoistAddressSpace("type", ["@x", "hi"], d), ["@x", "hi"]), "type keeps its @ (atOnly)");
 }
 
+// paw mcp: only --to names an agent — a server name, URL fragment or the server's own argv never does
+{
+  assert(eq(hoistAddressSpace("mcp", ["add", "srv", "--to", `x#lab`, "https://h/mcp#frag"], d), ["add", "srv", "--to", "x", "https://h/mcp#frag", "--space", "lab"]), "mcp add --to x#space → --to x + --space (the URL's # untouched)");
+  assert(eq(hoistAddressSpace("mcp", ["add", "srv", `--to=x#lab`], d), ["add", "srv", "--to=x", "--space", "lab"]), "mcp --to=x#space");
+  assert(eq(hoistAddressSpace("mcp", ["add", "a#b", "--to", "x", "--", "cmd", `y#lab`], d), ["add", "a#b", "--to", "x", "--", "cmd", `y#lab`]), "mcp: positionals and the server argv after -- are never addresses");
+  assert(eq(hoistAddressSpace("mcp", ["add", "s", "--header", `X: a#lab`, "--to", `x#lab`], d), ["add", "s", "--header", `X: a#lab`, "--to", "x", "--space", "lab"]), "mcp: a --header value is skipped, not hoisted");
+}
+
 // every listed command's slot table is exercised by the CLI pass below
 const CLI_ADDRESS: Record<string, string[]> = {
   chat: ["@x#nosuch"], dm: ["x#nosuch", "hi"], open: ["x#nosuch"], attach: ["x#nosuch"], log: ["x#nosuch"],
@@ -216,6 +224,8 @@ const CLI_ADDRESS: Record<string, string[]> = {
   move: ["x#nosuch", "--to-space", "other", "--dry-run"],
   relocate: ["x#nosuch", "/tmp/elsewhere", "--dry-run"],
   cron: ["add", "x#nosuch", "--in", "5m", "hi"],
+  sandbox: ["shell", "x#nosuch"],
+  mcp: ["ls", "--to", "x#nosuch"],
 };
 assert(eq(Object.keys(CLI_ADDRESS).sort(), Object.keys(ADDRESS_ARGS).sort()), "the CLI pass covers every address-aware command");
 

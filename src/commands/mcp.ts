@@ -17,10 +17,12 @@
  *     and granted per agent in the persona (`mcpOptIn:`). The math, and why the mark lives in cotal's
  *     file rather than a paw-side one, are in src/mcp-select.ts.
  *
- * NOTHING HERE RESTARTS AN AGENT. An MCP server is read by claude at startup, so a running agent keeps
- * the set it launched with — and restarting someone's agents as a side effect of editing config is not
- * a decision a config command gets to make. Every command that changes what an agent WOULD get names the
- * agents whose set changed and prints the command to restart them.
+ * NOTHING HERE RESTARTS AN AGENT — except `--to <agent>`. An MCP server is read by claude at startup, so a
+ * running agent keeps the set it launched with — and restarting someone's agents as a side effect of
+ * editing config is not a decision a config command gets to make. Every command that changes what an agent
+ * WOULD get names the agents whose set changed and prints the command to restart them. `--to` names ONE
+ * sandboxed agent and installs into its own VM config (src/mcp-sandbox.ts); naming it is the operator's go
+ * to restart it, said in the output, `--no-restart` to skip, and a busy one is left alone without `--now`.
  */
 import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -29,6 +31,21 @@ import { listAgents, personaFilePath } from "../addressing.ts";
 import { pawHomeDir, resolveSpace } from "../lifecycle.ts";
 import { personaValue, readShareTools } from "../session.ts";
 import { effectiveServers, GRANT_KEY, OPT_IN_KEY, readOptIn, splitList } from "../mcp-select.ts";
+import {
+  RESERVED_SANDBOX_SERVERS,
+  checkCommandInVm,
+  claudeUserSpec,
+  describeServer,
+  enableInAgent,
+  listedServers,
+  readClaudeJson,
+  realEnableDeps,
+  sandboxTarget,
+  withUserServer,
+  withoutUserServer,
+  writeClaudeJson,
+  type EnableDeps,
+} from "../mcp-sandbox.ts";
 
 const tty = process.stdout.isTTY === true;
 const wrap = (code: string) => (s: string) => (tty ? `\x1b[${code}m${s}\x1b[0m` : s);
@@ -117,8 +134,14 @@ export function isValidServerName(name: string): boolean {
  * A spec with neither `command` nor `url` is refused: it would write a config entry that can never
  * launch, and the failure would surface much later as a broken agent rather than here.
  */
-export function buildSpec(opts: { json?: string; cmd: string[]; env: string[] }): McpServerSpec {
+export function buildSpec(opts: { json?: string; cmd: string[]; env: string[]; headers?: string[]; transport?: string }): McpServerSpec {
+  const headers = opts.headers ?? [];
+  const transport = opts.transport;
+  if (transport !== undefined && !["stdio", "http", "sse"].includes(transport))
+    throw new Error(`paw: --transport is stdio, http or sse (got "${transport}")`);
   if (opts.json !== undefined) {
+    if (opts.cmd.length || opts.env.length || headers.length || transport !== undefined)
+      throw new Error(`paw: --json is the whole entry — put env/headers/type inside it, not beside it`);
     let parsed: unknown;
     try {
       parsed = JSON.parse(opts.json);
@@ -139,17 +162,36 @@ export function buildSpec(opts: { json?: string; cmd: string[]; env: string[] })
     env[pair.slice(0, eq)] = pair.slice(eq + 1);
   }
   const [command, ...args] = opts.cmd;
-  // A lone URL is a remote (streamable HTTP) server — what `claude mcp add --transport http` writes. Any
-  // other transport (sse, ws) or headers: paste the whole entry with --json.
+  // A lone URL is a remote server: streamable HTTP by default (what `claude mcp add --transport http`
+  // writes), `--transport sse` for the older one; `--header 'K: V'` repeatable.
   if (/^https?:\/\//.test(command)) {
+    if (transport === "stdio") throw new Error(`paw: --transport stdio runs a command, not a URL`);
     if (args.length || Object.keys(env).length)
-      throw new Error(`paw: a URL server takes nothing after the URL — for headers or another transport use --json '{"type":"sse","url":"…","headers":{…}}'`);
-    return { type: "http", url: command };
+      throw new Error(`paw: a URL server takes nothing after the URL and no --env — headers go in --header 'K: V' (or paste the entry with --json)`);
+    const spec: McpServerSpec = { type: transport ?? "http", url: command };
+    if (headers.length) spec.headers = parseHeaders(headers);
+    return spec;
   }
+  if (transport === "http" || transport === "sse") throw new Error(`paw: --transport ${transport} needs a URL (https://…), not a command`);
+  if (headers.length) throw new Error(`paw: --header is for http/sse servers — a stdio server takes --env`);
   const spec: McpServerSpec = { command };
   if (args.length) spec.args = args;
   if (Object.keys(env).length) spec.env = env;
   return spec;
+}
+
+/** `--header 'Authorization: Bearer x'` → `{Authorization: "Bearer x"}` (split at the FIRST colon, as
+ *  `claude mcp add -H` does). A header with no name, or given twice, fails loud. */
+export function parseHeaders(list: string[]): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const h of list) {
+    const colon = h.indexOf(":");
+    const key = colon === -1 ? "" : h.slice(0, colon).trim();
+    if (!key) throw new Error(`paw: --header expects 'Name: value' (got "${h}")`);
+    if (Object.hasOwn(out, key)) throw new Error(`paw: --header "${key}" given twice`);
+    out[key] = h.slice(colon + 1).trim();
+  }
+  return out;
 }
 
 /** One agent as the selection math sees it: its `shareTools:` and its `mcpOptIn:` grants. */
@@ -271,17 +313,31 @@ function printRestarts(names: string[], verbose: boolean, spaceFlag: string): vo
   if (shown.length < names.length) console.log(c.dim(`  +${names.length - shown.length} more (--verbose lists every one)`));
 }
 
-function parseArgs(argv: string[]): { sub: string; rest: string[]; space?: string; json?: string; cmd: string[]; env: string[]; only?: string; all: boolean; verbose: boolean } {
-  const out = {
-    sub: "",
-    rest: [] as string[],
-    space: undefined as string | undefined,
-    json: undefined as string | undefined,
-    cmd: [] as string[],
-    env: [] as string[],
-    only: undefined as string | undefined,
-    all: false,
-    verbose: false,
+export type McpArgs = {
+  sub: string;
+  rest: string[];
+  space?: string;
+  json?: string;
+  cmd: string[];
+  env: string[];
+  headers: string[];
+  transport?: string;
+  only?: string;
+  all: boolean;
+  verbose: boolean;
+  /** `--to <agent>`: a sandboxed agent's OWN servers (src/mcp-sandbox.ts), not the shared config. */
+  to?: string;
+  force: boolean;
+  noRestart: boolean;
+  now: boolean;
+};
+
+export function parseArgs(argv: string[]): McpArgs {
+  const out: McpArgs = { sub: "", rest: [], cmd: [], env: [], headers: [], all: false, verbose: false, force: false, noRestart: false, now: false };
+  const value = (i: number, flag: string): string => {
+    const v = argv[i];
+    if (v === undefined || (v.startsWith("-") && v !== "-")) throw new Error(`paw: ${flag} needs a value`);
+    return v;
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -295,7 +351,14 @@ function parseArgs(argv: string[]): { sub: string; rest: string[]; space?: strin
     }
     if (a === "--space") out.space = argv[++i];
     else if (a === "--json") out.json = argv[++i];
-    else if (a === "--env") out.env.push(argv[++i]);
+    else if (a === "--env" || a === "-e") out.env.push(value(++i, a));
+    else if (a === "--header" || a === "-H") out.headers.push(value(++i, a));
+    else if (a === "--transport" || a === "-t") out.transport = value(++i, a);
+    else if (a === "--to") out.to = value(++i, "--to");
+    else if (a.startsWith("--to=")) out.to = a.slice(5);
+    else if (a === "--force") out.force = true;
+    else if (a === "--no-restart") out.noRestart = true;
+    else if (a === "--now") out.now = true;
     else if (a === "--only") {
       out.only = argv[++i];
       if (!out.only || out.only.startsWith("-")) throw new Error(`paw: --only takes agent names, e.g. \`--only evals,tracepaper\``);
@@ -305,6 +368,13 @@ function parseArgs(argv: string[]): { sub: string; rest: string[]; space?: strin
     else if (!out.sub) out.sub = a;
     else out.rest.push(a);
   }
+  // `paw mcp add <name> <https-url>` — a URL can't be mistaken for a paw flag, so it needs no `--`.
+  if (out.sub === "add" && !out.cmd.length && out.rest.length === 2 && /^https?:\/\//.test(out.rest[1])) out.cmd = [out.rest.pop()!];
+  if (out.to !== undefined) {
+    if (out.only !== undefined || out.all) throw new Error(`paw: --to installs into ONE sandboxed agent; --only/--all select shared servers — use one or the other`);
+    if (!["", "add", "rm", "ls", "list"].includes(out.sub)) throw new Error(`paw: --to works with \`paw mcp add|ls|rm\`, not "${out.sub || "(none)"}"`);
+  } else if (out.force || out.noRestart || out.now) throw new Error(`paw: --force/--no-restart/--now go with --to <agent> (a sandboxed agent's own servers)`);
+  if (out.noRestart && out.now) throw new Error(`paw: --no-restart and --now contradict each other`);
   return out;
 }
 
@@ -312,7 +382,8 @@ const USAGE = `paw mcp — which of your MCP servers paw's agents get
 
   paw mcp list [--verbose]                     what's configured, and who gets it
   paw mcp add <name> -- <cmd> [args…]          add a server (ALL agents get it)
-  paw mcp add <name> -- <https://url>          …a remote (http) server
+  paw mcp add <name> <https://url>             …a remote server (http; --transport sse,
+                                               --header 'K: V' repeatable)
   paw mcp add <name> --json '<entry>'          …or paste a .mcp.json entry
   paw mcp add <name> --only <a,b> -- …         add an OPT-IN server: only those agents get it
       e.g. paw mcp add github [--env TOKEN=\${GITHUB_TOKEN}] -- npx -y @mcp/server-github
@@ -323,14 +394,24 @@ const USAGE = `paw mcp — which of your MCP servers paw's agents get
   paw mcp unshare <server> <agent>             take it away from that agent
   paw mcp share <agent> <a,b|all|none>         set an agent's whole selection
 
+A SANDBOXED agent's own servers (its VM's claude user scope — the shared ones never reach a VM):
+  paw mcp add <name> --to <agent>[#space] [--env K=V] -- <cmd> [args…]   (cmd must exist IN the VM)
+  paw mcp add <name> --to <agent>[#space] <https://url> [--transport sse] [--header 'K: V']
+  paw mcp ls --to <agent>[#space]              its servers
+  paw mcp rm <name> --to <agent>[#space]       remove one
+      add/rm RESTART a live agent so the change loads (that's your go for it);
+      --no-restart skips, a busy agent is left alone unless --now; --force replaces a same-named server
+
 Servers are defined in cotal's own config (${globalConfigPath()}); the per-agent
 selection lives in the agent's persona (shareTools:, and mcpOptIn: for opt-in servers —
 an agent named for one gets it even with shareTools: none). Nothing here restarts an
-agent — claude reads MCP config at startup, so restart the ones named to pick a change up.`;
+agent — claude reads MCP config at startup, so restart the ones named to pick a change up.
+\`--to\` is the exception: it restarts the one agent you named.`;
 
 async function run(argv: string[]): Promise<void> {
   const a = parseArgs(argv);
   const space = a.space?.trim() || resolveSpace();
+  if (a.to !== undefined) return runTo(a, space, realEnableDeps());
   const path = globalConfigPath();
   const config = readConfig(path);
   const declared = config.connectors?.[PAW_CONNECTOR]?.mcpServers ?? {};
@@ -357,7 +438,7 @@ async function run(argv: string[]): Promise<void> {
     printRestarts(changedAgents(before, after), a.verbose, a.space ? ` --space ${space}` : "");
   };
 
-  if (!a.sub || a.sub === "list") {
+  if (!a.sub || a.sub === "list" || a.sub === "ls") {
     console.log(c.dim(path));
     if (!names.length) {
       console.log(`\nno MCP servers shared with paw agents — every agent gets cotal's server only`);
@@ -558,12 +639,53 @@ async function run(argv: string[]): Promise<void> {
   throw new Error(`paw: unknown \`paw mcp\` command "${a.sub}"\n\n${USAGE}`);
 }
 
+/** `paw mcp add|ls|rm … --to <agent>`: a sandboxed agent's OWN servers, in its VM's claude user scope.
+ *  Exported with its deps injected so check:mcp-sandbox runs it against a fake agent. */
+export async function runTo(a: McpArgs, space: string, deps: EnableDeps): Promise<void> {
+  const t = sandboxTarget(space, a.to!);
+  const addr = `${t.name}#${t.space}`;
+  if (a.sub === "" || a.sub === "ls" || a.sub === "list") {
+    const listed = listedServers(readClaudeJson(t.claudeJson), t.cwd);
+    deps.log(c.dim(`${t.claudeJson}  (in the VM: /paw/claude/.claude.json)`));
+    if (!listed.length) return deps.log(`\n${t.name} has no MCP servers of its own — add one: paw mcp add <name> --to ${addr} <https://url>`);
+    for (const x of listed) deps.log(`${c.bold(x.name)}${x.scope === "local" ? c.dim(" [local scope: this folder]") : ""}  ${c.dim(describeServer(x.spec))}`);
+    return;
+  }
+  const name = a.rest[0];
+  if (!name) throw new Error(`paw: name the server — \`paw mcp ${a.sub} <name> --to ${addr}${a.sub === "add" ? " <https://url>|-- <cmd>" : ""}\``);
+  if (a.sub === "rm") {
+    const doc = readClaudeJson(t.claudeJson);
+    const next = withoutUserServer(doc, name);
+    if (!next) {
+      const local = listedServers(doc, t.cwd).some((x) => x.scope === "local" && x.name === name);
+      throw new Error(
+        `paw: ${t.name} has no user-scope server "${name}"${local ? ` — it is in LOCAL scope (added inside the VM); remove it there: \`paw sandbox shell ${addr}\` → \`claude mcp remove ${name} -s local\`` : ` (\`paw mcp ls --to ${addr}\`)`}`,
+      );
+    }
+    writeClaudeJson(t.claudeJson, next);
+    deps.log(`✓ removed ${c.bold(name)} from ${t.name}'s servers ${c.dim(`(${t.claudeJson})`)}`);
+    await enableInAgent(t, { server: name, verb: "rm", noRestart: a.noRestart, now: a.now }, deps);
+    return;
+  }
+  if (!isValidServerName(name)) throw new Error(`paw: "${name}" isn't a valid server name (letters, digits, dash, underscore, dot, colon)`);
+  if (RESERVED_SANDBOX_SERVERS.includes(name)) throw new Error(`paw: "${name}" is the mesh server every agent launches with — pick another name`);
+  const spec = claudeUserSpec(buildSpec(a));
+  const { doc, replaced } = withUserServer(readClaudeJson(t.claudeJson), name, spec, a.force);
+  if (spec.type === "stdio") checkCommandInVm(t, spec.command!, deps);
+  writeClaudeJson(t.claudeJson, doc);
+  deps.log(`✓ ${replaced ? "replaced" : "added"} ${c.bold(name)} in ${t.name}'s VM ${c.dim(`(${describeServer(spec)}; user scope, ${t.claudeJson})`)}`);
+  const secrets = [...Object.keys(spec.env ?? {}), ...Object.keys(spec.headers ?? {})];
+  if (secrets.length)
+    deps.log(c.dim(`  ${secrets.join(", ")} stored in plain text in ${t.name}'s claude dir (0600) — same trust as its home: the agent can read it, and so can any host process of this user`));
+  await enableInAgent(t, { server: name, verb: "add", noRestart: a.noRestart, now: a.now }, deps);
+}
+
 const mcpCommand: Command = {
   kind: "command",
   name: "mcp",
   group: "Agents",
   summary: "which of your MCP servers paw's agents get",
-  usage: "mcp [list|add|only|rm|share|unshare] … (see `paw mcp`)",
+  usage: "mcp [list|add|only|rm|share|unshare] … [--to <agent>] (see `paw mcp`)",
   run: (a) => run([...a.raw]),
 };
 
