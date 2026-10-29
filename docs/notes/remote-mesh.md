@@ -30,6 +30,13 @@ untouched: a space with no record resolves exactly as before.
   stripped signer through its SecretStore seam (`validateSpaceAuthForRead` accepts it) and mints +
   renews per-agent creds itself. cotal 0.84 allows several managers per space (per-instance leases,
   "a second manager in a second workspace root coexists"), so this works beside a manager elsewhere.
+- **A manager probe proves the broker (2026-10-28).** When ensure() gets a caller's `managerProbe` on a
+  remote space (`paw chat`, `paw status`, every `withEnsuredManager` command), it skips
+  `ensureRemoteMesh`'s connect probe — the probe's own dial over TLS with signer creds is the proof.
+  Only a probe that does NOT answer runs `ensureRemoteMesh` (connect + `diagnoseConnect`), so a dead
+  broker still fails with the step-by-step reason, not a manager timeout. Paths with no manager probe
+  (`needMesh` only, `restartManager`) keep the connect probe. `check:connect-diag` asserts zero dials on
+  the success path and the diagnosis on the failure path.
 - **Which step stalled (`src/connect-diag.ts`, 2026-10-24).** cotal's `probeConnect` reports only
   `timeout`/`unreachable`. On those two, paw re-walks the connect on its own sockets (DNS lookup, TCP,
   the plaintext NATS INFO greeting, the TLS upgrade, a TLS-first try if no INFO; 3s per step), times

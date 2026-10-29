@@ -76,6 +76,21 @@ console.log("2. argv + signature");
   assert(new RegExp(lc.mailboxMatchPattern(SPACE)).test(`/n/node /r/bin/paw.ts mailbox --space ${SPACE}`), "…and a legacy marker-less beacon");
 }
 
+console.log("2b. one listing for manager + mailbox (classifyDaemonListing)");
+{
+  const mgr = `/n/node /r/bin/cotald.ts supervise --space ${SPACE} --server nats://127.0.0.1:4222 --runtime tmux`;
+  const mbx = `/n/node /r/bin/paw.ts mailbox --space ${SPACE} --home ${HOME_A}`;
+  const got = lc.classifyDaemonListing(SPACE, `101 ${mgr}\n202 ${mbx}\n`);
+  assert(JSON.stringify([...got.manager]) === JSON.stringify([[101, mgr]]), "the manager line lands in .manager with its command");
+  assert(JSON.stringify([...got.mailbox]) === JSON.stringify([[202, mbx]]), "the mailbox line lands in .mailbox with its command");
+  assert(lc.runtimeOfCommands(got.manager.values()) === "tmux", "…and the runtime is read from that command, no ps call");
+  assert(lc.classifyDaemonListing(SPACE, "").manager.size === 0, "an empty listing is no daemons");
+  throws(() => lc.classifyDaemonListing(SPACE, `303 /n/node /r/bin/paw.ts mailbox --space ${SPACE}1\n`), /matches neither signature/, "a line of another space fails loud (space-exact)");
+  throws(() => lc.classifyDaemonListing(SPACE, "node\n"), /unexpected pgrep line/, "a listing without pids fails loud");
+  const live = lc.scanDaemons(SPACE);
+  assert(live.manager.size === 0 && live.mailbox.size === 0, "scanDaemons on the test space finds nothing before any beacon runs");
+}
+
 console.log("3. mailboxOwnerHome");
 {
   const cmd = `/n/node /r/bin/paw.ts mailbox --space s --home /h/with space`;
@@ -114,7 +129,10 @@ try {
     const ours = await fakeBeacon(["--home", HOME_A], baseEnv);
     assert(lc.mailboxProcs(SPACE).includes(ours.pid!), "the fake beacon is found by signature");
     assert(lc.adoptRunningMailbox(SPACE) === true, "a --home beacon of our PAW_HOME is adopted");
-    lc.ensureMailbox(SPACE);
+    const scan = lc.scanDaemons(SPACE);
+    assert(scan.mailbox.has(ours.pid!) && scan.manager.size === 0, "the one-listing scan finds it as the mailbox");
+    assert(lc.adoptRunningMailbox(SPACE, scan.mailbox) === true, "…and adopts it from the scan's command line");
+    lc.ensureMailbox(SPACE, scan.mailbox);
     assert(!existsSync(mailboxLog), "ensureMailbox spawned nothing (no mailbox.log, no pid file consulted)");
     assert(lc.mailboxProcs(SPACE).length === 1, "still exactly one beacon");
     await kill(ours);
@@ -129,6 +147,7 @@ try {
   {
     const foreign = await fakeBeacon(["--home", HOME_B], baseEnv);
     throws(() => lc.ensureMailbox(SPACE), /from another PAW_HOME/, "ensureMailbox throws on a --home beacon of another home");
+    throws(() => lc.ensureMailbox(SPACE, lc.scanDaemons(SPACE).mailbox), /from another PAW_HOME/, "…also when handed ensure()'s one-listing scan");
     assert(!existsSync(mailboxLog), "…and spawned no second beacon");
     await kill(foreign);
 

@@ -12,6 +12,7 @@
  */
 import { existsSync, writeSync } from "node:fs";
 import { homedir } from "node:os";
+import { basename } from "node:path";
 import * as readline from "node:readline";
 import { stripVTControlCharacters } from "node:util";
 import {
@@ -89,6 +90,7 @@ import { renderMarkdown } from "./markdown.ts";
 import { HUMAN_PEER, humanPeer } from "./names.ts";
 import { sameSpaceAddress } from "./dispatch.ts";
 import { describeInboxBindFailure, openHumanInbox } from "./human-inbox.ts";
+import { concurrentStartup } from "./chat-startup.ts";
 import { bangNoFolder, elsewhereBang, elsewhereBanner, elsewhereFiles, elsewhereLogs, elsewhereStatus, localMachine, machineOf, machineOfCard, runsElsewhere, type Elsewhere, type Machine } from "./hosted.ts";
 import { readTeleported } from "./teleport-plan.ts";
 import { cachedLedger, ledgerName } from "./peer-ledger.ts";
@@ -396,6 +398,11 @@ function freshTarget(space: string, target: string): { folder: string; name: str
   return { folder, name, brief: addr.brief, kind: addr.kind };
 }
 
+/** Every manager command chat's startup handle sends: ensure()'s probe (`ps`), and ensureAgentSpawned's
+ *  wake gate — `ps`, `spawn`, and a stop/restart's `despawn` (targeted, so resolved by `inspect` on the
+ *  same rail). A command outside it is absent from the narrowed resolve and fails loud as not-found. */
+export const CHAT_STARTUP_COMMANDS = ["ps", "spawn", "inspect", "despawn"] as const;
+
 async function chat(argv: string[]): Promise<void> {
   const { space: spaceArg, server: serverArg, target: givenTarget, model, name: nameFlag, agent: agentFlag, provider, personality: personalityFlag, fresh, only, all, restart } = parseArgs(argv);
   // A personality is given at BIRTH; an existing agent's is changed with `paw persona <name> --reroll`.
@@ -418,15 +425,83 @@ async function chat(argv: string[]): Promise<void> {
   const space = spaceArg ?? resolveSpace();
   const server = serverArg ?? pawServer(space);
   const remoteSpace = isRemoteSpace(space);
+  // SAY something before the wait. Resolving a target can take tens of seconds — a cold claude boot,
+  // or an agent already `starting` — and the terminal used to print NOTHING for the whole time: no
+  // banner, no cursor, no hint. The operator's report was "why does it take so long to load", which
+  // is really two complaints, and the silence is the half paw controls. A wait you can see is a wait;
+  // a blank screen is a hang. Said BEFORE ensure(), not after it: on a remote space that alone is
+  // seconds. What was typed names it; the resolved name is said again below only if it differs.
+  // (Written straight to stdout: the readline that owns `emit` isn't up yet.)
+  const announced = target === undefined ? undefined : target === "." ? basename(process.cwd()) : target;
+  if (announced !== undefined) process.stdout.write(c.dim(`  connecting to ${announced}…\n`));
+
   // ONE resolved control handle for startup: ensure()'s "is the manager up?" probe and the target's
   // spawn/reuse below. bin/paw.ts used to ensure() first and the spawn then resolved the manager's
   // service again — a describe, a contract fetch and an Ajv compile of every validator, twice per
-  // `paw chat <folder>`. Ensured FIRST, as the bin gate did, so a manager that won't come up fails
-  // before anything is registered. Closed once the target is resolved; the REPL's later calls open
-  // their own (a throw before then exits the process — bin/paw.ts — so it never strands a socket).
-  const startup = new ManagerControl(space, server);
-  await ensureManagerOn(startup, ensureSpaceFor(space));
-  if (!fresh) assertUnambiguousTarget(space, target); // a bare token that's BOTH a known name and a folder → fail loud (skipped under --fresh: the only interpretation there is a folder)
+  // `paw chat <folder>`. Resolved for ONLY the commands startup sends (CHAT_STARTUP_COMMANDS) — the
+  // full surface is ~60 contract compiles. Ensured FIRST, as the bin gate did, so a manager that won't
+  // come up fails before anything is registered. Closed once the target is resolved; the REPL's later
+  // calls open their own.
+  const startup = new ManagerControl(space, server, undefined, CHAT_STARTUP_COMMANDS);
+
+  // Persistent human peer. Open mesh => bare connection with a stable id (so replies sent while we
+  // step away queue and redeliver). Auth mesh => the minted creds carry the identity, and the DM inbox
+  // durable they bind must be provisioned first (src/human-inbox.ts). Both are opened CONCURRENTLY with
+  // ensure() (src/chat-startup.ts): none needs another's answer, only the broker. Any failure there
+  // releases what the others acquired, so a failed start leaves no remote durable behind.
+  // cotal's endpoint reports trouble one event at a time (src/conn-state.ts); the conn state has to be
+  // listening before the endpoint starts (an unheard "error" event crashes the process), but the REPL
+  // that prints its lines is built further down — so its lines wait here until then.
+  const connBacklog: (() => void)[] = [];
+  let connSay = (f: () => void): void => void connBacklog.push(f);
+  const {
+    inbox,
+    endpoint: { ep, conn },
+  } = await concurrentStartup({
+    ensure: (meshUp) => ensureManagerOn(startup, ensureSpaceFor(space), { onMeshUp: meshUp }),
+    openInbox: () => openHumanInbox(space, server, addressed.mode === "channel" ? [room] : []),
+    releaseInbox: (i) => i.release(),
+    startEndpoint: async (i) => {
+      const humanAuth = i.auth;
+      const card = humanAuth.creds
+        ? { name: humanPeer(space), kind: "endpoint" as const }
+        : { name: humanPeer(space), kind: "endpoint" as const, id: stableHumanId(space) };
+      const ep = new CotalEndpoint({
+        space,
+        servers: server,
+        ...humanAuth,
+        card,
+        registerPresence: true,
+        consume: true,
+        watchPresence: true,
+        // A channel session must actually SUBSCRIBE to that channel — the default is #general only, so
+        // `paw chat '#team2027'` would otherwise sit filtered on traffic it never receives. Posting needs
+        // no subscription (multicast is a publish), which is why only the read side needs this.
+        ...(addressed.mode === "channel" ? { channels: [room] } : {}),
+      });
+      const conn = attachConn(
+        ep,
+        Date.now,
+        (lines) => connSay(() => emitConn(lines)),
+        (raw) => connSay(() => emit(c.dim(raw))),
+      );
+      try {
+        await startResilient(ep);
+      } catch (e) {
+        await ep.stop().catch(() => {});
+        throw describeInboxBindFailure(space, humanAuth.lifecycleUid, e as Error);
+      }
+      return { ep, conn };
+    },
+    stopEndpoint: ({ ep }) => ep.stop(),
+    report: (m) => console.error(m),
+  });
+  const releaseInbox = () => inbox.release().catch((e: Error) => console.error(e.message));
+  /** Stop the endpoint and retire the inbox — the cleanup every startup failure past this point owes. */
+  const abandon = async (): Promise<void> => {
+    await ep.stop().catch(() => {});
+    await releaseInbox();
+  };
 
   // No target (only `--all` gets here) => start in broadcast mode: plain lines go to #general, and @name latches a sticky DM
   // (so you only pin a target once you actually mention someone). A target seeds that sticky target up
@@ -436,141 +511,125 @@ async function chat(argv: string[]): Promise<void> {
   let name: string | undefined; // the initial sticky target; undefined = broadcast mode
   let brief: string | undefined; // per-kind persona body (web/pr); undefined ⇒ generic
   let kind: Kind | undefined; // persona kind marker (folder/worktree/repo/pr/web)
-  if (fresh) {
-    // --fresh births a NEW agent for the target folder, defaulting to the current directory (".") like
-    // `paw chat <folder>` / `paw open` / the former `paw create` — so `cd repo && paw chat --fresh`
-    // just works. freshTarget still fails loud if an agent already exists for that folder.
-    if (nameFlag !== undefined) {
-      // --name mints an EXTRA instance; a brand-new --name already cold-starts a fresh session (personas
-      // + resume pins are name-keyed), so --fresh --name is redundant. Fail loud rather than silently
-      // resume-or-reset — a fresh extra is `paw chat <folder> --name`, a reset is `paw rm` then that.
-      throw new Error(
-        `paw: --fresh can't be combined with --name. A brand-new \`paw chat <folder> --name ${nameFlag}\` already ` +
-          `births a fresh EXTRA agent; to reset an existing one, \`paw rm ${nameFlag}\` then \`paw chat <folder> --name ${nameFlag}\`.`,
-      );
-    }
-    ({ folder, name, brief, kind } = freshTarget(space, target ?? "."));
-    // Written onto the still-unborn persona, so the birth (ensurePersonaFile) keeps it instead of drawing.
-    if (personalityArg) setPersonaKeys(space, name, personalityFor(personalityArg, name, folder));
-  } else if (nameFlag !== undefined && target === undefined) {
-    // --name pins an EXTRA instance AT A FOLDER; with no explicit target that folder is the cwd (".",
-    // like `paw chat --fresh`), never broadcast mode — so `cd repo && paw chat --name reviewer` works.
-    folder = canonicalDir(".");
-    name = registerInstance(space, folder, nameFlag);
-  } else if (target !== undefined) {
-    // `@name` names an AGENT — never a website to scaffold, never a folder. A dotted `@getslash.co`
-    // used to fall into the address resolver below and mint a new agent in ~/.paw/web/ (2026-09-24);
-    // resolve it against the registry instead, and fail loud if nothing is registered by that name.
-    if (addressed.mode === "agent" && !/^[A-Za-z0-9_-]+$/.test(target)) {
-      const known = registeredAgentFor(space, target);
-      if (!known) throw new Error(`paw: no agent "${target}" — @ names an agent (\`paw status\` lists them); for a website use \`paw chat web:${target}\``);
-      target = known.name;
-      // The filter was built from what was TYPED; it must compare against the real name, or every DM
-      // from `getslash-co` would be hidden as "not getslash.co".
-      if (filter?.kind === "agent") filter = { kind: "agent", name: known.name };
-    }
-    if (addressed.mode !== "agent" && isAddressHandle(target)) {
-      // A URL / web: / gh: / github: / <repo>@<branch> / bare host — resolveAddress clones/creates and
-      // returns the cwd + kind + optional brief/name hint (all throw clearly on failure).
-      // A bare dotted word with no agent behind it is almost always a mistyped NAME — refuse BEFORE the
-      // resolver scaffolds a website folder for it (it would leave ~/.paw/web/<word> behind).
-      if (!nameFlag && HOST_RE.test(target) && !existsSync(target) && !registeredAgentFor(space, target)) {
-        throw new Error(noAgentMessage(target, target, listAgents(space).map((a) => a.name)));
+  // Resolving the target can throw (no such agent, an ambiguous token, a bad --name) AFTER the inbox
+  // and endpoint are up — release them, or a remote space keeps this run's durables forever.
+  try {
+    if (!fresh) assertUnambiguousTarget(space, target); // a bare token that's BOTH a known name and a folder → fail loud (skipped under --fresh: the only interpretation there is a folder)
+    if (fresh) {
+      // --fresh births a NEW agent for the target folder, defaulting to the current directory (".") like
+      // `paw chat <folder>` / `paw open` / the former `paw create` — so `cd repo && paw chat --fresh`
+      // just works. freshTarget still fails loud if an agent already exists for that folder.
+      if (nameFlag !== undefined) {
+        // --name mints an EXTRA instance; a brand-new --name already cold-starts a fresh session (personas
+        // + resume pins are name-keyed), so --fresh --name is redundant. Fail loud rather than silently
+        // resume-or-reset — a fresh extra is `paw chat <folder> --name`, a reset is `paw rm` then that.
+        throw new Error(
+          `paw: --fresh can't be combined with --name. A brand-new \`paw chat <folder> --name ${nameFlag}\` already ` +
+            `births a fresh EXTRA agent; to reset an existing one, \`paw rm ${nameFlag}\` then \`paw chat <folder> --name ${nameFlag}\`.`,
+        );
       }
-      const addr = resolveAddress(target);
-      folder = addr.cwd;
-      if (!nameFlag && agentFlag === undefined) requireExistingAgent(space, folder, target); // --agent is an explicit ask to create
-      // --name pins a 2nd+ EXTRA instance at the resolved folder (its own persona), overriding the address's
-      // own name hint and the folder default; otherwise honour the hint, else mint the folder default.
-      name = nameFlag
-        ? registerInstance(space, folder, nameFlag)
-        : addr.name
-          ? setFolderName(space, folder, addr.name).name
-          : resolveFolderAgent(space, folder);
-      brief = addr.brief;
-      kind = addr.kind;
-    } else {
-      // Resolve the folder in its OWN try, so a registerInstance name-collision below throws straight
-      // out instead of being mis-caught as "target isn't a folder" and reinterpreted as a bare name.
-      let asFolder: string | undefined;
-      try {
-        // `@name` is the NAME sigil — never a folder. `paw chat @queue` run from ~/Github/team2027
-        // resolved the folder `queue/` and opened its DEFAULT agent (queue-ea) while the operator was
-        // reading queue's replies, so every line went to the wrong agent (2026-09-17).
-        asFolder = addressed.mode === "agent" ? undefined : canonicalDir(target);
-      } catch {
-        asFolder = undefined;
+      ({ folder, name, brief, kind } = freshTarget(space, target ?? "."));
+      // Written onto the still-unborn persona, so the birth (ensurePersonaFile) keeps it instead of drawing.
+      if (personalityArg) setPersonaKeys(space, name, personalityFor(personalityArg, name, folder));
+    } else if (nameFlag !== undefined && target === undefined) {
+      // --name pins an EXTRA instance AT A FOLDER; with no explicit target that folder is the cwd (".",
+      // like `paw chat --fresh`), never broadcast mode — so `cd repo && paw chat --name reviewer` works.
+      folder = canonicalDir(".");
+      name = registerInstance(space, folder, nameFlag);
+    } else if (target !== undefined) {
+      // `@name` names an AGENT — never a website to scaffold, never a folder. A dotted `@getslash.co`
+      // used to fall into the address resolver below and mint a new agent in ~/.paw/web/ (2026-09-24);
+      // resolve it against the registry instead, and fail loud if nothing is registered by that name.
+      if (addressed.mode === "agent" && !/^[A-Za-z0-9_-]+$/.test(target)) {
+        const known = registeredAgentFor(space, target);
+        if (!known) throw new Error(`paw: no agent "${target}" — @ names an agent (\`paw status\` lists them); for a website use \`paw chat web:${target}\``);
+        target = known.name;
+        // The filter was built from what was TYPED; it must compare against the real name, or every DM
+        // from `getslash-co` would be hidden as "not getslash.co".
+        if (filter?.kind === "agent") filter = { kind: "agent", name: known.name };
       }
-      if (asFolder !== undefined) {
-        folder = asFolder;
+      if (addressed.mode !== "agent" && isAddressHandle(target)) {
+        // A URL / web: / gh: / github: / <repo>@<branch> / bare host — resolveAddress clones/creates and
+        // returns the cwd + kind + optional brief/name hint (all throw clearly on failure).
+        // A bare dotted word with no agent behind it is almost always a mistyped NAME — refuse BEFORE the
+        // resolver scaffolds a website folder for it (it would leave ~/.paw/web/<word> behind).
+        if (!nameFlag && HOST_RE.test(target) && !existsSync(target) && !registeredAgentFor(space, target)) {
+          throw new Error(noAgentMessage(target, target, listAgents(space).map((a) => a.name)));
+        }
+        const addr = resolveAddress(target);
+        folder = addr.cwd;
         if (!nameFlag && agentFlag === undefined) requireExistingAgent(space, folder, target); // --agent is an explicit ask to create
-        // --name → register a 2nd+ EXTRA agent at this folder (its own persona); no --name → the folder default.
-        name = nameFlag ? registerInstance(space, folder, nameFlag) : resolveFolderAgent(space, folder);
+        // --name pins a 2nd+ EXTRA instance at the resolved folder (its own persona), overriding the address's
+        // own name hint and the folder default; otherwise honour the hint, else mint the folder default.
+        name = nameFlag
+          ? registerInstance(space, folder, nameFlag)
+          : addr.name
+            ? setFolderName(space, folder, addr.name).name
+            : resolveFolderAgent(space, folder);
+        brief = addr.brief;
+        kind = addr.kind;
       } else {
-        // A bare NAME target. --name creates an EXTRA for a FOLDER, so it's meaningless here — fail loud.
-        if (nameFlag !== undefined) {
-          throw new Error(
-            `paw: --name creates an EXTRA agent for a FOLDER and can't be combined with the agent name "${target}"; ` +
-              `pass a folder, e.g. \`paw chat . --name ${nameFlag}\`.`,
-          );
+        // Resolve the folder in its OWN try, so a registerInstance name-collision below throws straight
+        // out instead of being mis-caught as "target isn't a folder" and reinterpreted as a bare name.
+        let asFolder: string | undefined;
+        try {
+          // `@name` is the NAME sigil — never a folder. `paw chat @queue` run from ~/Github/team2027
+          // resolved the folder `queue/` and opened its DEFAULT agent (queue-ea) while the operator was
+          // reading queue's replies, so every line went to the wrong agent (2026-09-17).
+          asFolder = addressed.mode === "agent" ? undefined : canonicalDir(target);
+        } catch {
+          asFolder = undefined;
         }
-        if (!/^[A-Za-z0-9_-]+$/.test(target)) {
-          throw new Error(`paw: "${target}" is neither an existing folder nor a valid agent name`);
+        if (asFolder !== undefined) {
+          folder = asFolder;
+          if (!nameFlag && agentFlag === undefined) requireExistingAgent(space, folder, target); // --agent is an explicit ask to create
+          // --name → register a 2nd+ EXTRA agent at this folder (its own persona); no --name → the folder default.
+          name = nameFlag ? registerInstance(space, folder, nameFlag) : resolveFolderAgent(space, folder);
+        } else {
+          // A bare NAME target. --name creates an EXTRA for a FOLDER, so it's meaningless here — fail loud.
+          if (nameFlag !== undefined) {
+            throw new Error(
+              `paw: --name creates an EXTRA agent for a FOLDER and can't be combined with the agent name "${target}"; ` +
+                `pass a folder, e.g. \`paw chat . --name ${nameFlag}\`.`,
+            );
+          }
+          if (!/^[A-Za-z0-9_-]+$/.test(target)) {
+            throw new Error(`paw: "${target}" is neither an existing folder nor a valid agent name`);
+          }
+          name = target;
+          // A KNOWN agent addressed by name → resume it from its registered folder (same as the in-REPL
+          // `@name` respawn below). Only a name with no registry entry stays live-only focus, so a truly
+          // unknown name still fails loud rather than being auto-created out of nothing.
+          const home = folderForName(space, target);
+          if (home && existsSync(home)) folder = home;
         }
-        name = target;
-        // A KNOWN agent addressed by name → resume it from its registered folder (same as the in-REPL
-        // `@name` respawn below). Only a name with no registry entry stays live-only focus, so a truly
-        // unknown name still fails loud rather than being auto-created out of nothing.
-        const home = folderForName(space, target);
-        if (home && existsSync(home)) folder = home;
       }
     }
-  }
 
-  // `--only` turns whatever the target resolved to into the FILTERED view (`paw chat @name`), reached
-  // by FOLDER or `.` instead of by name — "show only this folder's agent" ("does `paw chat .` filter
-  // to one agent? if not add `paw chat --only .`", operator 2026-09-09). `@name` already filters, so
-  // --only there is a redundant no-op; a channel already filters itself, and broadcast has nothing to
-  // filter TO, so both fail loud rather than silently doing nothing.
-  if (only) {
-    if (addressed.mode === "channel") throw new Error("paw: --only filters to an AGENT; a `#channel` session is already single-channel (drop --only)");
-    if (!name) throw new Error("paw: --only needs an agent — it can't combine with --all");
-    filter = { kind: "agent", name };
-  }
+    // `--only` turns whatever the target resolved to into the FILTERED view (`paw chat @name`), reached
+    // by FOLDER or `.` instead of by name — "show only this folder's agent" ("does `paw chat .` filter
+    // to one agent? if not add `paw chat --only .`", operator 2026-09-09). `@name` already filters, so
+    // --only there is a redundant no-op; a channel already filters itself, and broadcast has nothing to
+    // filter TO, so both fail loud rather than silently doing nothing.
+    if (only) {
+      if (addressed.mode === "channel") throw new Error("paw: --only filters to an AGENT; a `#channel` session is already single-channel (drop --only)");
+      if (!name) throw new Error("paw: --only needs an agent — it can't combine with --all");
+      filter = { kind: "agent", name };
+    }
 
-  // `--agent <type>`: the resolved agent runs on that harness — a new one is born with it (persona
-  // `agent:`/`provider:`/`model:`, a fresh pin), an existing one must already be on it (fails loud).
-  if (agentSpec) {
-    if (!name || !folder) throw new Error("paw: --agent needs a folder (or a registered agent) to create or target — e.g. `paw chat . --agent kit`");
-    applyAgentType(space, name, agentSpec, { brief, kind });
+    // `--agent <type>`: the resolved agent runs on that harness — a new one is born with it (persona
+    // `agent:`/`provider:`/`model:`, a fresh pin), an existing one must already be on it (fails loud).
+    if (agentSpec) {
+      if (!name || !folder) throw new Error("paw: --agent needs a folder (or a registered agent) to create or target — e.g. `paw chat . --agent kit`");
+      applyAgentType(space, name, agentSpec, { brief, kind });
+    }
+  } catch (e) {
+    await abandon();
+    throw e;
   }
-
-  // Persistent human peer. Open mesh => bare connection with a stable id (so replies sent while we
-  // step away queue and redeliver). Auth mesh => the minted creds carry the identity, and the DM inbox
-  // durable they bind must be provisioned first (src/human-inbox.ts).
-  const inbox = await openHumanInbox(space, server, filter?.kind === "channel" ? [room] : []);
-  const humanAuth = inbox.auth;
-  const creds = humanAuth.creds;
-  const card = creds
-    ? { name: humanPeer(space), kind: "endpoint" as const }
-    : { name: humanPeer(space), kind: "endpoint" as const, id: stableHumanId(space) };
-  const ep = new CotalEndpoint({
-    space,
-    servers: server,
-    ...humanAuth,
-    card,
-    registerPresence: true,
-    consume: true,
-    watchPresence: true,
-    // A channel session must actually SUBSCRIBE to that channel — the default is #general only, so
-    // `paw chat '#team2027'` would otherwise sit filtered on traffic it never receives. Posting needs
-    // no subscription (multicast is a publish), which is why only the read side needs this.
-    ...(filter?.kind === "channel" ? { channels: [room] } : {}),
-  });
-  const releaseInbox = () => inbox.release().catch((e: Error) => console.error(e.message));
-  // Declared BEFORE ep.start() so the "error" handler (which calls emit) can't hit a temporal-dead-
-  // zone ReferenceError if the endpoint emits "error" mid-startup — that would crash the process and
-  // mask the real mesh error. emit guards on rl, so it's safe to run before readline exists.
+  // Declared before the held-back conn lines flush (below) so the "error" handler (which calls emit)
+  // can't hit a temporal-dead-zone ReferenceError — that would crash the process and mask the real
+  // mesh error. emit guards on rl, so it's safe to run before readline exists.
   let rl: readline.Interface | undefined;
   let closing = false;
 
@@ -770,13 +829,9 @@ async function chat(argv: string[]): Promise<void> {
   const emitConn = (lines: ConnLine[]): void => {
     for (const l of lines) emit(l.level === "recovered" ? c.green(l.text) : c.red(l.text));
   };
-  const conn = attachConn(ep, Date.now, emitConn, (raw) => emit(c.dim(raw)));
-  try {
-    await startResilient(ep);
-  } catch (e) {
-    await releaseInbox();
-    throw describeInboxBindFailure(space, humanAuth.lifecycleUid, e as Error);
-  }
+  // The conn lines held back while the endpoint started beside ensure() print now, then live.
+  connSay = (f) => f();
+  for (const f of connBacklog.splice(0)) f();
   const me = ep.card.id;
 
   // Resolve a peer by name, preferring a LIVE one. Restarting an agent (e.g. re-adopt) leaves stale
@@ -844,13 +899,9 @@ async function chat(argv: string[]): Promise<void> {
   let spawned = false;
   let busy: true | undefined;
   if (name !== undefined) {
-    // SAY something before the wait. Resolving a target can take tens of seconds — a cold claude boot,
-    // or an agent already `starting` — and until now the terminal printed NOTHING for the whole time:
-    // no banner, no cursor, no hint. The operator's report was "why does it take so long to load",
-    // which is really two complaints, and the silence is the half paw controls. A wait you can see is
-    // a wait; a blank screen is a hang. (Written straight to stdout: the readline that owns `emit`
-    // isn't up yet.)
-    process.stdout.write(c.dim(`  connecting to ${name}…\n`));
+    // Said before ensure() under the name that was typed (see `announced`); again only if it resolved
+    // to a different one (a folder, an address).
+    if (name !== announced) process.stdout.write(c.dim(`  connecting to ${name}…\n`));
     try {
       if (folder) {
         const r = await ensureAgentSpawned(startup, { space, name, cwd: folder, model, brief, kind, restartLive: cliRestartConsent(restart) });
@@ -867,13 +918,11 @@ async function chat(argv: string[]): Promise<void> {
         curId = await waitForPeerId(ep, name, 5000);
       }
     } catch (e) {
-      await ep.stop().catch(() => {});
-      await releaseInbox();
+      await abandon();
       throw e;
     }
     if (!curId) {
-      await ep.stop().catch(() => {});
-      await releaseInbox();
+      await abandon();
       throw folder
         ? new Error(unreachableHint(name, space, busy))
         : new Error(`paw: no live agent named "${name}" — start one with \`paw chat <folder>\``);

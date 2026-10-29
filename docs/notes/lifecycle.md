@@ -28,6 +28,12 @@ Moved verbatim from CLAUDE.md (2026-10-02 split). Index: [CLAUDE.md](../../CLAUD
   marker (`meshPidPath` from cotal's own `nats.pid`, which is correct — not a spawn() pid). Space-
   exactness is unit-tested in `check:commands`. Verified live: `paw restart` → exactly one manager
   (no dup), `paw down` → zero managers + zero mailbox, `down` on `ex1` leaves `ex11` untouched.
+  **One listing on the adopt path (2026-10-28):** when the probe answers, `ensureManagerUp` reads
+  manager AND mailbox from one `scanDaemons(space)` (`pgrep -f -l` on macOS, `-a` on Linux, over
+  both space-exact signatures, classified by the same regexes — a line neither matches throws), takes
+  the runtime from that command line (`runtimeOfCommands`), and hands the mailbox half to
+  `ensureMailbox(space, scan)` — no second pgrep, no `ps -p` per hit. The unused `probeCreds` mint
+  in `ensureManagerUp`/`restartManager` is gone (`managerReady` never read it). `check:mailbox`.
   **ensureMailbox adopts-or-refuses by signature too (2026-10-26).** It used to gate on `mailbox.pid`
   under ITS OWN `$PAW_HOME`, so a test run (fresh `PAW_HOME`, `PAW_SPACE=` empty → `paw`) saw no pid,
   started a second beacon in the LIVE space, and that beacon minted a new human id (no `human.id` in the

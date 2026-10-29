@@ -78,6 +78,11 @@ export interface EnsureOpts {
    *  resolve is ~0.5s of Ajv compile, and doing it twice was a third of `paw status`'s wall time. Must
    *  behave like the default probe: true iff a manager answered ok, never a throw. */
   managerProbe?: () => Promise<boolean>;
+  /** Called once the broker is proven (or, on a remote space with a {@link managerProbe}, once it is
+   *  about to be proven by that probe — see ensure()), still inside the lock, so a caller can start its
+   *  own mesh work (paw chat's inbox + endpoint) concurrently with the manager/mailbox steps. Never
+   *  called when ensure() fails before that point. */
+  onMeshUp?: () => void;
 }
 
 /** Machine-wide default space. A folder maps to an agent NAME, not a space, so every paw agent
@@ -1261,6 +1266,40 @@ export function managerProcs(space: string): number[] {
 export function mailboxProcs(space: string): number[] {
   return pgrepF(mailboxMatchPattern(space));
 }
+/** pid → command line of the space's live mailbox beacons, as {@link scanDaemons} lists them. */
+export type MailboxScan = Map<number, string>;
+/**
+ * The manager AND mailbox of `space` in ONE process listing: `pgrep` over both signatures, with the
+ * command lines, so ensure()'s adopt path pays one process walk instead of a `pgrep` per daemon plus
+ * a `ps -p` per hit. Each line is classified by the SAME space-exact regexes {@link managerProcs} and
+ * {@link mailboxProcs} hand pgrep (both are plain ERE that JS reads the same). A line neither matches
+ * means the listing came back in a shape this doesn't know — thrown, never guessed at.
+ */
+export function scanDaemons(space: string): { manager: Map<number, string>; mailbox: MailboxScan } {
+  // The flag that prints the full command line: `-l` with `-f` on BSD/macOS pgrep, `-a` on procps (Linux).
+  const list = process.platform === "linux" ? "-a" : "-l";
+  const r = spawnSync("pgrep", ["-f", list, `${managerMatchPattern(space)}|${mailboxMatchPattern(space)}`], { encoding: "utf8" });
+  if (r.error) throw new Error(`paw: couldn't list paw's daemons for "${space}" (pgrep: ${r.error.message})`);
+  return classifyDaemonListing(space, r.stdout);
+}
+/** {@link scanDaemons}' parse of the pgrep listing, pure. Exported for hermetic unit coverage. */
+export function classifyDaemonListing(space: string, stdout: string): { manager: Map<number, string>; mailbox: MailboxScan } {
+  const mgr = new RegExp(managerMatchPattern(space));
+  const mbx = new RegExp(mailboxMatchPattern(space));
+  const manager = new Map<number, string>();
+  const mailbox: MailboxScan = new Map();
+  for (const line of stdout.split("\n")) {
+    if (!line.trim()) continue;
+    const m = /^\s*(\d+) (.*)$/.exec(line);
+    const pid = m ? Number(m[1]) : NaN;
+    if (!m || !(pid > 0)) throw new Error(`paw: unexpected pgrep line while listing "${space}"'s daemons: ${JSON.stringify(line)}`);
+    const cmd = m[2].trim();
+    if (mgr.test(cmd)) manager.set(pid, cmd);
+    else if (mbx.test(cmd)) mailbox.set(pid, cmd);
+    else throw new Error(`paw: pgrep listed pid ${pid} for "${space}"'s daemons but its command matches neither signature: ${JSON.stringify(cmd)}`);
+  }
+  return { manager, mailbox };
+}
 /**
  * The runtime the manager is ACTUALLY running, read from its live command line — never the
  * `manager.runtime` marker file. startManagerDaemon only emits `--runtime <r>` for non-pty (pty is
@@ -1271,9 +1310,16 @@ export function mailboxProcs(space: string): number[] {
  * manager proc is alive.
  */
 export function actualManagerRuntime(space: string, pids: number[] = managerProcs(space)): Runtime | undefined {
-  for (const pid of pids) {
-    const res = spawnSync("ps", ["-o", "command=", "-p", String(pid)], { encoding: "utf8" });
-    const cmd = res.status === 0 ? res.stdout : "";
+  return runtimeOfCommands(
+    pids.map((pid) => {
+      const res = spawnSync("ps", ["-o", "command=", "-p", String(pid)], { encoding: "utf8" });
+      return res.status === 0 ? res.stdout : "";
+    }),
+  );
+}
+/** {@link actualManagerRuntime} over command lines already in hand (a {@link scanDaemons} listing). */
+export function runtimeOfCommands(cmds: Iterable<string>): Runtime | undefined {
+  for (const cmd of cmds) {
     if (!cmd.includes("supervise")) continue;
     const m = /--runtime (\S+)/.exec(cmd);
     if (!m) return "pty"; // owned supervise with no --runtime flag = supervise's default
@@ -1431,7 +1477,7 @@ export function logSince(path: string, from: number, tailN = 25): string {
   return buf.toString("utf8").split("\n").filter((l) => l.length > 0).slice(-tailN).join("\n");
 }
 
-async function managerReady(space: string, server: string, creds: string | undefined, ms = MANAGER_READY_MS): Promise<boolean> {
+async function managerReady(space: string, server: string, ms = MANAGER_READY_MS): Promise<boolean> {
   const deadline = Date.now() + ms;
   while (Date.now() < deadline) {
     if (await managerAnswers(space, server)) return true;
@@ -1559,9 +1605,8 @@ export function runtimeMismatchAction(switchRuntime: boolean, envRuntime: string
   return switchRuntime || envRuntime !== undefined ? "switch" : "warn";
 }
 
-async function ensureManagerUp(space: string, server: string, switchRuntime = false, probe?: () => Promise<boolean>): Promise<void> {
+async function ensureManagerUp(space: string, server: string, switchRuntime = false, probe?: () => Promise<boolean>): Promise<MailboxScan | undefined> {
   const runtime = resolveRuntime(space);
-  const creds = await probeCreds(space);
   let previous: Runtime | undefined; // the known-good runtime we killed on a switch — the rollback target
 
   if (await (probe ? probe().catch(() => false) : managerAnswers(space, server))) {
@@ -1573,9 +1618,10 @@ async function ensureManagerUp(space: string, server: string, switchRuntime = fa
     // agent headless while `paw runtime cmux` reported "already running cmux" (2026-07-12). A manager
     // answering ps that has NO cotald supervise proc is a foreign one paw didn't start — stays
     // unidentified, never killed.
-    const owned = managerProcs(space);
-    const ownedByUs = owned.length > 0;
-    const running: Runtime | undefined = ownedByUs ? (actualManagerRuntime(space, owned) ?? "pty") : undefined;
+    // ONE process listing for both signatures: the mailbox step right after reads its half (ensure()).
+    const scan = scanDaemons(space);
+    const ownedByUs = scan.manager.size > 0;
+    const running: Runtime | undefined = ownedByUs ? (runtimeOfCommands(scan.manager.values()) ?? "pty") : undefined;
     // ADOPT a running manager whose runtime matches (or one we don't own) — no surface needed to
     // merely talk to a live manager, so `paw ps`/`dm` from a NON-cmux shell reach a running cmux
     // manager fine. The assertRuntimeUsable gate is only for STARTING/SWITCHING cmux (below).
@@ -1592,7 +1638,7 @@ async function ensureManagerUp(space: string, server: string, switchRuntime = fa
             `\`paw down\` then re-run to force ${runtime}.`,
         );
       }
-      return;
+      return scan.mailbox;
     }
     // Ours, identified, and it differs. Switching despawns the WHOLE fleet, so only an explicit ask does
     // it. 2026-10-02: a stray pty manager appeared beside the freshly cut-over tmux one, a plain
@@ -1603,7 +1649,7 @@ async function ensureManagerUp(space: string, server: string, switchRuntime = fa
         `paw: ⚠ the manager is running ${running} but this space prefers ${runtime} (pid ${pids.join(", ")}) — NOT switching ` +
           `implicitly (it would despawn every agent). \`paw runtime ${runtime}\` switches on purpose; several pids may mean a stray manager.`,
       );
-      return;
+      return scan.mailbox;
     }
     // Explicit switch → restart into the requested runtime (the point of the knob).
     // Assert we CAN start the target BEFORE we kill the known-good manager, else a cmux-no-surface
@@ -1629,7 +1675,7 @@ async function ensureManagerUp(space: string, server: string, switchRuntime = fa
     // window, and if it still doesn't answer paw fails loud instead of starting a competitor.
     const running = managerProcs(space);
     if (running.length) {
-      if (await managerReady(space, server, creds)) return;
+      if (await managerReady(space, server)) return undefined;
       throw new Error(
         `paw: a manager for space "${space}" is running (pid ${running.join(", ")}) but not answering — NOT starting a ` +
           `second one (two managers on one instance fight over its lease). The host may be starved (load ${loadavg()[0].toFixed(0)}). ` +
@@ -1647,23 +1693,23 @@ async function ensureManagerUp(space: string, server: string, switchRuntime = fa
       attempt: async () => {
         const from = logOffset(logPath);
         startManagerDaemon(space, server, runtime);
-        return (await managerReady(space, server, creds)) ? { ok: true } : { ok: false, logTail: logSince(logPath, from) };
+        return (await managerReady(space, server)) ? { ok: true } : { ok: false, logTail: logSince(logPath, from) };
       },
       cleanup: () => stopOwnedManager(space),
     });
-    if (r.ok) return;
+    if (r.ok) return undefined;
     throw new Error(explainManagerFailure({ logTail: r.logTail, runtime, space, logPath, attempts: r.attempts }));
   }
 
   startManagerDaemon(space, server, runtime);
-  if (await managerReady(space, server, creds)) return;
+  if (await managerReady(space, server)) return undefined;
 
   // The switch's new runtime never came up — restore the previous, known-good manager so the
   // operator isn't left with NONE, then fail loud naming both runtimes.
   const logTail = tail(managerLogPath(space));
   await stopOwnedManager(space); // reap the half-started (possibly-alive) new daemon
   startManagerDaemon(space, server, previous);
-  await managerReady(space, server, creds);
+  await managerReady(space, server);
   throw new Error(
     `paw: manager failed to start under ${runtime} (is it installed + reachable?) — restored the ${previous} manager.\n` +
       `--- manager.log tail ---\n${logTail}`,
@@ -1723,11 +1769,12 @@ function psCommandSync(pid: number, env: boolean): string | undefined {
  * two "you" peers, and replies landing on whichever inbox the agent resolved (the 2026-10-21 incident:
  * a test home started a second beacon in the live `paw` space). Exported for check:mailbox.
  */
-export function adoptRunningMailbox(space: string, pids: number[] = mailboxProcs(space)): boolean {
+export function adoptRunningMailbox(space: string, running: number[] | MailboxScan = mailboxProcs(space)): boolean {
   const ours = pawHomeDir();
   let adopted = false;
+  const pids = Array.isArray(running) ? running : [...running.keys()];
   for (const pid of pids) {
-    const cmd = psCommandSync(pid, false);
+    const cmd = Array.isArray(running) ? psCommandSync(pid, false) : running.get(pid);
     if (cmd === undefined) continue; // exited between pgrep and ps
     const home = mailboxOwnerHome(cmd, () => psCommandSync(pid, true));
     if (!sameHome(home, ours)) {
@@ -1751,8 +1798,8 @@ export function adoptRunningMailbox(space: string, pids: number[] = mailboxProcs
  * up in ~1s, long before an agent could reply. A foreign-home beacon fails the command loud; a SPAWN
  * failure only warns — a dead beacon bounds replies by presence TTL, it must not block a real command.
  */
-export function ensureMailbox(space: string): void {
-  if (adoptRunningMailbox(space)) return;
+export function ensureMailbox(space: string, running?: MailboxScan): void {
+  if (adoptRunningMailbox(space, running)) return;
   try {
     const out = openSync(mailboxLogPath(space), "a");
     try {
@@ -1937,15 +1984,31 @@ export async function ensure(opts: EnsureOpts = {}): Promise<{ space: string; se
   const space = opts.space ?? resolveSpace();
   const server = pawServer(space);
   if (opts.needManager) resolveRuntime(space); // fail loud on a bad PAW_RUNTIME before booting; the cmux-surface gate is in ensureManagerUp (adopt needs no surface)
+  // A REMOTE broker paw never starts, about to be dialled by the caller's own manager probe: that
+  // answer proves the broker, so the separate connect probe is skipped. Only a probe that fails runs
+  // the full proof (connect + step-by-step diagnosis), which still names the broker fault plainly.
+  const proveByProbe = !!(opts.needManager && opts.managerProbe && isRemoteSpace(space));
   await withLock(space, async () => {
-    if (opts.needMesh || opts.needManager) await ensureMeshFor(space, server);
+    if (opts.needMesh || opts.needManager) {
+      if (!proveByProbe) await ensureMeshFor(space, server);
+      opts.onMeshUp?.();
+    }
     // Before anything can spawn: a kit agent can't be the space's first peer without them.
     if (opts.needManager && wantsSpaceStreams(space)) await ensureSpaceStreams(space, server);
     // The hub before the manager: the connector points every agent the manager spawns at it.
     if (opts.needMesh || opts.needManager) await ensureHub(space);
-    if (opts.needManager) await ensureManagerUp(space, server, opts.switchRuntime, opts.managerProbe);
+    let mailboxes: MailboxScan | undefined;
+    if (opts.needManager) {
+      let probe = opts.managerProbe;
+      if (proveByProbe) {
+        const answered = await probe!().catch(() => false);
+        if (!answered) await ensureRemoteMesh(space, server);
+        probe = async () => answered;
+      }
+      mailboxes = await ensureManagerUp(space, server, opts.switchRuntime, probe);
+    }
     // Any mesh-up context keeps "you" reachable — so a fire-and-forget `paw dm` gets a reply later.
-    if (opts.needMesh || opts.needManager) ensureMailbox(space);
+    if (opts.needMesh || opts.needManager) ensureMailbox(space, mailboxes);
   });
   // A `paw restart` that failed after despawning left its revive list; the manager is up now, so bring
   // those agents back (src/revive.ts). Lazy import: revive.ts reaches addressing.ts, which imports this.
@@ -1972,11 +2035,11 @@ export function reviveListPath(space: string): string {
  * it always did. A probe that didn't answer drops `ctl`'s rails: ensure() may then have started a
  * fresh manager, and a rail resolved against the one before would address a ghost.
  */
-export async function ensureManagerOn(ctl: ManagerControl, ensureSpace: string = ctl.space): Promise<void> {
+export async function ensureManagerOn(ctl: ManagerControl, ensureSpace: string = ctl.space, opts: { onMeshUp?: () => void } = {}): Promise<void> {
   let answered = false;
   const managerProbe = async () => (answered = (await ctl.ps(2000, READY_PROBE_MS)).ok);
   const shared = ensureSpace === ctl.space && ctl.server === pawServer(ensureSpace);
-  await ensure({ needMesh: true, needManager: true, space: ensureSpace, ...(shared ? { managerProbe } : {}) });
+  await ensure({ needMesh: true, needManager: true, space: ensureSpace, ...(shared ? { managerProbe } : {}), ...(opts.onMeshUp ? { onMeshUp: opts.onMeshUp } : {}) });
   if (!answered) await ctl.close();
 }
 
@@ -2017,7 +2080,6 @@ export async function restartManager(opts: { space?: string } = {}): Promise<voi
   await withLock(space, async () => {
     await ensureMeshFor(space, server);
     if (wantsSpaceStreams(space)) await ensureSpaceStreams(space, server); // the revival below may start a kit agent first
-    const creds = await probeCreds(space);
     // OWNERSHIP BY SIGNATURE: paw owns the manager iff a `cotald supervise` for this space is running
     // (only paw starts one). No running manager isn't an error — `paw restart` with nothing up should
     // just START one (ensureManagerUp below does), not fail loud. This replaces the old dead-pid-marker

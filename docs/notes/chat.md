@@ -47,6 +47,18 @@ Moved verbatim from CLAUDE.md (2026-10-02 split). Index: [CLAUDE.md](../../CLAUD
   operator Ctrl-C, which is what left the stuck lock above). Now prints `connecting to <name>…` before
   the wait, plus `cold start — this can take up to Ns` when it actually spawned one. Written straight
   to stdout because the readline that owns `emit` isn't up yet.
+- **Startup runs concurrently (`src/chat-startup.ts`, 2026-10-28).** `connecting to <typed target>…`
+  prints BEFORE ensure() (the resolved name again only if it differs). Then ensure() runs beside the
+  human inbox + chat endpoint: ensure's `onMeshUp` starts the inbox → endpoint chain, and all of it is
+  awaited before the target is resolved or spawned. Any failure releases what the others acquired
+  (endpoint stopped, the remote inbox durables retired) and throws the first failure in startup order
+  (ensure's first — it names the broker fault); a target-resolution throw after startup also releases
+  them (`abandon`). Conn-state lines from the endpoint's start are held and printed once the REPL's
+  state exists (an unheard `error` event would crash the process). The startup control resolves only
+  `CHAT_STARTUP_COMMANDS` (ps/spawn/inspect/despawn — `check:chat` greps addressing.ts's `ctl.<op>`
+  calls against it). Measured (pty, Ctrl-D after the header, median): remote team2027 2.63s → 1.84s,
+  local 0.73s → 0.65s; the remote floor is now the inbox chain (provision ~0.6–1s + endpoint connect
+  ~0.3–0.5s), not ensure. `check:chat` covers the cleanup matrix.
 
 ## images
 
