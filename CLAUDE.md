@@ -147,7 +147,10 @@ Each entry: what it is + the most load-bearing rule. Full notes behind the link.
   `~/.env` then `~/.bashrc` auto-sourced via BASH_ENV by every bash (seeded `~/.profile` for login shells), installers default into it, one owner space per name); remote spaces only (v1); `paw claude --sandbox`,
   `paw sandbox build|ls|shell`; `!cmd` (chat/web) for a sandboxed agent runs IN its VM via `container exec` (src/sandbox-exec.ts),
   never a host fallback; `check:sandbox`, `check:sandbox-bang`. VM listening ports → host 127.0.0.1/::1 same port (`bin/paw-sandbox-forward.mjs`,
-  `container exec` relay per connection, busy host port skipped, `sandboxForward: false` opts out; `check:sandbox-forward`). → [sandbox.md](docs/notes/sandbox.md)
+  `container exec` relay per connection, busy host port skipped, `sandboxForward: false` opts out; `check:sandbox-forward`). The operator's
+  skills ro (src/sandbox-skills.ts): each `~/.claude/skills/<n>` realpath'd → `/paw/claude/skills/<n>`, pure enabled plugins → `/paw/plugins/<p>` +
+  `--plugin-dir` (hooks/MCP/LSP/channel plugins excluded, logged), never `~/.claude` itself; `sandboxSkills: false|[…]`. No `--strict-mcp-config`
+  in the VM (its own user/project MCP load; `--mcp-config` stays cotal-only; `sandboxOwnMcp: false` restores). → [sandbox.md](docs/notes/sandbox.md)
 - `src/session.ts` — `readResumeId`, `transcriptExists`; leaf module. → [agents.md#srcsessionts](docs/notes/agents.md#srcsessionts)
 - **Two-writer guard** — never start an agent whose pinned session a standalone claude holds. → [agents.md#two-writer-guard](docs/notes/agents.md#two-writer-guard)
 - `src/open.ts` — `paw open`/`paw attach`: runtime-aware; tmux → real window, cmux → names the tab, pty

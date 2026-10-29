@@ -159,4 +159,9 @@ export const SANDBOX_BRIEF: readonly string[] = [
     `\`pip install x\`, \`cargo install x\` already land in ~ and on PATH). Keep ~/.bashrc quiet (it runs before`,
     `every command; its errors print on stderr). apt packages do NOT survive — ask the operator for a custom image instead. Never write a`,
     `secret into your folder, a message or a log: ~/.env is the place.`,
+    `The operator's skills are mounted READ-ONLY under $CLAUDE_CONFIG_DIR/skills (and plugin skills via`,
+    `/paw/plugins); a skill of your own goes in $CLAUDE_CONFIG_DIR/skills/<new-name>/SKILL.md and persists.`,
+    `MCP servers: the operator's host \`paw mcp\` servers are NOT shared with you. You may add your own with`,
+    `\`claude mcp add -s user <name> -- <command…>\` (or a .mcp.json in your folder); they load on your next`,
+    `restart (ask the operator for \`paw restart\`) — unless the operator set \`sandboxOwnMcp: false\`.`,
 ];
