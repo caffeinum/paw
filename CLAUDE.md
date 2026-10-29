@@ -152,6 +152,10 @@ Each entry: what it is + the most load-bearing rule. Full notes behind the link.
 - `src/open.ts` — `paw open`/`paw attach`: runtime-aware; tmux → real window, cmux → names the tab, pty
   → cotal's own grant-based `attach` subprocess (remote space: cwd = record root, `--server`, NO
   `--space`; `paw cotal <verb> --space <remote>` same rewrite). → [agents.md#pty-attach-cotal-084](docs/notes/agents.md#pty-attach-cotal-084)
+- **"pinned digests … do not match the served contract"** = managers on DIFFERENT COTAL VERSIONS in one
+  space (another host), never paw release skew — cotal pins whichever manager answers describe first.
+  `paw attach` pins `--on` this machine's manager when it hosts the seat; `src/contract-mismatch.ts` turns
+  the refusal into one actionable line. → [agents.md#contract-mismatch-mixed-cotal-versions-in-one-space-2026-10-28](docs/notes/agents.md#contract-mismatch-mixed-cotal-versions-in-one-space-2026-10-28)
 - `src/native-attach.ts` — `attachTmux`; default socket; `nudgeTmuxConfirm`. → [agents.md#native-attach](docs/notes/agents.md#native-attach)
 - `src/attach-client.ts` — ws pty attach client, now dead code. → [agents.md#attach-client](docs/notes/agents.md#attach-client)
 - Waking a sleeping agent: `cotal_dm("global", "wake <name>")`; the tty dev-channels prompt nudge. → [agents.md#waking-a-sleeping-agent-the-in-mesh-gap-and-the-tty-prompt](docs/notes/agents.md#waking-a-sleeping-agent-the-in-mesh-gap-and-the-tty-prompt)

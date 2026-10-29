@@ -21,7 +21,9 @@ import { claudeProjectDir } from "./adopt.ts";
 import { dirname, join } from "node:path";
 import { withManagerControl } from "./control.ts";
 import { readForeground } from "./foreground.ts";
-import { elsewhereAttach, runsElsewhere } from "./hosted.ts";
+import { elsewhereAttach, localManagerInstanceId, runsElsewhere } from "./hosted.ts";
+import { contractMismatchHint } from "./contract-mismatch.ts";
+import { runTeed } from "./cotal-tee.ts";
 import { isAddressHandle, resolveAddress } from "./address.ts";
 import { cotaldViaNode, readRuntimeMarker, resolveSpace } from "./lifecycle.ts";
 import { findMesh } from "@cotal-ai/workspace";
@@ -201,7 +203,7 @@ export async function attachResolved(
   // cotal also locates which manager instance hosts the seat (a scatter `ps` across every manager in
   // the space) and pins the call there, so an agent another machine's manager runs attaches too.
   // paw's only job is to run it from where cotal can find that material — see cotalAttachInvocation.
-  attachPty(space, name);
+  await attachPty(space, name);
 }
 
 /**
@@ -209,20 +211,60 @@ export async function attachResolved(
  *  - REMOTE space (`paw mesh add`): cwd = the record root (its `.cotal/auth` is the stripped signer),
  *    `--server <record server>`, NO `--space` — cotal's registry doesn't know the space, and naming it
  *    sends cotal down its raw open arm (bare connect → refused). See remoteCotalArgv.
+ *    `on` (the hosting manager instance, see {@link localSeatPin}) becomes `--on <id>`, which skips
+ *    cotal's scatter locate entirely.
  *  - LOCAL space: cwd = pawCotalRoot(space), `--space <s> --server <broker>` — the registry entry
  *    `cotal up` recorded carries the mode (open → bare redeem; PAW_AUTH=1 → the root's seed).
  * Pure over the records, so check:remote covers it.
  */
-export function cotalAttachInvocation(space: string, name: string): { argv: string[]; cwd: string; remote: boolean } {
+export function cotalAttachInvocation(space: string, name: string, on?: string): { argv: string[]; cwd: string; remote: boolean } {
   const remote = readRemoteMesh(space);
-  if (remote) return { argv: remoteCotalArgv(["attach", "--name", name], remote.server).argv, cwd: remote.root, remote: true };
+  if (remote) return { argv: remoteCotalArgv(["attach", "--name", name, ...(on ? ["--on", on] : [])], remote.server).argv, cwd: remote.root, remote: true };
+  if (on) throw new Error(`paw: a manager pin (--on ${on}) only applies to a remote space; "${space}" is local`);
   return { argv: ["attach", "--name", name, "--space", space, "--server", pawServer(space)], cwd: pawCotalRoot(space), remote: false };
 }
 
-function attachPty(space: string, name: string): void {
+type SeatPinDeps = {
+  remote: (space: string) => boolean;
+  localInstanceId: (space: string) => string | undefined;
+  inspect: (space: string, name: string) => Promise<{ ok: boolean; data?: unknown; error?: string }>;
+};
+
+const seatPinDeps: SeatPinDeps = {
+  remote: (space) => readRemoteMesh(space) !== undefined,
+  localInstanceId: localManagerInstanceId,
+  inspect: (space, name) => withManagerControl(space, pawServer(space), (ctl) => ctl.inspect(name), { only: ["inspect"] }),
+};
+
+/**
+ * THIS machine's manager instance when it hosts `name` on a remote space, else undefined.
+ *
+ * WHY: without `--on`, cotal locates the seat by scattering `ps` across every manager in the space,
+ * pinned to the contract of whichever manager answered `describe` first. A space whose hosts run
+ * different cotal versions then refuses ~half the calls — `paw attach evals-intern#team2027` failed
+ * with "could not establish where … pinned digests … do not match" while this machine's manager
+ * hosted the seat the whole time (see src/contract-mismatch.ts). paw's own rail is pinned to this
+ * machine's instance (src/control.ts `pinFor`), so its `inspect` is answered by that manager alone
+ * and never mismatches; a hit means `--on <that instance>` is exact. A miss (the seat runs on
+ * another host) leaves the locate to cotal.
+ */
+export async function localSeatPin(space: string, name: string, d: SeatPinDeps = seatPinDeps): Promise<string | undefined> {
+  if (!d.remote(space)) return undefined;
+  const local = d.localInstanceId(space);
+  if (!local) return undefined;
+  const r = await d.inspect(space, name);
+  if (!r.ok) return undefined;
+  const row = r.data as { instanceId?: unknown } | undefined;
+  if (typeof row?.instanceId === "string" && row.instanceId !== local)
+    throw new Error(`paw: this machine's pinned manager rail answered for "${name}" with instance ${row.instanceId}, not its own ${local} — refusing to guess where it runs`);
+  return local;
+}
+
+async function attachPty(space: string, name: string): Promise<void> {
   if (!process.stdin.isTTY || !process.stdout.isTTY)
     throw new Error(`paw: attaching to "${name}" needs a terminal (stdin and stdout must be a tty) — \`paw log ${name} -f\` follows it without one`);
-  const { argv, cwd, remote } = cotalAttachInvocation(space, name);
+  const on = await localSeatPin(space, name);
+  const { argv, cwd, remote } = cotalAttachInvocation(space, name, on);
   const alternatives =
     `    paw chat ${name}  — talk to it\n` +
     `    paw log ${name} -f  — watch its session` +
@@ -238,13 +280,17 @@ function attachPty(space: string, name: string): void {
         `  If the agent is running it is still reachable:\n${alternatives}`,
     );
   const [exec, args] = cotaldViaNode(argv);
-  process.stderr.write(`attaching to ${name} — Ctrl-] detaches (the agent keeps running) · \`paw stop ${name}\` ends it\n`);
-  const r = spawnSync(exec, args, { stdio: "inherit", cwd });
-  if (r.error) throw new Error(`paw: couldn't run cotal attach for "${name}": ${r.error.message}`);
+  const where = on ? ` on this machine's manager ${on.slice(0, 8)}…` : remote ? " (not hosted by this machine's manager — cotal locates it across the space)" : "";
+  process.stderr.write(`attaching to ${name}${where} — Ctrl-] detaches (the agent keeps running) · \`paw stop ${name}\` ends it\n`);
+  const r = await runTeed(exec, args, { cwd }).catch((e: Error) => {
+    throw new Error(`paw: couldn't run cotal attach for "${name}": ${e.message}`);
+  });
   if (r.status === 0) return;
+  const hint = contractMismatchHint({ space, text: r.stderr, remote, ...(remote ? { localInstanceId: localManagerInstanceId(space) } : {}) });
   // cotal already printed its own ✗ line (which names the root/broker it resolved). Add what still works.
   throw new Error(
     `paw: cotal couldn't attach a terminal to "${name}" (exit ${r.status ?? r.signal}) — see its message above.\n` +
+      (hint ? `${hint}\n` : "") +
       `  If the agent is running it is still reachable:\n${alternatives}`,
   );
 }
