@@ -3,12 +3,15 @@
  * `paw sandbox ls [--json]` — EVERY paw sandbox container on this machine (VMs are per machine, so this is a
  *   machine view: the `--space` the dispatcher appends to every verb is accepted and ignored): agent#space, state,
  *   memory in use / limit, its persistent home ($PAW_HOME/containers/<name>), and whether a paw launcher still owns it (an `orphan` is a VM whose launcher was
- *   SIGKILLed — the agent's next launch removes it, or `container delete --force <id>` now).
+ *   SIGKILLed — the agent's next launch removes it, or `container delete --force <id>` now), and the VM ports its
+ *   launcher forwards to the host's loopback (from the launcher's `forwards.json`).
  * docs/notes/sandbox.md.
  */
 import { execFileSync, spawnSync } from "node:child_process";
-import { dirname } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { registry, type Command } from "@cotal-ai/core";
+import { pawHomeDir } from "../lifecycle.ts";
 import { CONTAINERFILE, containerBin, defaultSandboxImage, listSandboxContainers, readSandboxHomeOwner, sandboxHomeDir, type SandboxContainer } from "../sandbox.ts";
 import { writeJson, writeOut } from "../stdout.ts";
 
@@ -58,6 +61,19 @@ function launcherOwned(): Set<string> {
   return owned;
 }
 
+/** The ports the launcher of container `id` forwards (bin/paw-sandbox-forward.mjs writes `forwards.json` beside
+ *  launcher.log); undefined when it writes none (forwarding off, no launcher) or the file is an older launch's. */
+export function readForwards(home: string, space: string, agent: string, id: string): { ports: number[]; skipped: number[] } | undefined {
+  const f = join(home, "spaces", space, "sandbox", agent, "forwards.json");
+  if (!existsSync(f)) return undefined;
+  const s = JSON.parse(readFileSync(f, "utf8")) as { container?: string; ports?: number[]; skipped?: number[] };
+  if (s.container !== id) return undefined;
+  if (!Array.isArray(s.ports) || !Array.isArray(s.skipped)) throw new Error(`paw: ${f} has no ports/skipped lists`);
+  return { ports: s.ports, skipped: s.skipped };
+}
+const portList = (f: { ports: number[]; skipped: number[] } | undefined) =>
+  !f ? "-" : [...f.ports.map(String), ...f.skipped.map((p) => `${p}(host busy)`)].join(",") || "-";
+
 const mb = (b: number | undefined) => (b === undefined ? "?" : `${Math.round(b / (1024 * 1024))}M`);
 
 function ls(argv: string[]): void {
@@ -74,11 +90,12 @@ function ls(argv: string[]): void {
     ...c,
     memoryUsedBytes: used.get(c.id),
     launcher: owned.has(c.id) ? "live" : "orphan",
+    forwards: readForwards(pawHomeDir(), c.space, c.agent, c.id),
     home: readSandboxHomeOwner(c.agent) === c.space ? sandboxHomeDir(c.agent) : undefined,
   }));
   if (json) return writeJson(rows);
   if (!rows.length) return writeOut("no sandboxed agents on this machine (no paw sandbox containers)\n");
-  const table = [["AGENT", "STATE", "MEM USED/LIMIT", "LAUNCHER", "IP", "CONTAINER", "HOME"], ...rows.map((r) => [`${r.agent}#${r.space}`, r.state, `${mb(r.memoryUsedBytes)}/${mb(r.memoryBytes)}`, r.launcher, r.ip ?? "-", r.id, r.home ?? "-"])];
+  const table = [["AGENT", "STATE", "MEM USED/LIMIT", "LAUNCHER", "IP", "PORTS", "CONTAINER", "HOME"], ...rows.map((r) => [`${r.agent}#${r.space}`, r.state, `${mb(r.memoryUsedBytes)}/${mb(r.memoryBytes)}`, r.launcher, r.ip ?? "-", portList(r.forwards), r.id, r.home ?? "-"])];
   const w = table[0].map((_, i) => Math.max(...table.map((row) => row[i].length)));
   writeOut(table.map((row) => row.map((v, i) => v.padEnd(w[i])).join("  ").trimEnd()).join("\n") + "\n");
   const orphans = rows.filter((r) => r.launcher === "orphan");
