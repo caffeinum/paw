@@ -165,13 +165,15 @@ The command runs as `container exec -w <folder> <id> timeout -s KILL <secs> bash
 argv element (no host shell ever sees it), the folder at the same path in the VM, and the container's own env
 (`container exec` inherits it: HOME, PATH, BASH_ENV → `~/.env`; verified 1.6.0). `timeout` is load-bearing:
 killing the `container exec` CLI does NOT stop the process in the VM (verified — a `sleep 200` survived its CLI's
-SIGKILL), so the 60s bang timeout is enforced inside; its exit 137 reads as "timed out". The chat echoes
+SIGKILL), so the bang timeout is enforced inside; its exit 137 reads as "timed out". An in-VM bang gets **5 min**
+(`SANDBOX_BASH_TIMEOUT_MS`), not the host's 60s — `!neon auth login` waits while you finish OAuth in the browser —
+and a timeout appends ``long/interactive? use `paw sandbox shell <n>#<s>` `` to the output (chat, web, the agent's DM). The chat echoes
 `$ <cmd>  (in <name>'s VM: <folder>)`, the agent's transcript says "I ran this in your sandbox VM, in <folder>", the
 web hint adds "· ran in <name>'s VM".
 
 Output STREAMS in `paw chat` (both host and VM, batched per ~100ms of complete lines): a login prints its URL,
 then waits for the browser callback — the URL shows while it still runs. The REPL still waits for the command
-(same 60s timeout as before). For a real TTY (a login that wants input, a REPL): `paw sandbox shell <n>[#<s>]` =
+(60s on the host as before, 5 min in a VM). For a real TTY (a login that wants input, a REPL): `paw sandbox shell <n>[#<s>]` =
 `container exec -i -t -w <folder> <id> bash -l` (the seeded `~/.bashrc` sources BASH_ENV). `check:sandbox-bang`
 (fake `container`); `PAW_SANDBOX_BANG_SMOKE=1` adds a real run against a THROWAWAY labelled container.
 

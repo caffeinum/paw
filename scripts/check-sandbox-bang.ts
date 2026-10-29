@@ -122,6 +122,8 @@ console.log("a sandboxed agent's !cmd runs in its VM via container exec");
   process.env.FAKE_EXEC_CODE = "137";
   const killed = await sx.runBang("sleep 999", folder, place);
   assert(killed.timedOut && killed.code === null, "the in-VM timeout firing (exit 137) reads as `timed out`, not `exit 137`");
+  assert(exec?.includes("300"), "an in-VM bang gets 5 min (a login waits for the browser), not the host's 60s");
+  assert(killed.output.includes(`use \`paw sandbox shell boxed#${SPACE}\``) && bashMessage(killed).includes("timed out after 300s"), "a VM timeout points at `paw sandbox shell <n>#<s>` and states the real limit");
   process.env.FAKE_EXEC_CODE = "3";
   const failed = await sx.runBang("false", folder, place);
   assert(!failed.timedOut && failed.code === 3, "an ordinary failing exit is reported as is");

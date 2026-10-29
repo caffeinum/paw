@@ -37,6 +37,8 @@ export interface BashResult {
   code: number | null;
   /** True when the command hit {@link BASH_TIMEOUT_MS} and was killed. */
   timedOut: boolean;
+  /** The limit it ran under, when not {@link BASH_TIMEOUT_MS} (an in-VM bang gets longer). */
+  timeoutMs?: number;
   /** Set when it ran inside the agent's sandbox VM (src/sandbox-exec.ts), not on this host: the container id. */
   vm?: string;
 }
@@ -187,7 +189,7 @@ export async function runArgv(file: string, args: string[], o: RunArgvOpts): Pro
  */
 export function bashMessage(r: BashResult): string {
   const status = r.timedOut
-    ? ` (timed out after ${Math.round(BASH_TIMEOUT_MS / 1000)}s)`
+    ? ` (timed out after ${Math.round((r.timeoutMs ?? BASH_TIMEOUT_MS) / 1000)}s)`
     : r.code === 0 || r.code === null
       ? ""
       : ` (exit ${r.code})`;
