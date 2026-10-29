@@ -18,7 +18,9 @@ paw sandbox ls                             # every paw container on THIS machine
 
 Persona keys: `sandbox: container` (any other value throws — a typo never boots the agent unsandboxed),
 `sandboxImage:` (default `paw-sandbox:<sha256(Containerfile)[:12]>`, so a recipe change asks for a rebuild),
-`sandboxMemory:` (default `2G`), `sandboxForward: false` (turns off [port forwarding](#port-forwarding); default on). `paw claude --sandbox` writes `sandbox: container` once; it is never cleared
+`sandboxMemory:` (default `2G`), `sandboxForward: false` (turns off [port forwarding](#port-forwarding); default on),
+`sandboxSkills: false | [names…]` ([the operator's skills](#skills); default all), `sandboxOwnMcp: false`
+([the VM's own MCP servers](#the-vms-own-mcp-servers); default on). `paw claude --sandbox` writes `sandbox: container` once; it is never cleared
 by paw (un-sandboxing is a deliberate persona edit). Auth: the Claude OAuth token at
 `$PAW_HOME/secrets/claude-oauth-token` (`PAW_CLAUDE_TOKEN_FILE` overrides), a 0600 regular file.
 `PAW_CONTAINER` pins the `container` binary (else the first on PATH).
@@ -46,6 +48,8 @@ processes):
 | paw's topmost `node_modules` (release or checkout) | same path | ro | the cotal MCP server (`mcp.cjs`) and plugin hooks claude starts as its children |
 | cotal's launch dirs (`material.json`, persona prompt file + `paw-brief.md`) | same paths | ro | |
 | `<cotal root>/.cotal/events` | same path | rw | the MCP server's event write-ahead log — never the root itself (the signer) |
+| each `~/.claude/skills/<name>`, symlinks resolved on the host | `/paw/claude/skills/<name>` | ro | the operator's user skills — [Skills](#skills) |
+| each enabled, pure (no hooks/MCP/LSP/channels) user-scope plugin's `installPath` | `/paw/plugins/<plugin>` (+ `--plugin-dir`) | ro | the operator's plugin skills/commands/agents — [Skills](#skills) |
 
 Env reaches the VM by NAME only (`-e KEY`, values inherited from the launcher's env): every `COTAL_*` except
 `COTAL_HOME`, plus `TERM`/`COLORTERM`/`LANG`/`LC_ALL`, CA vars, `CLAUDE_CONFIG_DIR`, `IS_SANDBOX=1` (claude
@@ -55,7 +59,8 @@ installer prefixes and `BASH_ENV` (see [Private home](#private-home)). `COTAL_CO
 `/tmp/cotal-control.sock` in the VM (the MCP server listens, the hooks dial — both inside). Any OTHER
 `COTAL_*` value that is an absolute host path not under a mount fails the launch loud (a future cotal var
 must be taught, not silently missing). `--mcp-config` is cut to the cotal server alone: servers `paw mcp`
-shares run host commands with host secrets in their env.
+shares run host commands with host secrets in their env. `--strict-mcp-config` is DROPPED (unless
+`sandboxOwnMcp: false`) so the VM's own servers load — [below](#the-vms-own-mcp-servers).
 
 **The token** is read by the launcher from its file into its own env for `container run`, so it is never
 on an argv, in the LaunchSpec, a persona or a log line (`check:sandbox` asserts all four, plus `ps`).
@@ -103,6 +108,56 @@ Verified on the mini (container 1.6.0): a throwaway container's `node` http serv
 answered `curl http://127.0.0.1:<p>/callback?code=x` and `http://localhost:<p>/` on the host, via the forwarder
 directly (`PAW_FORWARD_SMOKE=<container id> pnpm check:sandbox-forward`) and through the launcher itself
 (forwards.json written, removed on SIGTERM); the host port closed when the VM server stopped.
+
+## Skills
+
+A host agent sees the operator's Claude Code skills from `~/.claude`; a sandboxed one gets the same, READ-ONLY,
+without ever mounting `~/.claude` itself (credentials, other agents' transcripts, settings) or anything of it
+writable. src/sandbox-skills.ts, per launch:
+
+- **user skills**: each entry of `~/.claude/skills` (the host claude's `CLAUDE_CONFIG_DIR`, else `$HOME/.claude`) is
+  `realpath`ed ON THE HOST — most are symlinks (`../../.agents/skills/now`, `/Users/…/dream-skill`) that would dangle
+  in the VM — and that real dir bind-mounted `:ro` at `/paw/claude/skills/<name>`. One mount per skill, so a host
+  edit shows up live in the running VM. Skipped (never a launch failure), each logged once per launch in
+  `launcher.log`: dotfiles (`.trash`), a missing target (dangling symlink), a dir with no `SKILL.md` (e.g. claude's own
+  `synced/` buckets of claude.ai skills — the VM's claude syncs its own), and a target that is or contains `~/.claude`
+  or `$HOME`, or lies in `~/.claude` outside `skills/`/`plugins/`.
+- **plugins**: every plugin in `~/.claude/plugins/installed_plugins.json` with a `scope: user` install AND `true` in
+  `~/.claude/settings.json` `enabledPlugins`, mounted `:ro` at `/paw/plugins/<plugin>` and loaded with
+  `--plugin-dir /paw/plugins/<plugin>` — skills keep their `<plugin>:<skill>` names, commands and agents come too.
+  Chosen over mounting `installed_plugins.json` + `known_marketplaces.json` + `enabledPlugins` into /paw/claude:
+  `--plugin-dir` needs no marketplace state (claude would try to refresh/auto-update marketplaces whose
+  `installLocation`s don't exist in the VM, and write `.in_use` markers into a read-only cache), and keeps host paths
+  (the username) out of the VM. **Excluded by default**: a plugin that ships hooks (`hooks/` or `hooks` in
+  `.claude-plugin/plugin.json`), MCP servers (`.mcp.json` / `mcpServers`), LSP servers or `channels` — those run
+  host-oriented commands or want host secrets/OAuth. On the mini: `team2027-skills` and `unknowns` are mounted;
+  `artil` (`.mcp.json` runs the host's `artil` CLI + a channel) and `slack` (`.mcp.json`, an OAuth'd HTTP server) are
+  not. A project- or local-scope plugin is not mounted.
+- **the agent's own skills**: `/paw/claude/skills` itself is the agent's (its rw config dir), so it may write
+  `/paw/claude/skills/<other-name>/SKILL.md` and it persists. A same-named skill of its own is SHADOWED by the
+  operator's (logged); the empty mount points the VM leaves in the host dir are removed at the next launch.
+- **knobs**: persona `sandboxSkills: false` mounts none; `sandboxSkills: [now, team2027-skills]` mounts only those
+  (skill names, plugin names or `name@marketplace`) — a name matching nothing installed throws, a non-list throws.
+- **visible**: `launcher.log` (`skills: … · plugins: …` + every `NOT mounted — <why>`), `…/sandbox/<n>/skills.json`,
+  `paw sandbox ls` (SKILLS column, and the plugins left out with why).
+
+Verified (container 1.6.0, the mini): 20 nested `:ro` mounts start in ~1s; in a throwaway VM with the real set
+(15 skills, 2 plugins) `ls /paw/claude/skills` and `cat …/now/SKILL.md` work, a write into a skill or a plugin fails
+`Read-only file system`, the agent's own `/paw/claude/skills/mine` is writable and persists; `claude -p` (2.1.304)
+listed the user skills, `mine`, `unknowns:*` and `team2027-skills:*`.
+
+## The VM's own MCP servers
+
+The operator (via `paw sandbox shell <n>#<s>`) or the agent itself may `claude mcp add -s user <name> -- <cmd…>` IN
+the VM: it writes `/paw/claude/.claude.json`, which persists on the host. Host launches pass `--strict-mcp-config`
+so ambient host helpers never boot; in the VM, user and project scope are the VM's OWN config, so a sandboxed launch
+drops the flag (persona `sandboxOwnMcp: false` keeps it). `--mcp-config` stays cotal-only — host `paw mcp` servers
+are never shared (host commands, host secrets). The seeded `settings.json` sets `enableAllProjectMcpServers: true`
+(a folder `.mcp.json` would otherwise wait on an approval dialog nobody answers) and `disableClaudeAiConnectors: true`
+(the operator's claude.ai connectors — Gmail, Drive… — stay out of the VM). A new server loads on the agent's next
+start: `paw restart <n>#<s>`. A folder `.mcp.json` written for the host may name commands the VM lacks — those just
+fail to start. Verified (claude 2.1.304, throwaway VM): without the flag, a `--mcp-config` server, a user-scope
+`claude mcp add` server and a folder `.mcp.json` server all loaded (merged); with it, only the `--mcp-config` one.
 
 ## Refusals (all fail loud, `check:sandbox`)
 

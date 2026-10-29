@@ -4,7 +4,8 @@
  *   machine view: the `--space` the dispatcher appends to every verb is accepted and ignored): agent#space, state,
  *   memory in use / limit, its persistent home ($PAW_HOME/containers/<name>), and whether a paw launcher still owns it (an `orphan` is a VM whose launcher was
  *   SIGKILLed — the agent's next launch removes it, or `container delete --force <id>` now), and the VM ports its
- *   launcher forwards to the host's loopback (from the launcher's `forwards.json`).
+ *   launcher forwards to the host's loopback (from the launcher's `forwards.json`), and how many of the operator's
+ *   skills/plugins its last launch mounted (`skills.json`), plus the plugins left out (hooks/MCP) and why.
  * `paw sandbox shell <agent>[#space]` — an interactive login bash in the agent's RUNNING VM, in its folder
  *   (`container exec -it`): the VM's PATH, HOME and ~/.env, a real TTY (OAuth logins, REPLs). Not running → fails loud.
  * docs/notes/sandbox.md.
@@ -79,6 +80,20 @@ export function readForwards(home: string, space: string, agent: string, id: str
 const portList = (f: { ports: number[]; skipped: number[] } | undefined) =>
   !f ? "-" : [...f.ports.map(String), ...f.skipped.map((p) => `${p}(host busy)`)].join(",") || "-";
 
+/** What the agent's last launch mounted from the operator's skills (src/sandbox-skills.ts writes `skills.json`). */
+export function readSkillsState(home: string, space: string, agent: string): { mounts: Array<{ kind: string; name: string }>; skipped: Array<{ kind: string; name: string; reason: string }> } | undefined {
+  const f = join(home, "spaces", space, "sandbox", agent, "skills.json");
+  if (!existsSync(f)) return undefined;
+  const s = JSON.parse(readFileSync(f, "utf8")) as { mounts?: Array<{ kind: string; name: string }>; skipped?: Array<{ kind: string; name: string; reason: string }> };
+  if (!Array.isArray(s.mounts) || !Array.isArray(s.skipped)) throw new Error(`paw: ${f} has no mounts/skipped lists`);
+  return { mounts: s.mounts, skipped: s.skipped };
+}
+const skillCell = (s: ReturnType<typeof readSkillsState>) => {
+  if (!s) return "-";
+  const n = (k: string) => s.mounts.filter((m) => m.kind === k).length;
+  return `${n("skill")} skills, ${n("plugin")} plugins`;
+};
+
 const mb = (b: number | undefined) => (b === undefined ? "?" : `${Math.round(b / (1024 * 1024))}M`);
 
 function ls(argv: string[]): void {
@@ -97,12 +112,15 @@ function ls(argv: string[]): void {
     launcher: owned.has(c.id) ? "live" : "orphan",
     forwards: readForwards(pawHomeDir(), c.space, c.agent, c.id),
     home: readSandboxHomeOwner(c.agent) === c.space ? sandboxHomeDir(c.agent) : undefined,
+    skills: readSkillsState(pawHomeDir(), c.space, c.agent),
   }));
   if (json) return writeJson(rows);
   if (!rows.length) return writeOut("no sandboxed agents on this machine (no paw sandbox containers)\n");
-  const table = [["AGENT", "STATE", "MEM USED/LIMIT", "LAUNCHER", "IP", "PORTS", "CONTAINER", "HOME"], ...rows.map((r) => [`${r.agent}#${r.space}`, r.state, `${mb(r.memoryUsedBytes)}/${mb(r.memoryBytes)}`, r.launcher, r.ip ?? "-", portList(r.forwards), r.id, r.home ?? "-"])];
+  const table = [["AGENT", "STATE", "MEM USED/LIMIT", "LAUNCHER", "IP", "PORTS", "SKILLS", "CONTAINER", "HOME"], ...rows.map((r) => [`${r.agent}#${r.space}`, r.state, `${mb(r.memoryUsedBytes)}/${mb(r.memoryBytes)}`, r.launcher, r.ip ?? "-", portList(r.forwards), skillCell(r.skills), r.id, r.home ?? "-"])];
   const w = table[0].map((_, i) => Math.max(...table.map((row) => row[i].length)));
   writeOut(table.map((row) => row.map((v, i) => v.padEnd(w[i])).join("  ").trimEnd()).join("\n") + "\n");
+  const notMounted = [...new Set(rows.flatMap((r) => (r.skills?.skipped ?? []).filter((x) => x.kind === "plugin").map((x) => `${x.name} (${x.reason})`)))];
+  if (notMounted.length) writeOut(`\nplugins NOT mounted in the VMs: ${notMounted.join("; ")} — docs/notes/sandbox.md#skills\n`);
   const orphans = rows.filter((r) => r.launcher === "orphan");
   if (orphans.length) writeOut(`\n${orphans.length} orphan(s): no paw launcher owns them — the agent's next launch removes them, or now: container delete --force ${orphans.map((o) => o.id).join(" ")}\n`);
 }

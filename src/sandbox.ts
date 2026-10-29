@@ -13,7 +13,9 @@
  *  - READ-ONLY: paw's node_modules (the cotal MCP server + plugin hooks claude starts as its children), the
  *    launch's material dir(s) (its mesh creds, persona file, paw-brief.md), a TLS CA file if one is set;
  *  - read-write: `<cotal root>/.cotal/events` (the MCP server's event write-ahead log) — never the root itself,
- *    which holds the space's signer on a remote space.
+ *    which holds the space's signer on a remote space;
+ *  - READ-ONLY: the operator's skills and pure plugins (src/sandbox-skills.ts), each its own mount, never ~/.claude.
+ * `--strict-mcp-config` is dropped (persona `sandboxOwnMcp: false` keeps it): the VM's own user/project MCP servers load.
  * Claude authenticates with the operator's OAuth token, read by the launcher from a 0600 file into the
  * environment (never argv, never the LaunchSpec, never a persona or a log line).
  *
@@ -21,13 +23,14 @@
  */
 import { spawnSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { accessSync, chmodSync, constants, copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { accessSync, appendFileSync, chmodSync, constants, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, delimiter, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { LaunchSpec } from "@cotal-ai/core";
 import { isClaudeHarness, readAgentType, readCwd, readHeadless, readSandbox, sandboxClaudeDir, sandboxStateDir } from "./session.ts";
 import { isRemoteSpace } from "./server.ts";
+import { collectSandboxSkills, readSandboxSkills, SANDBOX_SKILLS_MOUNT, type SandboxSkillSet, type SkillSelection } from "./sandbox-skills.ts";
 
 /** Where the agent's claude config dir is mounted inside the VM (the image's CLAUDE_CONFIG_DIR). */
 export const SANDBOX_CLAUDE_MOUNT = "/paw/claude";
@@ -188,6 +191,14 @@ export function readSandboxForward(configPath: string | undefined): boolean {
   if (v === "false") return false;
   throw new Error(`paw: sandboxForward: in ${configPath} is "${v}" — expected true or false`);
 }
+/** Persona `sandboxOwnMcp:` — `false` keeps `--strict-mcp-config` (only cotal); default on: the VM's own user- and
+ *  project-scope MCP servers (`claude mcp add -s user …` inside the VM, the folder's `.mcp.json`) load too. */
+export function readSandboxOwnMcp(configPath: string | undefined): boolean {
+  const v = scalarKey(configPath, "sandboxOwnMcp");
+  if (v === undefined || v === "true") return true;
+  if (v === "false") return false;
+  throw new Error(`paw: sandboxOwnMcp: in ${configPath} is "${v}" — expected true or false`);
+}
 function scalarKey(configPath: string | undefined, key: string): string | undefined {
   if (!configPath || !existsSync(configPath)) return undefined;
   const line = readFileSync(configPath, "utf8").match(/^---\n([\s\S]*?)\n---/)?.[1].split("\n").find((l) => l.startsWith(`${key}:`));
@@ -260,7 +271,7 @@ export function cotalOnlyMcpConfig(value: string): { json: string; cotalPaths: s
 
 /** Seed the agent's own claude config so the VM's first boot needs no human: onboarding done, its folder
  *  trusted, bypass-mode consent given. Merged into what is there; claude's own keys are kept. */
-export function seedSandboxClaude(dir: string, cwd: string): void {
+export function seedSandboxClaude(dir: string, cwd: string, opts: { ownMcp?: boolean } = {}): void {
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   const merge = (file: string, edit: (o: Record<string, unknown>) => void) => {
     const p = join(dir, file);
@@ -277,6 +288,10 @@ export function seedSandboxClaude(dir: string, cwd: string): void {
   });
   merge("settings.json", (o) => {
     o.skipDangerousModePermissionPrompt = true;
+    // The operator's claude.ai connectors (their Gmail, Drive, …) are never the VM's by default.
+    o.disableClaudeAiConnectors = true;
+    // Own MCP on: the folder's `.mcp.json` servers start without the approval dialog nobody is at the pty to answer.
+    if (opts.ownMcp) o.enableAllProjectMcpServers = true;
   });
 }
 
@@ -305,10 +320,14 @@ export function sandboxLaunch(spec: LaunchSpec, o: SandboxLaunchOpts): LaunchSpe
   const tokenFile = claudeTokenFile(env);
   const configPath = o.configPath!;
   const claudeDir = sandboxClaudeDir(configPath);
-  seedSandboxClaude(claudeDir, cwd);
+  const ownMcp = readSandboxOwnMcp(configPath);
+  seedSandboxClaude(claudeDir, cwd, { ownMcp });
   const home = claimSandboxHome(o.space, o.name, env);
 
   const args = [...spec.args];
+  // Inside the VM, user/project MCP scope is the VM's OWN config (/paw/claude/.claude.json, the folder's .mcp.json),
+  // so the host's reason for --strict-mcp-config (ambient host helpers) doesn't apply. --mcp-config stays cotal-only.
+  if (ownMcp) for (let i; (i = args.indexOf("--strict-mcp-config")) !== -1; ) args.splice(i, 1);
   const ro = new Set<string>();
   const rw = new Map<string, string>([[cwd, cwd], [claudeDir, SANDBOX_CLAUDE_MOUNT], [home, SANDBOX_HOME_MOUNT]]);
 
@@ -330,6 +349,8 @@ export function sandboxLaunch(spec: LaunchSpec, o: SandboxLaunchOpts): LaunchSpe
   const promptFile = args.indexOf("--append-system-prompt-file");
   if (promptFile !== -1) ro.add(dirname(args[promptFile + 1]));
   for (const a of spec.artifacts ?? []) ro.add(a);
+  const skills = mountSandboxSkills(claudeDir, sandboxStateDir(configPath), readSandboxSkills(configPath), env);
+  for (const d of skills.pluginDirs) args.push("--plugin-dir", d);
   const seatEnv: Record<string, string> = { ...(spec.env ?? {}) };
   if (seatEnv.COTAL_LAUNCH_MATERIAL) ro.add(dirname(seatEnv.COTAL_LAUNCH_MATERIAL));
   // Single host FILES the seat reads (its persona, a TLS CA) are COPIED into a per-launch dir mounted
@@ -402,6 +423,8 @@ export function sandboxLaunch(spec: LaunchSpec, o: SandboxLaunchOpts): LaunchSpe
     "-v", `${seatDir}:${SANDBOX_SEAT_MOUNT}:ro`,
     "-v", `${credsMirror}:${credsTarget}:ro`,
     ...[...ro].filter((p) => ![...rw.keys()].includes(p)).flatMap((p) => ["-v", `${p}:${p}:ro`]),
+    // AFTER /paw/claude: each nests inside it (or under /paw/plugins), read-only.
+    ...skills.mounts.flatMap((m) => ["-v", `${m.host}:${m.vm}:ro`]),
     ...[...new Set(passed)].flatMap((k) => ["-e", k]),
     readSandboxImage(configPath),
     // The IMAGE's claude, never spec.command: the manager resolves that to the HOST binary's absolute
@@ -416,6 +439,32 @@ export function sandboxLaunch(spec: LaunchSpec, o: SandboxLaunchOpts): LaunchSpe
     args: [SANDBOX_RUNNER, "--container", bin, "--token-file", tokenFile, "--name", name, "--space", o.space, "--agent", o.name, "--log", join(sandboxStateDir(configPath), "launcher.log"), "--forward", readSandboxForward(configPath) ? "on" : "off", "--mirror-src", creds, "--mirror-dst", join(credsMirror, basename(creds)), "--", ...run],
     env: seatEnv,
   };
+}
+
+/**
+ * The operator's skills for this launch (src/sandbox-skills.ts): what is mounted and what was skipped goes to
+ * launcher.log (once per launch) and `skills.json` (read by `paw sandbox ls`). Empty mount points a previous launch
+ * left in the agent's own skills dir are removed; an agent's own non-empty skill of the same name is shadowed.
+ */
+function mountSandboxSkills(claudeDir: string, stateDir: string, select: SkillSelection, env: NodeJS.ProcessEnv): SandboxSkillSet {
+  const set = collectSandboxSkills(select, env);
+  const own = join(claudeDir, "skills");
+  if (existsSync(own))
+    for (const d of readdirSync(own)) {
+      const p = join(own, d);
+      if (statSync(p).isDirectory() && !readdirSync(p).length) rmdirSync(p);
+    }
+  const lines = [
+    select === false
+      ? "skills: off (persona sandboxSkills: false)"
+      : `skills: ${set.mounts.filter((m) => m.kind === "skill").map((m) => m.name).join(", ") || "none"} · plugins: ${set.mounts.filter((m) => m.kind === "plugin").map((m) => m.name).join(", ") || "none"}`,
+    ...set.skipped.map((s) => `${s.kind} ${s.name} NOT mounted — ${s.reason}`),
+    ...set.mounts.filter((m) => m.kind === "skill" && existsSync(join(own, m.name))).map((m) => `the agent's own skill ${SANDBOX_SKILLS_MOUNT}/${m.name} is shadowed by the operator's (read-only)`),
+  ];
+  mkdirSync(stateDir, { recursive: true });
+  appendFileSync(join(stateDir, "launcher.log"), lines.map((l) => `${new Date().toISOString()} [paw] ${l}\n`).join(""));
+  writeFileSync(join(stateDir, "skills.json"), `${JSON.stringify({ selection: select, mounts: set.mounts, skipped: set.skipped }, null, 2)}\n`, { mode: 0o600 });
+  return set;
 }
 
 /**
