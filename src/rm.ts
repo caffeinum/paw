@@ -15,7 +15,8 @@ import { agentNamesForFolder, assertUnambiguousTarget, canonicalDir, folderForNa
 import { readForeground, unregisterForeground } from "./foreground.ts";
 import { parseGithubHandle, repoDir } from "./github.ts";
 import { ensureSpaceFor, resolveSpace, withEnsuredManager } from "./lifecycle.ts";
-import { readResumeId } from "./session.ts";
+import { readResumeId, readSandbox } from "./session.ts";
+import { readSandboxHomeOwner, sandboxHomeDir, sandboxHomeOwnerFile } from "./sandbox.ts";
 import { parseWorktreeRef, resolveWorktreeFolder } from "./worktree.ts";
 
 function parseArgs(argv: string[]): { space?: string; target?: string } {
@@ -72,6 +73,17 @@ export function resolveRemoval(space: string, target: string): { name: string; f
   throw new Error(`paw: no agent "${target}" in the registry (\`paw status\` to list)`);
 }
 
+/** A sandboxed agent's home (src/sandbox.ts) holds its secrets (~/.env) and installs: `paw rm` never deletes it
+ *  silently — it says where it is and how to delete it. A new sandboxed agent of that name here reuses it. */
+export function sandboxHomeKept(space: string, name: string, persona: string): string[] {
+  if (!existsSync(persona) || !readSandbox(persona) || readSandboxHomeOwner(name) !== space) return [];
+  const dir = sandboxHomeDir(name);
+  return [
+    `  sandbox home kept: ${dir} (its ~/.env, dotfiles, installs) — a new sandboxed "${name}" on ${space} would reuse it`,
+    `  delete it for good: rm -rf ${dir} ${sandboxHomeOwnerFile(name)}`,
+  ];
+}
+
 async function rm(argv: string[]): Promise<void> {
   const { space: spaceArg, target } = parseArgs(argv);
   if (!target) throw new Error("paw: usage — rm <name|folder|repo@branch|github:owner/repo>");
@@ -81,6 +93,7 @@ async function rm(argv: string[]): Promise<void> {
   const { name, folder } = resolveRemoval(space, target);
   const persona = personaFilePath(space, name);
   const pin = existsSync(persona) ? readResumeId(persona) : undefined;
+  const homeKept = sandboxHomeKept(space, name, persona);
 
   // A FOREGROUND `paw claude` agent isn't a manager agent — stop it by SIGTERMing its own process; only
   // fall through to the manager stop for a managed agent.
@@ -100,6 +113,7 @@ async function rm(argv: string[]): Promise<void> {
   rmSync(persona, { force: true }); // the persona IS the registration — deleting it forgets the agent
 
   console.log(`✓ removed "${name}"${stopped ? " (stopped + forgotten)" : " (forgotten)"} — persona deleted`);
+  for (const line of homeKept) console.log(line);
   if (pin) {
     // The session may still belong to another agent (a second name for one conversation) — then there is
     // nothing to revive, and the adopt hint would be refused as two agents on one transcript.

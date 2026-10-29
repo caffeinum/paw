@@ -2,14 +2,14 @@
  * `paw sandbox build` — build paw's sandbox image (src/sandbox/Containerfile) with Apple's `container`.
  * `paw sandbox ls [--json]` — EVERY paw sandbox container on this machine (VMs are per machine, so this is a
  *   machine view: the `--space` the dispatcher appends to every verb is accepted and ignored): agent#space, state,
- *   memory in use / limit, and whether a paw launcher still owns it (an `orphan` is a VM whose launcher was
+ *   memory in use / limit, its persistent home ($PAW_HOME/containers/<name>), and whether a paw launcher still owns it (an `orphan` is a VM whose launcher was
  *   SIGKILLed — the agent's next launch removes it, or `container delete --force <id>` now).
  * docs/notes/sandbox.md.
  */
 import { execFileSync, spawnSync } from "node:child_process";
 import { dirname } from "node:path";
 import { registry, type Command } from "@cotal-ai/core";
-import { CONTAINERFILE, containerBin, defaultSandboxImage, listSandboxContainers, type SandboxContainer } from "../sandbox.ts";
+import { CONTAINERFILE, containerBin, defaultSandboxImage, listSandboxContainers, readSandboxHomeOwner, sandboxHomeDir, type SandboxContainer } from "../sandbox.ts";
 import { writeJson, writeOut } from "../stdout.ts";
 
 const USAGE = "sandbox build | sandbox ls [--json]";
@@ -70,10 +70,15 @@ function ls(argv: string[]): void {
   const all: SandboxContainer[] = listSandboxContainers(bin);
   const used = memoryInUse(bin, all.filter((c) => c.state === "running").map((c) => c.id));
   const owned = launcherOwned();
-  const rows = all.map((c) => ({ ...c, memoryUsedBytes: used.get(c.id), launcher: owned.has(c.id) ? "live" : "orphan" }));
+  const rows = all.map((c) => ({
+    ...c,
+    memoryUsedBytes: used.get(c.id),
+    launcher: owned.has(c.id) ? "live" : "orphan",
+    home: readSandboxHomeOwner(c.agent) === c.space ? sandboxHomeDir(c.agent) : undefined,
+  }));
   if (json) return writeJson(rows);
   if (!rows.length) return writeOut("no sandboxed agents on this machine (no paw sandbox containers)\n");
-  const table = [["AGENT", "STATE", "MEM USED/LIMIT", "LAUNCHER", "IP", "CONTAINER"], ...rows.map((r) => [`${r.agent}#${r.space}`, r.state, `${mb(r.memoryUsedBytes)}/${mb(r.memoryBytes)}`, r.launcher, r.ip ?? "-", r.id])];
+  const table = [["AGENT", "STATE", "MEM USED/LIMIT", "LAUNCHER", "IP", "CONTAINER", "HOME"], ...rows.map((r) => [`${r.agent}#${r.space}`, r.state, `${mb(r.memoryUsedBytes)}/${mb(r.memoryBytes)}`, r.launcher, r.ip ?? "-", r.id, r.home ?? "-"])];
   const w = table[0].map((_, i) => Math.max(...table.map((row) => row[i].length)));
   writeOut(table.map((row) => row.map((v, i) => v.padEnd(w[i])).join("  ").trimEnd()).join("\n") + "\n");
   const orphans = rows.filter((r) => r.launcher === "orphan");

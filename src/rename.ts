@@ -6,7 +6,8 @@
  */
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { basename, resolve } from "node:path";
-import { sandboxStateDir } from "./session.ts";
+import { readSandbox, sandboxStateDir } from "./session.ts";
+import { readSandboxHomeOwner, sandboxHomeDir, sandboxHomeOwnerFile } from "./sandbox.ts";
 import { registry, type Command } from "@cotal-ai/core";
 import {
   agentRecord,
@@ -98,8 +99,18 @@ export function renameAgentOnDisk(
     const fromSandbox = sandboxStateDir(personaFilePath(space, from));
     const toSandbox = sandboxStateDir(toFile);
     if (existsSync(toSandbox)) throw new Error(`paw: ${toSandbox} already exists — a sandbox store for "${to}" is in the way; move it aside first`);
+    // …and so is its persistent home ($PAW_HOME/containers/<name>, its ~/.env + installs) — when THIS space owns it.
+    const carryHome = readSandbox(personaFilePath(space, from)) !== undefined && readSandboxHomeOwner(from) === space;
+    if (carryHome) {
+      for (const p of [sandboxHomeDir(to), sandboxHomeOwnerFile(to)])
+        if (existsSync(p)) throw new Error(`paw: ${p} already exists — "${to}" already has a sandbox home (another space's agent, or a leftover); move it aside first`);
+    }
     renameSync(personaFilePath(space, from), toFile);
     if (existsSync(fromSandbox)) renameSync(fromSandbox, toSandbox);
+    if (carryHome) {
+      if (existsSync(sandboxHomeDir(from))) renameSync(sandboxHomeDir(from), sandboxHomeDir(to));
+      renameSync(sandboxHomeOwnerFile(from), sandboxHomeOwnerFile(to));
+    }
     writeFileSync(toFile, readFileSync(toFile, "utf8").replace(/^name:.*$/m, `name: ${to}`));
     return { from, to };
   });
