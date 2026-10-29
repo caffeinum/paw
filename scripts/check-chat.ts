@@ -363,6 +363,11 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
   assert(m.includes("paw chat --fresh @getslash.co") && m.includes("did you mean @getslash-co"), "no agent: points at --fresh AND at the registered name it looks like");
   assert(noAgentMessage("/tmp/new", ".", ["evals"]).includes("`paw status` lists your agents"), "no agent: nothing close → points at paw status, no invented suggestion");
   assert(!noAgentMessage("/tmp/q", "q", ["queue", "queue-ea"]).includes("did you mean"), "no agent: a 1-2 char token suggests nothing (it would match everything)");
+  const { isExplicitRepoHandle } = await import("../src/chat.ts");
+  for (const t of ["github:sageox/ox", "gh:sageox/ox", "https://github.com/sageox/ox", "https://www.github.com/o/r/pull/3"])
+    assert(isExplicitRepoHandle(t), `clone-and-chat: ${t} is an explicit repo handle (chat births its agent)`);
+  for (const t of ["@getslash.co", "getslash.co", "web:github.com/o/r", "https://example.com/o/r", "./ox", "ox", "repo@branch"])
+    assert(!isExplicitRepoHandle(t), `clone-and-chat: ${t} still needs an existing agent (or --fresh)`);
 }
 
 // AwaitTracker: one pending entry per sent message (the 2026-10-06 "message 2 looked lost" bug).
