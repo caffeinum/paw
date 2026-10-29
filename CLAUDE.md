@@ -143,7 +143,8 @@ Each entry: what it is + the most load-bearing rule. Full notes behind the link.
   `ACP_HOST_REV` + `ACP_PLUGIN_INTEGRITY` together; `check:acp`. → [agents.md#acp](docs/notes/agents.md#acp)
 - `src/sandbox.ts` + `bin/paw-sandbox-run.mjs` + `src/commands/sandbox.ts` — persona `sandbox: container`: the claude
   launch runs in an Apple `container` VM (folder rw; own claude store at /paw/claude; node_modules + launch dirs ro;
-  only ITS creds via a mirror; token file → env, never argv); remote spaces only (v1); `paw claude --sandbox`,
+  only ITS creds via a mirror; token file → env, never argv; persistent private HOME `$PAW_HOME/containers/<name>` → /root,
+  `~/.env` auto-sourced via BASH_ENV, installers default into it, one owner space per name); remote spaces only (v1); `paw claude --sandbox`,
   `paw sandbox build|ls`; `check:sandbox`. → [sandbox.md](docs/notes/sandbox.md)
 - `src/session.ts` — `readResumeId`, `transcriptExists`; leaf module. → [agents.md#srcsessionts](docs/notes/agents.md#srcsessionts)
 - **Two-writer guard** — never start an agent whose pinned session a standalone claude holds. → [agents.md#two-writer-guard](docs/notes/agents.md#two-writer-guard)

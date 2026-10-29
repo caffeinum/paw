@@ -5,7 +5,7 @@
  * `container` binary, so it runs anywhere (no VM, no mesh, no network). Run: pnpm check:sandbox
  */
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -61,6 +61,7 @@ const { peelArgs } = await import("../src/claude.ts");
 const { readSandbox, personaTranscriptRoots, sandboxClaudeDir } = await import("../src/session.ts");
 const sbx = await import("../src/sandbox.ts");
 const { pawConnector } = await import("../src/connector.ts");
+const { personaFilePath } = await import("../src/addressing.ts");
 const { writeRemoteMesh } = await import("../src/remote-mesh.ts");
 
 console.log("paw claude --sandbox");
@@ -163,6 +164,58 @@ const envs = run.flatMap((a, i) => (a === "-e" ? [run[i + 1]] : []));
   assert(again.args.includes("--resume"), "restart: --resume once the sandbox store holds the session");
 }
 
+console.log("the persistent home ($PAW_HOME/containers/<name>)");
+{
+  const homeDir = join(home, ".paw", "containers", "smoke");
+  assert(sbx.sandboxHomeDir("smoke") === homeDir, "the home is $PAW_HOME/containers/<name>");
+  assert(vols.includes(`${homeDir}:/root`), "…mounted read-write as the VM's /root");
+  assert((statSync(homeDir).mode & 0o777) === 0o700 && (statSync(join(home, ".paw", "containers")).mode & 0o777) === 0o700, "…created 0700 (and its parent)");
+  assert(readFileSync(join(home, ".paw", "containers", ".owners", "smoke"), "utf8").trim() === SPACE, "…claimed by its space, in an owner file outside the home");
+  assert(readFileSync(join(homeDir, ".bashrc"), "utf8").includes(sbx.SANDBOX_BASH_ENV), "…seeded with a ~/.bashrc that sources the seat's BASH_ENV (interactive shells)");
+  writeFileSync(join(homeDir, ".bashrc"), "# mine\n");
+  writeFileSync(join(homeDir, ".env"), "NEON_API_KEY=neon-SECRET-sentinel\n", { mode: 0o600 });
+  const relaunch = pawConnector.buildLaunch({ space: SPACE, name: "smoke", configPath, workspaceRoot: root, servers: "tls://192.168.64.1:4222", creds: agentCreds });
+  assert(readFileSync(join(homeDir, ".bashrc"), "utf8") === "# mine\n", "the agent's own ~/.bashrc is never overwritten");
+  assert(!JSON.stringify(relaunch).includes("neon-SECRET-sentinel"), "the agent's ~/.env secret is NOWHERE in the LaunchSpec");
+  const stateDir = join(home, ".paw", "spaces", SPACE, "sandbox", "smoke");
+  const seatFiles = readdirSync(join(stateDir, "seat")).map((f) => readFileSync(join(stateDir, "seat", f), "utf8")).join("");
+  assert(!seatFiles.includes("neon-SECRET-sentinel") && !readFileSync(join(stateDir, "vm.env"), "utf8").includes("neon-SECRET-sentinel"), "…nor in the seat files or the VM env file paw writes");
+  const r = relaunch.args.slice(relaunch.args.indexOf("--") + 1);
+  const envFile = r[r.indexOf("--env-file") + 1];
+  assert(envFile === join(stateDir, "vm.env") && !envFile.startsWith(join(stateDir, "seat")), "the VM's fixed env comes from a host --env-file, not mounted into the VM");
+  const vmEnv = Object.fromEntries(readFileSync(envFile, "utf8").trim().split("\n").map((l) => [l.slice(0, l.indexOf("=")), l.slice(l.indexOf("=") + 1)]));
+  assert(vmEnv.HOME === "/root" && vmEnv.NPM_CONFIG_PREFIX === "/root/.local" && vmEnv.CARGO_HOME === "/root/.cargo" && vmEnv.GOPATH === "/root/go" && vmEnv.BUN_INSTALL === "/root/.bun" && vmEnv.PNPM_HOME === "/root/.local/share/pnpm" && vmEnv.PIP_USER === "1" && vmEnv.PYTHONUSERBASE === "/root/.local", "installers default into the home (npm/pnpm/pip/cargo/go/bun)");
+  assert(vmEnv.XDG_CONFIG_HOME === "/root/.config" && vmEnv.XDG_DATA_HOME === "/root/.local/share" && vmEnv.XDG_CACHE_HOME === "/root/.cache", "XDG config/data/cache live in the home");
+  const path = vmEnv.PATH.split(":");
+  assert(path[0] === "/root/.local/bin" && ["/root/node_modules/.bin", "/root/.cargo/bin", "/root/go/bin", "/root/.bun/bin", "/root/.local/share/pnpm"].every((d) => path.includes(d)) && path.indexOf("/usr/local/bin") > path.indexOf("/root/go/bin"), "PATH: the home's tool dirs first, the image's own (/usr/local/bin: node) after");
+  assert(vmEnv.BASH_ENV === sbx.SANDBOX_BASH_ENV && existsSync(join(stateDir, "seat", "bashenv.sh")), "BASH_ENV points at the seat's rc file, which paw wrote");
+  assert(r[r.indexOf(sbx.readSandboxImage(configPath)) + 1] === "/usr/local/bin/claude", "the image's claude runs by absolute path (a ~/.local/bin/claude can't shadow it)");
+  const pf = r.indexOf("--append-system-prompt-file");
+  const brief = pf !== -1 ? readFileSync(r[pf + 1], "utf8") : r[r.indexOf("--append-system-prompt") + 1];
+  assert(brief.includes("YOU RUN IN A SANDBOX") && brief.includes("~/.env"), "the sandboxed seat's brief tells it about its persistent home and ~/.env");
+  // The rc file, run by a real bash: ~/.env exported, PATH prepended even after a profile reset it.
+  const fakeRoot = join(home, "fake-vm-root");
+  mkdirSync(fakeRoot);
+  writeFileSync(join(fakeRoot, ".env"), "NEON_API_KEY=from-dotenv\n");
+  const rc = join(home, "bashenv.sh");
+  writeFileSync(rc, sbx.sandboxBashEnv().replaceAll("/root", fakeRoot));
+  const b = spawnSync("/bin/bash", ["-c", 'PATH=/usr/bin:/bin; . "$BASH_ENV"; bash -c \'echo "$NEON_API_KEY|$PATH"\''], { encoding: "utf8", env: { HOME: fakeRoot, BASH_ENV: rc, PATH: "/usr/bin:/bin" } });
+  assert(b.stdout.startsWith(`from-dotenv|${fakeRoot}/.local/bin:`), `bash with BASH_ENV: ~/.env exported to children, ~/.local/bin first on PATH${b.stderr ? ` (${b.stderr.trim()})` : ""}`);
+  const nb = spawnSync("/bin/bash", ["-c", 'echo "[$NEON_API_KEY]"'], { encoding: "utf8", env: { HOME: join(home, "nowhere"), BASH_ENV: rc, PATH: "/usr/bin:/bin" } });
+  assert(nb.status === 0 && nb.stdout.trim() === "[]", "no ~/.env ⇒ nothing sourced, no error");
+  // One home per NAME across spaces: another space's sandboxed "smoke" is refused, loud.
+  const otherSpace = "sbxother";
+  writeRemoteMesh({ space: otherSpace, server: "tls://192.168.64.1:4222", root, ts: new Date().toISOString() });
+  mkdirSync(join(home, ".paw", "spaces", otherSpace, "personas"), { recursive: true });
+  const otherPersona = join(home, ".paw", "spaces", otherSpace, "personas", "smoke.md");
+  writeFileSync(otherPersona, `---\nname: smoke\ncwd: ${folder}\nsandbox: container\n---\n`);
+  assert(
+    throwsLike(() => pawConnector.buildLaunch({ space: otherSpace, name: "smoke", configPath: otherPersona, workspaceRoot: root, servers: "tls://x:1", creds: agentCreds }), /home of sandboxed "smoke" on space "sbxremote"/),
+    "a second space's sandboxed agent of the same name is refused (it would share the first's secrets)",
+  );
+  assert(throwsLike(() => sbx.assertSandboxable(otherSpace, "smoke", otherPersona), /share its secrets/), "…already at the CLI-side precheck");
+}
+
 console.log("cotal-only MCP config");
 {
   const r = sbx.cotalOnlyMcpConfig(JSON.stringify({ mcpServers: { cotal: { command: "node", args: ["/x/node_modules/a/mcp.cjs"] }, slack: { command: "slack-mcp", env: { SLACK_TOKEN: "xoxb-secret" } } } }));
@@ -262,6 +315,23 @@ console.log("paw stop's reap");
   const forced = await sbx.reapSandbox(SPACE, "smoke", 600);
   assert(forced.join() === "paw-sbxremote-smoke-zzz111" && readFileSync(fakeLog, "utf8").includes("argv: delete --force paw-sbxremote-smoke-zzz111"), "one that outlives it is force-deleted (and named)");
   writeFileSync(lsJson, "[]");
+}
+
+console.log("paw rename carries the home; paw rm keeps it");
+{
+  const { renameAgentOnDisk } = await import("../src/rename.ts");
+  const { sandboxHomeKept } = await import("../src/rm.ts");
+  const c = join(home, ".paw", "containers");
+  renameAgentOnDisk(SPACE, folder, "smoke2", "smoke");
+  assert(!existsSync(join(c, "smoke")) && readFileSync(join(c, "smoke2", ".env"), "utf8").includes("neon-SECRET-sentinel"), "rename moves containers/<old> → containers/<new>, ~/.env inside");
+  assert(readFileSync(join(c, ".owners", "smoke2"), "utf8").trim() === SPACE && !existsSync(join(c, ".owners", "smoke")), "…and its owner claim");
+  mkdirSync(join(c, "taken"), { recursive: true });
+  assert(throwsLike(() => renameAgentOnDisk(SPACE, folder, "taken", "smoke2"), /containers\/taken already exists/), "a rename onto an existing home is refused loud");
+  assert(existsSync(personaFilePath(SPACE, "smoke2")) && existsSync(join(c, "smoke2")), "…and leaves the agent exactly as it was");
+  renameAgentOnDisk(SPACE, folder, "smoke", "smoke2");
+  const kept = sandboxHomeKept(SPACE, "smoke", personaFilePath(SPACE, "smoke")).join("\n");
+  assert(kept.includes(join(c, "smoke")) && kept.includes(`rm -rf ${join(c, "smoke")} ${join(c, ".owners", "smoke")}`), "paw rm names the kept home and how to delete it");
+  assert(sandboxHomeKept(SPACE, "keys", personaFilePath(SPACE, "keys")).length === 0, "…and says nothing for an agent that never launched (no home)");
 }
 
 console.log("sandbox image recipe");

@@ -8,6 +8,8 @@
  *  - the agent's folder, read-write, at its own path (the only host folder it can change);
  *  - its own claude config dir ($PAW_HOME/spaces/<s>/sandbox/<name>/claude) at /paw/claude — transcripts,
  *    `.claude.json`, settings — so `--resume` finds the session after any restart;
+ *  - its persistent HOME ($PAW_HOME/containers/<name>) at /root — `~/.env` (auto-sourced by every bash), dotfiles,
+ *    CLI installs; the rest of the VM's filesystem is wiped every launch;
  *  - READ-ONLY: paw's node_modules (the cotal MCP server + plugin hooks claude starts as its children), the
  *    launch's material dir(s) (its mesh creds, persona file, paw-brief.md), a TLS CA file if one is set;
  *  - read-write: `<cotal root>/.cotal/events` (the MCP server's event write-ahead log) — never the root itself,
@@ -19,7 +21,7 @@
  */
 import { spawnSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { accessSync, constants, copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { accessSync, chmodSync, constants, copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, delimiter, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -35,6 +37,95 @@ export const SANDBOX_SEAT_MOUNT = "/paw/seat";
  *  so the host path cotal picked (under the host's TMPDIR, absent in the VM) is replaced. */
 export const SANDBOX_CONTROL_SOCKET = "/tmp/cotal-control.sock";
 export const DEFAULT_SANDBOX_MEMORY = "2G";
+/** The VM's HOME: the agent's persistent home dir on the host ({@link sandboxHomeDir}) is mounted here, rw.
+ *  claude runs as the VM's root, whose home is /root — tools that assume `~` find it where they expect. */
+export const SANDBOX_HOME_MOUNT = "/root";
+/** Sourced by every bash in the VM (BASH_ENV): PATH for the home's tools, then the agent's own `~/.env`. */
+export const SANDBOX_BASH_ENV = "/paw/seat/bashenv.sh";
+/** The image's claude, by absolute path: a `claude` the agent installs into its home must not replace it. */
+export const SANDBOX_CLAUDE_BIN = "/usr/local/bin/claude";
+
+const H = SANDBOX_HOME_MOUNT;
+/** Tool dirs inside the persistent home, ahead of the image's own (which still resolve: node, git, …). */
+const HOME_PATH = [`${H}/.local/bin`, `${H}/node_modules/.bin`, `${H}/.local/share/pnpm`, `${H}/.bun/bin`, `${H}/.cargo/bin`, `${H}/go/bin`];
+const IMAGE_PATH = ["/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin"];
+/**
+ * The VM's fixed env — PATHS, never secrets — handed to `container run --env-file` from a host file paw
+ * writes per launch. Every installer's default lands in the persistent home, so a plain `npm i -g x`,
+ * `pip install x`, `cargo install x` or a tool's own config/auth (XDG dirs) survives the rootfs wipe.
+ */
+export const SANDBOX_VM_ENV: Readonly<Record<string, string>> = {
+  HOME: H,
+  PATH: [...HOME_PATH, ...IMAGE_PATH].join(":"),
+  NPM_CONFIG_PREFIX: `${H}/.local`,
+  PNPM_HOME: `${H}/.local/share/pnpm`,
+  PIP_USER: "1",
+  PYTHONUSERBASE: `${H}/.local`,
+  CARGO_HOME: `${H}/.cargo`,
+  GOPATH: `${H}/go`,
+  BUN_INSTALL: `${H}/.bun`,
+  XDG_CONFIG_HOME: `${H}/.config`,
+  XDG_DATA_HOME: `${H}/.local/share`,
+  XDG_CACHE_HOME: `${H}/.cache`,
+  BASH_ENV: SANDBOX_BASH_ENV,
+  ENV: SANDBOX_BASH_ENV,
+};
+
+/** BASH_ENV's body. Re-prepends the home's PATH (a login bash's /etc/profile resets PATH before BASH_ENV
+ *  runs) and exports the agent's own `~/.env`. Holds no value of its own — the secrets stay in the home. */
+export function sandboxBashEnv(): string {
+  return [
+    "# paw (src/sandbox.ts): every bash in this sandbox sources this via BASH_ENV. Your own setup goes in",
+    "# ~/.bashrc / ~/.env — your home persists across launches; the rest of the VM's filesystem does not.",
+    `case ":$PATH:" in *":${HOME_PATH[0]}:"*) ;; *) PATH="${HOME_PATH.join(":")}:$PATH" ;; esac`,
+    "export PATH",
+    'if [ -f "$HOME/.env" ]; then set -a; . "$HOME/.env"; set +a; fi',
+    "",
+  ].join("\n");
+}
+
+function pawHomeDir(env: NodeJS.ProcessEnv = process.env): string {
+  return env.PAW_HOME?.trim() || join(homedir(), ".paw");
+}
+/** A sandboxed agent's persistent home on the host, `$PAW_HOME/containers/<name>` (the VM's /root): its
+ *  dotfiles, `~/.env`, CLI installs. One namespace for every space — {@link assertSandboxHomeOwner} refuses
+ *  a second space's agent of the same name. */
+export function sandboxHomeDir(name: string, env: NodeJS.ProcessEnv = process.env): string {
+  return join(pawHomeDir(env), "containers", name);
+}
+/** Which space owns `containers/<name>` — kept OUTSIDE the home, where the agent can't rewrite it. */
+export function sandboxHomeOwnerFile(name: string, env: NodeJS.ProcessEnv = process.env): string {
+  return join(pawHomeDir(env), "containers", ".owners", name);
+}
+export function readSandboxHomeOwner(name: string, env: NodeJS.ProcessEnv = process.env): string | undefined {
+  const f = sandboxHomeOwnerFile(name, env);
+  if (!existsSync(f)) return undefined;
+  const owner = readFileSync(f, "utf8").trim();
+  if (!owner) throw new Error(`paw: ${f} is empty — it must name the space that owns ${sandboxHomeDir(name, env)}`);
+  return owner;
+}
+/** `containers/<name>` belongs to at most one space: another space's agent of the same name is refused. */
+export function assertSandboxHomeOwner(space: string, name: string, env: NodeJS.ProcessEnv = process.env): void {
+  const owner = readSandboxHomeOwner(name, env);
+  if (owner !== undefined && owner !== space)
+    throw new Error(
+      `paw: ${sandboxHomeDir(name, env)} is the home of sandboxed "${name}" on space "${owner}" — a sandboxed agent named "${name}" on "${space}" would share its secrets. ` +
+        `Pick another name, or (if ${name}#${owner} is gone for good) delete ${sandboxHomeDir(name, env)} and ${sandboxHomeOwnerFile(name, env)}`,
+    );
+}
+/** Create (0700) and claim the agent's home; seed a `~/.bashrc` that sources BASH_ENV for interactive shells. */
+export function claimSandboxHome(space: string, name: string, env: NodeJS.ProcessEnv = process.env): string {
+  assertSandboxHomeOwner(space, name, env);
+  const dir = sandboxHomeDir(name, env);
+  mkdirSync(dirname(sandboxHomeOwnerFile(name, env)), { recursive: true, mode: 0o700 });
+  chmodSync(dirname(dir), 0o700);
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  chmodSync(dir, 0o700);
+  if (!existsSync(sandboxHomeOwnerFile(name, env))) writeFileSync(sandboxHomeOwnerFile(name, env), `${space}\n`, { mode: 0o600 });
+  const rc = join(dir, ".bashrc");
+  if (!existsSync(rc)) writeFileSync(rc, `# interactive shells (container exec … bash): the same PATH + ~/.env as the agent's own\n[ -f ${SANDBOX_BASH_ENV} ] && . ${SANDBOX_BASH_ENV}\n`, { mode: 0o600 });
+  return dir;
+}
 
 /** paw's image recipe, and the launcher that owns one container's lifetime. */
 export const CONTAINERFILE = fileURLToPath(new URL("./sandbox/Containerfile", import.meta.url));
@@ -120,6 +211,7 @@ export function assertSandboxable(space: string, name: string, configPath: strin
   const cwd = readCwd(configPath);
   if (!cwd) throw new Error(`paw: "${name}" is sandboxed but its persona has no cwd: — the folder is the only thing the VM may change`);
   if (!existsSync(cwd)) throw new Error(`paw: "${name}"'s folder ${cwd} does not exist`);
+  assertSandboxHomeOwner(space, name);
   return cwd;
 }
 
@@ -207,10 +299,11 @@ export function sandboxLaunch(spec: LaunchSpec, o: SandboxLaunchOpts): LaunchSpe
   const configPath = o.configPath!;
   const claudeDir = sandboxClaudeDir(configPath);
   seedSandboxClaude(claudeDir, cwd);
+  const home = claimSandboxHome(o.space, o.name, env);
 
   const args = [...spec.args];
   const ro = new Set<string>();
-  const rw = new Map<string, string>([[cwd, cwd], [claudeDir, SANDBOX_CLAUDE_MOUNT]]);
+  const rw = new Map<string, string>([[cwd, cwd], [claudeDir, SANDBOX_CLAUDE_MOUNT], [home, SANDBOX_HOME_MOUNT]]);
 
   const pluginAt = args.indexOf("--plugin-dir");
   if (pluginAt !== -1) {
@@ -246,6 +339,10 @@ export function sandboxLaunch(spec: LaunchSpec, o: SandboxLaunchOpts): LaunchSpe
     seatEnv[key] = `${SANDBOX_SEAT_MOUNT}/${as}`;
   };
   copyIn("COTAL_AGENT_FILE", "agent.md");
+  writeFileSync(join(seatDir, basename(SANDBOX_BASH_ENV)), sandboxBashEnv(), { mode: 0o644 });
+  // The VM's fixed env (paths only) as a host file the run CLI reads — not under /paw/seat, the VM has no use for it.
+  const vmEnvFile = join(sandboxStateDir(configPath), "vm.env");
+  writeFileSync(vmEnvFile, Object.entries(SANDBOX_VM_ENV).map(([k, v]) => `${k}=${v}\n`).join(""), { mode: 0o600 });
   // The seat's mesh creds: the launch material names a file in the space's creds dir, which also holds
   // EVERY other agent's creds on this machine — so never that dir. A per-agent MIRROR dir holding only
   // this agent's file is mounted read-only AT that dir's path (the material's path resolves unchanged),
@@ -293,6 +390,7 @@ export function sandboxLaunch(spec: LaunchSpec, o: SandboxLaunchOpts): LaunchSpe
     "-l", `paw.agent=${o.name}`,
     "-m", readSandboxMemory(configPath),
     "-w", cwd,
+    "--env-file", vmEnvFile,
     ...[...rw].flatMap(([h, c]) => ["-v", `${h}:${c}`]),
     "-v", `${seatDir}:${SANDBOX_SEAT_MOUNT}:ro`,
     "-v", `${credsMirror}:${credsTarget}:ro`,
@@ -300,8 +398,9 @@ export function sandboxLaunch(spec: LaunchSpec, o: SandboxLaunchOpts): LaunchSpe
     ...[...new Set(passed)].flatMap((k) => ["-e", k]),
     readSandboxImage(configPath),
     // The IMAGE's claude, never spec.command: the manager resolves that to the HOST binary's absolute
-    // path (~/.local/bin/claude), which the VM doesn't have.
-    "claude",
+    // path (~/.local/bin/claude), which the VM doesn't have. Absolute, so a `claude` the agent installs
+    // into its home's ~/.local/bin (first on the VM's PATH) never replaces the seat's own.
+    SANDBOX_CLAUDE_BIN,
     ...args,
   ];
   return {

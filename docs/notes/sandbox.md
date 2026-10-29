@@ -13,7 +13,7 @@ container system start                     # once per boot (Apple's services; `p
 paw sandbox build                          # build paw's image (src/sandbox/Containerfile), then stop the builder VM
 cd <folder> && paw claude --sandbox --space <remote space> --name <n>
 paw start|stop|restart <n>#<s> · paw chat @<n>#<s> · paw dm <n>#<s> "…" · paw attach <n>#<s> · paw log <n>#<s>
-paw sandbox ls                             # every paw container on THIS machine: agent#space, state, mem used/limit, launcher live|orphan
+paw sandbox ls                             # every paw container on THIS machine: agent#space, state, mem used/limit, launcher live|orphan, home
 ```
 
 Persona keys: `sandbox: container` (any other value throws — a typo never boots the agent unsandboxed),
@@ -29,7 +29,8 @@ by paw (un-sandboxing is a deliberate persona edit). Auth: the Claude OAuth toke
 (src/sandbox.ts) turns it into `node bin/paw-sandbox-run.mjs … -- container run --rm -i -t --init … <image>
 claude <the same args>`. The hub rewrite, tracepaper-direct and `nice` are skipped for a sandboxed seat (it
 runs its own cotal MCP in the VM; the VM has its own CPUs). The in-VM command is always the IMAGE's
-`claude` — the manager resolves `spec.command` to the host binary's absolute path, which the VM lacks.
+`claude`, by absolute path (`/usr/local/bin/claude`) — the manager resolves `spec.command` to the host binary's
+absolute path, which the VM lacks, and a bare `claude` would resolve to one the agent installed into `~/.local/bin`.
 
 What the VM sees (everything else of the host is absent — verified: `~/.ssh`, `~/.paw`, `~/Github`,
 `~/Library` don't exist in it, a write outside the mounts lands in the VM's own rootfs, `ps` shows ~6 VM-local
@@ -38,8 +39,9 @@ processes):
 | host | in the VM | mode | why |
 |---|---|---|---|
 | the agent's folder (persona `cwd:`) | same path | rw | the only host folder it can change |
+| `$PAW_HOME/containers/<n>` (0700, created on first launch) | `/root` (= `HOME`) | rw | the agent's persistent home: `~/.env`, dotfiles, CLI installs, tools' config — see [Private home](#private-home) |
 | `$PAW_HOME/spaces/<s>/sandbox/<n>/claude` | `/paw/claude` (= `CLAUDE_CONFIG_DIR`) | rw | transcripts, `.claude.json`, settings survive every container restart; seeded with onboarding done, the folder trusted, bypass consent |
-| `…/sandbox/<n>/seat/` (per-launch copies of the persona and any `NODE_EXTRA_CA_CERTS`/`SSL_CERT_FILE`) | `/paw/seat` | ro | single files are COPIED: their own dirs hold other agents' personas / a CA's key |
+| `…/sandbox/<n>/seat/` (per-launch copies of the persona and any `NODE_EXTRA_CA_CERTS`/`SSL_CERT_FILE`, plus paw's `bashenv.sh`) | `/paw/seat` | ro | single files are COPIED: their own dirs hold other agents' personas / a CA's key |
 | `…/sandbox/<n>/creds/` (a mirror of ONLY this agent's creds file) | the creds dir's own path (the launch material names it) | ro | the real dir holds every agent's creds on this machine; the launcher re-copies on renewal |
 | paw's topmost `node_modules` (release or checkout) | same path | ro | the cotal MCP server (`mcp.cjs`) and plugin hooks claude starts as its children |
 | cotal's launch dirs (`material.json`, persona prompt file + `paw-brief.md`) | same paths | ro | |
@@ -47,7 +49,9 @@ processes):
 
 Env reaches the VM by NAME only (`-e KEY`, values inherited from the launcher's env): every `COTAL_*` except
 `COTAL_HOME`, plus `TERM`/`COLORTERM`/`LANG`/`LC_ALL`, CA vars, `CLAUDE_CONFIG_DIR`, `IS_SANDBOX=1` (claude
-runs as the VM's root; the VM is the sandbox) and `CLAUDE_CODE_OAUTH_TOKEN`. `COTAL_CONTROL_SOCKET` moves to
+runs as the VM's root; the VM is the sandbox) and `CLAUDE_CODE_OAUTH_TOKEN`. The VM's fixed env — paths only,
+never a secret — comes from `--env-file …/sandbox/<n>/vm.env` (a host file, not mounted): `HOME`, `PATH`, the
+installer prefixes and `BASH_ENV` (see [Private home](#private-home)). `COTAL_CONTROL_SOCKET` moves to
 `/tmp/cotal-control.sock` in the VM (the MCP server listens, the hooks dial — both inside). Any OTHER
 `COTAL_*` value that is an absolute host path not under a mount fails the launch loud (a future cotal var
 must be taught, not silently missing). `--mcp-config` is cut to the cotal server alone: servers `paw mcp`
@@ -75,8 +79,46 @@ orphan VM — `paw sandbox ls` marks it `orphan`, the agent's next launch remove
 - a non-claude harness (`agent: kit|acp|…` would silently run unsandboxed), `headless: true` (needs the hub's
   host socket), no persona `cwd:`, `--fg`;
 - `container` missing / services down / image not built / token file missing, empty or group/other-readable;
-- `paw move` and `paw teleport` of a sandboxed agent (its store under `spaces/<s>/sandbox/<n>` isn't carried
-  yet); `paw rename` moves the store with the persona.
+- `paw move` and `paw teleport` of a sandboxed agent (its store under `spaces/<s>/sandbox/<n>` and its home
+  aren't carried yet); `paw rename` moves the store AND the home with the persona, refusing if
+  `containers/<new>` (or its owner file) already exists;
+- a sandboxed agent whose NAME already owns a home on another space (below).
+
+## Private home
+
+Every sandboxed agent gets a persistent home on the host, `$PAW_HOME/containers/<name>` (0700, as is
+`containers/`), mounted read-write as the VM's `/root` — claude runs as the VM's root, so `HOME=/root` is where
+every tool already looks (the host path is not reused in the VM: it would leak the operator's username/layout
+and `~` is what tools assume). The rootfs is wiped every launch; the home is not. It is for:
+
+- **secrets**: `~/.env` (`KEY=value` lines). Every bash in the VM sources it, exported: `BASH_ENV` (and `ENV`)
+  = `/paw/seat/bashenv.sh`, paw's rc file, which also re-prepends the home's tool dirs to `PATH` (a login bash's
+  `/etc/profile` resets PATH before BASH_ENV runs). A seeded `~/.bashrc` (written only if absent) sources the same
+  file for interactive `container exec … bash`. The values never touch argv, the LaunchSpec, a persona, a log,
+  `vm.env` or the seat dir — `check:sandbox` asserts it with a sentinel.
+- **tools**: the VM env points every installer's default into the home — `NPM_CONFIG_PREFIX=~/.local` (so
+  `npm i -g neonctl` → `~/.local/bin`), `PNPM_HOME=~/.local/share/pnpm`, `PIP_USER=1` + `PYTHONUSERBASE=~/.local`,
+  `CARGO_HOME=~/.cargo`, `GOPATH=~/go`, `BUN_INSTALL=~/.bun`, `XDG_{CONFIG,DATA,CACHE}_HOME` under `~` (CLIs keep
+  their auth/config there). `PATH` = `~/.local/bin`, `~/node_modules/.bin`, `$PNPM_HOME`, `~/.bun/bin`,
+  `~/.cargo/bin`, `~/go/bin`, then the image's own (`/usr/local/bin`: node, the image's claude). **apt/system
+  packages do NOT survive** — they land in the wiped rootfs; bake them into a custom image (`sandboxImage:`).
+- **one per name, machine-wide**: the home is keyed by name only (the shape the operator asked for:
+  `~/.paw/containers/neon`). `containers/.owners/<name>` (outside the home, so the agent can't rewrite it) records
+  the owning space; a sandboxed agent of the same name on ANOTHER space is refused at the CLI and in the manager's
+  `buildLaunch` — it would boot with the first one's secrets.
+- `paw rename` carries it (+ the owner file); `paw rm` keeps it and prints its path and the `rm -rf` that deletes
+  it (a new sandboxed agent of that name on that space would reuse it); `paw sandbox ls` shows it.
+- The agent's brief (`SANDBOX_BRIEF`, src/brief.ts) tells it the home exists and that `~/.env` is where secrets go.
+
+Verified live (container 1.6.0, the mini): in `bash -c -l`, `$NEON_API_KEY` from `~/.env` is set and PATH starts
+with `/root/.local/bin`; `npm i -g cowsay` lands in the host's `containers/<n>/.local/bin` and runs in the next VM;
+`command -v claude` is still the image's `/usr/local/bin/claude`.
+
+**Threat model — obscurity, not isolation.** The home is a host folder outside every repo, so another host agent
+grepping its own repos or `~/.paw/spaces` won't stumble on it, and only this agent's VM mounts it. But every host
+agent runs as the same macOS user: any of them can `cat ~/.paw/containers/neon/.env`, or `container exec` into
+the VM. Keychain-gating was rejected (prompts). Real isolation from other agents = a separate macOS user (or
+machine) for the sandboxed agent's paw.
 
 ## Why remote spaces only (v1) — and the local plan
 
@@ -105,9 +147,16 @@ helper, ~55 MB launcher, ~32 MB `container run` CLI — ~1.5 GB per agent vs ~0.
 ## Install of `container` without sudo (how the mini got it)
 
 The signed release pkg's payload runs from any prefix: `pkgutil --expand-full container-<v>-installer-signed.pkg x`,
-copy `x/Payload` to `~/.local/opt/container`, symlink `bin/container` into `~/.local/bin`, then
-`container system start --install-root ~/.local/opt/container --enable-kernel-install`. Its services are user
-launchd agents. The system install (`sudo installer -pkg … -target /`) is the supported path.
+copy `x/Payload` to `~/.local/opt/container`, symlink `bin/container` AND `bin/container-apiserver` into
+`~/.local/bin`, then `container system start --install-root ~/.local/opt/container --enable-kernel-install`. Its
+services are user launchd agents. Two traps (1.6.0):
+- `system start` looks for `container-apiserver` NEXT TO THE INVOKED CLI path (`CommandLine.executablePath`), not
+  under `--install-root` — through a lone `~/.local/bin/container` symlink it fails with a bare "No such file or
+  directory". Symlink the apiserver beside it (done on the mini) or invoke the real binary.
+- the launchd domain comes from `launchctl managername`: `gui/501` from a GUI (Aqua) session, `user/501` from
+  ssh/Background. Start it from a GUI session — started over ssh it registers in `user/501`, and `container
+  system status` from an Aqua shell (and paw's preflight, whose LaunchAgents live in `gui/501`) says "not
+  registered" (exit 1) even though XPC works. The system install (`sudo installer -pkg … -target /`) is the supported path.
 
 ## Live verification (2026-10-28, the mini)
 
