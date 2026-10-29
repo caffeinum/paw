@@ -158,6 +158,63 @@ Moved verbatim from CLAUDE.md (2026-10-02 split). Index: [CLAUDE.md](../../CLAUD
   agent target; `--model`/`--` need `--agent`; `--` needs `--agent kit`; only kit and claude swap. Full
   rules: [kit.md#swapping-a-harness-paw-restart-agent---agent-kitclaude](kit.md#swapping-a-harness-paw-restart-agent---agent-kitclaude).
 
+### A sandboxed agent's own servers: `paw mcp … --to <agent>` (2026-10-28)
+`src/mcp-sandbox.ts` (+ the `--to` branch of `src/commands/mcp.ts`). Operator ask: "`paw mcp add` to a sandboxed
+agent installs into the sandbox and enables it; also https MCPs, not only cmd."
+```
+paw mcp add <name> --to <agent>[#space] [--env K=V]… -- <cmd> [args…]        # stdio: cmd must exist IN the VM
+paw mcp add <name> --to <agent>[#space] <https://url> [--transport http|sse] [--header 'K: V']…
+paw mcp add <name> --to <agent>[#space] --json '<.mcp.json entry>'          # anything else (ws, oauth.clientId…)
+paw mcp ls --to <agent>[#space]            # its servers: user scope + the folder's local scope
+paw mcp rm <name> --to <agent>[#space]
+  add/rm: --force (replace a same-named server), --no-restart, --now (restart even if busy)
+```
+- **Why a separate target.** The shared servers (cotal config, `shareTools:`/`mcpOptIn:`) never reach a VM:
+  `--mcp-config` into it is cut to the cotal server, because shared servers run HOST commands with HOST
+  secrets. What a VM agent can load is its own claude config — `/paw/claude` = host
+  `$PAW_HOME/spaces/<s>/sandbox/<n>/claude`, whose `.claude.json` `mcpServers` is claude's USER scope. Loading
+  it needs the sandboxed launch to drop `--strict-mcp-config` (the feat/sandbox-skills change; persona
+  `sandboxOwnMcp: false` restores strict). A VM claude still running strict is detected after the restart
+  (`ps -eo args` in the VM) and called out: "installed but not loaded".
+- **Direct file write, not `container exec … claude mcp add -s user`.** It works with the VM stopped (a host
+  folder), needs no exec channel, and writes the SAME shape — verified by running `claude mcp add -s user` from
+  2.1.304 (the image's pin) against a throwaway `CLAUDE_CONFIG_DIR`: stdio = `{type:"stdio",command,args:[],env:{}}`
+  (empty args/env included), http = `{type:"http",url[,headers]}`, sse = `{type:"sse",url}`; `--client-id`/
+  `--callback-port` add `oauth:{clientId,callbackPort}` (pass via `--json`). `check:mcp-sandbox` pins those
+  fixtures. Atomic (tmp + rename), 0600, every other key kept; malformed JSON fails loud and is never rewritten;
+  a name clash is refused unless `--force`; `cotal` is reserved; a never-launched agent's file is created (the
+  launch's seeding merges into it). Concurrency equals `claude mcp add` from a second process while the agent
+  runs, and the restart is checked to have KEPT the entry (fails loud otherwise).
+- **"…and enables it" = restart by default.** MCP servers load at claude start. CLAUDE.md forbids restarting a
+  live agent without the operator's go — naming ONE agent in `paw mcp add … --to <agent>` is that go, and the
+  output says `restarting <n> so it loads <server> (… --no-restart skips this)`. No TTY prompt (agents run paw
+  too). `--no-restart` skips (and doesn't even ask the manager). A BUSY agent (paw status's judgement:
+  `collectStatus` busy, or mesh `working`/`waiting`) is NOT restarted — the server is installed, the output says
+  so and prints `paw restart <n>#<s>` / "re-run with --now". A stopped agent is never started: it loads the
+  server at its next start. The restart is paw's own single-agent path (`restartAgent`, as `paw restart <agent>`).
+- **Verification** (after a restart, add only): wait ≤90 s for the agent's container, then
+  `container exec -w <folder> <id> timeout … bash -lc '/usr/local/bin/claude mcp get <name>'` → `✔ Connected` /
+  `! Needs authentication` / `✘ Failed to connect` + claude's `Issue:` line. That is a SEPARATE claude process
+  health-checking the config (it starts a stdio server once), the closest proxy available — claude's transcript
+  carries no MCP init record, so the agent's own connection isn't readable from the host.
+- **Stdio commands run IN the VM.** With the VM running, `command -v <cmd>` is checked there (read-only) and a
+  miss is a warning (install it via `paw sandbox shell`; installers default into the persistent home). VM
+  stopped → a note, never a guess. `--env`/`--header` VALUES are stored in plain text in the agent's claude dir
+  (0600) — same trust as its home; the output names the keys, never prints values (`ls` neither).
+- **Remote servers with OAuth.** claude 2.1.304 has `claude mcp login <name>` (and `--no-browser`: print the URL,
+  paste the redirect back). In the VM: `paw sandbox shell <n>#<s>` → `claude mcp login <name>` → open the printed
+  URL on the host; its `http://localhost:<port>/callback` redirect reaches the VM through the
+  [port forwarder](sandbox.md#port-forwarding) (or use `--no-browser` and paste the redirect URL). Inside the
+  agent's own TUI, `/mcp` → the server → authenticate does the same. Then `paw restart <n>#<s>`. Tokens land in
+  the VM's claude store (`/paw/claude`), so they persist. NOT verified end-to-end against a real OAuth server
+  in a VM yet; `claude mcp list` on a fresh config showed `! Needs authentication` for `mcp.linear.app`.
+- **Host (non-sandboxed) `--to` target: refused**, naming `paw mcp add <server> --only <agent> -- …` / `paw mcp
+  share <server> <agent>` — host agents' servers come from the shared config.
+- **Addressing:** `--to <agent>#<space>` (and `--to=`) is hoisted by dispatch (`ADDRESS_ARGS.mcp`: only `--to`
+  names an agent; server names, URL fragments, header values and the argv after `--` never do).
+- **Also (shared servers):** `paw mcp add <name> <https-url>` needs no `--`; `--transport sse` and repeatable
+  `--header 'K: V'` work without `--to` too; `paw mcp ls` = `list`.
+
 ### tracepaper direct (2026-10-05)
 `src/tracepaper-direct.ts`: when `$PAW_HOME/spaces/<s>/tracepaper-url` holds tracepaper's MCP url (e.g.
 `http://127.0.0.1:4321/mcp`), the connector rewrites each launch's `tracepaper` entry from the per-agent

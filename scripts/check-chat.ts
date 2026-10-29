@@ -318,6 +318,63 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
   const f4 = new LogFollower((n) => { if (n === "bad") throw new Error("paw: nope"); return h2.src; }, () => {}, (n) => errs3.push(n), 5);
   f4.pump("bad"); f4.pump("h"); f4.pump("bad"); f4.pump("h"); f4.pump("bad");
   assert(errs3.length === 1, "follow: the '(no logs for x)' note is shown ONCE per session, not on every return");
+
+  // "Not written YET" is retried, not a verdict for the session — the logs view of every freshly born
+  // agent (seen live on the sandboxed fly/vercel, whose VM boot is slow) stayed empty for the whole chat.
+  const late = mkSrc([tool("first-turn")]);
+  let born = false;
+  const errs5: string[] = [];
+  const got5: Array<{ agent: string; blocks: B[]; backfill: boolean }> = [];
+  const f5 = new LogFollower(
+    (n) => {
+      if (!born) throw Object.assign(new Error(`paw: "${n}" is pinned to session x but it has no transcript yet`), { retryable: true });
+      return late.src;
+    },
+    (e) => got5.push(e),
+    (n, m) => errs5.push(`${n}: ${m}`),
+    5,
+  );
+  assert(f5.pump("fresh") === true && !f5.readable("fresh") && errs5.length === 1 && /once written/.test(errs5[0]), "follow: a not-yet transcript notes it once, says it keeps following, and reads as unreadable");
+  assert(f5.pump("fresh") === false && f5.pump("fresh") === false && errs5.length === 1, "follow: …retries on each pump without a redraw or a second note");
+  born = true;
+  assert(f5.pump("fresh") === true && f5.readable("fresh") && got5.length === 1 && got5[0].backfill && (got5[0].blocks[0] as { arg: string }).arg === "first-turn", "follow: …and once the first turn lands it backfills it (redraw) and reads as readable");
+  late.queue.push([tool("second")]);
+  assert(f5.pump("fresh") === false && got5.length === 2 && !got5[1].backfill, "follow: …then follows it like any other");
+}
+
+// End to end through openAgentLog: a SANDBOXED agent (its transcripts under
+// $PAW_HOME/spaces/<s>/sandbox/<n>/claude/projects, never ~/.claude) opened before its first turn.
+{
+  const { mkdirSync, writeFileSync } = await import("node:fs");
+  const { LogFollower } = await import("../src/chat-views.ts");
+  const { openAgentLog, TranscriptNotYet } = await import("../src/log.ts");
+  const home = process.env.PAW_HOME as string;
+  const pin = "0f696552-ee85-41d6-b9af-2e3168190b71";
+  const folder = join(home, "work", "boxed");
+  mkdirSync(folder, { recursive: true });
+  mkdirSync(join(home, "spaces", "chattest", "personas"), { recursive: true });
+  writeFileSync(join(home, "spaces", "chattest", "personas", "boxed.md"), `---\nname: boxed\ncwd: ${folder}\nresume: ${pin}\nsandbox: container\n---\n`);
+  let threw: unknown;
+  try {
+    openAgentLog("chattest", "boxed", folder);
+  } catch (e) {
+    threw = e;
+  }
+  assert(threw instanceof TranscriptNotYet && (threw as { retryable?: boolean }).retryable === true, "sandboxed log: opened before its first turn → TranscriptNotYet (retryable), not a hard failure");
+  const notes: string[] = [];
+  const seen: string[] = [];
+  const fol = new LogFollower((n) => openAgentLog("chattest", n, folder), (e) => seen.push(...e.blocks.map((b) => JSON.stringify(b))), (n, m) => notes.push(m), 40);
+  fol.pump("boxed");
+  fol.pump("boxed");
+  const proj = join(home, "spaces", "chattest", "sandbox", "boxed", "claude", "projects", folder.replace(/[^A-Za-z0-9_]/g, "-"));
+  mkdirSync(proj, { recursive: true });
+  const line = (t: string) => JSON.stringify({ type: "assistant", message: { role: "assistant", content: [{ type: "text", text: t }] } }) + "\n";
+  writeFileSync(join(proj, `${pin}.jsonl`), line("hello from the vm"));
+  fol.pump("boxed");
+  assert(notes.length === 1 && seen.some((b) => b.includes("hello from the vm")), "sandboxed log: chat's follower picks the transcript up from the sandbox claude root once it is written");
+  writeFileSync(join(proj, `${pin}.jsonl`), line("hello from the vm") + line("second turn"));
+  fol.pump("boxed");
+  assert(seen.some((b) => b.includes("second turn")), "sandboxed log: …and keeps following it");
 }
 {
   const { logBlockFor, displayWidth } = await import("../src/chat-views.ts");
@@ -363,6 +420,11 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
   assert(m.includes("paw chat --fresh @getslash.co") && m.includes("did you mean @getslash-co"), "no agent: points at --fresh AND at the registered name it looks like");
   assert(noAgentMessage("/tmp/new", ".", ["evals"]).includes("`paw status` lists your agents"), "no agent: nothing close → points at paw status, no invented suggestion");
   assert(!noAgentMessage("/tmp/q", "q", ["queue", "queue-ea"]).includes("did you mean"), "no agent: a 1-2 char token suggests nothing (it would match everything)");
+  const { isExplicitRepoHandle } = await import("../src/chat.ts");
+  for (const t of ["github:sageox/ox", "gh:sageox/ox", "https://github.com/sageox/ox", "https://www.github.com/o/r/pull/3"])
+    assert(isExplicitRepoHandle(t), `clone-and-chat: ${t} is an explicit repo handle (chat births its agent)`);
+  for (const t of ["@getslash.co", "getslash.co", "web:github.com/o/r", "https://example.com/o/r", "./ox", "ox", "repo@branch"])
+    assert(!isExplicitRepoHandle(t), `clone-and-chat: ${t} still needs an existing agent (or --fresh)`);
 }
 
 // AwaitTracker: one pending entry per sent message (the 2026-10-06 "message 2 looked lost" bug).

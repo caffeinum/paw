@@ -1,6 +1,7 @@
 /**
  * `paw chat [folder|name]` — the headline. Joins the mesh as a PERSISTENT human peer (named by
- * HUMAN_PEER), wakes the folder's REGISTERED agent if it isn't live (never creates one — that's --fresh), and opens an interactive
+ * HUMAN_PEER), wakes the folder's REGISTERED agent if it isn't live (never creates one — that's --fresh — except for a
+ * github repo handle, which clones and births its agent), and opens an interactive
  * loop: what you type is direct-messaged to that agent, and its replies (and any other DMs) stream
  * back in real time. This is what closes the human↔agent loop that `paw dm` couldn't — `dm` is
  * fire-and-forget (a throwaway "send" peer that publishes and vanishes), so an agent had nowhere to
@@ -52,7 +53,8 @@ import {
 } from "./addressing.ts";
 import { isAddressHandle, resolveAddress } from "./address.ts";
 import { HOST_RE } from "./url.ts";
-import { bashMessage, parseBang, runBash } from "./bash.ts";
+import { bashMessage, parseBang } from "./bash.ts";
+import { bangPlace, bangWhere, runBang, type BangPlace } from "./sandbox-exec.ts";
 import { ManagerControl, withManagerControl } from "./control.ts";
 import { advanceCursor } from "./cursor.ts";
 import { attachConn, shortReason, type ConnLine, type ConnPhase } from "./conn-state.ts";
@@ -387,6 +389,15 @@ export function noAgentMessage(folder: string, typed: string, registered: string
   );
 }
 
+/**
+ * A github repo handle (`github:o/r`, `gh:o/r`, a pasted https://github.com/o/r URL) is an explicit ask to
+ * clone AND chat — unlike a mistyped name or a bare dotted host, it can't land somewhere by accident — so
+ * chat births its agent when none exists (operator, 2026-10-28: "clone and chat in one command").
+ */
+export function isExplicitRepoHandle(target: string): boolean {
+  return /^(github:|gh:)/.test(target) || /^https?:\/\/(www\.)?github\.com\/[^/]+\/[^/]+/.test(target);
+}
+
 function requireExistingAgent(space: string, folder: string, typed: string): void {
   if (agentNamesForFolder(space, folder).length) return;
   throw new Error(noAgentMessage(folder, typed, listAgents(space).map((a) => a.name)));
@@ -506,7 +517,7 @@ async function chat(argv: string[]): Promise<void> {
         }
         const addr = resolveAddress(target);
         folder = addr.cwd;
-        if (!nameFlag && agentFlag === undefined) requireExistingAgent(space, folder, target); // --agent is an explicit ask to create
+        if (!nameFlag && agentFlag === undefined && !isExplicitRepoHandle(target)) requireExistingAgent(space, folder, target); // --agent / a repo handle is an explicit ask to create
         // --name pins a 2nd+ EXTRA instance at the resolved folder (its own persona), overriding the address's
         // own name hint and the folder default; otherwise honour the hint, else mint the folder default.
         name = nameFlag
@@ -2264,13 +2275,39 @@ async function chat(argv: string[]): Promise<void> {
     const cwd = folderForName(space, curName);
     if (!cwd) return void emit(c.red(`! ${bangNoFolder(space, curName, (roster() ?? []).find((p) => p.card.id === curId)?.card)}`));
     if (!existsSync(cwd)) return void emit(c.red(`! "${curName}" is registered at ${cwd}, which no longer exists`));
-    emit(c.dim(`$ ${command}  (in ${cwd})`), "you", true);
-    const result = await runBash(command, cwd, undefined, true); // paw chat is a real terminal → source the operator's shell rc
-    const body = result.output.trim() || "(no output)";
+    // A sandboxed agent's command runs in ITS VM (its tools, ~/.env, PATH live only there); its VM not
+    // running is an error here — never a silent run on this machine (src/sandbox-exec.ts).
+    let place: BangPlace;
+    try {
+      place = bangPlace(space, curName);
+    } catch (e) {
+      return void emit(c.red(`! ${(e as Error).message}`));
+    }
+    emit(c.dim(`$ ${command}  (${bangWhere(curName, cwd, place)})`), "you", true);
+    // Output STREAMS while the command runs (a login prints its URL, then waits for the browser), batched
+    // per ~100ms of complete lines: emit redraws the prompt after each call, and a 200-line build log
+    // emitted line by line is 200 prompt redraws.
+    let partial = "";
+    let ready: string[] = [];
+    let timer: NodeJS.Timeout | undefined;
+    const flushLines = (): void => {
+      timer = undefined;
+      if (ready.length) emit(ready.map((l) => `  ${l}`).join("\n"), "you", true);
+      ready = [];
+    };
+    const onOutput = (chunk: string): void => {
+      const lines = (partial + chunk).split("\n");
+      partial = lines.pop()!;
+      ready.push(...lines);
+      if (ready.length && !timer) timer = setTimeout(flushLines, 100);
+    };
+    const result = await runBang(command, cwd, place, { interactive: true, onOutput }); // paw chat is a real terminal → the host path sources the operator's shell rc
+    if (timer) clearTimeout(timer);
+    if (partial) ready.push(partial);
+    const streamed = result.output.trim() !== "";
     const status = result.timedOut ? "timed out" : result.code === 0 || result.code === null ? undefined : `exit ${result.code}`;
-    // One emit for the whole block: emit redraws the prompt after each call, and a 200-line build
-    // log emitted line by line is 200 prompt redraws.
-    emit(body.split("\n").map((l) => `  ${l}`).join("\n") + (status ? `\n${c.yellow(`  (${status})`)}` : ""), "you");
+    const tail = [...ready.map((l) => `  ${l}`), ...(streamed ? [] : ["  (no output)"]), ...(status ? [c.yellow(`  (${status})`)] : [])];
+    if (tail.length) emit(tail.join("\n"), "you");
     refreshTarget();
     sendDm(curName, curId!, bashMessage(result));
   }

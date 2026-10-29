@@ -65,6 +65,11 @@ Each entry: what it is + the most load-bearing rule. Full notes behind the link.
   Opt-in servers (`add --only a,b`, `only <s> a,b|--all`) are marked `connectors.claude.pawOptIn` in the same
   file and granted by persona `mcpOptIn:`. `src/mcp-select.ts` holds the math, and the spawn sends an explicit
   list once any opt-in exists. → [cli.md#paw-mcp](docs/notes/cli.md#paw-mcp)
+- `src/mcp-sandbox.ts` — `paw mcp add|ls|rm … --to <agent>[#s]`: a SANDBOXED agent's own servers (stdio/http/sse,
+  `--header`, `--transport`) written into its VM's claude user scope (`sandbox/<n>/claude/.claude.json`, claude's
+  own `mcp add` shape, atomic, clash → `--force`); RESTARTS that one live agent (the operator's go; `--no-restart`,
+  busy → refused unless `--now`), then `claude mcp get` in the VM. Host agent → refused. `check:mcp-sandbox`.
+  → [cli.md#a-sandboxed-agents-own-servers-paw-mcp----to-agent-2026-10-28](docs/notes/cli.md#a-sandboxed-agents-own-servers-paw-mcp----to-agent-2026-10-28)
 - `src/commands/files.ts` — `paw files`: pure observer of `#files` (`ai.cotal.file` FileEntry, absolute
   paths, no bytes on the mesh). → [cli.md#paw-files](docs/notes/cli.md#paw-files)
 - `src/commands/bind.ts` — `paw bind`: one-time Telegram bind code minted over the mesh, as a distinct
@@ -145,14 +150,22 @@ Each entry: what it is + the most load-bearing rule. Full notes behind the link.
 - `src/sandbox.ts` + `bin/paw-sandbox-run.mjs` + `src/commands/sandbox.ts` — persona `sandbox: container`: the claude
   launch runs in an Apple `container` VM (folder rw; own claude store at /paw/claude; node_modules + launch dirs ro;
   only ITS creds via a mirror; token file → env, never argv; persistent private HOME `$PAW_HOME/containers/<name>` → /root,
-  `~/.env` auto-sourced via BASH_ENV, installers default into it, one owner space per name); remote spaces only (v1); `paw claude --sandbox`,
-  `paw sandbox build|ls`; `check:sandbox`. VM listening ports → host 127.0.0.1/::1 same port (`bin/paw-sandbox-forward.mjs`,
-  `container exec` relay per connection, busy host port skipped, `sandboxForward: false` opts out; `check:sandbox-forward`). → [sandbox.md](docs/notes/sandbox.md)
+  `~/.env` then `~/.bashrc` auto-sourced via BASH_ENV by every bash (seeded `~/.profile` for login shells), installers default into it, one owner space per name); remote spaces only (v1); `paw claude --sandbox`,
+  `paw sandbox build|ls|shell`; `!cmd` (chat/web) for a sandboxed agent runs IN its VM via `container exec` (src/sandbox-exec.ts),
+  never a host fallback; `check:sandbox`, `check:sandbox-bang`. VM listening ports → host 127.0.0.1/::1 same port (`bin/paw-sandbox-forward.mjs`,
+  `container exec` relay per connection, busy host port skipped, `sandboxForward: false` opts out; `check:sandbox-forward`). The operator's
+  skills ro (src/sandbox-skills.ts): each `~/.claude/skills/<n>` realpath'd → `/paw/claude/skills/<n>`, pure enabled plugins → `/paw/plugins/<p>` +
+  `--plugin-dir` (hooks/MCP/LSP/channel plugins excluded, logged), never `~/.claude` itself; `sandboxSkills: false|[…]`. No `--strict-mcp-config`
+  in the VM (its own user/project MCP load; `--mcp-config` stays cotal-only; `sandboxOwnMcp: false` restores). → [sandbox.md](docs/notes/sandbox.md)
 - `src/session.ts` — `readResumeId`, `transcriptExists`; leaf module. → [agents.md#srcsessionts](docs/notes/agents.md#srcsessionts)
 - **Two-writer guard** — never start an agent whose pinned session a standalone claude holds. → [agents.md#two-writer-guard](docs/notes/agents.md#two-writer-guard)
 - `src/open.ts` — `paw open`/`paw attach`: runtime-aware; tmux → real window, cmux → names the tab, pty
   → cotal's own grant-based `attach` subprocess (remote space: cwd = record root, `--server`, NO
   `--space`; `paw cotal <verb> --space <remote>` same rewrite). → [agents.md#pty-attach-cotal-084](docs/notes/agents.md#pty-attach-cotal-084)
+- **"pinned digests … do not match the served contract"** = managers on DIFFERENT COTAL VERSIONS in one
+  space (another host), never paw release skew — cotal pins whichever manager answers describe first.
+  `paw attach` pins `--on` this machine's manager when it hosts the seat; `src/contract-mismatch.ts` turns
+  the refusal into one actionable line. → [agents.md#contract-mismatch-mixed-cotal-versions-in-one-space-2026-10-28](docs/notes/agents.md#contract-mismatch-mixed-cotal-versions-in-one-space-2026-10-28)
 - `src/native-attach.ts` — `attachTmux`; default socket; `nudgeTmuxConfirm`. → [agents.md#native-attach](docs/notes/agents.md#native-attach)
 - `src/attach-client.ts` — ws pty attach client, now dead code. → [agents.md#attach-client](docs/notes/agents.md#attach-client)
 - Waking a sleeping agent: `cotal_dm("global", "wake <name>")`; the tty dev-channels prompt nudge. → [agents.md#waking-a-sleeping-agent-the-in-mesh-gap-and-the-tty-prompt](docs/notes/agents.md#waking-a-sleeping-agent-the-in-mesh-gap-and-the-tty-prompt)
@@ -213,11 +226,12 @@ Each entry: what it is + the most load-bearing rule. Full notes behind the link.
 ### paw chat → [chat.md](docs/notes/chat.md)
 - `src/chat.ts` — the headline REPL as a persistent human peer; bare `paw chat` = `.`, `--all` global,
   `@agent` filtered (hidden messages never marked read), `#channel`; `--fresh` is the birth verb (fails
-  if an agent exists); follows the conversation only when input is empty. → [chat.md#srcchatts](docs/notes/chat.md#srcchatts)
+  if an agent exists); follows the conversation only when input is empty; the logs view keeps retrying a
+  not-yet-written transcript (`TranscriptNotYet`), never gives up for the session. → [chat.md#srcchatts](docs/notes/chat.md#srcchatts)
 - `src/chat-preshell.ts` + `chat-banner.ts` + `chat-boot.ts` + `chat-consent.ts` — the instant UI: frame at
   ~25ms, keys from ~250ms, connect behind it; loaders (`◌`) never guessed values (no `offline` from an
   unread roster); lines typed early queue + replay in order; a lost target REFUSES plain lines (never
-  #general); restart consent only from a line typed after the question; remote inbox LEDGERED before
+  #general); restart consent only from a y/n line typed after the question; remote inbox LEDGERED before
   provisioning (`chat-inboxes/<uid>.json`, swept by the next chat). → [chat.md#instant-ui](docs/notes/chat.md#instant-ui)
 - `src/chat-own.ts` — chat's echo tap + tasks seed; remote: only "you"'s own send subjects (narrow
   `chat-echo`/`chat-history` creds), never the space wildcard. → [remote-mesh.md#paw-chat--paw-web-taps](docs/notes/remote-mesh.md#paw-chat--paw-web-taps)

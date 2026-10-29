@@ -323,6 +323,9 @@ export const ADDRESS_ARGS: Readonly<Record<string, AddressSpec>> = {
   history: { values: [...V, "--limit", "-n"], slots: [0] },
   claude: { values: V, names: ["--name"], slots: [] },
   cron: { values: CRON_VALUE_FLAGS, slots: cronSlots },
+  sandbox: { values: V, slots: (pos) => (pos[0] === "shell" ? [1] : []) },
+  // `paw mcp add|ls|rm … --to <agent>#<space>`: only --to names an agent (a server name, URL or command never does).
+  mcp: { values: [...V, "--json", "--env", "-e", "--header", "-H", "--transport", "-t", "--only"], names: ["--to"], slots: [] },
 };
 
 /**

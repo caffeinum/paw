@@ -75,7 +75,8 @@ Moved verbatim from CLAUDE.md (2026-10-02 split). Index: [CLAUDE.md](../../CLAUD
   assembled from anything but what the operator typed. 60s timeout, 256KB output cap, and `code` is
   read as a NUMBER only (a spawn failure sets it to a STRING like ETIMEDOUT, which would render as
   "exit ETIMEDOUT"). The result returns even when the DM fails, so a command whose delivery breaks
-  isn't also lost to the operator. Test: `check:web`.
+  isn't also lost to the operator. Test: `check:web`. A SANDBOXED agent's command runs in its VM (`runBang`, src/sandbox-exec.ts —
+  [sandbox.md](sandbox.md#cmd-and-a-shell-in-the-vm-srcsandbox-exects)); its VM down → 400 with the reason, never a host run.
   **A rebuild waits for your text selection (`selectionInside`/`pendingRender`, 2026-08-19)** —
   `renderMessages` writes `innerHTML`, which destroys every node in the list and takes the operator's
   SELECTION with it. The relative stamps ("3m ago") change on their own, so a poll eventually produces

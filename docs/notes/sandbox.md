@@ -18,7 +18,9 @@ paw sandbox ls                             # every paw container on THIS machine
 
 Persona keys: `sandbox: container` (any other value throws — a typo never boots the agent unsandboxed),
 `sandboxImage:` (default `paw-sandbox:<sha256(Containerfile)[:12]>`, so a recipe change asks for a rebuild),
-`sandboxMemory:` (default `2G`), `sandboxForward: false` (turns off [port forwarding](#port-forwarding); default on). `paw claude --sandbox` writes `sandbox: container` once; it is never cleared
+`sandboxMemory:` (default `2G`), `sandboxForward: false` (turns off [port forwarding](#port-forwarding); default on),
+`sandboxSkills: false | [names…]` ([the operator's skills](#skills); default all), `sandboxOwnMcp: false`
+([the VM's own MCP servers](#the-vms-own-mcp-servers); default on). `paw claude --sandbox` writes `sandbox: container` once; it is never cleared
 by paw (un-sandboxing is a deliberate persona edit). Auth: the Claude OAuth token at
 `$PAW_HOME/secrets/claude-oauth-token` (`PAW_CLAUDE_TOKEN_FILE` overrides), a 0600 regular file.
 `PAW_CONTAINER` pins the `container` binary (else the first on PATH).
@@ -46,6 +48,8 @@ processes):
 | paw's topmost `node_modules` (release or checkout) | same path | ro | the cotal MCP server (`mcp.cjs`) and plugin hooks claude starts as its children |
 | cotal's launch dirs (`material.json`, persona prompt file + `paw-brief.md`) | same paths | ro | |
 | `<cotal root>/.cotal/events` | same path | rw | the MCP server's event write-ahead log — never the root itself (the signer) |
+| each `~/.claude/skills/<name>`, symlinks resolved on the host | `/paw/claude/skills/<name>` | ro | the operator's user skills — [Skills](#skills) |
+| each enabled, pure (no hooks/MCP/LSP/channels) user-scope plugin's `installPath` | `/paw/plugins/<plugin>` (+ `--plugin-dir`) | ro | the operator's plugin skills/commands/agents — [Skills](#skills) |
 
 Env reaches the VM by NAME only (`-e KEY`, values inherited from the launcher's env): every `COTAL_*` except
 `COTAL_HOME`, plus `TERM`/`COLORTERM`/`LANG`/`LC_ALL`, CA vars, `CLAUDE_CONFIG_DIR`, `IS_SANDBOX=1` (claude
@@ -55,7 +59,11 @@ installer prefixes and `BASH_ENV` (see [Private home](#private-home)). `COTAL_CO
 `/tmp/cotal-control.sock` in the VM (the MCP server listens, the hooks dial — both inside). Any OTHER
 `COTAL_*` value that is an absolute host path not under a mount fails the launch loud (a future cotal var
 must be taught, not silently missing). `--mcp-config` is cut to the cotal server alone: servers `paw mcp`
-shares run host commands with host secrets in their env.
+shares run host commands with host secrets in their env. `--strict-mcp-config` is DROPPED (unless
+`sandboxOwnMcp: false`) so the VM's own servers load — [below](#the-vms-own-mcp-servers). The agent's OWN servers go in its VM's claude user
+scope — `paw mcp add <name> --to <n>#<s> <https://url>|-- <cmd>` writes `/paw/claude/.claude.json` and restarts it
+(`--no-restart`; busy → not without `--now`), `paw mcp ls|rm … --to`; OAuth via `paw sandbox shell` →
+`claude mcp login <name>` → [cli.md#a-sandboxed-agents-own-servers-paw-mcp----to-agent-2026-10-28](cli.md#a-sandboxed-agents-own-servers-paw-mcp----to-agent-2026-10-28).
 
 **The token** is read by the launcher from its file into its own env for `container run`, so it is never
 on an argv, in the LaunchSpec, a persona or a log line (`check:sandbox` asserts all four, plus `ps`).
@@ -104,6 +112,56 @@ answered `curl http://127.0.0.1:<p>/callback?code=x` and `http://localhost:<p>/`
 directly (`PAW_FORWARD_SMOKE=<container id> pnpm check:sandbox-forward`) and through the launcher itself
 (forwards.json written, removed on SIGTERM); the host port closed when the VM server stopped.
 
+## Skills
+
+A host agent sees the operator's Claude Code skills from `~/.claude`; a sandboxed one gets the same, READ-ONLY,
+without ever mounting `~/.claude` itself (credentials, other agents' transcripts, settings) or anything of it
+writable. src/sandbox-skills.ts, per launch:
+
+- **user skills**: each entry of `~/.claude/skills` (the host claude's `CLAUDE_CONFIG_DIR`, else `$HOME/.claude`) is
+  `realpath`ed ON THE HOST — most are symlinks (`../../.agents/skills/now`, `/Users/…/dream-skill`) that would dangle
+  in the VM — and that real dir bind-mounted `:ro` at `/paw/claude/skills/<name>`. One mount per skill, so a host
+  edit shows up live in the running VM. Skipped (never a launch failure), each logged once per launch in
+  `launcher.log`: dotfiles (`.trash`), a missing target (dangling symlink), a dir with no `SKILL.md` (e.g. claude's own
+  `synced/` buckets of claude.ai skills — the VM's claude syncs its own), and a target that is or contains `~/.claude`
+  or `$HOME`, or lies in `~/.claude` outside `skills/`/`plugins/`.
+- **plugins**: every plugin in `~/.claude/plugins/installed_plugins.json` with a `scope: user` install AND `true` in
+  `~/.claude/settings.json` `enabledPlugins`, mounted `:ro` at `/paw/plugins/<plugin>` and loaded with
+  `--plugin-dir /paw/plugins/<plugin>` — skills keep their `<plugin>:<skill>` names, commands and agents come too.
+  Chosen over mounting `installed_plugins.json` + `known_marketplaces.json` + `enabledPlugins` into /paw/claude:
+  `--plugin-dir` needs no marketplace state (claude would try to refresh/auto-update marketplaces whose
+  `installLocation`s don't exist in the VM, and write `.in_use` markers into a read-only cache), and keeps host paths
+  (the username) out of the VM. **Excluded by default**: a plugin that ships hooks (`hooks/` or `hooks` in
+  `.claude-plugin/plugin.json`), MCP servers (`.mcp.json` / `mcpServers`), LSP servers or `channels` — those run
+  host-oriented commands or want host secrets/OAuth. On the mini: `team2027-skills` and `unknowns` are mounted;
+  `artil` (`.mcp.json` runs the host's `artil` CLI + a channel) and `slack` (`.mcp.json`, an OAuth'd HTTP server) are
+  not. A project- or local-scope plugin is not mounted.
+- **the agent's own skills**: `/paw/claude/skills` itself is the agent's (its rw config dir), so it may write
+  `/paw/claude/skills/<other-name>/SKILL.md` and it persists. A same-named skill of its own is SHADOWED by the
+  operator's (logged); the empty mount points the VM leaves in the host dir are removed at the next launch.
+- **knobs**: persona `sandboxSkills: false` mounts none; `sandboxSkills: [now, team2027-skills]` mounts only those
+  (skill names, plugin names or `name@marketplace`) — a name matching nothing installed throws, a non-list throws.
+- **visible**: `launcher.log` (`skills: … · plugins: …` + every `NOT mounted — <why>`), `…/sandbox/<n>/skills.json`,
+  `paw sandbox ls` (SKILLS column, and the plugins left out with why).
+
+Verified (container 1.6.0, the mini): 20 nested `:ro` mounts start in ~1s; in a throwaway VM with the real set
+(15 skills, 2 plugins) `ls /paw/claude/skills` and `cat …/now/SKILL.md` work, a write into a skill or a plugin fails
+`Read-only file system`, the agent's own `/paw/claude/skills/mine` is writable and persists; `claude -p` (2.1.304)
+listed the user skills, `mine`, `unknowns:*` and `team2027-skills:*`.
+
+## The VM's own MCP servers
+
+The operator (via `paw sandbox shell <n>#<s>`) or the agent itself may `claude mcp add -s user <name> -- <cmd…>` IN
+the VM: it writes `/paw/claude/.claude.json`, which persists on the host. Host launches pass `--strict-mcp-config`
+so ambient host helpers never boot; in the VM, user and project scope are the VM's OWN config, so a sandboxed launch
+drops the flag (persona `sandboxOwnMcp: false` keeps it). `--mcp-config` stays cotal-only — host `paw mcp` servers
+are never shared (host commands, host secrets). The seeded `settings.json` sets `enableAllProjectMcpServers: true`
+(a folder `.mcp.json` would otherwise wait on an approval dialog nobody answers) and `disableClaudeAiConnectors: true`
+(the operator's claude.ai connectors — Gmail, Drive… — stay out of the VM). A new server loads on the agent's next
+start: `paw restart <n>#<s>`. A folder `.mcp.json` written for the host may name commands the VM lacks — those just
+fail to start. Verified (claude 2.1.304, throwaway VM): without the flag, a `--mcp-config` server, a user-scope
+`claude mcp add` server and a folder `.mcp.json` server all loaded (merged); with it, only the `--mcp-config` one.
+
 ## Refusals (all fail loud, `check:sandbox`)
 
 - a LOCAL space (v1, below) — at `paw claude --sandbox` before anything is written, at the spawn site
@@ -125,9 +183,36 @@ and `~` is what tools assume). The rootfs is wiped every launch; the home is not
 
 - **secrets**: `~/.env` (`KEY=value` lines). Every bash in the VM sources it, exported: `BASH_ENV` (and `ENV`)
   = `/paw/seat/bashenv.sh`, paw's rc file, which also re-prepends the home's tool dirs to `PATH` (a login bash's
-  `/etc/profile` resets PATH before BASH_ENV runs). A seeded `~/.bashrc` (written only if absent) sources the same
-  file for interactive `container exec … bash`. The values never touch argv, the LaunchSpec, a persona, a log,
+  `/etc/profile` resets PATH before BASH_ENV runs). The values never touch argv, the LaunchSpec, a persona, a log,
   `vm.env` or the seat dir — `check:sandbox` asserts it with a sentinel.
+- **`~/.bashrc` is honored by every bash in the VM** — the agent's own Bash tool (non-interactive → BASH_ENV),
+  `!cmd` (`bash -lc`), `paw sandbox shell` (`bash -l`) and an interactive `container exec … bash`. Seen live: fly's
+  installer (`curl -L https://fly.io/install.sh | sh`) put flyctl in `~/.fly/bin` and appended
+  `export FLYCTL_INSTALL="$HOME/.fly"; export PATH="$FLYCTL_INSTALL/bin:$PATH"` to `~/.bashrc`; `!fly auth login`
+  said `fly: command not found` — a login non-interactive bash reads no `~/.bashrc`, and BASH_ENV sourced only
+  `~/.env`. Now `bashenv.sh` does, in this order: PATH defaults, `~/.env`, then `~/.bashrc` LAST (so an installer's
+  PATH line wins). How each shell gets there:
+  - non-interactive (`bash -c`, claude's Bash tool) → BASH_ENV → `bashenv.sh` → `~/.bashrc`;
+  - login (`bash -l`/`-lc`) → `/etc/profile` → the seeded `~/.profile` → `bashenv.sh` → `~/.bashrc` (then BASH_ENV
+    again for `-lc`, a no-op: the file runs once per shell, so a second `~/.env` pass can't undo what `~/.bashrc` set);
+  - interactive non-login → `~/.bashrc` itself → the seeded line sources `bashenv.sh`, which sees `~/.bashrc` already
+    on `BASH_SOURCE` and doesn't source it back (no recursion, no double load).
+  Kept the bang's `bash -lc` rather than switching to `bash -c`: a login shell is what a real terminal (and
+  `paw sandbox shell`) gives, `/etc/profile.d` runs, and the seeded `~/.profile` covers installers that write
+  there too (rustup, uv). Both seeds are written only when absent — `~/.bashrc` if missing, `~/.profile` only if
+  the home has NO login file (bash reads only the first of `~/.bash_profile`, `~/.bash_login`, `~/.profile`, so a
+  seed beside the agent's own `.bash_profile` would be dead). Never overwritten. Homes seeded before this have
+  no `~/.profile`: their bangs still work (BASH_ENV), and their next launch seeds it. The guard is a NON-exported
+  shell variable: a child bash loads `~/.bashrc` again, as its functions/aliases need. `~/.bashrc` is bash-only —
+  dash (`/bin/sh`, via `ENV` when interactive) and bash in POSIX mode skip it. An error in `~/.bashrc` prints on
+  stderr (bash names file + line) and the command still runs; a Debian-style early `return`
+  (`case $- in *i*) ;; *) return;; esac`) just ends `~/.bashrc` for non-interactive shells — paw never fakes
+  interactivity, so lines below such a guard apply only to interactive shells (paw's seeded `~/.bashrc` has none).
+  An `exit` in `~/.bashrc` would end every command — don't. `check:sandbox` runs all of the above with a real bash
+  and a fake HOME; `check:sandbox-bang` runs the bang's and the shell's argv tails. Verified with the image's
+  bash 5.2 in a throwaway container (not a live agent): `bash -lc`, `bash -c`, `bash -l`, `bash -i` all resolve a
+  `~/.bashrc` PATH entry, `~/.bashrc` loaded once each, dash untouched. Live agents get it on their next launch
+  (the seat's `bashenv.sh` is rewritten per launch — release + manager restart, then the agent's restart).
 - **tools**: the VM env points every installer's default into the home — `NPM_CONFIG_PREFIX=~/.local` (so
   `npm i -g neonctl` → `~/.local/bin`), `PNPM_HOME=~/.local/share/pnpm`, `PIP_USER=1` + `PYTHONUSERBASE=~/.local`,
   `CARGO_HOME=~/.cargo`, `GOPATH=~/go`, `BUN_INSTALL=~/.bun`, `XDG_{CONFIG,DATA,CACHE}_HOME` under `~` (CLIs keep
@@ -151,6 +236,31 @@ grepping its own repos or `~/.paw/spaces` won't stumble on it, and only this age
 agent runs as the same macOS user: any of them can `cat ~/.paw/containers/neon/.env`, or `container exec` into
 the VM. Keychain-gating was rejected (prompts). Real isolation from other agents = a separate macOS user (or
 machine) for the sandboxed agent's paw.
+
+## `!cmd` and a shell in the VM (src/sandbox-exec.ts)
+
+Seen live: `!neon auth login` in `paw chat @neon` ran on the HOST (`zsh:1: command not found: neon`, exit 127) —
+neon had installed `neonctl` in its VM, and its tools, `~/.env` and PATH exist only there. Now every "run in the
+agent's folder" path (`paw chat`'s `!cmd`, `paw web`'s `!cmd`) asks `bangPlace(space, name)`: no `sandbox:` in the
+persona → the host, exactly as before; `sandbox: container` → its ONE running container (labels `paw.space`/
+`paw.agent`, as `paw sandbox ls` finds them). Not running (or a stopped one only) → fails loud naming
+`paw start <n>#<s>`; two running → refuses to guess. **Never a host fallback** — that was the bug.
+
+The command runs as `container exec -w <folder> <id> timeout -s KILL <secs> bash -lc <command>` — the command one
+argv element (no host shell ever sees it), the folder at the same path in the VM, and the container's own env
+(`container exec` inherits it: HOME, PATH, BASH_ENV → `~/.env` + `~/.bashrc`; verified 1.6.0). `timeout` is load-bearing:
+killing the `container exec` CLI does NOT stop the process in the VM (verified — a `sleep 200` survived its CLI's
+SIGKILL), so the bang timeout is enforced inside; its exit 137 reads as "timed out". An in-VM bang gets **5 min**
+(`SANDBOX_BASH_TIMEOUT_MS`), not the host's 60s — `!neon auth login` waits while you finish OAuth in the browser —
+and a timeout appends ``long/interactive? use `paw sandbox shell <n>#<s>` `` to the output (chat, web, the agent's DM). The chat echoes
+`$ <cmd>  (in <name>'s VM: <folder>)`, the agent's transcript says "I ran this in your sandbox VM, in <folder>", the
+web hint adds "· ran in <name>'s VM".
+
+Output STREAMS in `paw chat` (both host and VM, batched per ~100ms of complete lines): a login prints its URL,
+then waits for the browser callback — the URL shows while it still runs. The REPL still waits for the command
+(60s on the host as before, 5 min in a VM). For a real TTY (a login that wants input, a REPL): `paw sandbox shell <n>[#<s>]` =
+`container exec -i -t -w <folder> <id> bash -l` (the seeded `~/.profile` sources BASH_ENV, which reads `~/.bashrc`). `check:sandbox-bang`
+(fake `container`); `PAW_SANDBOX_BANG_SMOKE=1` adds a real run against a THROWAWAY labelled container.
 
 ## Why remote spaces only (v1) — and the local plan
 

@@ -334,12 +334,18 @@ export class Painter {
  * Re-points itself LAZILY: the target moves on many paths (@name, the picker, following a reply, a
  * respawn), and checking on each pump catches all of them without hooking any. A new target starts
  * with a backfill of its recent blocks. `open` throws when there is nothing to follow (no folder, a
- * harness `paw log` can't read); that is reported once through `onError` and not retried every tick.
+ * harness `paw log` can't read); that is reported once through `onError` and not retried every tick —
+ * UNLESS the error is `retryable` (log.ts TranscriptNotYet: the agent hasn't written its first turn).
+ * Then it is re-opened on every pump until the transcript appears. That was the "logs view doesn't work
+ * for the containers" bug (2026-10-28): `paw chat @fly` opened as the sandboxed agent was born, its VM
+ * took seconds to write turn one, and the follower had already given up for the whole chat session.
  */
 export class LogFollower {
   private name: string | undefined;
   private src: FollowSource | undefined;
   private failed: string | undefined;
+  /** {@link failed} said "not yet" (a retryable error) — keep re-opening it on every pump. */
+  private retrying = false;
   /** Every agent followed this session, by name. Going back to one RESUMES its source — pulling what
    *  it wrote in the meantime — instead of opening it fresh and backfilling again, which printed its
    *  whole recent history a second time on A → B → A (the critic reproduced every line doubled). */
@@ -373,6 +379,7 @@ export class LogFollower {
     this.name = undefined;
     this.src = undefined;
     this.failed = undefined;
+    this.retrying = false;
   }
 
   /** Capture whatever is new for `target`, re-pointing when the target moved.
@@ -383,7 +390,8 @@ export class LogFollower {
       return false;
     }
     if (target !== this.name || !this.src) {
-      if (target === this.failed) return false;
+      if (target === this.failed && !this.retrying) return false;
+      const repoint = target !== this.name;
       this.name = target;
       const known = this.seen.get(target);
       if (known) {
@@ -397,14 +405,18 @@ export class LogFollower {
         this.src = this.open(target);
         recent = this.src.blocks(this.backfill);
       } catch (e) {
+        this.src = undefined;
         this.failed = target;
+        this.retrying = (e as { retryable?: unknown }).retryable === true;
         if (!this.reported.has(target)) {
           this.reported.add(target);
-          this.onError(target, (e as Error).message.replace(/^paw: /, ""));
+          const msg = (e as Error).message.replace(/^paw: /, "");
+          this.onError(target, this.retrying ? `${msg} Following — its trace shows here once written.` : msg);
         }
-        return true;
+        return repoint;
       }
       this.failed = undefined;
+      this.retrying = false;
       this.seen.set(target, this.src);
       if (recent.length) this.out({ kind: "log", agent: target, blocks: recent, backfill: true });
       return true;

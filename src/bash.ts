@@ -37,6 +37,10 @@ export interface BashResult {
   code: number | null;
   /** True when the command hit {@link BASH_TIMEOUT_MS} and was killed. */
   timedOut: boolean;
+  /** The limit it ran under, when not {@link BASH_TIMEOUT_MS} (an in-VM bang gets longer). */
+  timeoutMs?: number;
+  /** Set when it ran inside the agent's sandbox VM (src/sandbox-exec.ts), not on this host: the container id. */
+  vm?: string;
 }
 
 /** Is this line the bang form, and what is the command? Undefined when it isn't — a line merely
@@ -97,20 +101,53 @@ export function stripRcNoise(stderr: string): string {
  * — with its own session the shell's children are no longer in ours, so killing the pid alone would
  * leave a `sleep`/build running.
  */
-export async function runBash(command: string, cwd: string, timeoutMs = BASH_TIMEOUT_MS, interactive = false): Promise<BashResult> {
+export async function runBash(command: string, cwd: string, timeoutMs = BASH_TIMEOUT_MS, interactive = false, onOutput?: (chunk: string) => void): Promise<BashResult> {
+  // bdEnv, not process.env: `!bd create …` from the composer must hit the SAME shared task db the
+  // agents' BEADS_DIR pins — without it bd resolves a repo-local .beads and the task lands in that
+  // project's own tracker, invisibly. It also backfills PATH for the launchd-started daemon.
+  const { sh, args } = shellInvocation(command, interactive);
+  return runArgv(sh, args, { command, cwd, spawnCwd: cwd, env: bdEnv(), timeoutMs, stripNoise: interactive, onOutput });
+}
+
+export interface RunArgvOpts {
+  /** What the operator typed, and the folder it means — reported in the result, never interpreted here. */
+  command: string;
+  cwd: string;
+  /** The HOST cwd of the spawned process; undefined for a runner (`container exec`) that sets its own. */
+  spawnCwd?: string;
+  env?: NodeJS.ProcessEnv;
+  timeoutMs: number;
+  stripNoise?: boolean;
+  /** Each stdout/stderr chunk as it arrives, so a command that prints a URL and then waits (an OAuth
+   *  login) shows it while it is still running. The result still carries the whole output. */
+  onOutput?: (chunk: string) => void;
+  /** Extra text for a spawn failure, e.g. which runner could not start. */
+  label?: string;
+}
+
+/** The detached, stdin-closed, group-killed runner behind {@link runBash} — `file`/`args` are an argv,
+ *  never a host shell line built here. Never throws: a failing command is a result. */
+export async function runArgv(file: string, args: string[], o: RunArgvOpts): Promise<BashResult> {
   return new Promise((resolve) => {
-    // bdEnv, not process.env: `!bd create …` from the composer must hit the SAME shared task db the
-    // agents' BEADS_DIR pins — without it bd resolves a repo-local .beads and the task lands in that
-    // project's own tracker, invisibly. It also backfills PATH for the launchd-started daemon.
-    const { sh, args } = shellInvocation(command, interactive);
-    const child = spawn(sh, args, { cwd, env: bdEnv(), detached: true, stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(file, args, { cwd: o.spawnCwd, env: o.env ?? process.env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
     let stdout = "";
     let stderr = "";
     let timedOut = false;
     let done = false;
     const cap = (s: string, d: Buffer) => (s.length > BASH_MAX_BYTES ? s : s + d.toString());
-    child.stdout.on("data", (d: Buffer) => (stdout = cap(stdout, d)));
-    child.stderr.on("data", (d: Buffer) => (stderr = cap(stderr, d)));
+    const live = (d: Buffer) => {
+      if (!o.onOutput || done || stdout.length + stderr.length > BASH_MAX_BYTES) return;
+      const text = o.stripNoise ? stripRcNoise(d.toString()) : d.toString();
+      if (text) o.onOutput(text);
+    };
+    child.stdout.on("data", (d: Buffer) => {
+      stdout = cap(stdout, d);
+      live(d);
+    });
+    child.stderr.on("data", (d: Buffer) => {
+      stderr = cap(stderr, d);
+      live(d);
+    });
     const timer = setTimeout(() => {
       timedOut = true;
       if (child.pid !== undefined) {
@@ -120,16 +157,16 @@ export async function runBash(command: string, cwd: string, timeoutMs = BASH_TIM
           child.kill("SIGKILL");
         }
       }
-    }, timeoutMs);
+    }, o.timeoutMs);
     const finish = (code: number | null, spawnError?: string) => {
       if (done) return;
       done = true;
       clearTimeout(timer);
-      const err = interactive ? stripRcNoise(stderr) : stderr;
+      const err = o.stripNoise ? stripRcNoise(stderr) : stderr;
       const both = `${stdout}${err}${spawnError ? `${spawnError}\n` : ""}`;
       resolve({
-        command,
-        cwd,
+        command: o.command,
+        cwd: o.cwd,
         output: both.length > BASH_MAX_BYTES ? `${both.slice(0, BASH_MAX_BYTES)}\n… output truncated` : both,
         // a killed or unspawnable command has no exit status — null, never a signal name or errno
         // rendered as though the command had exited with it
@@ -137,7 +174,7 @@ export async function runBash(command: string, cwd: string, timeoutMs = BASH_TIM
         timedOut,
       });
     };
-    child.on("error", (e: NodeJS.ErrnoException) => finish(null, `paw: could not run ${sh}: ${e.message}`));
+    child.on("error", (e: NodeJS.ErrnoException) => finish(null, `paw: could not run ${o.label ?? file}: ${e.message}`));
     child.on("close", (code) => finish(code));
   });
 }
@@ -152,10 +189,10 @@ export async function runBash(command: string, cwd: string, timeoutMs = BASH_TIM
  */
 export function bashMessage(r: BashResult): string {
   const status = r.timedOut
-    ? ` (timed out after ${Math.round(BASH_TIMEOUT_MS / 1000)}s)`
+    ? ` (timed out after ${Math.round((r.timeoutMs ?? BASH_TIMEOUT_MS) / 1000)}s)`
     : r.code === 0 || r.code === null
       ? ""
       : ` (exit ${r.code})`;
   const body = r.output.trim() || "(no output)";
-  return [`I ran this in ${r.cwd}${status}:`, "```console", `$ ${r.command}`, body, "```"].join("\n");
+  return [`I ran this in ${r.vm ? "your sandbox VM, in " : ""}${r.cwd}${status}:`, "```console", `$ ${r.command}`, body, "```"].join("\n");
 }
