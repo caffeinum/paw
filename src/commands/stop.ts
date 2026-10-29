@@ -17,8 +17,11 @@ import {
   elsewhereHint,
   folderForName,
   lookupFolderName,
+  personaFilePath,
   stopAgent,
 } from "../addressing.ts";
+import { reapSandbox } from "../sandbox.ts";
+import { readSandbox } from "../session.ts";
 import { readForeground, unregisterForeground } from "../foreground.ts";
 import { ensureSpaceFor, resolveSpace, withEnsuredManager } from "../lifecycle.ts";
 import { sleepState } from "../sleep-state.ts";
@@ -112,6 +115,11 @@ async function stop(argv: string[]): Promise<void> {
   const wasAsleep = sleepState(space, name) !== undefined; // read BEFORE stopAgent clears it
   // Ensured here, not by the bin/paw.ts gate: ensure()'s manager probe and the stop share one rail.
   const stopped = await withEnsuredManager(space, (ctl) => stopAgent(ctl, name), { ensureSpace: ensureSpaceFor(space) });
+  // A sandboxed agent's VM goes down a beat after its seat: "stopped" means no container is left (src/sandbox.ts).
+  if (readSandbox(personaFilePath(space, name))) {
+    const forced = await reapSandbox(space, name);
+    if (forced.length) console.error(`paw: force-deleted ${name}'s container(s) that outlived the stop: ${forced.join(" ")}`);
+  }
   const done = stopMessage(name, stopped, wasAsleep);
   if (done) console.log(done);
   else if (rawName === undefined && !agentRecord(space, name)) {

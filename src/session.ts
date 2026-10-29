@@ -4,7 +4,7 @@
  */
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 
 /**
  * The raw value of one frontmatter `key:` line in an agent file, or undefined when the key (or the
@@ -114,6 +114,29 @@ export function readHeadless(configPath: string | undefined): boolean {
   throw new Error(`paw: headless: in ${configPath} is "${v}" — expected true or false`);
 }
 
+/** The persona's `sandbox:` key — run this agent inside a VM (src/sandbox.ts). `container` (Apple's
+ *  `container`) is the only kind; absent ⇒ no sandbox. Anything else throws: a typo must never boot the
+ *  agent UNsandboxed on the host. */
+export type SandboxKind = "container";
+export function readSandbox(configPath: string | undefined): SandboxKind | undefined {
+  const v = scalar(configPath, "sandbox");
+  if (v === undefined) return undefined;
+  if (v === "container") return v;
+  throw new Error(`paw: sandbox: in ${configPath} is "${v}" — the only sandbox is \`container\` (Apple's container)`);
+}
+
+/** A sandboxed agent's own state on the host: `$PAW_HOME/spaces/<space>/sandbox/<name>`, beside the
+ *  persona `…/spaces/<space>/personas/<name>.md` it is derived from. */
+export function sandboxStateDir(configPath: string): string {
+  return join(dirname(dirname(resolve(configPath))), "sandbox", basename(configPath, ".md"));
+}
+
+/** The sandboxed claude's CLAUDE_CONFIG_DIR, as the host sees it (mounted at /paw/claude in the VM):
+ *  its transcripts, `.claude.json` and settings — so they survive every container restart. */
+export function sandboxClaudeDir(configPath: string): string {
+  return join(sandboxStateDir(configPath), "claude");
+}
+
 /** Default scheduling priority for agents: low, so their builds, tests and dev servers only get the CPU
  *  the operator's own apps leave free. `PAW_NICE` overrides the default; persona `nice:` overrides per agent. */
 export const DEFAULT_NICE = 10;
@@ -207,6 +230,8 @@ export function transcriptRoots(agentType: string | undefined, storage: KitStora
 /** {@link transcriptRoots} for a persona file (its `agent:` + `storage:`). No file ⇒ claude-only. */
 export function personaTranscriptRoots(configPath: string | undefined): string[] {
   if (!configPath || !existsSync(resolve(configPath))) return [claudeProjectsRoot()];
+  // A sandboxed claude writes ONLY into its own mounted config dir — never ~/.claude on the host.
+  if (readSandbox(configPath)) return [join(sandboxClaudeDir(configPath), "projects")];
   const agent = readAgentType(configPath);
   return transcriptRoots(agent, agent === "kit" ? readKitStorage(configPath) : undefined);
 }

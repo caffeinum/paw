@@ -7,7 +7,8 @@ import { permissionMode } from "./bypass-consent.ts";
 import { ADDRESSING_BRIEF, BACKGROUND_BASH_BRIEF, CRON_BRIEF, CHANNELS_BRIEF, COTAL_TOOLS_NOTICE_BRIEF, FILES_BRIEF, OPERATOR_REQUESTS_BRIEF, TASKS_BRIEF, UNATTENDED_BRIEF, WAKE_BRIEF } from "./brief.ts";
 import { beadsDir } from "./beads-dir.ts";
 import { voiceLineFor } from "./personality.ts";
-import { readClaudeArgs, readCwd, readHeadless, readNice, readResumeId, transcriptExists } from "./session.ts";
+import { personaTranscriptRoots, readClaudeArgs, readCwd, readHeadless, readNice, readResumeId, readSandbox, transcriptExists } from "./session.ts";
+import { sandboxLaunch } from "./sandbox.ts";
 import { ensureShim, headlessDir, hubEnabled, hubSocketPath } from "./hub/paths.ts";
 import { headlessLaunch } from "./headless.ts";
 import { routeCotalToHub } from "./hub/route.ts";
@@ -141,14 +142,17 @@ export const pawConnector: Connector = {
     // booting every ambient helper eats the machine), so every paw launch is exclusive: `--strict-mcp-config`.
     const spec = claudeConnector.buildLaunch({ ...opts, mcpServersExclusive: true, ...remoteTlsEnv(opts) });
     const args = [...spec.args];
+    // `sandbox: container` (src/sandbox.ts): the seat runs its OWN cotal MCP inside the VM, so neither the
+    // hub's host socket nor tracepaper's host-loopback server applies — both rewrites are skipped for it.
+    const sandboxed = readSandbox(opts.configPath) !== undefined;
 
     // Hub mode (`paw hub on`, read per spawn): the cotal MCP server is the hub's C shim, not a node process per agent
     // (src/hub/). ensure() starts the hub; the shim is built here on first use if the tree lacks one.
-    if (hubEnabled(opts.space)) routeCotalToHub(args, ensureShim(), hubSocketPath(opts.space));
+    if (!sandboxed && hubEnabled(opts.space)) routeCotalToHub(args, ensureShim(), hubSocketPath(opts.space));
 
     // tracepaper direct (src/tracepaper-direct.ts): one shared HTTP server instead of a ~17MB stdio
     // bridge per agent. The canvas follows the agent's folder, read from its persona.
-    const tpUrl = readTracepaperUrl(opts.space);
+    const tpUrl = sandboxed ? undefined : readTracepaperUrl(opts.space);
     if (tpUrl) {
       const cwd = readCwd(opts.configPath);
       if (!cwd) throw new Error(`paw: tracepaper direct needs "${opts.name}"'s folder (persona cwd:) to pick its canvas — none in ${opts.configPath}`);
@@ -191,7 +195,8 @@ export const pawConnector: Connector = {
     // fresh, amnesiac session. (The paw-reset bug of 2026-06-26: pinless agents lost all history on
     // any mesh bounce / reboot because claude auto-generated a new session id each launch.)
     const resumeId = readResumeId(opts.configPath);
-    if (resumeId) args.push(transcriptExists(resumeId) ? "--resume" : "--session-id", resumeId);
+    // The store is the persona's: a sandboxed claude writes only into its own mounted config dir.
+    if (resumeId) args.push(transcriptExists(resumeId, personaTranscriptRoots(opts.configPath)) ? "--resume" : "--session-id", resumeId);
 
     // The operator's own claude flags, recorded when the agent was created (`paw claude --model opus`).
     // LAST on purpose: a flag the operator named should beat paw's default for the same flag, and
@@ -207,6 +212,10 @@ export const pawConnector: Connector = {
     // agent-filed task reads "created by Aleksey Bykhun" — the one fact the operator's hover card
     // exists to answer ("which agent filed this?") fabricated away by a default.
     const env = { ...spec.env, ...remoteSeatTls(opts.space), BEADS_DIR: beadsDir(), BEADS_ACTOR: opts.name };
+
+    // A sandboxed seat is a VM with its own CPUs: `nice` on the host-side launcher would schedule nothing. Before
+    // headless: sandboxLaunch refuses a headless persona (it needs the hub's host socket).
+    if (sandboxed) return sandboxLaunch({ ...spec, args, env }, { space: opts.space, name: opts.name, configPath: opts.configPath });
 
     // `headless: true` in the persona: the same launch, run as `claude -p` stream-json with no TUI
     // (docs/notes/headless.md). -p drops the channel push, so the HUB is what wakes it — no hub, no

@@ -37,7 +37,7 @@ import { hermesProfileId, hermesRoot, HERMES_AGENT } from "./hermes-profile.ts";
 import { resolveSpace, withEnsuredManager } from "./lifecycle.ts";
 import { liveSessionProcs, meshIdentity } from "./named.ts";
 import { isRemoteSpace } from "./server.ts";
-import { isClaudeHarness, personaTranscriptRoots, readAgentType, readCwd, readHermesHome, readResumeId, transcriptExists, transcriptMtime } from "./session.ts";
+import { isClaudeHarness, personaTranscriptRoots, readAgentType, readCwd, readHermesHome, readResumeId, readSandbox, transcriptExists, transcriptMtime } from "./session.ts";
 import { KIT_AGENT } from "./kit.ts";
 import { sleepState } from "./sleep-state.ts";
 import { readTeleported } from "./teleport-plan.ts";
@@ -446,6 +446,8 @@ export async function move(a: MoveArgs): Promise<void> {
   const from = a.space?.trim() || resolveSpace();
   const d = moveDisk({ from, to: a.to, name: a.name, ...(a.as ? { newName: a.as } : {}) });
   if (!d.personaExists) throw new Error(`paw: no agent "${a.name}" in space "${from}" (\`paw status --space ${from}\` lists them)`);
+  // v1: its transcript lives in spaces/<from>/sandbox/<name>, which move does not carry (docs/notes/sandbox.md).
+  if (readSandbox(d.personaFrom)) throw new Error(`paw: "${a.name}" is sandboxed (sandbox: container) — paw move does not carry a sandboxed agent's own claude store yet`);
   const early = moveBlockers(d, undefined, { yes: a.yes, now: Date.now() });
   const l = early.length ? undefined : await moveLive(d);
   const now = Date.now();
