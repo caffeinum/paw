@@ -85,3 +85,8 @@ Moved verbatim from CLAUDE.md (2026-10-02 split). Index: [CLAUDE.md](../../CLAUD
   servers record which claude listed their tools. Proves: alice (`--only`) has the server, bob doesn't
   but keeps the shared one, `only --all` restarts nobody and names bob, and a respawned bob gets it.
   ~2min. See [cli.md#paw-mcp](cli.md#paw-mcp).
+  `scripts/check-kv-consumer-perms.ts` (`pnpm check:kv-consumer-perms`) — a private JWT + TLS broker: each
+  KV-watching cotal role (agent, observer, admin, supervisor) rebuilds its watch with no Publish Violation
+  and no leftover consumer under the patched core, the unpatched grant reproduces both, and the patched cred
+  still cannot touch CHAT/DM/manager-KV consumers or purge a stream. ~5s. See
+  [cotal-dependency.md#kv-watch-consumer-delete-patch](cotal-dependency.md#kv-watch-consumer-delete-patch).

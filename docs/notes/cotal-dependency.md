@@ -82,6 +82,54 @@ releases (0.85–0.100, ~1260 commits); read from the packages' changesets. What
   team2027 broker can stay on 0.84 (verified above); upgrade it at leisure with `auth signer` in mind.
   NOT verified: a 0.84 paw machine and a 0.100 paw machine on one remote space at once.
 
+### KV watch consumer delete patch
+
+2026-10-28, in `patches/@cotal-ai__core@0.100.0.patch` beside the meta-validator hunks. The team2027
+broker logged `Publish Violation` for `$JS.API.CONSUMER.DELETE.KV_cotal_presence_team2027.oc_…` and
+`…KV_cotal_channels_team2027.oc_…` from `cotal:aleks-mac-mini` and `cotal:vercel`. The connection name
+is `cotal:<card name>`, and only an endpoint that watches BOTH buckets logs both. So these are agent-
+profile endpoints: the mini's human peer (mailbox / chat / web under `--as aleks-mac-mini`) and an
+agent named `vercel`. A manager watches presence only, under its own card name.
+- **Cause:** a KV watch is a nats.js ordered push consumer `oc_<nuid>_<serial>`. Each rebuild (two missed
+  30s heartbeats, a sequence gap) deletes the predecessor before creating `_<serial+1>`. cotal 0.100
+  deliberately minted no CONSUMER.DELETE on those streams (#691), because the name can't be pinned in a
+  grant: the only grant that can express it covers the whole stream. So every rebuild was refused, and
+  the old consumer stayed for its 5-minute inactive threshold. cotal swallows the refusal client-side
+  (`isOwnWatchDelete`), but the broker still logs it and still holds the consumer.
+- **Patch (dist/provision.js):** `$JS.API.CONSUMER.DELETE.<stream>.>` only for the KV streams each long-lived
+  role watches. `agent` gets presence + channels. `observer`/`admin` get presence + channels + membership.
+  `supervisor` (the local AND the signer-backed remote paw manager) gets presence. Nothing else changes:
+  no stream purge/delete, and no CHAT/DM/DLV/TASK/manager-KV consumer delete. Those streams hold only
+  ordered watch consumers, with no durable on them.
+  **Residual (why upstream said no):** a holder can delete a peer's watch cursor on those buckets.
+  The peer's ordered consumer rebuilds itself on its next missed heartbeat, so that is a self-healing
+  roster/registry stall, not data access. `operator`/`deployer`/`teardown` are one-shot and untouched.
+- **Patch (dist/endpoint.js):** `rebindStalePresenceWatch` ("presence watch silent … rebound") stopped the
+  old watch and never deleted its consumer. It now deletes it the way `retireDeliveryLeaseWatch` already
+  does (#3966). The seat's cotal MCP server (`mcp.cjs`) bundles its own endpoint code and does not get
+  this hunk. Its nats.js rebuild deletes do work, because the permission lives in the JWT the manager mints.
+- **Proof:** `pnpm check:kv-consumer-perms` runs a private JWT + TLS broker (cotal `serverConfig`, a
+  self-signed cert, its own log file). For each role it opens a watch the way `kv.watch()` does and drives
+  nats.js's own `reset()`:
+  1. With the grant minus the new rows (0.100 as shipped), the violation and the leftover `_1` reproduce.
+  2. With the patched `mintCreds` grant, `_1` is replaced by `_2`, there is no violation, and stop + delete leaves nothing.
+  3. The patched cred still can't delete a consumer on CHAT/DM/the manager KV or on a bucket it doesn't
+     watch, and can't purge or delete the KV stream.
+
+  The broker log is counted at the end. A one-off run with a real `CotalEndpoint` (agent cred, card
+  `vercel`) on a `cotal up --no-manager` JWT + TLS broker: the rebind deleted the old consumer, with zero
+  violation lines in the broker log.
+- **Takes effect** only for creds minted by patched code; agent/observer/admin JWTs carry no expiry.
+  Each machine hosting team2027 peers has to:
+  1. pull, then `pnpm install` (verify `grep -c "paw patch" node_modules/@cotal-ai/core/dist/provision.js` = 6);
+  2. `paw release`;
+  3. `paw restart --space team2027`. The new manager's supervisor cred and fresh seat creds come from it.
+     The mailbox's agent cred too.
+
+  Also restart `paw web` and any open `paw chat` there, since they mint their own creds at start. The
+  fly broker needs nothing: permissions live in user JWTs signed by the space account. A non-paw cotal
+  host on the space, such as the `vercel` agent if a plain-cotal box runs it, needs the same cotal patch.
+
 ## cotal 0.84.0
 
 **Bumped 0.81.1 → 0.84.0 on 2026-10-16** (operator-approved, inside the 7-day min-release-age window:

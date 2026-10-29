@@ -1,5 +1,100 @@
+diff --git a/dist/endpoint.js b/dist/endpoint.js
+index b1497ccd1ddac98196d6620240b490a7c7157649..bc0deca87529ff4331079a2fbbc01563039c34f8 100644
+--- a/dist/endpoint.js
++++ b/dist/endpoint.js
+@@ -6777,6 +6777,9 @@ export class CotalEndpoint extends EventEmitter {
+                         old.stop();
+                     }
+                     catch { /* already closed with its consumer */ }
++                    // paw patch: the stop alone leaves the retired ordered consumer on the broker until its
++                    // five-minute inactive threshold, as retireDeliveryLeaseWatch does for the lease watch.
++                    void this.deleteOwnConsumer(kvWatchConsumer(old)).catch((e) => this.emitRecoverable(new Error(`a retired presence watch consumer was not deleted (${e.message}); the broker reaps it at its inactive threshold`)));
+                 }
+                 // A bucket with no keys replays nothing, so the new watch cannot refresh
+                 // `lastPresenceWatchAt` by delivering. It IS current knowledge: nobody is present. The
+diff --git a/dist/provision.js b/dist/provision.js
+index e539f43b599cc08ff85471f7e28a5097a8403871..0ba2d3feee9a4d3499b5804a8407c87c0426cb0c 100644
+--- a/dist/provision.js
++++ b/dist/provision.js
+@@ -834,12 +834,14 @@ export function permissionsFor(profile, space, pr, opts) {
+             "$JS.API.INFO",
+             `$JS.API.STREAM.INFO.${CHAT}`,
+             `$JS.API.STREAM.INFO.${KV}`,
+-            // NO stream-wide CONSUMER.DELETE on any stream this profile reads (#691). Its watch consumers
+-            // are client-named ordered consumers (`oc_<nuid>_<serial>`, the serial bumped on every
+-            // rebuild), so the only expressible grant for them is stream-wide, and stream-wide let one
+-            // observer delete another principal's live watch cursors and the delivery daemon's fan-out
+-            // durable. The broker reaps those consumers at their inactive threshold instead, and the
+-            // client treats a refused delete of its own watch consumer as that designed outcome.
++            // NO stream-wide CONSUMER.DELETE on CHAT/DM (#691): stream-wide there let one observer delete
++            // another principal's live watch cursors and the delivery daemon's fan-out durable. The
++            // presence, channel-registry and membership KV streams are the exception (paw patch): they
++            // hold only client-named ordered watch consumers (`oc_<nuid>_<serial>`), no durable, and
++            // nats.js deletes the predecessor on every watch rebuild and on stop. Refused, each delete
++            // was a broker Publish Violation and left the consumer behind for the 5-minute inactive
++            // threshold. The residual: a holder can delete a peer's watch cursor, which that peer's
++            // ordered consumer rebuilds on its next missed heartbeat.
+             //
+             // history reader consumer: a multi-filter create can't encode its filter in the subject → bare
+             // form; the .> form covers the single-filter named create.
+@@ -851,12 +853,14 @@ export function permissionsFor(profile, space, pr, opts) {
+             `$JS.ACK.${CHAT}.>`,
+             `$JS.API.CONSUMER.CREATE.${KV}.>`, // kv.watch ordered consumer (roster is public)
+             `$JS.API.CONSUMER.INFO.${KV}.>`,
++            `$JS.API.CONSUMER.DELETE.${KV}.>`, // the watch's own rebuild/stop delete (paw patch)
+             // Channel registry read (watch + direct kv.get + enriched listChannels) — config is
+             // world-readable. STREAM.MSG.GET is the verb kv.get() rides (the bucket has no allow_direct).
+             `$JS.API.STREAM.INFO.${CHKV}`,
+             `$JS.API.STREAM.MSG.GET.${CHKV}`,
+             `$JS.API.CONSUMER.CREATE.${CHKV}.>`,
+             `$JS.API.CONSUMER.INFO.${CHKV}.>`,
++            `$JS.API.CONSUMER.DELETE.${CHKV}.>`, // the watch's own rebuild/stop delete (paw patch)
+             // Derived graph-membership feed (broker-sourced who-is-subscribed) — watch + direct kv.get. The
+             // silent-reader set is sensitive, so read is admin/observer-only (this elevated profile), never an
+             // agent. Read-only: no `$KV.${membershipBucket}` publish — only the `membership-rw` cred writes it.
+@@ -864,6 +868,7 @@ export function permissionsFor(profile, space, pr, opts) {
+             `$JS.API.STREAM.MSG.GET.${MEMKV}`,
+             `$JS.API.CONSUMER.CREATE.${MEMKV}.>`,
+             `$JS.API.CONSUMER.INFO.${MEMKV}.>`,
++            `$JS.API.CONSUMER.DELETE.${MEMKV}.>`, // the watch's own rebuild/stop delete (paw patch)
+             // Delivery lease/readiness: READ-ONLY (STREAM.INFO + kv.get), the same pair the `agent` arm
+             // below already carries for its non-gating `cotal_channels` health surface. A read-only
+             // DIAGNOSTIC profile needs this axis for the same reason an agent does, and more: without it
+@@ -968,9 +973,13 @@ export function permissionsFor(profile, space, pr, opts) {
+         // Presence: watch (read, public roster) + flow control + PUT OWN KEY ONLY.
+         `$JS.API.CONSUMER.CREATE.${KV}.>`,
+         `$JS.API.CONSUMER.INFO.${KV}.>`,
+-        // No CONSUMER.DELETE here or on the registry below: the watch's `oc_<nuid>_<serial>` name
+-        // cannot be pinned, and a stream-wide delete reaches every peer's watch cursor (#691). A
+-        // rebuild's refused predecessor delete leaves that consumer to the broker's inactive threshold.
++        // CONSUMER.DELETE here and on the registry below (paw patch, reverses #691 for these two KV
++        // streams only): the watch's `oc_<nuid>_<serial>` name cannot be pinned, so the grant is
++        // stream-wide, but these streams hold only ordered watch consumers (no durable). Without it
++        // every rebuild's predecessor delete was a broker Publish Violation and the consumer stayed
++        // until the 5-minute inactive threshold. Residual: a peer's watch cursor can be deleted, and
++        // its ordered consumer rebuilds on the next missed heartbeat.
++        `$JS.API.CONSUMER.DELETE.${KV}.>`,
+         "$JS.FC.>",
+         `$KV.${presenceBucket(space)}.${pk.key}`, // own presence key (owner+actor) only — can't spoof peers
+         // Channel registry: read-only (watch + direct kv.get for the join-time replay decision).
+@@ -978,6 +987,7 @@ export function permissionsFor(profile, space, pr, opts) {
+         `$JS.API.STREAM.MSG.GET.${CHKV}`,
+         `$JS.API.CONSUMER.CREATE.${CHKV}.>`,
+         `$JS.API.CONSUMER.INFO.${CHKV}.>`,
++        `$JS.API.CONSUMER.DELETE.${CHKV}.>`,
+         // Delivery lease/readiness: READ-ONLY (kv.get) for the non-gating `cotal_channels` delivery-health
+         // surface (Component 6). The lease key is daemon-availability info, like the world-readable roster;
+         // NO write grant — only the `delivery` cred writes it.
+@@ -1183,6 +1193,7 @@ function supervisorPermissions(space, pr) {
+                 `$JS.API.STREAM.INFO.${PKV}`,
+                 `$JS.API.CONSUMER.CREATE.${PKV}.>`, // kv.watch ordered consumer (roster)
+                 `$JS.API.CONSUMER.INFO.${PKV}.>`,
++                `$JS.API.CONSUMER.DELETE.${PKV}.>`, // the roster watch's own rebuild/stop delete (paw patch)
+                 "$JS.FC.>", // ordered-consumer flow control
+                 // The ONE control service the supervisor CALLS: the delivery daemon's privileged
+                 // admin rail — the manager is the daemon's renewal owner, and after re-signing the daemon creds
 diff --git a/dist/schema-profile.js b/dist/schema-profile.js
-index 8d9b8f7..5b0f492 100644
+index 8d9b8f7debcdc7615e3f0c39b040eb03b4b0b4d6..5b0f4924b293c6814a47ca68bcd874f2f145fdaf 100644
 --- a/dist/schema-profile.js
 +++ b/dist/schema-profile.js
 @@ -86,6 +86,58 @@ const AJV_PROFILE_OPTIONS = Object.freeze({

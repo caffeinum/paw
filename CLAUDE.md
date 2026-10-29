@@ -38,7 +38,10 @@ Pinned **0.100.0** (all `@cotal-ai/*` exact; age-gate exemption in pnpm-workspac
 0.100's dist — a stale hunk offset fails `pnpm install` with ERR_PNPM_PATCH_FAILED) and the connector's
 bundled-nats reconnect patch (+ `@nats-io/transport-node@3.4.0`: a stale link with a backed-up write
 buffer never redialed — the sandboxed 15-min mesh outages; `check:nats-reconnect`,
-[sandbox.md#mesh-reconnect](docs/notes/sandbox.md#mesh-reconnect)). Since 0.85 the claude
+[sandbox.md#mesh-reconnect](docs/notes/sandbox.md#mesh-reconnect)). The core patch also grants
+agent/observer/admin/supervisor CONSUMER.DELETE on the presence/channels(/membership) KV streams only, so
+a watch rebuild deletes its own `oc_…` predecessor instead of a broker Publish Violation (reverses #691
+there; `check:kv-consumer-perms`, [cotal-dependency.md#kv-watch-consumer-delete-patch](docs/notes/cotal-dependency.md#kv-watch-consumer-delete-patch)). Since 0.85 the claude
 launch carries `confirmReady` (input-screen texts), which runtimes refuse without `confirm` — headless
 launches drop `confirm`, `confirmBefore` AND `confirmReady`. Since 0.95 the embedded cotal CLI sends
 opt-out usage telemetry (`COTAL_TELEMETRY_DISABLED=1` turns it off; paw leaves it to the operator) and

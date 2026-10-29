@@ -26,6 +26,11 @@ allowBuilds:
 #   while every closure still compiles in its own fresh Ajv with the exact profile options. A cold
 #   full manager resolve (66 compiles) went 441ms → 113ms. Re-key on every cotal bump; drop it when
 #   upstream ships the same fix. → docs/notes/cotal-dependency.md#core-meta-validator-patch
+#   The same core patch also adds CONSUMER.DELETE on the presence / channel-registry (/ membership) KV
+#   streams to the agent, observer, admin and supervisor profiles (dist/provision.js) and deletes the
+#   retired consumer on a presence-watch rebind (dist/endpoint.js): a KV watch's nats.js ordered consumer
+#   deletes its predecessor on every rebuild, which cotal 0.100 refused (#691) — broker Publish Violations
+#   + leftover `oc_…` consumers. → docs/notes/cotal-dependency.md#kv-watch-consumer-delete-patch
 # '@nats-io/transport-node' + '@cotal-ai/connector-claude-code' — reconnect fix: nats.js's stale-connection
 #   close awaited a goodbye write that never completes when the link dies with the socket's write buffer
 #   backed up, so the client never reconnected until the kernel killed the socket (~15 min in a sandbox
