@@ -343,7 +343,8 @@ an old server ignores the header and frames land on "default". `rm` the file to 
   ACCEPTANCE and mesh-live lands when the connector registers presence — the heavy part of a claude
   boot (transcript resume, MCP servers) continues after, so boots overlap almost completely.
   `awaitSpawnHeadroom` waits (poll 5s) for load1 < ncpu×2 before each spawn in `reviveAgents`
-  (runtime.ts) and `paw start` — BOUNDED at 90s, then spawns anyway: an agent that stays down is the
+  (runtime.ts), and ONCE per batch in `paw start` (then the batch spawns in parallel — 2026-10-30: the
+  post-login boot at load ~550 waited 90s PER agent, ~10 min for the boot list) — BOUNDED at 90s, then spawns anyway: an agent that stays down is the
   other failure (its name is unresolvable on the roster — the wake gap). **No message is lost either
   way:** DMs to a down agent queue in its durable JetStream consumer and deliver on reconnect (the
   INBOX column); the gate only widens the not-yet-resolvable window. 0.25's lease fix held twice in
