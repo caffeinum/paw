@@ -56,6 +56,7 @@ async function start(argv: string[]): Promise<void> {
     // One ps read up front so we can report "already live" vs "started" without a spawn round-trip each.
     const ps = await ctl.ps();
     const live = new Set(ps.ok ? ((ps.data as PsRow[]) ?? []).filter(psRowAlive).map((r) => r.name) : []);
+    const spawnable: { name: string; folder: string }[] = [];
     for (const t of targets) {
       if (live.has(t.name)) {
         alive.push(t.name); // live is live, whether or not paw spawned it (a cotal_spawn peer)
@@ -69,22 +70,29 @@ async function start(argv: string[]): Promise<void> {
         skipped.push(`${t.name} (folder gone: ${t.folder})`);
         continue;
       }
-      // Anti-thundering-herd: never start a cold-boot burst into a machine with no headroom
-      // (the 2026-08-21 swap-death revival — see src/pacing.ts). Bounded, then proceeds anyway.
-      const headroom = await awaitSpawnHeadroom({
-        onWait: (load, thr) => console.log(`  load ${load.toFixed(0)} > ${thr} — pausing before spawning ${t.name} until the machine has headroom…`),
-      });
-      if (headroom === "gave-up") console.log(`  still loaded after the wait cap — spawning ${t.name} anyway`);
-      try {
-        const r = await ensureAgentSpawned(ctl, { space, name: t.name, cwd: t.folder });
-        if (r.stuck) {
-          stuck.push(stuckWarning(t.name, r.stuck, false));
-          continue;
+      spawnable.push({ name: t.name, folder: t.folder });
+    }
+    if (!spawnable.length) return;
+    // Anti-thundering-herd, gated ONCE for the batch (the 2026-08-21 swap-death revival — see
+    // src/pacing.ts): wait for headroom, bounded, then start them all together. Per-agent waits made a
+    // post-login boot (load ~550) take up to 90s × N before the last agent was even asked to start.
+    const headroom = await awaitSpawnHeadroom({
+      onWait: (load, thr) => console.log(`  load ${load.toFixed(0)} > ${thr} — pausing before spawning ${spawnable.length} agent(s) until the machine has headroom…`),
+    });
+    if (headroom === "gave-up") console.log(`  still loaded after the wait cap — spawning anyway`);
+    const outcomes = await Promise.all(
+      spawnable.map(async (t) => {
+        try {
+          return { t, r: await ensureAgentSpawned(ctl, { space, name: t.name, cwd: t.folder }), err: undefined };
+        } catch (e) {
+          return { t, err: e as Error, r: undefined };
         }
-        started.push(r.starting ? `${t.name} (still starting — messages wait in its inbox)` : t.name);
-      } catch (e) {
-        skipped.push(`${t.name} (${(e as Error).message.split("\n")[0]})`);
-      }
+      }),
+    );
+    for (const o of outcomes) {
+      if (o.err) skipped.push(`${o.t.name} (${o.err.message.split("\n")[0]})`);
+      else if (o.r.stuck) stuck.push(stuckWarning(o.t.name, o.r.stuck, false));
+      else started.push(o.r.starting ? `${o.t.name} (still starting — messages wait in its inbox)` : o.t.name);
     }
   });
 
