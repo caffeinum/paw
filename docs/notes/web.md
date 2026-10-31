@@ -196,6 +196,12 @@ Moved verbatim from CLAUDE.md (2026-10-02 split). Index: [CLAUDE.md](../../CLAUD
   tree, path compression, status, 0 JS errors). Tests: `check:web` (Village tracker server-side; buildTree/
   segmentsFor/crossRepo/placement client-side).
 
+  **The Office tab (2026-10-31)** — the space's agent-office, embedded: an iframe of the office's own
+  viewer from `GET /api/office`, or an empty state with the exact `paw office connect` command. The
+  mirroring is the mailbox daemon's bridge, not paw web. `OFFICE = "~office"`, `?at=office`, sidebar row,
+  palette entry, composer hidden. (The first cut, a paw-side three.js renderer with vendored three r186,
+  was removed for this.) → [office.md](office.md). Test: `check:web` "office embed".
+
   **Channels are agent FOLDERS (`web/app/channels.js`, 2026-09-03)** — each channel row carries a ▸
   that unfolds the agents in it: click the channel = message the channel, click an agent beneath it =
   DM that agent (`focusAgent`); the chevron stops propagation so unfolding is never "open". WHERE

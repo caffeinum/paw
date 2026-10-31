@@ -90,3 +90,7 @@ Moved verbatim from CLAUDE.md (2026-10-02 split). Index: [CLAUDE.md](../../CLAUD
   and no leftover consumer under the patched core, the unpatched grant reproduces both, and the patched cred
   still cannot touch CHAT/DM/manager-KV consumers or purge a stream. ~5s. See
   [cotal-dependency.md#kv-watch-consumer-delete-patch](cotal-dependency.md#kv-watch-consumer-delete-patch).
+  `scripts/check-office.ts` (`pnpm check:office`) — the agent-office bridge: mapping, link file, engine against a
+  fake office; a real-office section when `PAW_OFFICE_TEST_URL` + `PAW_OFFICE_TEST_ADMIN_KEY` are set.
+  `scripts/e2e-office.ts` (same env) — isolated stack + stub agents through the mailbox's bridge into a real
+  local agent-office; see [office.md#tests](office.md#tests).
