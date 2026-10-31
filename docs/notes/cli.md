@@ -305,6 +305,11 @@ an old server ignores the header and frames land on "default". `rm` the file to 
   Self-ensures (mesh+manager), NOT in bin gating. Surfaced from a bridge via the endpoint-core `/help`
   footer (`--help-footer` / `$COTAL_TG_HELP_FOOTER` → generic `helpFooter` config) + `/switch`/`/who`.
   Exports `GLOBAL_NAME`.
+- **The tick always exits (2026-10-31).** launchd starts no new StartInterval run while one is alive, so a hung
+  tick silently stops cron, sleep, tidy and global's revival. The mini's tick finished its work on 2026-10-29
+  00:41 but stayed alive on a handle left by a stalled team2027 broker connect, and no cron fired for 2.5 days
+  (the 5am night roll missed). `paw global` now `process.exit(0)`s once its work is done, and a tick still
+  running after 15 min logs `paw keeper: tick still running…` and exits 1.
 
 ## keeper unstick sweep
 
