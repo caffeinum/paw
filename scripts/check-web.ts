@@ -28,6 +28,7 @@
  */
 import { connect, createServer, type Socket } from "node:net";
 import { request } from "node:http";
+import { fileURLToPath } from "node:url";
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -1555,8 +1556,11 @@ const stillAligned = async (ws: RawWs, label: string, ...setup: Buffer[]): Promi
   const realShell = readFileSync(new URL("../web/app/index.html", import.meta.url), "utf8");
   assert(realShell.includes('src="/app.js"') && !/src="\.\//.test(realShell), "company route: the real shell loads /app.js ABSOLUTELY (./app.js under /company/x would 404)");
   await cserver.close();
-  const plain = await startWebServer({ ...deps, port: cport, clientRoot: root });
-  assert((await fetch(`${cbase}/api/companies`, { headers: H })).status === 501, "company route: a server without the service answers 501, not an empty list");
+  // a fresh port: fetch's keep-alive pool still holds a socket to the closed server on cport (ECONNRESET)
+  const pport = await freePort();
+  const plain = await startWebServer({ ...deps, port: pport, clientRoot: root });
+  const pbase = `http://127.0.0.1:${pport}`;
+  assert((await fetch(`${pbase}/api/companies`, { headers: { ...H, Origin: pbase } })).status === 501, "company route: a server without the service answers 501, not an empty list");
   await plain.close();
   // a company slug may not hijack an existing channel (refused before any bd call)
   const { companyService } = await import("../src/company-service.ts");
@@ -1578,6 +1582,33 @@ const stillAligned = async (ws: RawWs, label: string, ...setup: Buffer[]): Promi
   assert(badPr.status === 400, "/api/pr-info only takes GitHub pull-request URLs (not a generic fetcher)");
   await sserver.close();
   console.log("✓ company routes");
+}
+
+/* ── the Office view is served from the real client: lazy module, versioned vendor, ?at=office ──── */
+{
+  const real = fileURLToPath(new URL("../web/app/", import.meta.url));
+  const oport = await freePort();
+  const oserver = await startWebServer({ ...deps, port: oport, clientRoot: real });
+  const ob = `http://127.0.0.1:${oport}`;
+  const get = (p: string) => fetch(`${ob}${p}`, { headers: { Origin: ob } });
+  const shell = await get("/?at=office");
+  const shellHtml = await shell.text();
+  assert(shell.status === 200 && shellHtml.includes('id="office"') && shellHtml.includes('id="officeRow"'), "office: /?at=office serves the shell with the #office pane and its sidebar row");
+  const app = await (await get("/app.js")).text();
+  assert(app.includes('q.get("at") === "office"') && app.includes('import("./office.js")'), "office: ?at=office routes to the view, and office.js is imported lazily (not at boot)");
+  const mod = await get("/office.js");
+  assert(mod.status === 200 && /javascript/.test(mod.headers.get("content-type") ?? "") && mod.headers.get("cache-control") === "no-store", "office: office.js is served as JS, uncached like the rest of the bundle");
+  const imp = /from "\.\/(vendor\/three-[^/]+)\/three\.module\.js"/.exec(await mod.text());
+  assert(!!imp, "office: office.js imports three from a versioned vendor folder");
+  for (const f of ["three.module.js", "three.core.js"]) {
+    const r = await get(`/${imp![1]}/${f}`);
+    const body = await r.arrayBuffer();
+    assert(r.status === 200 && /javascript/.test(r.headers.get("content-type") ?? "") && body.byteLength > 100_000, `office: /${imp![1]}/${f} is served (${body.byteLength} bytes)`);
+    assert(/immutable/.test(r.headers.get("cache-control") ?? ""), `office: ${f} is cached immutably (its path carries the version)`);
+  }
+  assert((await get("/vendor/three-0.186.1/nope.js")).status === 404, "office: a missing vendor file 404s rather than returning the shell");
+  await oserver.close();
+  console.log("✓ office serving");
 }
 
 /* ── manager reconnect backoff (src/web.ts Backoff) ───────────────────────────────────────────────── */

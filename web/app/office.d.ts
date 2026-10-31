@@ -4,7 +4,6 @@ import type { OfficeRow, VillageSnapshot } from "./office-model.js";
 
 export function initOffice(opts: {
   onFocusAgent: (name: string) => void;
-  avatarColor: (name: string) => string;
   avatarGlyph: (name: string) => string;
   loadVillage: () => Promise<VillageSnapshot>;
 }): {

@@ -18,7 +18,9 @@ import {
   podOrder,
   poseFor,
   route,
+  ROOM_ASPECT,
   seatsFrom,
+  statusDot,
   senderOf,
   WORKERS,
   type OfficeLayout,
@@ -147,7 +149,26 @@ function inside(L: OfficeLayout): boolean {
   const path = route(L1, { ...d0.chair, exit: d0.exit }, wpt);
   assert(path[0].x === d0.chair.x && path[path.length - 1].z === wpt.z, "a route starts at the chair and ends at the waypoint");
   assert(path.every((p) => p.x >= 0 && p.x <= L1.room.w && p.z >= 0 && p.z <= L1.room.d), "a route stays inside the room");
-  assert(path.every((p, i) => i === 0 || p.x === path[i - 1].x || p.z === path[i - 1].z || i === 1 || i === path.length - 1), "routes walk the aisles axis-aligned between exits");
+  const axisAligned = (pts: Array<{ x: number; z: number }>) => pts.every((p, i) => i === 0 || Math.abs(p.x - pts[i - 1].x) < 1e-9 || Math.abs(p.z - pts[i - 1].z) < 1e-9);
+  assert(axisAligned(path), "a desk → waypoint route is axis-aligned end to end");
+  const spots = [
+    ...L1.pods.flatMap((p) => p.desks.map((d) => ({ ...d.chair, exit: d.exit }))),
+    ...L1.waypoints,
+    { x: L1.you.x, z: L1.you.z, exit: L1.you.exit },
+    { x: L1.door.x, z: L1.door.z, exit: L1.door.exit },
+  ];
+  let bent = 0;
+  for (const a of spots) for (const b of spots) if (!axisAligned(route(L1, a, b))) bent++;
+  assert(bent === 0, `every desk/waypoint/door pair routes axis-aligned (${spots.length ** 2} routes, ${bent} with a diagonal)`);
+  const aspect = (L: OfficeLayout) => L.room.w / L.room.d;
+  assert(Math.abs(Math.log(aspect(LB) / ROOM_ASPECT)) < Math.log(1.6), `a 9-pod office keeps a screen-friendly shape (w:d ${aspect(LB).toFixed(2)}, target ${ROOM_ASPECT})`);
+}
+
+/* ── status colours match the sidebar pips ── */
+{
+  assert(statusDot(row("a", "/x", { mesh: "working" })) === "busy" && statusDot(row("a", "/x", { busy: true })) === "busy", "working/busy → amber, the sidebar's busy pip");
+  assert(statusDot(row("a", "/x", { busy: true, failure: { text: "boom" } } as Partial<OfficeRow>)) === "fail", "a failed turn → red, even mid-turn (sidebar order)");
+  assert((["idle", "waiting", "starting"] as const).every((m) => statusDot(row("a", "/x", { mesh: m })) === "on"), "idle/waiting/starting → green (available)");
 }
 
 /* ── DM diffing ── */

@@ -73,7 +73,7 @@ window.addEventListener("unhandledrejection", (e) => showFault(`unhandled: ${e.r
 // The client names its own build, loudly, so "which code is this tab running" is answered by any
 // screenshot instead of a forensic session (the 2026-08-25 evening: three rounds of fixes debugged
 // against tabs of unknown vintage). Stamped by paw-folder at edit time; shown in the header hint.
-const CLIENT_BUILD = "office-1";
+const CLIENT_BUILD = "office-2";
 console.log("[paw] client build", CLIENT_BUILD);
 
 const state = {
@@ -951,9 +951,12 @@ function render() {
     if (office) {
       if (!office.isOpen()) office.open();
       office.update(state.space, state.rows, state.messages);
-    } else void ensureOffice().then((o) => { if (o) render(); });
+    } else if (!officeFailed) void ensureOffice().then((o) => { if (o) render(); });
   } else if (office?.isOpen()) office.close();
-  else if (!office) $("office").hidden = true; // a still-loading (or failed) office leaves with the focus
+  else if (!office) {
+    $("office").hidden = true; // a still-loading (or failed) office leaves with the focus
+    if (officeFailed) { $("office").innerHTML = ""; officeFailed = false; } // …and the next open retries the import
+  }
   // A company page is SCOPED: no global sidebar, no global filter bar (operator, 2026-10-04).
   document.body.classList.toggle("cochrome", !!state.co);
   if (state.co) closeNav();
@@ -1492,12 +1495,12 @@ const palette = initPalette({
  *  never a blank canvas. One in-flight load at a time. */
 let office = null;
 let officeLoading = null;
+let officeFailed = false; // a failed import is retried when the view is reopened, not on every ws frame
 function ensureOffice() {
   officeLoading ??= import("./office.js")
     .then(({ initOffice }) => {
       office = initOffice({
         onFocusAgent: (name) => { state.mode = "chat"; focusTarget(name); },
-        avatarColor,
         avatarGlyph,
         loadVillage: async () => { const d = await api("/api/village"); state.village = d; return d; },
       });
@@ -1505,6 +1508,7 @@ function ensureOffice() {
     })
     .catch((e) => {
       officeLoading = null;
+      officeFailed = true;
       const pane = $("office");
       pane.hidden = false;
       pane.innerHTML = `<div class="ofc-fatal"><b>The Office view failed to load.</b><br>${esc(e.message)}</div>`;

@@ -442,9 +442,13 @@
   #office .ofc-pill .em { font-size:11px; }
   #office .ofc-pill.sel { background:#3F0E40; box-shadow:0 0 0 2px rgba(255,255,255,.9), 0 4px 14px rgba(0,0,0,.25); }
   #office .d { width:7px; height:7px; border-radius:50%; flex:none; background:#9a9aa0; display:inline-block; }
-  #office .d.live { background:#2BAC76; } #office .d.waiting { background:#ECB22E; } #office .d.failed { background:#E01E5A; } #office .d.you { background:#c9a6d6; }
-  #office .ofc-bubble { position:absolute; left:0; top:0; max-width:220px; padding:7px 10px; border-radius:14px 14px 14px 4px; background:#fff; color:#1e1b22; font-size:11.5px; line-height:1.35;
-                        box-shadow:0 6px 18px rgba(0,0,0,.16); white-space:normal; }
+  /* the sidebar's pip meanings: green = available, amber = working, red = failed/stuck */
+  #office .d.on { background:var(--green, #2BAC76); } #office .d.busy { background:var(--amber, #ECB22E); } #office .d.fail { background:#E01E5A; } #office .d.you { background:#c9a6d6; }
+  #office .ofc-bubble { position:absolute; left:0; top:0; max-width:220px; padding:7px 10px; border-radius:14px; background:#fff; color:#1e1b22; font-size:11.5px; line-height:1.35;
+                        box-shadow:0 6px 18px rgba(0,0,0,.16); white-space:normal; will-change:transform; }
+  #office .ofc-bubble::after { content:""; position:absolute; left:50%; bottom:-5px; width:10px; height:10px; margin-left:-5px; background:inherit; transform:rotate(45deg); border-radius:2px; }
+  #office .ofc-bubble b { font-weight:650; margin-right:2px; }
+  #office.night .ofc-bubble { background:#2a2733; color:#efe8f5; }
   #office .ofc-bubble.in { animation:ofcpop .25s cubic-bezier(.3,1.6,.5,1); }
   @keyframes ofcpop { from { opacity:0; scale:.6; } to { opacity:1; scale:1; } }
   #office .ofc-roster { position:absolute; left:14px; top:14px; bottom:14px; width:272px; display:flex; flex-direction:column; border-radius:24px; background:var(--glass); color:var(--glass-txt);
@@ -490,7 +494,15 @@
   #office .ofc-tip .vft { margin-top:6px; font-size:11px; }
   #office .ofc-fatal { position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:6px; text-align:center; padding:24px; color:#5a5560; font-size:13.5px; line-height:1.6; }
   #office .ofc-fatal b { color:#1e1b22; font-size:15px; }
-  @media (max-width: 900px) { #office .ofc-roster { display:none; } #office .ofc-card { right:16px; bottom:200px; } }
+  #office .ofc-rbtn { display:none; position:absolute; top:14px; left:14px; height:34px; padding:0 14px; border:0; border-radius:999px; cursor:pointer; background:var(--glass); color:var(--glass-txt);
+                      font:inherit; font-size:12.5px; font-weight:600; box-shadow:0 4px 14px rgba(0,0,0,.1); backdrop-filter:blur(20px); -webkit-backdrop-filter:blur(20px); }
+  @media (max-width: 900px) {
+    #office .ofc-rbtn { display:block; }
+    #office .ofc-roster { display:none; left:8px; right:8px; top:auto; bottom:8px; width:auto; height:min(60%, 460px); z-index:6; }
+    #office.roster-open .ofc-roster { display:flex; }
+    #office.roster-open .ofc-rbtn { background:#3F0E40; color:#fff; }
+    #office .ofc-card { left:12px; right:64px; bottom:12px; width:auto; }
+  }
   #palette { position:fixed; inset:0; z-index:100; background:rgba(20,16,24,.32); display:flex; align-items:flex-start; justify-content:center; }
   #palette[hidden] { display:none; }
   #palette .palbox { margin-top:12vh; width:min(560px,92vw); max-height:64vh; background:var(--content); color:var(--txt); border:1px solid var(--line); border-radius:12px; box-shadow:0 24px 64px rgba(0,0,0,.35); display:flex; flex-direction:column; overflow:hidden; }

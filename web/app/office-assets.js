@@ -3,16 +3,20 @@
 // floor, windows day/night, wall TV, vending front). No external models. Geometries are shared and
 // materials cached, so 20+ characters stay cheap.
 
-import * as THREE from "./vendor/three/three.module.js";
+import * as THREE from "./vendor/three-0.186.1/three.module.js";
 
-export const CHAR_SCALE = 0.74;
+export const CHAR_SCALE = 1.1; // chunky, Skydive-scale: a standing character is ~2.5 desk heights
 export const HIP_Y = 0.42; // character-local hip height (before CHAR_SCALE)
 export const SEAT_Y = 0.36; // world seat height
 export const DESK_Y = 0.62; // world desk top
+const HEAD_TOP = 1.44; // character-local crown height, standing, before CHAR_SCALE
+/** World height just above a character's crown — where its pill/bubble anchors. */
+export const crownY = (seated) => (seated ? SEAT_Y + (HEAD_TOP - HIP_Y) * CHAR_SCALE : HEAD_TOP * CHAR_SCALE) + 0.04;
 
 const geo = {};
 const G = (key, make) => (geo[key] ??= make());
 const mats = new Map();
+let sharedHit = null;
 export function mat(color, opts = {}) {
   const key = `${color}|${JSON.stringify(opts)}`;
   if (!mats.has(key)) mats.set(key, new THREE.MeshStandardMaterial({ color, roughness: 0.8, metalness: 0, ...opts }));
@@ -34,7 +38,8 @@ const BODY = "#f4f1ec";
 const SKIN = "#ebe7e1";
 
 /** A character Group. `parts` holds the named pivots the animator drives. Feet at y=0, facing +z. */
-export function buildCharacter(look) {
+export function buildCharacter(look, blobMat) {
+  if (!blobMat) throw new Error("buildCharacter: blobMat (the contact-shadow material) is required");
   const root = new THREE.Group();
   const rig = new THREE.Group();
   rig.scale.setScalar(CHAR_SCALE);
@@ -111,8 +116,16 @@ export function buildCharacter(look) {
   const armL = arm(1), armR = arm(-1);
 
   // Picking proxy: an invisible capsule, cheaper and kinder than raycasting every limb.
-  const hit = new THREE.Mesh(G("hit", () => new THREE.CapsuleGeometry(0.32, 0.7, 2, 8)), new THREE.MeshBasicMaterial({ visible: false }));
-  hit.position.y = 0.55;
+  // Characters never cast into the shadow map (it is rendered once, for the static room); a soft blob
+  // under the feet grounds them instead, like Skydive's contact shadows.
+  rig.traverse((o) => { if (o.isMesh) o.castShadow = false; });
+  const blob = new THREE.Mesh(G("blob", () => new THREE.PlaneGeometry(0.9, 0.9)), blobMat);
+  blob.rotation.x = -Math.PI / 2;
+  blob.position.y = 0.015;
+  blob.renderOrder = -1;
+  root.add(blob);
+  const hit = new THREE.Mesh(G("hit", () => new THREE.CapsuleGeometry(0.42, 0.95, 2, 8)), (sharedHit ??= new THREE.MeshBasicMaterial({ visible: false })));
+  hit.position.y = 0.8;
   root.add(hit);
 
   root.userData.parts = { rig, hips, torso, head, armL, armR, legL: L.pivot, legR: R.pivot, shinL: L.knee, shinR: R.knee };
@@ -503,4 +516,6 @@ export function disposeAssets() {
   for (const k in geo) { geo[k].dispose(); delete geo[k]; }
   for (const m of mats.values()) m.dispose();
   mats.clear();
+  sharedHit?.dispose();
+  sharedHit = null;
 }

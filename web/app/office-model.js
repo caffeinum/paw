@@ -50,11 +50,12 @@ export function poseFor(row) {
 /** Seated poses hold the desk; roam wanders; absent has no character at all. */
 export const SEATED_POSES = new Set(["typing", "waiting", "slumped"]);
 
-export function statusDot(pose) {
-  if (pose === "typing") return "live";
-  if (pose === "waiting" || pose === "arriving") return "waiting";
-  if (pose === "slumped") return "failed";
-  return "idle";
+/** Exactly the sidebar's pip rule (app.js rowHtml), so one agent never shows two colours side by side:
+ *  red = last turn failed, amber = working/busy, green = available. Stuck shows in the pose and pill. */
+export function statusDot(row) {
+  if (row.failure) return "fail";
+  if (row.busy || row.mesh === "working") return "busy";
+  return "on";
 }
 
 /** Pill detail text — real fields only, never invented. */
@@ -181,6 +182,32 @@ function podSize(n) {
   };
 }
 
+export const ROOM_ASPECT = 1.3;
+const MIN_W = 14;
+
+function gridFor(pods, cols) {
+  const gridRows = Math.ceil(pods.length / cols);
+  const colW = Array.from({ length: cols }, (_, c) => Math.max(0, ...pods.filter((_, k) => k % cols === c).map((p) => p.w)));
+  const rowD = Array.from({ length: gridRows }, (_, r) => Math.max(0, ...pods.filter((_, k) => Math.floor(k / cols) === r).map((p) => p.d)));
+  const gridW = colW.reduce((s, v) => s + v, 0) + AISLE * Math.max(0, cols - 1);
+  const gridD = rowD.reduce((s, v) => s + v, 0) + AISLE * Math.max(0, gridRows - 1);
+  const W = Math.max(MIN_W, gridW + 2 * AISLE);
+  const D = BACK_STRIP + AISLE + gridD + AISLE + FRONT_STRIP;
+  return { cols, colW, rowD, gridW, gridD, W, D };
+}
+
+/** The pod column count whose room is closest to ROOM_ASPECT (w:d), so the room fills a screen instead
+ *  of reading as a strip. Ties go to fewer columns. */
+export function bestGrid(pods) {
+  let best = null;
+  for (let cols = 1; cols <= Math.max(1, pods.length); cols++) {
+    const g = gridFor(pods, cols);
+    const err = Math.abs(Math.log(g.W / g.D / ROOM_ASPECT));
+    if (!best || err < best.err - 1e-9) best = { ...g, err };
+  }
+  return best;
+}
+
 /** rows + seats (+ a stable pod order) → the whole floor plan. Pure. */
 export function officeLayout(rows, seats, podRank) {
   const podOf = podKeysFor(rows);
@@ -197,23 +224,14 @@ export function officeLayout(rows, seats, podRank) {
     const ra = rank(a), rb = rank(b);
     return ra < rb ? -1 : ra > rb ? 1 : a.localeCompare(b);
   });
-  const P = keys.length;
-  const cols = Math.max(1, Math.ceil(Math.sqrt(P)));
   const pods = keys.map((key) => {
     const members = byPod.get(key);
     const n = Math.max(...members.map((m) => m.i)) + 1;
     return { key, label: podLabel(key), members, n, ...podSize(n), rugColor: RUG_COLORS[hashStr(key) % RUG_COLORS.length] };
   });
-  const gridRows = Math.ceil(P / cols);
-  const colW = Array.from({ length: cols }, (_, c) => Math.max(0, ...pods.filter((_, k) => k % cols === c).map((p) => p.w)));
-  const rowD = Array.from({ length: gridRows }, (_, r) => Math.max(0, ...pods.filter((_, k) => Math.floor(k / cols) === r).map((p) => p.d)));
-  const gridW = colW.reduce((s, v) => s + v, 0) + AISLE * Math.max(0, cols - 1);
-  const minW = 14;
-  const W = Math.max(minW, gridW + 2 * AISLE);
+  const { cols, colW, rowD, gridW, W, D } = bestGrid(pods);
   const x0 = (W - gridW) / 2;
   const zGrid = BACK_STRIP + AISLE;
-  const gridD = rowD.reduce((s, v) => s + v, 0) + AISLE * Math.max(0, gridRows - 1);
-  const D = zGrid + gridD + AISLE + FRONT_STRIP;
   const colX = colW.map((_, c) => x0 + colW.slice(0, c).reduce((s, v) => s + v, 0) + AISLE * c);
   const rowZ = rowD.map((_, r) => zGrid + rowD.slice(0, r).reduce((s, v) => s + v, 0) + AISLE * r);
 

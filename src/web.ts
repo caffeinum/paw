@@ -819,7 +819,9 @@ export function serveStatic(root: string | undefined, urlPath: string, res: Resp
   res.writeHead(200, {
     "content-type": MIME[extname(file).toLowerCase()] ?? "application/octet-stream",
     "content-length": String(body.length),
-    "cache-control": "no-store", // the bundle is rebuilt in place; a cached shell against a new API is a support call
+    // The bundle is rebuilt in place, so a cached shell against a new API is a support call — except
+    // vendor/<lib>-<version>/, which is verbatim third-party code whose path changes with its version.
+    "cache-control": /^vendor\/[^/]+-\d[^/]*\//.test(rel) ? "public, max-age=31536000, immutable" : "no-store",
   });
   res.end(body);
 }

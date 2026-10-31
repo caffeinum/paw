@@ -7,13 +7,13 @@
 // roster, controls). Everything shown is real data from /api/status, /api/village and the inbox; an
 // endpoint that fails is SAID in the pane, never papered over.
 
-import * as THREE from "./vendor/three/three.module.js";
+import * as THREE from "./vendor/three-0.186.1/three.module.js";
 import {
   assignSeats, clip, cullLabels, diffEdges, labelPriority, limbAngles, lookFor, officeLayout, pillDetail,
   podKeysFor, podOrder, poseFor, relTime, route, senderOf, statusDot, SEATED_POSES,
 } from "./office-model.js";
 import {
-  applyLimbs, buildAmenity, buildCharacter, buildDesk, buildRug, buildYouDesk, disposeAssets, mat,
+  applyLimbs, buildAmenity, buildCharacter, buildDesk, buildRug, buildYouDesk, crownY, disposeAssets, mat,
   MONITOR_OFF, MONITOR_ON, shadowBlobTexture, tvTexture, vendingTexture, windowTexture, woodTexture,
 } from "./office-assets.js";
 
@@ -22,6 +22,9 @@ const ISO_EL = Math.atan(1 / Math.SQRT2); // 35.264° — true isometric
 const WALL_H = 2.8;
 const WALK_SPEED = 1.5;
 const VILLAGE_EVERY = 3000;
+const IDLE_FRAME_MS = 1000 / 30 - 2; // unless the camera is moving, 30fps is plenty for walks, breathing and typing
+const MAX_PPU = 72; // px per world unit: a small office never zooms past "a desk pod fills the view"
+const NARROW = "(max-width: 900px)";
 const BG = { day: "#f4f1ec", night: "#1b1d2a" };
 const YOU = "you";
 
@@ -29,7 +32,7 @@ const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&l
 const ease = (t) => (t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2);
 const rand = (a, b) => a + Math.random() * (b - a);
 
-export function initOffice({ onFocusAgent, avatarColor, avatarGlyph, loadVillage }) {
+export function initOffice({ onFocusAgent, avatarGlyph, loadVillage }) {
   const root = document.getElementById("office");
   if (!root) throw new Error("office: #office pane missing from index.html");
   let open = false;
@@ -58,6 +61,7 @@ export function initOffice({ onFocusAgent, avatarColor, avatarGlyph, loadVillage
         <button data-act="out" title="zoom out">−</button>
       </div>
       <button class="ofc-link" title="copy a link to this view">copy link</button>
+      <button class="ofc-rbtn" title="agents">Agents</button>
       <div class="ofc-note" hidden></div>
       <div class="ofc-card" hidden></div>
       <div class="ofc-tip" hidden></div>`;
@@ -93,6 +97,7 @@ export function initOffice({ onFocusAgent, avatarColor, avatarGlyph, loadVillage
     renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    renderer.shadowMap.autoUpdate = false; // only the static room casts; re-rendered on rebuild (needsUpdate)
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
     renderer.toneMappingExposure = 0.9;
@@ -120,8 +125,9 @@ export function initOffice({ onFocusAgent, avatarColor, avatarGlyph, loadVillage
     })();
 
     const textures = { tv: tvTexture(), vending: vendingTexture(), day: windowTexture(false), night: windowTexture(true), blob: shadowBlobTexture() };
+    const blobMat = new THREE.MeshBasicMaterial({ map: textures.blob, transparent: true, depthWrite: false });
     const s = {
-      renderer, scene, camera, hemi, sun, textures, stage,
+      renderer, scene, camera, hemi, sun, textures, stage, blobMat,
       theme: theme0,
       staticGroup: null, lamps: [], windowMats: [], walls: {},
       layout: null, layoutSig: "",
@@ -132,7 +138,8 @@ export function initOffice({ onFocusAgent, avatarColor, avatarGlyph, loadVillage
       cam: { target: new THREE.Vector3(), h: 8, az: 45, user: false },
       camAnim: null,
       selected: null, hover: null, filter: "",
-      raf: 0, frames: 0, lastT: performance.now(), clock: 0,
+      raf: 0, frames: 0, lastT: performance.now(), lastRender: 0, clock: 0, dirty: true, dragging: false,
+      rowsSig: "", cardHtml: "", lastPick: null, dimCache: new Map(), bubbleMax: 0,
       raycaster: new THREE.Raycaster(),
       size: { w: 1, h: 1 },
       labelSizes: new Map(),
@@ -153,6 +160,9 @@ export function initOffice({ onFocusAgent, avatarColor, avatarGlyph, loadVillage
       for (const a of s.agents.values()) s.scene.remove(a.obj);
       for (const arc of s.arcs) disposeArc(s, arc);
       for (const t of Object.values(textures)) t.dispose();
+      blobMat.dispose();
+      for (const m of s.dimCache.values()) m.dispose();
+      s.dimCache.clear();
       disposeAssets();
       renderer.dispose();
       renderer.forceContextLoss();
@@ -324,10 +334,12 @@ export function initOffice({ onFocusAgent, avatarColor, avatarGlyph, loadVillage
     s.scene.background = new THREE.Color(night ? BG.night : BG.day);
     s.hemi.intensity = night ? 0.55 : 2;
     s.sun.intensity = night ? 0.5 : 3.2;
-    for (const l of s.lamps) l.intensity = night ? 5 : 0;
+    for (const l of s.lamps) { l.intensity = night ? 5 : 0; l.visible = night; } // invisible lights cost no shader work
     for (const m of s.windowMats) { m.map = m.emissiveMap = night ? s.textures.night : s.textures.day; m.emissiveIntensity = night ? 0.9 : 0.6; m.needsUpdate = true; }
     for (const m of s.lampShades ?? []) m.material = mat("#f6e9d2", { emissive: "#ffc98f", emissiveIntensity: night ? 1.4 : 0 });
     root.classList.toggle("night", night);
+    s.renderer.shadowMap.needsUpdate = true;
+    s.dirty = true;
   }
 
   /* ── camera ──────────────────────────────────────────────────────────────────────────────── */
@@ -344,27 +356,50 @@ export function initOffice({ onFocusAgent, avatarColor, avatarGlyph, loadVillage
     const roster = root.querySelector(".ofc-roster");
     const rr = roster && roster.offsetParent ? roster.getBoundingClientRect() : null;
     const hr = root.getBoundingClientRect();
-    return { l: rr ? rr.right - hr.left + 12 : 24, r: 72, t: 24, b: 24 };
+    const docked = rr && !window.matchMedia(NARROW).matches; // the narrow-screen sheet floats over the room
+    return { l: docked ? rr.right - hr.left + 12 : 16, r: 64, t: 56, b: 16 };
   }
 
-  /** Target + frustum that fit the whole room into the area not covered by the roster/buttons. */
+  /** Screen-space bounds (camera right/up axes, relative to c) of a set of world points. */
+  function screenBounds(points, c, right, up) {
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    const v = new THREE.Vector3();
+    for (const p of points) {
+      v.copy(p).sub(c);
+      const px = v.dot(right), py = v.dot(up);
+      minX = Math.min(minX, px); maxX = Math.max(maxX, px); minY = Math.min(minY, py); maxY = Math.max(maxY, py);
+    }
+    return { minX, maxX, minY, maxY };
+  }
+
+  /** Target + frustum framing the desk pods (where the people are), Skydive-style: the room fills the
+   *  free area and may bleed off its edges. Never smaller than a legible character scale, never zoomed
+   *  past MAX_PPU unless the whole room already fits at that size. */
   function fitView(s, az) {
     const L = s.layout;
     if (!L) return { target: new THREE.Vector3(), h: 8, az };
     const { right, up } = basis(az);
     const c = new THREE.Vector3(L.room.w / 2, 0, L.room.d / 2);
-    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-    for (const x of [0, L.room.w]) for (const z of [0, L.room.d]) for (const y of [-0.25, WALL_H]) {
-      const v = new THREE.Vector3(x, y, z).sub(c);
-      const px = v.dot(right), py = v.dot(up);
-      minX = Math.min(minX, px); maxX = Math.max(maxX, px); minY = Math.min(minY, py); maxY = Math.max(maxY, py);
-    }
     const ins = insets(s);
     const availW = Math.max(100, s.size.w - ins.l - ins.r), availH = Math.max(100, s.size.h - ins.t - ins.b);
-    const ppu = Math.min(availW / (maxX - minX), availH / (maxY - minY));
+    const corners = (x0, z0, x1, z1, ys) => {
+      const out = [];
+      for (const x of [x0, x1]) for (const z of [z0, z1]) for (const y of ys) out.push(new THREE.Vector3(x, y, z));
+      return out;
+    };
+    const head = crownY(false) + 0.3;
+    const podPts = L.pods.flatMap((p) => corners(p.x, p.z, p.x + p.w, p.z + p.d, [0, head]));
+    podPts.push(...corners(L.you.x - 1, L.you.z - 1, L.you.x + 1, L.you.z + 0.6, [0, head]));
+    const room = screenBounds(corners(0, 0, L.room.w, L.room.d, [-0.25, WALL_H]), c, right, up);
+    const pods = screenBounds(podPts, c, right, up);
+    const ppuOf = (b) => Math.min(availW / (b.maxX - b.minX), availH / (b.maxY - b.minY));
+    const minPpu = s.size.w < 700 ? 20 : 24; // ≈ 26–31px characters: legible, never a floor plan
+    const ppuRoom = ppuOf(room);
+    const ppu = ppuRoom >= MAX_PPU ? ppuRoom : Math.min(MAX_PPU, Math.max(minPpu, ppuOf(pods), ppuRoom));
+    const b = ppu === ppuRoom ? room : pods;
     const h = s.size.h / (2 * ppu);
-    const vx = (minX + maxX) / 2 - (ins.l - ins.r) / 2 / ppu;
-    const vy = (minY + maxY) / 2 - (ins.b - ins.t) / 2 / ppu;
+    const vx = (b.minX + b.maxX) / 2 - (ins.l - ins.r) / 2 / ppu;
+    const vy = (b.minY + b.maxY) / 2 - (ins.b - ins.t) / 2 / ppu;
     return { target: c.clone().addScaledVector(right, vx).addScaledVector(up, vy), h, az };
   }
 
@@ -379,6 +414,7 @@ export function initOffice({ onFocusAgent, avatarColor, avatarGlyph, loadVillage
     cam.near = 1; cam.far = 400;
     cam.updateProjectionMatrix();
     cam.updateMatrixWorld();
+    s.dirty = true;
     // cutaway: hide the walls between the camera and the room
     const a = s.cam.az * D2R;
     const dx = Math.sin(a), dz = Math.cos(a);
@@ -390,9 +426,10 @@ export function initOffice({ onFocusAgent, avatarColor, avatarGlyph, loadVillage
     }
   }
 
-  function animateCam(s, to, dur = 700) {
-    if (reduced()) { Object.assign(s.cam, { target: to.target.clone(), h: to.h, az: to.az }); placeCamera(s); saveCam(); return; }
-    s.camAnim = { from: { target: s.cam.target.clone(), h: s.cam.h, az: s.cam.az }, to, t0: performance.now(), dur };
+  /** `persist: false` for transient framing (selecting an agent), so reopening returns to the user's view. */
+  function animateCam(s, to, dur = 700, persist = true) {
+    if (reduced()) { Object.assign(s.cam, { target: to.target.clone(), h: to.h, az: to.az }); placeCamera(s); if (persist) saveCam(); return; }
+    s.camAnim = { from: { target: s.cam.target.clone(), h: s.cam.h, az: s.cam.az }, to, t0: performance.now(), dur, persist };
   }
 
   function stepCam(s, now) {
@@ -403,7 +440,7 @@ export function initOffice({ onFocusAgent, avatarColor, avatarGlyph, loadVillage
     s.cam.target.lerpVectors(A.from.target, A.to.target, e);
     s.cam.h = A.from.h + (A.to.h - A.from.h) * e;
     s.cam.az = A.from.az + (A.to.az - A.from.az) * e;
-    if (k >= 1) { s.camAnim = null; s.cam.az = ((A.to.az % 360) + 360) % 360; saveCam(); }
+    if (k >= 1) { s.camAnim = null; s.cam.az = ((A.to.az % 360) + 360) % 360; if (A.persist) saveCam(); }
     placeCamera(s);
   }
 
@@ -437,7 +474,7 @@ export function initOffice({ onFocusAgent, avatarColor, avatarGlyph, loadVillage
     const { right, up } = basis(s.cam.az);
     const t = p.clone().setY(0.7).addScaledVector(right, -(ins.l - ins.r) / 2 / ppu).addScaledVector(up, -(ins.b - ins.t) / 2 / ppu);
     s.cam.user = true;
-    animateCam(s, { target: t, h, az: s.cam.az });
+    animateCam(s, { target: t, h, az: s.cam.az }, 700, false);
   }
 
   const camKey = () => `office.cam.${data.space}`;
@@ -466,17 +503,30 @@ export function initOffice({ onFocusAgent, avatarColor, avatarGlyph, loadVillage
     if (open && S) sync();
   }
 
+  /** Only the fields the scene, roster and card read — a status frame that changes none of them is a no-op. */
+  const rowsSig = (rows) => data.space + "\u0001" + JSON.stringify(rows.map((r) => [
+    r.name, r.live, r.mesh, !!r.busy, r.failure ? r.failure.text ?? 1 : 0, !!r.stuck, r.tool?.name, r.git?.repo, r.git?.branch,
+    !!r.git?.worktree, r.git?.mainPath, r.folder, !!r.unregistered, r.hue, r.emoji,
+  ]));
+  const messagesSig = () => { const m = data.messages[data.messages.length - 1]; return `${data.messages.length}:${m?.ts ?? 0}`; };
+
   function sync() {
     const s = S;
     const rows = data.rows.filter((r) => r && r.name);
+    const sig = rowsSig(rows) + "\u0001" + messagesSig();
+    if (sig === s.rowsSig) return;
+    const rowsChanged = !s.rowsSig.startsWith(rowsSig(rows) + "\u0001");
+    s.rowsSig = sig;
+    if (!rowsChanged) { renderRoster(); if (s.selected) renderCard(s.selected); return; }
+    s.dirty = true;
     const seats = assignSeats(data.space, rows);
     const rank = podOrder(data.space, [...new Set(podKeysFor(rows).values())]);
     const L = officeLayout(rows, seats, rank);
-    const sig = JSON.stringify([L.room, L.pods.map((p) => [p.key, p.x, p.z, p.w, p.d, p.desks.map((d) => d.name)])]);
-    if (sig !== s.layoutSig) {
+    const layoutSig = JSON.stringify([L.room, L.pods.map((p) => [p.key, p.x, p.z, p.w, p.d, p.desks.map((d) => d.name)])]);
+    if (layoutSig !== s.layoutSig) {
       const first = !s.layout;
       s.layout = L;
-      s.layoutSig = sig;
+      s.layoutSig = layoutSig;
       s.deskByName = new Map(L.pods.flatMap((p) => p.desks.filter((d) => d.name).map((d) => [d.name, d])));
       buildStatic(s, L);
       if (first) { const c = loadCam(); if (c) s.cam = c; }
@@ -509,6 +559,7 @@ export function initOffice({ onFocusAgent, avatarColor, avatarGlyph, loadVillage
       dk.chair.traverse((o) => o.updateMatrix());
       dk.top.material = pose === "absent" ? mat("#d6d3ce", { roughness: 0.5 }) : mat("#f9f6f1", { roughness: 0.5 });
     }
+    s.renderer.shadowMap.needsUpdate = true; // chairs may have moved
     if (!s.youChar) s.youChar = addYou(s);
     else { s.youChar.obj.position.set(s.layout.you.x, 0, s.layout.you.z - 0.8 * Math.cos(s.layout.you.yaw)); }
     renderRoster();
@@ -518,11 +569,10 @@ export function initOffice({ onFocusAgent, avatarColor, avatarGlyph, loadVillage
 
   function addYou(s) {
     const L = s.layout;
-    const obj = buildCharacter({ hair: "#3F0E40", style: "bob" });
+    const obj = buildCharacter({ hair: "#3F0E40", style: "bob" }, s.blobMat);
     obj.scale.setScalar(1.08);
     obj.position.set(L.you.x, 0, L.you.z - 0.8 * Math.cos(L.you.yaw));
     obj.rotation.y = L.you.yaw;
-    obj.traverse((o) => { if (o.isMesh && o !== obj.userData.hit) o.castShadow = true; });
     obj.userData.hit.userData.agent = YOU;
     s.scene.add(obj);
     const label = makeLabel(YOU);
@@ -531,7 +581,7 @@ export function initOffice({ onFocusAgent, avatarColor, avatarGlyph, loadVillage
 
   function addAgent(s, row, pose) {
     const look = lookFor(row.name, row);
-    const obj = buildCharacter(look);
+    const obj = buildCharacter(look, s.blobMat);
     obj.userData.hit.userData.agent = row.name;
     s.scene.add(obj);
     const a = {
@@ -652,6 +702,11 @@ export function initOffice({ onFocusAgent, avatarColor, avatarGlyph, loadVillage
     cancelAnimationFrame(s.raf);
     s.raf = requestAnimationFrame(() => {
       const now = performance.now();
+      const interactive = s.camAnim || s.dragging; // the camera under the user's hand gets every frame
+      const ambient = !reduced() || s.arcs.length > 0 || now < s.bubbleMax + 100; // reduced motion: draw only on change
+      if (!interactive && !s.dirty && (!ambient || now - s.lastRender < IDLE_FRAME_MS)) { loop(); return; }
+      s.lastRender = now;
+      s.dirty = false;
       const dt = Math.min(0.05, (now - s.lastT) / 1000);
       s.lastT = now;
       s.clock += dt;
@@ -705,9 +760,9 @@ export function initOffice({ onFocusAgent, avatarColor, avatarGlyph, loadVillage
   /* ── DM traffic: bubbles, visits, arcs ───────────────────────────────────────────────────── */
 
   function headOf(name) {
-    if (name === YOU) return S.youChar ? S.youChar.obj.position.clone().setY(1.0) : null;
+    if (name === YOU) return S.youChar ? S.youChar.obj.position.clone().setY(crownY(true) - 0.3) : null;
     const a = S.agents.get(name);
-    return a ? a.obj.position.clone().setY(a.state === "seated" ? 0.95 : 1.15) : null;
+    return a ? a.obj.position.clone().setY(crownY(a.state === "seated") - 0.3) : null;
   }
 
   function addArc(s, from, to, count) {
@@ -739,14 +794,21 @@ export function initOffice({ onFocusAgent, avatarColor, avatarGlyph, loadVillage
     });
   }
 
+  /** A speech bubble over `name`, carrying the name so it can stand in for the pill underneath. */
   function say(name, text, ms = 6000) {
     const who = name === YOU ? S?.youChar : S?.agents.get(name);
     if (!who || !text) return;
-    who.label.bubble.textContent = clip(text, 70);
-    who.label.bubble.classList.remove("in");
-    void who.label.bubble.offsetWidth;
-    who.label.bubble.classList.add("in");
+    const b = who.label.bubble;
+    b.innerHTML = `<b>${esc(name)}</b> ${esc(clip(text, 70))}`;
+    b.classList.remove("in");
+    b.style.display = "";
+    b.style.transform = "translate(-9999px, 0)";
+    who.label.bw = b.offsetWidth || 180;
+    who.label.bh = b.offsetHeight || 40;
+    b.classList.add("in");
     who.bubbleUntil = performance.now() + ms;
+    S.bubbleMax = Math.max(S.bubbleMax, who.bubbleUntil);
+    S.dirty = true;
   }
 
   function onVillageEvents(events, last) {
@@ -800,6 +862,7 @@ export function initOffice({ onFocusAgent, avatarColor, avatarGlyph, loadVillage
       data.village = d;
       if (events.length) onVillageEvents(events, d.last);
       renderRoster();
+      if (S?.selected) renderCard(S.selected);
       renderNote();
     } catch (e) {
       // 501 = a server without the tracker: render without wires, but say so (never fake traffic)
@@ -826,6 +889,9 @@ export function initOffice({ onFocusAgent, avatarColor, avatarGlyph, loadVillage
   }
 
   const tmpV = new THREE.Vector3();
+  const vis = (el, on) => { const d = on ? "" : "none"; if (el.style.display !== d) el.style.display = d; };
+  /** Pills and speech bubbles share one overlap pass: bubbles outrank pills (a bubble names its speaker,
+   *  so it replaces that agent's pill), the selected agent outranks everyone, then busy over idle. */
   function placeLabels(s) {
     const items = [];
     const now = performance.now();
@@ -835,56 +901,61 @@ export function initOffice({ onFocusAgent, avatarColor, avatarGlyph, loadVillage
     for (const a of all) {
       const isYou = a.name === YOU;
       const pose = isYou ? "you" : a.pose;
-      const dot = isYou ? "you" : statusDot(a.pose);
+      const dot = isYou ? "you" : statusDot(a.row);
       const detail = isYou ? "" : pillDetail(a.row, a.pose);
       const emoji = isYou ? "" : a.look.emoji;
-      const key = `${dot}|${detail}|${emoji}|${s.selected === a.name}`;
+      const sel = s.selected === a.name;
+      const key = `${dot}|${detail}|${emoji}|${sel}`;
       if (a.label.key !== key) {
         a.label.key = key;
         a.label.pill.innerHTML = `<i class="d ${dot}"></i>${emoji ? `<span class="em">${esc(emoji)}</span>` : ""}<b>${esc(a.name)}</b>${detail ? `<span class="dt">${esc(detail)}</span>` : ""}`;
-        a.label.pill.classList.toggle("sel", s.selected === a.name);
+        a.label.pill.classList.toggle("sel", sel);
+        a.label.pill.style.display = "";
         a.label.w = a.label.pill.offsetWidth || 80;
       }
       const matches = !q || a.name.toLowerCase().includes(q);
       tmpV.copy(a.obj.position);
-      tmpV.y += (a.state === "seated" || isYou ? 1.0 : 1.2) * (isYou ? 1.08 : 1);
+      tmpV.y = a.obj.position.y + crownY(isYou || a.state === "seated" || (a.state === "act" && a.anim === "sit")) * (isYou ? 1.08 : 1);
       tmpV.project(s.camera);
       const x = (tmpV.x * 0.5 + 0.5) * s.size.w, y = (-tmpV.y * 0.5 + 0.5) * s.size.h;
       const onScreen = tmpV.z < 1 && x > -50 && x < s.size.w + 50 && y > -20 && y < s.size.h + 20;
-      a._sx = x; a._sy = y;
-      if (!onScreen || !matches) { a.label.pill.style.display = "none"; a.label.bubble.style.display = "none"; continue; }
+      if (!onScreen || !matches) { vis(a.label.pill, false); vis(a.label.bubble, false); continue; }
       const w = a.label.w ?? 80;
-      items.push({ id: a.name, x: x - w / 2, y: y - 22, w, h: 20, priority: isYou ? 2 : labelPriority({ selected: s.selected === a.name, pose }), depth: tmpV.z, a });
-      const bubbleOn = a.bubbleUntil > now;
-      a.label.bubble.style.display = bubbleOn ? "" : "none";
-      if (bubbleOn) a.label.bubble.style.transform = `translate(${x}px, ${y - 28}px) translate(-50%, -100%)`;
+      const rank = isYou ? 2 : labelPriority({ selected: sel, pose });
+      items.push({ id: a.name, x: x - w / 2, y: y - 22, w, h: 20, priority: rank, depth: tmpV.z, a, kind: "pill" });
+      if (a.bubbleUntil > now) {
+        const bw = a.label.bw ?? 180, bh = a.label.bh ?? 40;
+        const bx = Math.max(4, Math.min(s.size.w - bw - 4, x - bw / 2)); // keep the words on screen
+        items.push({ id: `${a.name}\u0000b`, x: bx, y: Math.max(4, y - 2 - bh), w: bw, h: bh, priority: rank + 10, depth: tmpV.z, a, kind: "bubble" });
+      }
     }
     const kept = cullLabels(items);
+    const bubbled = new Set();
     for (const it of items) {
-      const show = kept.has(it.id);
-      it.a.label.pill.style.display = show ? "" : "none";
-      if (show) it.a.label.pill.style.transform = `translate(${it.x}px, ${it.y}px)`;
+      const el = it.kind === "bubble" ? it.a.label.bubble : it.a.label.pill;
+      const on = kept.has(it.id);
+      vis(el, on);
+      if (it.kind === "bubble") bubbled.add(it.a);
+      if (on) el.style.transform = `translate(${Math.round(it.x)}px, ${Math.round(it.y)}px)`;
     }
+    for (const it of items) if (it.kind === "pill" && !bubbled.has(it.a)) vis(it.a.label.bubble, false);
     // dim characters that don't match the roster search
     for (const a of s.agents.values()) {
       const dim = !!q && !a.name.toLowerCase().includes(q);
-      if (a.dim !== dim) { a.dim = dim; setDim(a.obj, dim); }
+      if (a.dim !== dim) { a.dim = dim; setDim(s, a.obj, dim); }
     }
   }
 
-  const dimCache = new Map();
-  function setDim(obj, dim) {
+  function setDim(s, obj, dim) {
     obj.traverse((o) => {
       if (!o.isMesh || o === obj.userData.hit) return;
       if (dim) {
         o.userData.mat0 ??= o.material;
-        let m = dimCache.get(o.userData.mat0);
-        if (!m) { m = o.userData.mat0.clone(); m.transparent = true; m.opacity = 0.22; dimCache.set(o.userData.mat0, m); }
+        let m = s.dimCache.get(o.userData.mat0);
+        if (!m) { m = o.userData.mat0.clone(); m.transparent = true; m.opacity = 0.22; s.dimCache.set(o.userData.mat0, m); }
         o.material = m;
-        o.castShadow = false;
       } else if (o.userData.mat0) {
         o.material = o.userData.mat0;
-        o.castShadow = true;
       }
     });
   }
@@ -903,7 +974,7 @@ export function initOffice({ onFocusAgent, avatarColor, avatarGlyph, loadVillage
     const list = root.querySelector(".ofc-list");
     if (!list || !S) return;
     const q = S.filter;
-    const rows = data.rows.filter((r) => r.name && (r.live || r.mesh !== "offline"));
+    const rows = data.rows.filter((r) => r.name && poseFor(r) !== "absent"); // exactly the agents with a character
     const scored = rows.map((r) => ({ r, last: lastFor(r.name) })).sort((a, b) => (b.last?.ts ?? 0) - (a.last?.ts ?? 0) || a.r.name.localeCompare(b.r.name));
     const shown = scored.filter(({ r }) => !q || r.name.toLowerCase().includes(q));
     if (!rows.length) {
@@ -914,41 +985,48 @@ export function initOffice({ onFocusAgent, avatarColor, avatarGlyph, loadVillage
     const html = shown.map(({ r, last }) => {
       const pose = poseFor(r);
       const preview = last ? esc(last.text.replace(/\s+/g, " ").slice(0, 160)) : `<span class="mut">${esc(pillDetail(r, pose) || "idle")}</span>`;
-      return `<div class="ofc-row${S.selected === r.name ? " sel" : ""}" data-name="${esc(r.name)}">
-        <div class="av" style="background:${avatarColor(r.name)}">${avatarGlyph(r.name)}<i class="d ${statusDot(pose)}"></i></div>
+      return `<div class="ofc-row" data-name="${esc(r.name)}">
+        <div class="av" style="background:${lookFor(r.name, r).hair}">${avatarGlyph(r.name)}<i class="d ${statusDot(r)}"></i></div>
         <div class="tx"><div class="hd"><b>${esc(r.name)}</b><span>${last ? relTime(last.ts) : ""}</span></div><div class="pv">${preview}</div></div>
       </div>`;
     }).join("") || `<div class="ofc-empty">no agent matches “${esc(q)}”</div>`;
-    if (html !== list.dataset.html) { list.innerHTML = html; list.dataset.html = html; } // a 2s re-render must not eat a double-click
+    if (html !== list.dataset.html) { list.innerHTML = html; list.dataset.html = html; markSelected(); } // a re-render must not eat a double-click
+  }
+
+  /** Selection is a class toggle, never a list rebuild — the row under the pointer must survive a click. */
+  function markSelected() {
+    for (const el of root.querySelectorAll(".ofc-row")) el.classList.toggle("sel", el.dataset.name === S?.selected);
   }
 
   function select(name) {
     if (!S) return;
     S.selected = name;
-    renderRoster();
-    if (!name) { root.querySelector(".ofc-card").hidden = true; return; }
+    S.dirty = true;
+    markSelected();
+    if (!name) { root.querySelector(".ofc-card").hidden = true; S.cardHtml = ""; return; }
     renderCard(name);
     frameAgent(S, name);
     const l = lastFor(name);
     if (l) say(name, l.text);
   }
 
+  /** Rebuilt only when its content changes, so a status frame mid-press can't swap the button out. */
   function renderCard(name) {
     const card = root.querySelector(".ofc-card");
     if (!card) return;
-    if (name === YOU) { card.hidden = true; return; }
-    const r = data.rows.find((x) => x.name === name);
-    if (!r) { card.hidden = true; return; }
+    const r = name === YOU ? null : data.rows.find((x) => x.name === name);
+    if (!r) { card.hidden = true; S.cardHtml = ""; return; }
     const pose = poseFor(r);
     const l = lastFor(name);
     const branch = r.git?.branch ? ` · ${r.git.worktree ? "⑂ " : ""}${r.git.branch}` : "";
-    card.innerHTML = `<div class="hd"><i class="d ${statusDot(pose)}"></i><b>${esc(name)}</b><span>${esc(branch)}</span><button class="x" title="close">✕</button></div>
+    const html = `<div class="hd"><i class="d ${statusDot(r)}"></i><b>${esc(name)}</b><span>${esc(branch)}</span><button class="x" title="close">✕</button></div>
       <div class="st">${esc(pillDetail(r, pose) || (pose === "roam" ? "idle" : pose))}${r.folder ? ` · <span class="mut">${esc(r.folder.replace(/^\/Users\/[^/]+/, "~"))}</span>` : ""}</div>
       ${l ? `<div class="msg">${esc(l.text.slice(0, 400))}</div><div class="mut">${relTime(l.ts) === "now" ? "just now" : relTime(l.ts) + " ago"}</div>` : `<div class="mut">no messages seen yet</div>`}
-      <button class="go">Open chat →</button>`;
+      <button class="go" data-name="${esc(name)}">Open chat →</button>`;
     card.hidden = false;
-    card.querySelector(".go").addEventListener("click", () => onFocusAgent(name));
-    card.querySelector(".x").addEventListener("click", () => select(null));
+    if (html === S.cardHtml) return;
+    S.cardHtml = html;
+    card.innerHTML = html;
   }
 
   function showTip(name, x, y) {
@@ -991,6 +1069,7 @@ export function initOffice({ onFocusAgent, avatarColor, avatarGlyph, loadVillage
     let drag = null;
     cv.addEventListener("pointerdown", (e) => {
       drag = { x: e.clientX, y: e.clientY, moved: false, floor: floorAt(s, e.clientX, e.clientY) };
+      s.dragging = true;
       cv.setPointerCapture(e.pointerId);
     });
     cv.addEventListener("pointermove", (e) => {
@@ -1010,14 +1089,19 @@ export function initOffice({ onFocusAgent, avatarColor, avatarGlyph, loadVillage
     cv.addEventListener("pointerup", (e) => {
       const d = drag;
       drag = null;
+      s.dragging = false;
       if (!d) return;
       if (d.moved) { saveCam(); return; }
       const name = pick(e.clientX, e.clientY);
-      if (name) select(name);
+      if (name) { s.lastPick = { name, t: performance.now() }; select(name); }
     });
     cv.addEventListener("pointerleave", () => showTip(null));
+    cv.addEventListener("pointercancel", () => { drag = null; s.dragging = false; });
+    // The first click starts a camera glide toward the agent, so the second click's hit test can land on
+    // floor — the double-click opens whoever the first click picked.
     cv.addEventListener("dblclick", (e) => {
-      const name = pick(e.clientX, e.clientY);
+      const lp = s.lastPick;
+      const name = lp && performance.now() - lp.t < 800 ? lp.name : pick(e.clientX, e.clientY);
       if (name && name !== YOU) onFocusAgent(name);
     });
     cv.addEventListener("wheel", (e) => {
@@ -1041,6 +1125,13 @@ export function initOffice({ onFocusAgent, avatarColor, avatarGlyph, loadVillage
         applyTheme(s);
       }
     });
+    const card = root.querySelector(".ofc-card");
+    card.addEventListener("click", (e) => {
+      const go = e.target.closest(".go");
+      if (go) return onFocusAgent(go.dataset.name);
+      if (e.target.closest(".x")) select(null);
+    });
+    root.querySelector(".ofc-rbtn").addEventListener("click", () => root.classList.toggle("roster-open"));
     root.querySelector(".ofc-link").addEventListener("click", async (e) => {
       const btn = e.currentTarget;
       try {
@@ -1052,9 +1143,14 @@ export function initOffice({ onFocusAgent, avatarColor, avatarGlyph, loadVillage
       setTimeout(() => { btn.textContent = "copy link"; }, 1600);
     });
     const input = root.querySelector(".ofc-search input");
-    input.addEventListener("input", () => { s.filter = input.value.trim().toLowerCase(); renderRoster(); });
+    input.addEventListener("input", () => { s.filter = input.value.trim().toLowerCase(); s.dirty = true; renderRoster(); });
     const list = root.querySelector(".ofc-list");
-    list.addEventListener("click", (e) => { const row = e.target.closest(".ofc-row"); if (row) select(row.dataset.name); });
+    list.addEventListener("click", (e) => {
+      const row = e.target.closest(".ofc-row");
+      if (!row) return;
+      select(row.dataset.name);
+      root.classList.remove("roster-open");
+    });
     list.addEventListener("dblclick", (e) => { const row = e.target.closest(".ofc-row"); if (row) onFocusAgent(row.dataset.name); });
   }
 
