@@ -19,6 +19,7 @@ import { pawHomeDir, resolveSpace, sameHome } from "./lifecycle.ts";
 import { humanPeer } from "./names.ts";
 import { startSleepHost } from "./sleep-host.ts";
 import { startStaleForwarder } from "./stale-forward.ts";
+import { startOfficeBridge } from "./office-daemon.ts";
 import { pawServer } from "./server.ts";
 
 function parseArgs(argv: string[]): { space?: string; server?: string; home?: string } {
@@ -82,7 +83,14 @@ async function mailbox(argv: string[]): Promise<void> {
       return async () => {};
     });
   }
+  // The agent-office bridge (src/office-daemon.ts): idle until `paw office connect`, then mirrors this
+  // space's agents into the office. Like the sleep host, its failure never takes the beacon down.
+  const stopOffice = await startOfficeBridge(space, server).catch((e: Error) => {
+    console.error(`[mailbox] office bridge failed to start — the agent office is NOT mirrored: ${e.message}`);
+    return async () => {};
+  });
   const leave = async () => {
+    await stopOffice().catch(() => {});
     await stopForwarder().catch(() => {});
     await stopSleepHost().catch(() => {});
     await ep.stop().catch(() => {});

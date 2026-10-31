@@ -15,6 +15,7 @@
     "check:sandbox-forward": "node scripts/check-sandbox-forward.ts",
     "check:addressing": "node scripts/check-addressing.ts",
     "check:web": "node scripts/check-web.ts",
+    "check:office": "node scripts/check-office.ts",
     "check:transcript": "node scripts/check-transcript.ts",
     "check:adopt": "node scripts/check-adopt.ts",
     "check:chat": "node scripts/check-chat.ts",

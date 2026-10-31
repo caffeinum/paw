@@ -51,6 +51,7 @@ const nice: Loader = () => import("./commands/nice.ts"); // "nice" (per-agent CP
 const acpHost: Loader = () => import("./commands/acp-host.ts"); // "acp-host" (the Rust ACP seat host)
 const sandbox: Loader = () => import("./commands/sandbox.ts"); // "sandbox" (build the image, list sandboxed agents)
 const mesh: Loader = () => import("./commands/mesh.ts"); // "mesh" (spaces on a remote broker)
+const office: Loader = () => import("./commands/office.ts"); // "office" (link a space to an agent-office)
 const spaces: Loader = () => import("./commands/spaces.ts"); // "spaces" (broker streams per space)
 const web: Loader = () => import("./web.ts"); // "web" (local http+ws UI)
 const complete: Loader = () => import("./commands/complete.ts"); // "completion" + hidden "__complete"
@@ -102,6 +103,7 @@ export const COMMAND_LOADERS: Readonly<Record<string, Loader>> = {
   "acp-host": acpHost,
   sandbox,
   mesh,
+  office,
   spaces,
   web,
   completion: complete,
