@@ -256,11 +256,24 @@ Each entry: what it is + the most load-bearing rule. Full notes behind the link.
 
 ### paw web → [web.md](docs/notes/web.md)
 - `src/web.ts` + `web/app/` — localhost-only browser UI on 7788 (busy port throws); exact Origin + Host
-  checks; own `web.cursor`; drafts per target; `!cmd`; PRs; search; channels; village; quotes; archive.
+  checks; own `web.cursor`; drafts per target; `!cmd`; PRs; search; channels; village; office (the
+  space's agent-office viewer in an iframe, `/api/office`); quotes; archive.
   `!cmd` is arbitrary code execution — never expose paw web beyond loopback. → [web.md#paw-web](docs/notes/web.md#paw-web)
 - `paw web` re-execs itself under node when the CLI is bun. → [web.md#node-re-exec](docs/notes/web.md#node-re-exec)
 - `src/tasks.ts` + `web/app/{tasks,taskspad,board,editlist}.js` — fleet task list on beads (`~/.beads`,
   bd calls serialized); verify UI by COMPUTED STYLE, not class flags. → [tasks.md](docs/notes/tasks.md)
+
+### Agent office → [office.md](docs/notes/office.md)
+- `src/commands/office.ts` + `src/office-link.ts` — `paw office connect --space s --url <agent-office> --join-key k [--owner-key k]`
+  / `status` / `open` / `disconnect`: link proven with a real `office_look` first; keys + agent tokens 0600 under
+  `spaces/<s>/office{,-agents}.json`, never printed or logged.
+- `src/office-bridge.ts` (pure + engine) + `src/office-daemon.ts` — hosted by the MAILBOX daemon (re-reads the link
+  every 10s): live rows → `office_join`/`office_status` (change-only; tool NAME + repo, never args/paths), offline →
+  `office_leave`, agent DMs/channel posts → office chat/say, office chat to an agent → paw DM from you. One
+  sequential worker, local budgets, 429 pauses for `retryAfter`; a refused JOIN KEY pauses the link and keeps the tokens
+  (only an unknown agentToken rejoins); the link file gone ⇒ the bridge walks everyone out and never saves tokens
+  again (disconnect deletes the link first); errors are `[office]` log lines, never a crash.
+  `check:office` (+ real office via `PAW_OFFICE_TEST_URL`/`_ADMIN_KEY`), `scripts/e2e-office.ts`.
 
 ### Raycast → [raycast.md](docs/notes/raycast.md)
 - `raycast/` — own npm project; shells out to the `paw` CLI (never joins the mesh); per-message read
@@ -316,6 +329,7 @@ Each entry: what it is + the most load-bearing rule. Full notes behind the link.
 | [docs/notes/chat.md](docs/notes/chat.md) | paw chat and its input pipeline |
 | [docs/notes/web.md](docs/notes/web.md) | paw web |
 | [docs/notes/tasks.md](docs/notes/tasks.md) | beads task list, pad, board |
+| [docs/notes/office.md](docs/notes/office.md) | paw office: agent-office link, the mailbox-hosted bridge, the ~office embed |
 | [docs/notes/raycast.md](docs/notes/raycast.md) | Raycast extension |
 | [docs/notes/testing.md](docs/notes/testing.md) | check scripts |
 

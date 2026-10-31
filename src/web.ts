@@ -107,6 +107,7 @@ import { bashMessage } from "./bash.ts";
 import { bangPlace, runBang } from "./sandbox-exec.ts";
 import { bangNoFolder, elsewhereBang, runsElsewhere } from "./hosted.ts";
 import { isRemoteSpace, pawServer } from "./server.ts";
+import { officeEmbed, type OfficeEmbed } from "./office-link.ts";
 import { logConn } from "./conn-state.ts";
 
 /** 7788, NOT 7799 — `cotal web` owns 7799 and running both at once is the normal case, not a clash. */
@@ -997,6 +998,9 @@ export interface WebDeps {
   /** The village snapshot: DM edges + last-spoken lines (see Village). OPTIONAL — a server without it
    *  answers 501 and the Village tab renders stations from status alone, no wires. */
   village?: () => VillageData;
+  /** The space's agent-office link for the ~office embed (src/office-link.ts officeEmbed). OPTIONAL —
+   *  without it the route answers 501. Carries the viewer key: loopback + exact Origin/Host only. */
+  office?: () => OfficeEmbed;
   /** Companies (docs/notes/company-spec.md). OPTIONAL — without it the routes answer 501. */
   company?: CompanyService;
   /** An agent's dialog (src/dialog.ts): its DMs both ways incl. agent↔agent, + a channel's posts by/
@@ -1059,6 +1063,11 @@ export async function startWebServer(deps: WebDeps): Promise<WebServer> {
           // client given the rows alone would render "—" as though it were a measured zero.
           // `channels` is present only when a source is configured — see WebDeps.channels.
           return sendJson(res, 200, { space, rows, errors, ...(deps.channels ? { channels: deps.channels() } : {}), ...(deps.channelMembers ? { channelMembers: deps.channelMembers() } : {}) });
+        }
+
+        if (path === "/api/office") {
+          if (!deps.office) return sendJson(res, 501, { error: "paw: this server was started without the office link reader" });
+          return sendJson(res, 200, deps.office());
         }
 
         if (path === "/api/village") {
@@ -1778,6 +1787,7 @@ async function web(argv: string[]): Promise<void> {
       channels: () => channelNames,
       channelMembers: () => channels.members(),
       village: () => village.snapshot(),
+      office: () => officeEmbed(space),
       channelActivity: (seen) => channels.activity(seen),
       dialog: async (agent, limit, channel) => {
         let history: RawMessage[] = [];

@@ -38,6 +38,7 @@ const TASKS = "~tasks";
 const BOARD = "~board"; // the kanban view of the same list — a sibling of Tasks in the focus model
 const SEARCH = "~search"; // results of the last search, a view like Tasks/Board (the composer hides)
 const VILLAGE = "~village"; // the transit-map view of the fleet — a sibling of Tasks/Board in the focus model
+const OFFICE = "~office"; // the space's agent-office, embedded (`paw office connect`; /api/office)
 /** The company pages (company.js) are a LOCATION, not a focus: `state.co` = {page:"new"} or
  *  {page:"company", slug, agent?, level: home|tasks|dialog|trace}. state.focus still names whose chat
  *  /trace is on screen — the lead on the home page, the agent on Dialog/Trace — so the real renderers,
@@ -932,7 +933,7 @@ function render() {
         ? esc(state.search ? `search "${state.search.q}" · ${state.search.phase === "done" ? "done" : state.search.phase + "…"}` : "search")
         : esc(`${state.rows.length} agents · ${state.unread} unread`);
   renderComposerMode();
-  $("main").classList.toggle("nofocus", !state.focus || state.focus === TASKS || state.focus === BOARD || state.focus === SEARCH || state.focus === VILLAGE || state.focus === CO);
+  $("main").classList.toggle("nofocus", !state.focus || state.focus === TASKS || state.focus === BOARD || state.focus === SEARCH || state.focus === VILLAGE || state.focus === OFFICE || state.focus === CO);
   // The pad follows FOCUS — it is never opened or closed on its own. (Render is the one place that
   // reconciles it, so a deep link, a poll, and a click all end in the same state.)
   if (state.focus === TASKS) {
@@ -946,6 +947,15 @@ function render() {
     village.update(state.space, state.rows, state.village || {});
     void loadVillage(); // refresh edges/last-lines from /api/village; re-renders on arrival
   } else if (village.isOpen()) village.close();
+  if (state.focus === OFFICE) {
+    $("office").hidden = false;
+    if (!officeOpen) { officeOpen = true; void loadOffice(); } // re-read the link each time the view opens
+  } else if (officeOpen) {
+    officeOpen = false;
+    $("office").hidden = true;
+    $("office").innerHTML = ""; // drops the iframe: the viewer's socket and render loop go with it
+    officeShown = "";
+  }
   // A company page is SCOPED: no global sidebar, no global filter bar (operator, 2026-10-04).
   document.body.classList.toggle("cochrome", !!state.co);
   if (state.co) closeNav();
@@ -1250,6 +1260,11 @@ function renderTasks() {
       <span class="pip ${vopen ? "on" : ""}"></span><span class="nm">Village</span>
     </div>`;
   $("villageRow").firstElementChild.addEventListener("click", () => focusTarget(VILLAGE));
+  const oopen = state.focus === OFFICE;
+  $("officeRow").innerHTML = `<div class="row${oopen ? " active" : ""}" data-office="1">
+      <span class="pip ${oopen ? "on" : ""}"></span><span class="nm">Office</span>
+    </div>`;
+  $("officeRow").firstElementChild.addEventListener("click", () => focusTarget(OFFICE));
 }
 
 /** The Companies section: one row per company + "+ new company". Refreshed every 30s, not on the
@@ -1463,6 +1478,7 @@ const palette = initPalette({
     { target: TASKS, label: "Tasks", kind: "view" },
     { target: BOARD, label: "Board", kind: "view" },
     { target: VILLAGE, label: "Village", kind: "view" },
+    { target: OFFICE, label: "Office", kind: "view" },
     { target: "/new", label: "New company", kind: "view" },
     ...(state.companies ?? []).map((c) => ({ target: `/company/${c.slug}`, label: "▣ " + c.slug, kind: "view" })),
     ...state.channels.map((ch) => ({ target: "#" + ch, label: "#" + ch, kind: "channel" })),
@@ -1474,6 +1490,31 @@ const palette = initPalette({
     focusTarget(target);
   },
 });
+/** The Office view embeds the space's agent-office viewer (src/office-link.ts). The iframe is written only
+ *  when what it shows changes — a rewrite would reload the whole 3D viewer. */
+let officeOpen = false;
+let officeShown = "";
+async function loadOffice() {
+  const pane = $("office");
+  let html;
+  try {
+    const o = await api("/api/office");
+    if (o.connected && o.src) {
+      html = `<iframe class="ofc-frame" src="${esc(o.src).replace(/"/g, "&quot;")}" title="Agent office" allow="fullscreen" referrerpolicy="no-referrer" sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-downloads"></iframe>`;
+    } else {
+      const why = o.error ? `<p class="bad">${esc(o.error)}</p>`
+        : o.connected ? `<p>Connected to office <b>${esc(o.office)}</b> at ${esc(o.url)}, but without an owner or view key the viewer can't be embedded. Reconnect with one:</p>`
+        : `<p>Space <b>${esc(o.space)}</b> has no agent office. Connect one and its agents walk in:</p>`;
+      html = `<div class="ofc-empty"><h2>Office</h2>${why}<pre>${esc(o.command.replace(/ --/g, " \\\n  --"))}</pre><p class="dim">Keys come from <code>agent-office create</code>. The owner key lets you chat with agents from here.</p></div>`;
+    }
+  } catch (e) {
+    html = `<div class="ofc-empty"><h2>Office</h2><p class="bad">Couldn't read the office link: ${esc(e.message)}</p></div>`;
+  }
+  if (!officeOpen || html === officeShown) return;
+  officeShown = html;
+  pane.innerHTML = html;
+}
+
 async function loadVillage() {
   try {
     const d = await api("/api/village");
@@ -1701,6 +1742,7 @@ function syncUrl(push = false) {
   else if (state.focus === BOARD) q.set("at", "board");
   else if (state.focus === SEARCH) { q.set("at", "search"); if (state.search?.q) q.set("q", state.search.q); }
   else if (state.focus === VILLAGE) q.set("at", "village");
+  else if (state.focus === OFFICE) q.set("at", "office");
   else if (state.focus) q.set("at", state.focus);
   if (state.mode !== "chat") q.set("view", state.mode);
   const url = q.toString() ? `/?${q}` : "/";
@@ -2184,6 +2226,7 @@ function readUrl() {
   else if (q.get("at") === "board") state.focus = BOARD;
   else if (q.get("at") === "search") { state.focus = SEARCH; if (q.get("q")) setTimeout(() => runSearch(q.get("q")), 0); }
   else if (q.get("at") === "village") state.focus = VILLAGE;
+  else if (q.get("at") === "office") state.focus = OFFICE;
   else if (q.get("at")) state.focus = q.get("at");
   if (q.get("view") === "trace") state.mode = "trace";
 }

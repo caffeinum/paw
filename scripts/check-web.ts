@@ -28,6 +28,7 @@
  */
 import { connect, createServer, type Socket } from "node:net";
 import { request } from "node:http";
+import { fileURLToPath } from "node:url";
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -1555,8 +1556,11 @@ const stillAligned = async (ws: RawWs, label: string, ...setup: Buffer[]): Promi
   const realShell = readFileSync(new URL("../web/app/index.html", import.meta.url), "utf8");
   assert(realShell.includes('src="/app.js"') && !/src="\.\//.test(realShell), "company route: the real shell loads /app.js ABSOLUTELY (./app.js under /company/x would 404)");
   await cserver.close();
-  const plain = await startWebServer({ ...deps, port: cport, clientRoot: root });
-  assert((await fetch(`${cbase}/api/companies`, { headers: H })).status === 501, "company route: a server without the service answers 501, not an empty list");
+  // a fresh port: fetch's keep-alive pool still holds a socket to the closed server on cport (ECONNRESET)
+  const pport = await freePort();
+  const plain = await startWebServer({ ...deps, port: pport, clientRoot: root });
+  const pbase = `http://127.0.0.1:${pport}`;
+  assert((await fetch(`${pbase}/api/companies`, { headers: { ...H, Origin: pbase } })).status === 501, "company route: a server without the service answers 501, not an empty list");
   await plain.close();
   // a company slug may not hijack an existing channel (refused before any bd call)
   const { companyService } = await import("../src/company-service.ts");
@@ -1578,6 +1582,31 @@ const stillAligned = async (ws: RawWs, label: string, ...setup: Buffer[]): Promi
   assert(badPr.status === 400, "/api/pr-info only takes GitHub pull-request URLs (not a generic fetcher)");
   await sserver.close();
   console.log("✓ company routes");
+}
+
+/* ── the Office view embeds the space's agent-office: /api/office + the real shell ────────────────── */
+{
+  const real = fileURLToPath(new URL("../web/app/", import.meta.url));
+  const oport = await freePort();
+  let embed: import("../src/office-link.ts").OfficeEmbed = { space: "s", connected: false, command: "paw office connect --space s --url <agent-office url> --join-key <joinKey> --owner-key <ownerKey>" };
+  const oserver = await startWebServer({ ...deps, port: oport, clientRoot: real, office: () => embed });
+  const ob = `http://127.0.0.1:${oport}`;
+  const get = (p: string, origin = ob) => fetch(`${ob}${p}`, { headers: { Origin: origin } });
+  const shellHtml = await (await get("/?at=office")).text();
+  assert(shellHtml.includes('id="office"') && shellHtml.includes('id="officeRow"'), "office: /?at=office serves the shell with the #office pane and its sidebar row");
+  const app = await (await get("/app.js")).text();
+  assert(app.includes('q.get("at") === "office"') && app.includes('api("/api/office")') && app.includes("<iframe"), "office: ?at=office routes to the view, which embeds the viewer from /api/office");
+  const none = (await (await get("/api/office")).json()) as { connected: boolean; command: string };
+  assert(none.connected === false && /paw office connect --space s/.test(none.command), "office: no link → connected:false with the exact connect command");
+  embed = { space: "s", connected: true, office: "abcdefghijkm", url: "http://127.0.0.1:9", src: "http://127.0.0.1:9/o/abcdefghijkm#k=x", readOnly: false };
+  const linked = (await (await get("/api/office")).json()) as { connected: boolean; src: string };
+  assert(linked.connected === true && linked.src.endsWith("#k=x"), "office: a link → the viewer src");
+  assert((await get("/api/office", "http://evil.example")).status === 403, "office: the viewer key is never served cross-origin");
+  await oserver.close();
+  const plain = await startWebServer({ ...deps, port: await freePort(), clientRoot: real });
+  assert((await fetch(`http://127.0.0.1:${plain.port}/api/office`, { headers: { Origin: `http://127.0.0.1:${plain.port}` } })).status === 501, "office: a server without the link reader answers 501");
+  await plain.close();
+  console.log("✓ office embed");
 }
 
 /* ── manager reconnect backoff (src/web.ts Backoff) ───────────────────────────────────────────────── */
