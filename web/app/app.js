@@ -38,6 +38,7 @@ const TASKS = "~tasks";
 const BOARD = "~board"; // the kanban view of the same list — a sibling of Tasks in the focus model
 const SEARCH = "~search"; // results of the last search, a view like Tasks/Board (the composer hides)
 const VILLAGE = "~village"; // the transit-map view of the fleet — a sibling of Tasks/Board in the focus model
+const OFFICE = "~office"; // the 3D isometric office of the fleet (office.js, lazy-loaded with three.js)
 /** The company pages (company.js) are a LOCATION, not a focus: `state.co` = {page:"new"} or
  *  {page:"company", slug, agent?, level: home|tasks|dialog|trace}. state.focus still names whose chat
  *  /trace is on screen — the lead on the home page, the agent on Dialog/Trace — so the real renderers,
@@ -72,7 +73,7 @@ window.addEventListener("unhandledrejection", (e) => showFault(`unhandled: ${e.r
 // The client names its own build, loudly, so "which code is this tab running" is answered by any
 // screenshot instead of a forensic session (the 2026-08-25 evening: three rounds of fixes debugged
 // against tabs of unknown vintage). Stamped by paw-folder at edit time; shown in the header hint.
-const CLIENT_BUILD = "company-4";
+const CLIENT_BUILD = "office-1";
 console.log("[paw] client build", CLIENT_BUILD);
 
 const state = {
@@ -932,7 +933,7 @@ function render() {
         ? esc(state.search ? `search "${state.search.q}" · ${state.search.phase === "done" ? "done" : state.search.phase + "…"}` : "search")
         : esc(`${state.rows.length} agents · ${state.unread} unread`);
   renderComposerMode();
-  $("main").classList.toggle("nofocus", !state.focus || state.focus === TASKS || state.focus === BOARD || state.focus === SEARCH || state.focus === VILLAGE || state.focus === CO);
+  $("main").classList.toggle("nofocus", !state.focus || state.focus === TASKS || state.focus === BOARD || state.focus === SEARCH || state.focus === VILLAGE || state.focus === OFFICE || state.focus === CO);
   // The pad follows FOCUS — it is never opened or closed on its own. (Render is the one place that
   // reconciles it, so a deep link, a poll, and a click all end in the same state.)
   if (state.focus === TASKS) {
@@ -946,6 +947,13 @@ function render() {
     village.update(state.space, state.rows, state.village || {});
     void loadVillage(); // refresh edges/last-lines from /api/village; re-renders on arrival
   } else if (village.isOpen()) village.close();
+  if (state.focus === OFFICE) {
+    if (office) {
+      if (!office.isOpen()) office.open();
+      office.update(state.space, state.rows, state.messages);
+    } else void ensureOffice().then((o) => { if (o) render(); });
+  } else if (office?.isOpen()) office.close();
+  else if (!office) $("office").hidden = true; // a still-loading (or failed) office leaves with the focus
   // A company page is SCOPED: no global sidebar, no global filter bar (operator, 2026-10-04).
   document.body.classList.toggle("cochrome", !!state.co);
   if (state.co) closeNav();
@@ -1250,6 +1258,11 @@ function renderTasks() {
       <span class="pip ${vopen ? "on" : ""}"></span><span class="nm">Village</span>
     </div>`;
   $("villageRow").firstElementChild.addEventListener("click", () => focusTarget(VILLAGE));
+  const oopen = state.focus === OFFICE;
+  $("officeRow").innerHTML = `<div class="row${oopen ? " active" : ""}" data-office="1">
+      <span class="pip ${oopen ? "on" : ""}"></span><span class="nm">Office</span>
+    </div>`;
+  $("officeRow").firstElementChild.addEventListener("click", () => focusTarget(OFFICE));
 }
 
 /** The Companies section: one row per company + "+ new company". Refreshed every 30s, not on the
@@ -1463,6 +1476,7 @@ const palette = initPalette({
     { target: TASKS, label: "Tasks", kind: "view" },
     { target: BOARD, label: "Board", kind: "view" },
     { target: VILLAGE, label: "Village", kind: "view" },
+    { target: OFFICE, label: "Office", kind: "view" },
     { target: "/new", label: "New company", kind: "view" },
     ...(state.companies ?? []).map((c) => ({ target: `/company/${c.slug}`, label: "▣ " + c.slug, kind: "view" })),
     ...state.channels.map((ch) => ({ target: "#" + ch, label: "#" + ch, kind: "channel" })),
@@ -1474,6 +1488,33 @@ const palette = initPalette({
     focusTarget(target);
   },
 });
+/** The Office is loaded on first open (it pulls in ~2MB of three.js); a failed import is SAID in the pane,
+ *  never a blank canvas. One in-flight load at a time. */
+let office = null;
+let officeLoading = null;
+function ensureOffice() {
+  officeLoading ??= import("./office.js")
+    .then(({ initOffice }) => {
+      office = initOffice({
+        onFocusAgent: (name) => { state.mode = "chat"; focusTarget(name); },
+        avatarColor,
+        avatarGlyph,
+        loadVillage: async () => { const d = await api("/api/village"); state.village = d; return d; },
+      });
+      return office;
+    })
+    .catch((e) => {
+      officeLoading = null;
+      const pane = $("office");
+      pane.hidden = false;
+      pane.innerHTML = `<div class="ofc-fatal"><b>The Office view failed to load.</b><br>${esc(e.message)}</div>`;
+      showFault(`office: ${e.message}`);
+      return null;
+    });
+  if (state.focus === OFFICE && !office) { $("office").hidden = false; if (!$("office").innerHTML) $("office").innerHTML = `<div class="ofc-fatal"><span>loading the office…</span></div>`; }
+  return officeLoading;
+}
+
 async function loadVillage() {
   try {
     const d = await api("/api/village");
@@ -1701,6 +1742,7 @@ function syncUrl(push = false) {
   else if (state.focus === BOARD) q.set("at", "board");
   else if (state.focus === SEARCH) { q.set("at", "search"); if (state.search?.q) q.set("q", state.search.q); }
   else if (state.focus === VILLAGE) q.set("at", "village");
+  else if (state.focus === OFFICE) q.set("at", "office");
   else if (state.focus) q.set("at", state.focus);
   if (state.mode !== "chat") q.set("view", state.mode);
   const url = q.toString() ? `/?${q}` : "/";
@@ -2010,6 +2052,7 @@ function connect() {
       }
       render();
     } else if (frame.type === "message") {
+      if (office?.isOpen()) office.onMessage(frame.entry);
       if (frame.entry?.channel) void pollChannelUnread().then(render); // a channel post: recount, the row lights up
       void loadInbox().then(render); // re-read rather than splice: the server owns ordering and unread
     }
@@ -2184,6 +2227,7 @@ function readUrl() {
   else if (q.get("at") === "board") state.focus = BOARD;
   else if (q.get("at") === "search") { state.focus = SEARCH; if (q.get("q")) setTimeout(() => runSearch(q.get("q")), 0); }
   else if (q.get("at") === "village") state.focus = VILLAGE;
+  else if (q.get("at") === "office") state.focus = OFFICE;
   else if (q.get("at")) state.focus = q.get("at");
   if (q.get("view") === "trace") state.mode = "trace";
 }
