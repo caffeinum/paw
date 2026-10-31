@@ -117,7 +117,11 @@ export function speechFor(
   if (!ctx.bridged.has(from)) return undefined;
   const raw = ctx.text(m);
   if (!raw.trim()) return undefined;
-  if (typeof m.channel === "string" && m.channel) return { from, kind: "say", text: clip(`#${m.channel}: ${raw}`, SPEECH_MAX) };
+  if (typeof m.channel === "string" && m.channel) {
+    // `events.*` channels carry machine frames (ag-ui JSON per turn), not speech — the harbor screenshot of 2026-10-31.
+    if (m.channel.startsWith("events.")) return undefined;
+    return { from, kind: "say", text: clip(`#${m.channel}: ${raw}`, SPEECH_MAX) };
+  }
   if (typeof m.to !== "string" || !m.to) return undefined;
   // by id, or by the human's roster name: under auth the observer's card id isn't the human's DM id
   if (m.to === ctx.humanId || (ctx.humanName !== undefined && ctx.names.get(m.to) === ctx.humanName)) return { from, kind: "chat", to: { human: true }, text: clip(raw, SPEECH_MAX) };

@@ -76,6 +76,7 @@ console.log("1. mapping");
   assert(JSON.stringify(speechFor(msg({ from: { id: "id-a", name: "ada" }, to: "id-human-real" }), { ...ctx, humanId: "id-observer", humanName: "human", names: authNames })?.to) === '{"human":true}', "auth/remote: a DM to the human's roster name (not the observer's card id) → chat to the office's human");
   const ch = speechFor(msg({ from: { id: "id-a", name: "ada" }, channel: "general" }), ctx);
   assert(ch?.kind === "say" && ch.text === "#general: hello there", "channel post → said aloud with its channel");
+  assert(speechFor(msg({ from: { id: "id-a", name: "ada" }, channel: "events.local.UAQTPVE3J6LH" }), ctx) === undefined, "an events.* channel (ag-ui frames) is never said aloud");
   assert(speechFor(msg({ from: { id: "id-you", name: "you" }, to: "id-b" }), ctx) === undefined, "you→agent is not mirrored (can't be attributed over REST)");
   assert(speechFor(msg({ from: { id: "id-x", name: "stranger" }, to: "id-b" }), ctx) === undefined, "an unbridged sender is not mirrored");
   assert(speechFor(msg({ from: { id: "id-a", name: "ada" }, to: "id-c" }), ctx) === undefined, "a DM to an unbridged agent is not mirrored");
