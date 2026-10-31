@@ -196,59 +196,6 @@ Moved verbatim from CLAUDE.md (2026-10-02 split). Index: [CLAUDE.md](../../CLAUD
   tree, path compression, status, 0 JS errors). Tests: `check:web` (Village tracker server-side; buildTree/
   segmentsFor/crossRepo/placement client-side).
 
-  **The Office tab (`web/app/office.js` + `office-model.js` + `office-assets.js`, 2026-10-30)** — the fleet
-  as a little 3D isometric office, after skydive.com/office. WebGL via **three.js r186 vendored verbatim**
-  in `web/app/vendor/three-0.186.1/` (`three.module.js` + `three.core.js` + LICENSE from the `three@0.186.1` npm
-  tarball; no package.json dep, no importmap — module imports core relatively; 0.187 was age-gated; the
-  tarball ships no minified build). The folder name carries the version, so `serveStatic` sends
-  `vendor/<lib>-<version>/` with `max-age=31536000, immutable` (everything else stays `no-store`) —
-  rename the folder on upgrade.
-  **Lazy**: app.js `import("./office.js")` the first time focus is `~office`, so normal boot never fetches
-  ~2MB of three; a failed import or a missing WebGL context is SAID in the pane, never a blank canvas.
-  A failed import sets `officeFailed`: no re-import (or fault banner) per ws frame; leaving the view
-  clears it, so reopening retries.
-  A view like Village: `OFFICE = "~office"`, `?at=office`, sidebar row "Office", palette entry, composer
-  hidden. **Real data only**: one character per row with `live && mesh !== "offline"` (offline agents
-  leave a dark desk, chair pushed in); `poseFor` = offline→absent, starting→arriving (drops in at the
-  door, walks to its desk), working/busy→typing (monitor lit, pill `● name · <tool>`), waiting→waiting
-  (arm up), failure/stuck→slumped (head on desk), idle→roam (wanders to sofa/kitchen/vending/window and
-  back every 20–60s). Seats: pods = REPOS via Village's `segmentsFor` (worktrees join their repo,
-  `unregistered` → `· workers`), pod order = Village `placement` under `<space>:office.pods`, seats in
-  `office.seats.<space>` — a known agent keeps its index, a removed one keeps its slot reserved, a corrupt
-  store reads empty. DM traffic: `/api/village` polled every 3s while open + visible; `diffEdges` of two
-  snapshots (none on first load) → the sender (whoever spoke last; edges are undirected) walks to the
-  recipient's desk and says `last[sender]` in a bubble if it was idle at its desk, else an orange arc
-  head→head with a travelling pulse, 4s; ws `message` frames (you↔agent) arc to the aubergine "you" desk
-  at the front. 501 (no tracker) → a quiet note, other errors → a red note. Look: hair = persona `hue`
-  else the sidebar name hash (THREE.Color needs `hsl(h, s%, l%)` WITH commas — the space syntax silently
-  renders white), hair style by name hash; the roster avatar uses the same hair colour. Characters are
-  Skydive-chunky (`CHAR_SCALE` 1.1, ~2.5 desk heights; `crownY()` anchors pills). Status dots use the
-  sidebar's exact pip rule (`statusDot(row)`: failure red, working/busy amber, else green). Layout:
-  `bestGrid` picks the pod column count whose room is closest to 1.3:1. Camera: orthographic true
-  isometric (35.264°), fit to the DESK PODS (+ your desk) not the wall tops — the room may bleed off the
-  edges — with a floor of 24 px/unit (20 under 700px) and a ceiling of 72 unless the whole room fits;
-  selecting an agent frames it without persisting that zoom, drag pans on the floor, wheel zooms to the cursor, buttons =
-  day/night · rotate 90° · recenter · zoom ±, state in `office.cam.<space>`; the two walls facing the
-  camera are hidden (cutaway). Pills and bubbles are DOM projected per frame and culled TOGETHER (greedy:
-  bubbles > selected > seated-status > idle); a bubble names its speaker and replaces that pill, and is
-  clamped inside the pane. The card is re-rendered only when its HTML changes (listeners delegated), so a
-  status frame can't swap "Open chat" out mid-press; `sync()` returns early unless the fields it reads
-  changed. Roster: search (also dims non-matching characters), rows sorted by
-  last activity with a 2-line preview from `village.last` else the newest inbox line, never invented;
-  click = frame + select card ("Open chat →"), double-click = open the chat (the dblclick reuses the
-  agent the first click picked — the camera glide moves it off the pointer; selection toggles `.sel`,
-  never rebuilds the list). Roster rows = exactly `poseFor(r) !== "absent"`. Under 900px the roster is a
-  bottom sheet behind an "Agents" button. Cost: rAF only while open and `!document.hidden`; full rate
-  only while the camera moves, else 30fps (reduced motion: only on change); the shadow map renders once
-  per rebuild (`autoUpdate = false`; characters use a blob contact shadow instead of casting); night
-  lamps are `visible = false` by day. Close disposes renderer, geometries, textures, the dim-material
-  cache. Tests: `check:office` (seats, layout bounds/no-overlap/growth/aspect, pose + dot tables,
-  diffEdges, cullLabels, limbAngles, every route axis-aligned); `check:web` "office serving" (`?at=office`
-  shell, lazy import, vendored three served + cached immutably, missing vendor file 404s). Visual harness: `scripts/office-demo.ts` (real `startWebServer` +
-  stubbed deps and a fixture fleet, refuses ~/.paw, the live space and port 7788) — drive it with Yab
-  (`yab exec`), never Chrome. Gotcha hit: the wood CanvasTexture left uncovered (transparent→black) strips
-  when a board row's offset was >256px — boards now start at k=-2.
-
   **Channels are agent FOLDERS (`web/app/channels.js`, 2026-09-03)** — each channel row carries a ▸
   that unfolds the agents in it: click the channel = message the channel, click an agent beneath it =
   DM that agent (`focusAgent`); the chevron stops propagation so unfolding is never "open". WHERE

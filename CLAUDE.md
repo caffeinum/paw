@@ -256,8 +256,7 @@ Each entry: what it is + the most load-bearing rule. Full notes behind the link.
 
 ### paw web → [web.md](docs/notes/web.md)
 - `src/web.ts` + `web/app/` — localhost-only browser UI on 7788 (busy port throws); exact Origin + Host
-  checks; own `web.cursor`; drafts per target; `!cmd`; PRs; search; channels; village; office (3D, lazy
-  three.js vendored in web/app/vendor/three-0.186.1, `check:office`); quotes; archive.
+  checks; own `web.cursor`; drafts per target; `!cmd`; PRs; search; channels; village; quotes; archive.
   `!cmd` is arbitrary code execution — never expose paw web beyond loopback. → [web.md#paw-web](docs/notes/web.md#paw-web)
 - `paw web` re-execs itself under node when the CLI is bun. → [web.md#node-re-exec](docs/notes/web.md#node-re-exec)
 - `src/tasks.ts` + `web/app/{tasks,taskspad,board,editlist}.js` — fleet task list on beads (`~/.beads`,
