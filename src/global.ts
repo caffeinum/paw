@@ -40,6 +40,12 @@ function globalFolder(): string {
   return dir;
 }
 
+/** The keeper tick is launchd's one-shot (StartInterval 60s): launchd starts no new tick while one still runs, so
+ *  a tick that never exits silently ends every keeper duty — cron, sleep, tidy, global's revival. The mini's
+ *  stalled for 2.5 days (2026-10-29 → 10-31) after a team2027 broker stall left an open handle behind a finished
+ *  tick. So the tick exits as soon as its work is done, and a tick still running at the deadline exits loudly. */
+const TICK_DEADLINE_MS = 15 * 60_000;
+
 /** Parse the only flag we accept: `--space <s>` (bin/paw.ts appends the default). */
 function parseSpace(argv: string[]): string | undefined {
   for (let i = 0; i < argv.length; i++) {
@@ -109,7 +115,14 @@ const globalCommand: Command = {
   group: "Lifecycle",
   summary: "bring up the always-on global agent (full machine access) — a persistent peer you can DM",
   usage: "global [--space <s>]",
-  run: (a) => globalUp([...a.raw]),
+  run: async (a) => {
+    setTimeout(() => {
+      console.error(`paw keeper: tick still running after ${TICK_DEADLINE_MS / 60_000} min — exiting so launchd can start the next one`);
+      process.exit(1);
+    }, TICK_DEADLINE_MS).unref();
+    await globalUp([...a.raw]);
+    process.exit(0); // a leftover handle (a stalled remote connect) must not keep the tick alive
+  },
 };
 
 registry.register(globalCommand);
