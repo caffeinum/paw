@@ -166,6 +166,15 @@ assert(folderForName(space, "../test/personas/api") === undefined, "folderForNam
   setPersonaKeys(space, "custom", { cwd: multi, "paw-extra": "true" });
   assert(readFileSync(custom, "utf8").endsWith("my own words\n") && agentRecord(space, "custom")?.extra === true, "setPersonaKeys keeps a CRLF body");
   rmSync(custom);
+  // A hand-written claude persona (body, no pin) is pinned on its next spawn; a non-claude one is not.
+  const handmade = personaPath(space, "handmade");
+  writeFileSync(handmade, `---\nname: handmade\ncwd: ${multi}\n---\nmy own words\n`);
+  const pinned = readFileSync(ensurePersonaFile(space, "handmade"), "utf8");
+  assert(/resume: \S+/.test(pinned) && pinned.endsWith("my own words\n"), "a pinless hand-written claude persona gets a pin, body kept");
+  assert(readFileSync(ensurePersonaFile(space, "handmade"), "utf8") === pinned, "…and is never re-pinned");
+  writeFileSync(handmade, `---\nname: handmade\nagent: codex\ncwd: ${multi}\n---\nmy own words\n`);
+  assert(!/resume:/.test(readFileSync(ensurePersonaFile(space, "handmade"), "utf8")), "a pinless codex persona is left alone");
+  rmSync(handmade);
 }
 
 // MIGRATION: a pre-persona install (folders.json + agents.json) folds into its personas exactly once.

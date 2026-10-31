@@ -569,6 +569,13 @@ export function ensurePersonaFile(space: string, name: string, opts?: { brief?: 
     }
     const body = opts?.brief ?? `You are the paw agent for the "${name}" folder — a peer on the cotal mesh, acting unattended on this repository.`;
     writeFileSync(file, `${readFileSync(file, "utf8")}${body}\n`);
+  } else if (isClaudeHarness(readAgentType(file)) && !readResumeId(file)) {
+    // A hand-written claude persona (a body, no pin) skipped the birth mint above, so EVERY boot was a
+    // fresh, amnesiac session — team2027 evals and kamilla-bd lost their conversations on the 2026-10-30
+    // reboot. Pin it now: this launch still starts fresh, every later one resumes it.
+    const resume = randomUUID();
+    setPersonaKeys(space, name, { resume });
+    console.error(`paw: ${name} had no resume: pin (each restart was a fresh session) — pinned ${resume}; later restarts resume it`);
   }
   // Self-heal a persona minted before paw granted channel scope (see GRANT_LINES). Every spawn passes
   // through here, so the fleet upgrades as its agents restart rather than needing a migration pass —
