@@ -29,10 +29,23 @@ const ESC = "\u001b";
  */
 export const CONTINUE_KEYS = [`${ESC}\r`, `${ESC}\n`, `${ESC}[13;2u`, `${ESC}[13;3u`, `${ESC}[13;5u`];
 
+/** CSI-u Enter with ANY modifier (9 = super/Cmd), and xterm's modifyOtherKeys form `CSI 27;<mod>;13~`
+ *  that cmux/ghostty send for Shift/Cmd+Enter. readline drops the CSI-u one, but NOT the
+ *  modifyOtherKeys one: it parses `CSI 27;<mod>;` and inserts the trailing `13~` as text (operator
+ *  screenshot 2026-11-03: "meow13~13~13~"), so that form needs {@link LEAKED_TAIL} peeled off the line. */
+const CSI_U_ENTER = new RegExp(`${ESC}\\[13;\\d+u$`);
+const MOK_ENTER = new RegExp(`${ESC}\\[27;\\d+;13~$`);
+export const LEAKED_TAIL = "13~";
+
 /** Does this stdin chunk end with a continuation key? Checked at the END because the chunk usually
  *  carries the character typed just before it, and it is the LAST keystroke that says "new line". */
 export function isContinueKey(chunk: string): boolean {
-  return CONTINUE_KEYS.some((k) => chunk.endsWith(k));
+  return CONTINUE_KEYS.some((k) => chunk.endsWith(k)) || CSI_U_ENTER.test(chunk) || MOK_ENTER.test(chunk);
+}
+
+/** Does this continuation key leave {@link LEAKED_TAIL} in readline's buffer? */
+export function leaksTail(chunk: string): boolean {
+  return MOK_ENTER.test(chunk);
 }
 
 /**

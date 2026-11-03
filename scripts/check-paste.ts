@@ -169,6 +169,14 @@ assert(composePastes("", [makeBlock(1, "solo")]).startsWith("--- [Pasted text #1
   assert(!isContinueKey("\r"), "a plain Enter is a SEND, not a continuation");
   assert(!isContinueKey("hello"), "ordinary typing is not a continuation");
   assert(!isContinueKey(`${ESC}[13;2u tail`), "a sequence in the MIDDLE isn't the last keystroke");
+  // cmux/ghostty: xterm modifyOtherKeys for Shift/Cmd+Enter, and CSI-u with the super (Cmd) modifier.
+  const { leaksTail, LEAKED_TAIL } = await import("../src/multiline.ts");
+  assert(isContinueKey(`meow${ESC}[27;2;13~`), "shift+enter (modifyOtherKeys) continues");
+  assert(isContinueKey(`${ESC}[27;9;13~`), "cmd+enter (modifyOtherKeys) continues");
+  assert(isContinueKey(`${ESC}[13;9u`), "cmd+enter (CSI-u super) continues");
+  assert(leaksTail(`${ESC}[27;2;13~`) && !leaksTail(`${ESC}[13;2u`), "only the modifyOtherKeys form leaks a tail");
+  assert(LEAKED_TAIL === "13~", "the leaked tail is what readline inserts");
+  assert(!isContinueKey(`${ESC}[27;2;9~`), "a modifyOtherKeys key that isn't Enter is not a continuation");
   assert(CONTINUE_KEYS.length >= 4, "several encodings, because terminals disagree about what they send");
 
   // The universal fallback. ODD trailing backslashes continue: `C:\\path\\\\` ends in an ESCAPED
