@@ -86,7 +86,7 @@ import { messageText as textOf, type Entry as FeedEntry } from "./feed.ts";
 import { forwardedFrom, isForwardOf, withoutForwardNote } from "./forward-mark.ts";
 import { readOwnConversation, startEcho, tapOwnSubject } from "./chat-own.ts";
 import { dedupeRoster } from "./commands/who.ts";
-import { isContinueKey, joinLines, peelContinuation } from "./multiline.ts";
+import { isContinueKey, joinLines, LEAKED_TAIL, leaksTail, peelContinuation } from "./multiline.ts";
 import { ensureManagerOn, ensureSpaceFor, resolveSpace } from "./lifecycle.ts";
 import { chatAgentInfo } from "./agent-summary.ts";
 import { renderMarkdown } from "./markdown.ts";
@@ -2224,9 +2224,10 @@ async function chat(argv: string[]): Promise<void> {
       const text = typeof chunk === "string" ? chunk : chunk.toString("utf8");
       if (scanner.pasting || swallow || pasteOpen) return; // inside a paste, Enter isn't a keystroke
       if (!isContinueKey(text)) return;
+      const leaked = leaksTail(text);
       setImmediate(() => {
         if (!rl || closing) return;
-        holdLine(rl.line);
+        holdLine(leaked && rl.line.endsWith(LEAKED_TAIL) ? rl.line.slice(0, -LEAKED_TAIL.length) : rl.line);
       });
     });
     process.stdin.on("data", () => {
