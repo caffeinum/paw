@@ -247,6 +247,8 @@ Each entry: what it is + the most load-bearing rule. Full notes behind the link.
 - `src/outbox.ts` + `src/mesh-publish.ts` — every chat send: paw-owned msg id (`msgID` dedup; reads cotal's
   private `js`, loud if renamed), transient → `◌ sending…` + backoff ≤90s, then ONE `✕ not sent … /retry`;
   degraded never prints, DNS errors are conn state, status flips live in the footer. → [chat.md#connection-state](docs/notes/chat.md#connection-state)
+- `src/link-probe.ts` — a send whose ack timed out PINGs the socket (cotal's public `onConnection`); no PONG in 5s →
+  `nc.reconnect()` (nats.js alone takes 4–6 min to notice a silently dropped flow); a reconnect re-sends the in-flight head. → [chat.md#connection-state](docs/notes/chat.md#connection-state)
 - `src/images.ts` — `[Image #N]` attachments as TEXT (never a new part kind); stage ephemeral paths. → [chat.md#images](docs/notes/chat.md#images)
 - `src/paste.ts` — bracketed paste → one `[Pasted text #N]` message; suppression starts at the START marker. → [chat.md#paste](docs/notes/chat.md#paste)
 - `src/multiline.ts` — alt/shift+enter and trailing `\` continuation. → [chat.md#multiline](docs/notes/chat.md#multiline)

@@ -992,6 +992,86 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
   }
 
   {
+    // A reconnect while an attempt is in flight: that attempt rode the dead socket and its ack can never
+    // come. kick() abandons it and re-sends at once — not after its 5s ack timeout plus a backoff.
+    let hung = true;
+    const r = rig(() => "ok");
+    const stored: string[] = [];
+    const box = new Outbox<{ id: string }>({
+      now: r.now,
+      schedule: () => () => {},
+      publish: (m) => {
+        if (hung) {
+          hung = false;
+          stored.push(m.id); // it even landed — the ack is what was lost
+          return new Promise(() => {});
+        }
+        const dup = stored.includes(m.id);
+        if (!dup) stored.push(m.id);
+        return Promise.resolve({ duplicate: dup });
+      },
+      onEvent: (e) => r.events.push({ kind: e.kind, label: e.item.label }),
+    });
+    const done = box.submit("kit", { id: "m4" });
+    await settle();
+    box.kick();
+    const item = await done;
+    assert(item.state === "sent" && item.attempts === 2 && item.duplicate === true && eq(stored, ["m4"]), `send: kick() mid-flight abandons the attempt on the old socket and re-sends at once — deduped, one copy (got ${item.state}/${item.attempts}/${JSON.stringify(stored)})`);
+    assert(eq(r.events.map((e) => e.kind), ["sent"]), `send: an abandoned attempt is not a failure — no ◌ sending… line (got ${JSON.stringify(r.events)})`);
+  }
+
+  {
+    // A socket that died silently (Wi-Fi/NAT dropped the flow, no RST): nats.js PINGs every 2 min, so it
+    // went unnoticed for minutes and every retry rode it to a 95s `✕ not sent` (team2027, 2026-11-04).
+    const { LinkProbe, isAckTimeout } = await import("../src/link-probe.ts");
+    const fakeNc = (answers: boolean) => {
+      const nc = { flushes: 0, reconnects: 0, closed: false, flush: () => (nc.flushes++, answers ? Promise.resolve() : new Promise<void>(() => {})), reconnect: async () => void nc.reconnects++, isClosed: () => nc.closed };
+      return nc;
+    };
+    let fire: (() => void)[] = [];
+    const wait = () => new Promise<void>((res) => fire.push(res));
+    const elapse = async () => {
+      await settle();
+      fire.splice(0).forEach((f) => f());
+      await settle();
+    };
+
+    const dead = fakeNc(false);
+    const p = new LinkProbe({ wait });
+    p.endpointOptions().onConnection(dead);
+    const a = p.check();
+    const b = p.check();
+    await elapse();
+    assert((await a) === "reconnected" && (await b) === "reconnected" && dead.flushes === 1 && dead.reconnects === 1 && p.forced === 1, `probe: no PONG in time → ONE forced reconnect, concurrent checks share it (flushes ${dead.flushes}, reconnects ${dead.reconnects})`);
+
+    const live = fakeNc(true);
+    const q = new LinkProbe({ wait });
+    q.endpointOptions().onConnection(live);
+    const alive = q.check();
+    await elapse();
+    assert((await alive) === "alive" && live.reconnects === 0, "probe: a socket that answers the PING is left alone (a slow JetStream ack is not a dead link)");
+
+    const old = fakeNc(false);
+    const s = new LinkProbe({ wait });
+    s.endpointOptions().onConnection(old);
+    const swapped = s.check();
+    await settle();
+    s.endpointOptions().onConnection(fakeNc(true));
+    await elapse();
+    assert((await swapped) === "closed" && old.reconnects === 0, "probe: a connection replaced while the PING waited is not reconnected again");
+
+    let threw = "";
+    await new LinkProbe({ wait }).check().catch((e: Error) => (threw = e.message));
+    assert(/never handed a connection/.test(threw), "probe: an endpoint built without the probe's onConnection fails LOUD");
+    assert(isAckTimeout(timeout()) && !isAckTimeout(new Error("permission denied")), "probe: only an ack timeout triggers it");
+
+    const { readFileSync } = await import("node:fs");
+    const src = readFileSync(new URL("../src/chat.ts", import.meta.url), "utf8");
+    assert(/\.\.\.linkProbe\.endpointOptions\(\)/.test(src) && /isAckTimeout\(err\)\) void linkProbe\.check\(\)/.test(src), "probe: chat's endpoint hands its connections to the probe, and a timed-out send runs it");
+    assert(/e\.on\("transport", \(st: \{ connected: boolean \}\) => st\.connected && outboxRef\?\.kick\(\)\)/.test(src), "probe: chat kicks the outbox on the transport-up EVENT (the 1s tick misses a forced reconnect)");
+  }
+
+  {
     // The publish itself: the same subject + payload cotal's unicast/multicast use, msgID = our id.
     const published: { subject: string; data: string; msgID: string }[] = [];
     const ep = {

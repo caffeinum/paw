@@ -636,6 +636,23 @@ for 3m …` / `● mesh connected again after 4m …` pairs, a raw `! getaddrinf
   did land, would arrive twice). Quitting with unsent messages prints them. The footer shows `◌ sending N`
   (only once a send has hit trouble) and `✕ N not sent · /retry`. Ids are recorded in `ownIds` BEFORE the
   publish, so the echo tap's in-flight wait (`sending` counter) is gone.
+- **A silently dead socket is replaced, not retried into (2026-11-04).** On a flaky Wi-Fi (router RTT
+  200ms–1s, resets) sends still ended `✕ not sent … no ack in 95s, 8 tries` under a `◐ degraded` footer.
+  Cause: the TCP flow had died with no RST (Wi-Fi/NAT dropped it); nats.js only notices through its own
+  PINGs (every 2 min, stale after 2 unanswered — 4–6 min), so the transport read "up" and all 8 tries
+  (5s JetStream ack timeout each, 1/2/4/8/15s backoff = exactly 95s) rode the dead socket. Reproduced
+  with a black-holing TCP proxy: baseline = failed at 95s, transport never went down. Fix (`src/link-probe.ts`): a send whose ack timed out PINGs the connection
+  (`nc.flush()`); no PONG in `PROBE_MS` 5s → `nc.reconnect()`. The connection comes from cotal's public
+  `onConnection` option; a live-but-slow link answers the PONG and is left alone. The outbox's `kick()`
+  now also ABANDONS an attempt in flight (it rode the old socket) and re-sends at once, and chat kicks on
+  the endpoint's `transport` up EVENT (the 1s phase tick misses a forced reconnect's same-ms down/up).
+  Measured: silent drop 95s ✕ → 10s ✓; 20s total outage → ✓ at 30s; 12 sends over 0.2–1s jitter with a
+  RST or black hole every 15s → 12/12 (each black hole costs its head ~10–14s; the baseline run had lost
+  4 of 7 when stopped); 4s RTT → no forced reconnect (a 3s probe bound forced 2); 0 duplicates throughout
+  (same msgID). Tried and dropped: tighter transport pings alone
+  (`transportPingIntervalMs` 5s/2: 22s and p50 60s on the jitter run — detection is slower and a queued
+  FIFO waits on it). `/conn` counts the forced reconnects. Tests: `check:chat` (`send: kick() mid-flight`,
+  `probe:` cases), `scripts/e2e-send-retry.ts` case 3 (silent drop).
 - **Degraded never prints.** `ConnState.settle` now prints only for a SOCKET-DOWN streak (connecting /
   reconnecting / disconnected) past 2 min, plus its recovery, coalesced per 10 min as before. A degraded
   spell (socket up) lives in the footer; `/conn` counts `degraded spells over 2m`. Applies to `paw inbox
