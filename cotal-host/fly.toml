@@ -6,6 +6,10 @@ kill_timeout = "30s"
 # 512MB went OOM; swap absorbs a transient spike instead of the OOM killer taking the broker.
 swap_size_mb = 512
 
+# paw for the optional office bridge (README "Office bridge"); OFFICE_URL / OFFICE_JOIN_KEY are Fly secrets.
+[build.args]
+  PAW_REF = "6e153ea663be452a1fe1c8d2fd6ee6ec75b35956"
+
 [env]
   PUBLIC_HOST = "2027-cotal.fly.dev"
   COTAL_SPACE = "team2027"
