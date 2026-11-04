@@ -125,9 +125,63 @@ every 2s (only while `office.json` exists):
 
 - Key rotation means reconnect: `paw office connect --space <s> --url <url> --join-key <new> [--owner-key <k>]`.
 - Big fleets fill in at 8 joins a minute (measured: 8 at 2s, 16 at 63s) — a 40-agent space takes ~5 min.
-- Remote spaces: connect only ONE machine's PAW_HOME per space. Every linked machine mirrors every agent
-  it sees on the roster, so two linked machines make duplicate characters.
+- **Single bridge per office.** Connect only ONE bridge per space/office: one machine's PAW_HOME, OR the
+  server bridge (`paw office serve`, below). Two bridges into one office make duplicate characters (each
+  joins the agents it mirrors under its own tokens). Once a server bridge runs, `paw office disconnect
+  --space <s>` on every machine that was linked (it walks that machine's characters out; the server
+  bridge keeps its own).
 - Your own DMs to agents (paw chat / web) are not mirrored; office chat typed in the viewer already shows.
+
+## Roster mode and the headless server bridge (#85)
+
+The bridge above mirrors THIS paw home's agents (`collectStatus`: registry + local manager ps +
+transcripts + git). A bridge next to the broker has none of that, and each laptop's bridge mirrored only
+its own agents. Roster mode mirrors **every live agent on the space's mesh roster**, from presence alone
+(`src/office-roster.ts`):
+
+- **On**: `paw office connect … --roster all` (stored as `roster: "all"` in office.json; the mailbox's
+  bridge then uses it too), or automatically in `paw office serve` when this PAW_HOME has no registered
+  agents. Without either, nothing changes (the #84 local mode).
+- **Who**: presence records with `card.kind === "agent"`, live status and a heartbeat within 15s. Not
+  endpoints (humans' mailboxes, observers, the `office`/`cron` senders), not `paw sleep` stand-ins (their
+  card says "asleep (paw sleep)"), not offline/stale records.
+- **Status**, presence only (no ps, git, tools or transcripts): `working` → working with the presence's
+  free-text `activity` (one line, clipped) else "working"; `waiting` → waiting, unless the harness's
+  `activeAt` moved >1s past `statusSince` (the #82 `running()` rule, `busy` = status ≠ idle); `idle` →
+  idle. Emoji/hue only if the card's `meta` carries them (persona frontmatter keys). No repo name.
+- **Identity**: the mesh NAME. Collision rule: two live records with one name whose cards' `meta.host`
+  differ (two machines) are both shown as `<name>~<4 hex of sha256(mesh id)>` — deterministic across
+  bridge restarts. Two live records of one name on ONE host (a restart overlapping the old record's last
+  heartbeats) are one agent: the newest wins, no suffix. A record with no `meta.host` (a non-paw cotal
+  agent) counts as host "". When a collision ends the survivor goes back to its bare name (leave + join).
+- **Trust model unchanged**: office chat to an agent is a DM from the `office` peer, labelled by sender
+  (#84) — delivered to the agent's mesh ID from the roster (`sendToPeerId`, src/dm.ts: no name
+  resolution, no wake, no spawn — the agent may be another machine's, or share its name). Speech
+  mirroring renames a colliding sender to its office name.
+- An unread roster (first snapshot not in, or the bucket silent past the liveness window) leaves the
+  office as it is — never "everyone left".
+
+### `paw office serve --space <s>`
+
+The headless bridge: ONLY the bridge — no mailbox beacon, no human presence, no manager, no ensure().
+Logs on stdout (`<iso> [office] …`). SIGTERM/SIGINT stop it cleanly (exit 0) keeping the agent tokens, so
+a restart resumes the same characters. Link config, first that is set: flags (`--url --join-key
+[--owner-key] [--view-key] [--roster all]`), else env `OFFICE_URL` + `OFFICE_JOIN_KEY` (+
+`OFFICE_OWNER_KEY`, `OFFICE_VIEW_KEY`, `OFFICE_ROSTER=all`; half of the pair fails loud), else the stored
+office.json. A given link is proven with `office_look` and written like `connect`. It refuses to start
+when this PAW_HOME's mailbox runs for the space (that mailbox already bridges it). Serve from a PAW_HOME
+of its own; a later `paw` command there that runs ensure() would start a mailbox — don't.
+
+**Creds on the broker box**: nothing new. The space is an ordinary paw remote mesh whose `--root` is the
+broker's own cotal root (`paw mesh add <s> --server tls://<host>:4222 --root /data/cotal`; cotal up's auth
+loads there directly, no signer export). The bridge then mints exactly what a laptop's bridge does: the
+read-only `admin` observer (no presence, no consume, no chat/inst/svc publish; subscribe to the
+chat/inst/svc planes so DMs can be mirrored as speech) and, for office→agent DMs, the `office` sender's
+own persisted nkey (`office.nkey.json`) minted `operator`. Tested against cotal 0.84's `cotal up` root
+by `scripts/e2e-office-serve-remote.ts`.
+
+On Fly next to `2027-cotal`: cotal-host/README.md "Office bridge" (`office-bridge.sh`, opt-in build arg
+`PAW_REF` + `OFFICE_*` secrets; a no-op without them).
 
 ## paw web ~office
 
@@ -154,5 +208,16 @@ leave the view. The route, sidebar row and palette entry are as before.
   `disconnect`, and the office still empty 15s later (no ghost rejoin). The temp dir is removed after
   (`PAW_E2E_KEEP=1` keeps it). `PAW_E2E_HOLD=<port>` serves `paw web` there and waits so the embed can be checked
   (and chatted from) in Yab.
+- `check:office` section 4: roster mapping (agents from the roster only, endpoints/stand-ins/stale out,
+  cross-machine collisions + the same-host restart rule, presence-only status), mode selection, the
+  `roster` link field, `serve` config (flags > env > stored, loud on half a pair), and cotal-host's hook
+  being inert without OFFICE_URL + OFFICE_JOIN_KEY (start.sh guard, office-bridge.sh exits 0).
+- `scripts/e2e-office-serve.ts` (same env) — home A runs mesh + manager + mailbox with stub agents (one
+  name on two "machines"), NO link; `paw office serve` from an EMPTY home B mirrors all of them in roster
+  mode, collisions suffixed, owner chat reaches the right `queue~…` only, SIGTERM exit 0, restart from the
+  stored link without duplicates, disconnect from B walks everyone out.
+- `scripts/e2e-office-serve-remote.ts` (+ `COTAL_BIN` = cotal-ai@0.84.0's cotal.js) — the box path: a JWT +
+  TLS `cotal up --no-manager`, `paw mesh add --root <its own root>`, serve mints its creds there, mirrors
+  a provisioned authed agent, delivers owner chat as the `office` peer.
 - `check:web` "office embed": the shell routes `?at=office`, `/api/office` both shapes, 403 cross-origin,
   501 without the reader.

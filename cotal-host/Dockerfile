@@ -13,6 +13,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
 # cotal-ai pins every @cotal-ai/* dependency to its own exact version; nats-server comes with it.
 RUN npm install -g --ignore-scripts "cotal-ai@${COTAL_VERSION}" && cotal --version
 
+# Optional: paw at a pinned caffeinum/paw commit, for the agent-office bridge (README "Office bridge").
+# Empty (the default) installs nothing. caffeinum/paw is public, so no build secret is needed.
+ARG PAW_REF=""
+RUN if [ -n "$PAW_REF" ]; then \
+      apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/* \
+      && git init -q /opt/paw && cd /opt/paw \
+      && git fetch -q --depth 1 https://github.com/caffeinum/paw.git "$PAW_REF" && git checkout -q FETCH_HEAD \
+      && npm install -g --ignore-scripts pnpm@11.1.2 \
+      && pnpm install --frozen-lockfile --prod --ignore-scripts \
+      && rm -rf .git /root/.cache /root/.local/share/pnpm/store \
+      && node bin/paw.mjs office --help >/dev/null; \
+    fi
+
 COPY start.sh /usr/local/bin/start.sh
+COPY office-bridge.sh /usr/local/bin/office-bridge.sh
 ENV HOME=/data/home COTAL_NO_PROMPT=1 COTAL_SKIP_CONNECTOR_SEED=1
 CMD ["/usr/local/bin/start.sh"]

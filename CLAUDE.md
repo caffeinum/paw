@@ -285,6 +285,13 @@ Each entry: what it is + the most load-bearing rule. Full notes behind the link.
   (only an unknown agentToken rejoins); the link file gone ⇒ the bridge walks everyone out and never saves tokens
   again (disconnect deletes the link first); errors are `[office]` log lines, never a crash.
   `check:office` (+ real office via `PAW_OFFICE_TEST_URL`/`_ADMIN_KEY`), `scripts/e2e-office.ts`.
+- `src/office-roster.ts` + `paw office serve` (#85) — ROSTER mode (`connect --roster all`, or a headless serve with no
+  local agents): every live `kind: agent` presence on the mesh, presence-only status; same name on two hosts →
+  `<name>~<sha256(id)[:4]>`, same host → newest; office→agent DMs by mesh id (`sendToPeerId`). `serve` = bridge only (no
+  mailbox/presence), link from flags > `OFFICE_*` env > stored, stdout logs, SIGTERM keeps tokens. On the broker box the
+  space is a remote mesh with `--root /data/cotal` (no new auth). cotal-host: opt-in `PAW_REF` build arg + `OFFICE_URL`/
+  `OFFICE_JOIN_KEY` secrets, else a no-op; ONE bridge per office. `scripts/e2e-office-serve{,-remote}.ts`.
+  → [office.md#roster-mode-and-the-headless-server-bridge-85](docs/notes/office.md#roster-mode-and-the-headless-server-bridge-85)
 
 ### Raycast → [raycast.md](docs/notes/raycast.md)
 - `raycast/` — own npm project; shells out to the `paw` CLI (never joins the mesh); per-message read

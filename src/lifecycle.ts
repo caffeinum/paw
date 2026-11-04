@@ -1768,6 +1768,17 @@ function psCommandSync(pid: number, env: boolean): string | undefined {
   return r.status === 0 && r.stdout.trim() ? r.stdout.trim() : undefined;
 }
 
+/** A running mailbox of `space` that belongs to THIS PAW_HOME (its pid), else undefined — `paw office serve`
+ *  refuses to start beside one, since that mailbox already hosts this home's office bridge. */
+export function mailboxOfThisHome(space: string): number | undefined {
+  const ours = pawHomeDir();
+  for (const pid of mailboxProcs(space)) {
+    const cmd = psCommandSync(pid, false);
+    if (cmd !== undefined && sameHome(mailboxOwnerHome(cmd, () => psCommandSync(pid, true)), ours)) return pid;
+  }
+  return undefined;
+}
+
 /**
  * Adopt-or-refuse for the "you" beacons ALREADY running for `space`, found by command signature from
  * any PAW_HOME and any release. True = one of ours is up (adopt, spawn nothing); false = none runs.

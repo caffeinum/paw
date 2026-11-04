@@ -29,6 +29,8 @@ export interface Desired {
 export type Row = Pick<AgentStatus, "name" | "mesh" | "live" | "busy" | "tool" | "turnAt" | "git" | "failure" | "stuck" | "emoji" | "hue"> & {
   statusSince?: number;
   activeAt?: number;
+  /** Roster mode only (src/office-roster.ts): the presence's free-text activity, shown while working when no tool is known. */
+  activity?: string;
 };
 
 // Control and bidi-override characters: the office refuses them (SPOOF_CHARS_RE there).
@@ -77,7 +79,7 @@ export function desiredFor(row: Row): Desired {
   const repo = repoOf(row);
   if (row.stuck || (row.failure && !row.busy)) return { present: true, status: "waiting", activity: clip(row.stuck ? "stuck: needs a look" : "last turn failed: needs a look", ACTIVITY_MAX) };
   if (running(row)) {
-    const what = row.tool ? toolName(row.tool.name) : "working";
+    const what = row.tool ? toolName(row.tool.name) : (row.activity ?? "working");
     return { present: true, status: "working", activity: clip(repo ? `${what} · ${repo}` : what, ACTIVITY_MAX) };
   }
   if (row.mesh === "waiting") return { present: true, status: "waiting", ...(repo ? { activity: clip(`waiting · ${repo}`, ACTIVITY_MAX) } : {}) };
