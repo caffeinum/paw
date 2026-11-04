@@ -10,8 +10,9 @@
  *   3. `paw chat nosuch` + an early line: the line is refused and kept (✕ not sent … text kept), the
  *      process stays up, /quit leaves, #general stays silent;
  *   4. echoer DMs "you" the moment its presence appears: the DM renders (listeners attach before connect);
- *   5. Ctrl-C at +80ms and at +400ms: exits within the startup-settle bound, bracketed paste turned off,
- *      a line queued before the quit is printed in full;
+ *   5. Ctrl-C at +20/50/80/120/400ms: exits within the startup-settle bound, bracketed paste turned off
+ *      if it was ever turned on, a line queued before the quit is printed in full;
+ *  5b. SIGTERM in the pre-shell window: bracketed paste (if on) is turned off on the way out;
  *   6. pipe mode (`… | paw chat echoer`) delivers once — today's order, unchanged;
  *   7. a multi-line bracketed paste landing at ~60ms (before chat.ts has loaded) is ONE message;
  *   8. a multi-line queued line refused at replay is kept and printed in full on quit (never lost);
@@ -76,17 +77,23 @@ echoer.on("presence", (ev: { type: string; presence: { card: { id: string; name:
 });
 await echoer.start();
 
+/** A mode switched on is switched off after it — never "off" required of a terminal paw never touched. */
+const pasteRestored = (raw: string): boolean => raw.lastIndexOf("\x1b[?2004h") < raw.lastIndexOf("\x1b[?2004l") || !raw.includes("\x1b[?2004h");
+const pasteDetail = (raw: string): string => (raw.includes("\x1b[?2004h") ? (raw.includes("\x1b[?2004l") ? "on → off" : "left ON") : "never switched on");
+
 /** One `paw chat` under a pty. `script` runs against it; returns the plain output and exit code. */
-async function chat(args: string[], script: (io: { write(s: string): void; out(): string; t(): number; waitFor(re: RegExp, ms: number): Promise<boolean> }) => Promise<void>, budgetMs = 30_000, rows = 40) {
+async function chat(args: string[], script: (io: { write(s: string): void; kill(sig: string): void; out(): string; t(): number; waitFor(re: RegExp, ms: number): Promise<boolean> }) => Promise<void>, budgetMs = 30_000, rows = 40) {
   const t0 = Date.now();
   const p = ptySpawn(exe, [...pre, "chat", ...args], { name: "xterm-256color", cols: 120, rows, cwd: REPO, env: { ...(process.env as Record<string, string>), FORCE_COLOR: "1" } });
   let raw = "";
   p.onData((d) => (raw += d));
-  const exited = new Promise<number>((r) => p.onExit(({ exitCode }) => r(exitCode)));
+  let signal = 0;
+  const exited = new Promise<number>((r) => p.onExit(({ exitCode, signal: sig }) => ((signal = sig ?? 0), r(exitCode))));
   let done = false;
   void exited.then(() => (done = true));
   const io = {
     write: (s: string) => !done && p.write(s),
+    kill: (sig: string) => !done && p.kill(sig),
     out: () => strip(raw),
     t: () => Date.now() - t0,
     waitFor: async (re: RegExp, ms: number) => {
@@ -102,7 +109,7 @@ async function chat(args: string[], script: (io: { write(s: string): void; out()
   await script(io);
   const code = await Promise.race([exited, sleep(budgetMs).then(() => undefined)]);
   if (code === undefined) p.kill();
-  return { raw, plain: strip(raw), code, ms: Date.now() - t0 };
+  return { raw, plain: strip(raw), code, signal, ms: Date.now() - t0 };
 }
 
 try {
@@ -168,16 +175,26 @@ try {
   }
 
   // 5. Ctrl-C during startup: leaves promptly, terminal restored, queued lines printed in full.
-  for (const at of [80, 400]) {
+  // Early ones may land before the pre-shell's raw switch: the kernel's SIGINT, the terminal never touched.
+  for (const at of [20, 50, 80, 120, 400]) {
     const r = await chat(["echoer"], async (io) => {
-      setTimeout(() => io.write("keep-this-line\r"), 30);
+      setTimeout(() => io.write("keep-this-line\r"), Math.min(30, at / 2)); // always typed before the Ctrl-C
       setTimeout(() => io.write("\x03"), at);
     }, 15_000);
-    ok(`5. Ctrl-C at +${at}ms exits within the settle bound`, r.code !== undefined && r.ms < 12_000, `exit ${r.code} after ${r.ms}ms`);
-    ok(`5. …bracketed paste is switched off on the way out`, r.raw.includes("\x1b[?2004l"));
+    ok(`5. Ctrl-C at +${at}ms exits within the settle bound`, r.code !== undefined && r.ms < 12_000, `exit ${r.code}${r.signal ? ` (signal ${r.signal})` : ""} after ${r.ms}ms`);
+    ok(`5. …bracketed paste, if switched on, is switched off on the way out`, pasteRestored(r.raw), pasteDetail(r.raw));
     const sent = dms.includes("keep-this-line");
     ok(`5. …the queued line is printed in full (or it was sent before the quit)`, /keep-this-line/.test(r.plain.slice(r.plain.lastIndexOf("quitting") >= 0 ? r.plain.lastIndexOf("quitting") : 0)) || sent, sent ? "sent" : "printed");
     dms.length = 0;
+  }
+
+  // 5b. a signal in the pre-shell window (before chat.ts listens for it): the terminal still goes back.
+  for (const at of [70, 110]) {
+    const r = await chat(["echoer"], async (io) => {
+      setTimeout(() => io.kill("SIGTERM"), at);
+    }, 15_000);
+    ok(`5b. SIGTERM at +${at}ms exits`, r.code !== undefined, `exit ${r.code}${r.signal ? ` (signal ${r.signal})` : ""} after ${r.ms}ms`);
+    ok(`5b. …bracketed paste, if switched on, is switched off on the way out`, pasteRestored(r.raw), pasteDetail(r.raw));
   }
 
   // 6. pipe mode: today's order — connect, then read lines — one delivery.
