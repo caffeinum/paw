@@ -9,12 +9,10 @@ swap_size_mb = 512
 [env]
   PUBLIC_HOST = "2027-cotal.fly.dev"
   COTAL_SPACE = "team2027"
-  # Memory budget for the 1GB box (no manager here; nats-server + two node daemons + the cred renewer).
-  # nats-server ran at ~160MB RSS; GOMEMLIMIT is a soft cap that makes Go GC harder near it, about 2x that.
-  GOMEMLIMIT = "300MiB"
-  # cotal up and cotal deliver each hold ~46MB of live V8 heap; the default limit on 1GB is ~530MB,
-  # which lets each grow to ~180MB RSS before collecting. 192MB is 4x the live heap.
-  NODE_OPTIONS = "--max-old-space-size=192"
+  # Memory budget for the 2GB box (no manager here; nats-server + two node daemons + the cred renewer,
+  # with room for an office bridge). Applied live with `fly machine update` on 2026-11-04.
+  GOMEMLIMIT = "1400MiB"
+  NODE_OPTIONS = "--max-old-space-size=512"
 
 [[mounts]]
   source = "cotal_data"
@@ -40,9 +38,10 @@ swap_size_mb = 512
   [[services.ports]]
     port = 443
 
+# A shared core stalled the broker on CPU steal (~60% steal, CPU pressure 43-55%); a dedicated vCPU fixed it.
 [[vm]]
-  size = "shared-cpu-1x"
-  memory = "1024mb"
+  size = "performance-1x"
+  memory = "2048mb"
 
 # start.sh stops the broker on purpose to rotate the $SYS creds; the machine must always come back.
 [[restart]]
