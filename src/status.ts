@@ -74,6 +74,9 @@ export interface AgentStatus {
    *  only for a live agent whose transcript shows one. With `startedMs` it says how long; without, no
    *  age is claimed. A hung tool blocks every later DM until it returns (see {@link hungTool}). */
   tool?: PendingTool;
+  /** Epoch ms of the newest message of the turn the transcript shows in flight (see {@link liveTurn});
+   *  absent when no turn is open or it can't be read. */
+  turnAt?: number;
   /** Repo, branch and worktree for the agent's folder — the thing you actually want to know when a
    *  dozen agents are working. Absent when the folder isn't a git checkout. */
   git?: GitInfo;
@@ -148,18 +151,24 @@ const BUSY_WINDOW_MS = 10_000;
  * `procStartedAt` is when the process holding the session started ({@link sessionStartedAt}): a turn whose
  * newest message predates it died with an earlier process and is not in flight ({@link turnOfProcess}).
  */
-export function liveTurn(t: Pick<TranscriptRead, "turn" | "mtimeMs"> | undefined, mesh: string, harness?: string, procStartedAt?: number): { busy: boolean; tool?: PendingTool } {
+export function liveTurn(t: Pick<TranscriptRead, "turn" | "mtimeMs"> | undefined, mesh: string, harness?: string, procStartedAt?: number): { busy: boolean; tool?: PendingTool; turnAt?: number } {
   // hermes/acp: presence alone too — their seats set working/idle per turn, and paw reads no transcript.
   if (harness === KIT_AGENT || harness === HERMES_AGENT || harness === ACP_AGENT) {
     const busy = mesh === "working" || mesh === "waiting";
     const state = busy ? turnOfProcess(t?.turn(), procStartedAt) : undefined;
-    return { busy, tool: state?.inFlight ? state.tool : undefined };
+    return { busy, tool: state?.inFlight ? state.tool : undefined, ...turnAtOf(state) };
   }
   const state = turnOfProcess(t?.turn(), procStartedAt);
   const tool = state?.inFlight ? state.tool : undefined;
-  if (mesh === "working" || mesh === "waiting") return { busy: true, tool }; // what the agent said beats what we infer
-  if (state?.inFlight !== undefined) return { busy: state.inFlight, tool };
+  if (mesh === "working" || mesh === "waiting") return { busy: true, tool, ...turnAtOf(state) }; // what the agent said beats what we infer
+  if (state?.inFlight !== undefined) return { busy: state.inFlight, tool, ...turnAtOf(state) };
   return { busy: inferBusy(mesh, true, t?.mtimeMs, Date.now()) };
+}
+
+/** The newest message of a turn the transcript shows IN FLIGHT — evidence the turn moved, which a
+ *  `waiting` claim alone can't give (paw counts `waiting` as busy whatever the transcript says). */
+function turnAtOf(state: { inFlight: boolean | undefined; lastMsgMs?: number } | undefined): { turnAt?: number } {
+  return state?.inFlight && state.lastMsgMs !== undefined ? { turnAt: state.lastMsgMs } : {};
 }
 
 const TAIL_SMALL = 64 * 1024;
