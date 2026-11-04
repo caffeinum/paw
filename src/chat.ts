@@ -11,6 +11,7 @@
  * Registers a "chat" command into the cotal registry on import; it ensures the mesh + manager
  * itself (see `startup` in chat()), so ensure()'s manager probe and the startup spawn share one rail.
  */
+import { spawnSync } from "node:child_process";
 import { appendFileSync, existsSync, writeSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
@@ -97,7 +98,9 @@ import { describeInboxBindFailure, inboxLedgerDir, prepareHumanInbox, sweepOrpha
 import { bootLabel, DeferredQueue, failed as failedSlot, LOADER, lineNeedsMesh, loading as loadingSlot, ok as okSlot, slotText, type BootPhase, type Slot } from "./chat-boot.ts";
 import { canRepaintInPlace, paintedRows, renderBanner, type BannerState } from "./chat-banner.ts";
 import { PendingConsent } from "./chat-consent.ts";
-import { takeFrame } from "./chat-preshell.ts";
+import { lookingFor, takeFrame } from "./chat-preshell.ts";
+import { otherSpaceHits, pawHome, suggestNames } from "./chat-lookup.ts";
+import { chooserKey, notFoundChooser, renderChooser, unreachableChooser, type Chooser, type Choice } from "./chat-chooser.ts";
 import { concurrentStartup } from "./chat-startup.ts";
 import { bangNoFolder, elsewhereBang, elsewhereBanner, elsewhereFiles, elsewhereLogs, elsewhereStatus, localMachine, machineOf, machineOfCard, runsElsewhere, type Elsewhere, type Machine } from "./hosted.ts";
 import { readTeleported } from "./teleport-plan.ts";
@@ -381,9 +384,7 @@ export function parseArgs(argv: string[]): ChatArgs {
  * still works — that's resuming, not creating — and so does `--name`, an explicit ask for an extra.
  */
 export function noAgentMessage(folder: string, typed: string, registered: string[]): string {
-  const token = typed.replace(/^@/, "").toLowerCase();
-  const key = token.replace(/[^a-z0-9]+/g, "");
-  const near = key.length >= 3 ? registered.filter((n) => n.toLowerCase().replace(/[^a-z0-9]+/g, "").includes(key)).slice(0, 5) : [];
+  const near = suggestNames(typed, registered);
   return (
     `paw: no agent for ${folder.replace(homedir(), "~")} — \`paw chat --fresh ${typed}\` creates one` +
     (near.length ? `; did you mean ${near.map((n) => `@${n}`).join(", ")}?` : " (`paw status` lists your agents)")
@@ -603,6 +604,14 @@ async function chat(argv: string[]): Promise<void> {
   }
   /** The name the UI shows for the target while it resolves: what was typed (`.` → this folder). */
   const typedLabel = target === undefined ? undefined : target === "." ? basename(process.cwd()) : target;
+  /**
+   * A bare name registered nowhere here (no folder to wake it from): maybe a peer hosted on another
+   * machine, maybe a typo — only the live roster can say. `pending` shows "◌ looking for @name…" in
+   * place of a live prompt; the roster settles it: `found` → the normal prompt, `absent` → the chooser
+   * (src/chat-chooser.ts), `unreachable` → said so, with retry. A pipe keeps today's behaviour.
+   */
+  let lookup: "pending" | "found" | "absent" | "unreachable" | undefined =
+    interactive && !mutating && name !== undefined && folder === undefined ? "pending" : undefined;
 
   let rl: readline.Interface | undefined;
   let closing = false;
@@ -660,6 +669,7 @@ async function chat(argv: string[]): Promise<void> {
     // The picker draws its rows above the prompt and erases them by COUNT; a line printed in between
     // made it erase the wrong rows and leave stale ones behind. Take it down, print, put it back.
     if (picking) pickerHooks?.erase();
+    else if (chooserHooks?.open()) chooserHooks.erase();
     if (rl && !closing) {
       // From the prompt's FIRST row: a line wrapped past the terminal width puts the cursor rows below
       // it, and clearing from there left the prompt's earlier rows stranded above every printed line.
@@ -672,6 +682,7 @@ async function chat(argv: string[]): Promise<void> {
     process.stdout.write(text);
     lastPainted = e;
     if (picking && pickerHooks) pickerHooks.draw();
+    else if (chooserHooks?.open()) chooserHooks.draw();
     else if (rl && !closing) rl.prompt(true);
   }
 
@@ -737,6 +748,8 @@ async function chat(argv: string[]): Promise<void> {
   let picking = false;
   /** The picker's erase/draw, registered once its section of this function has run. */
   let pickerHooks: { erase(): void; draw(): void } | undefined;
+  /** The not-found chooser's, likewise (src/chat-chooser.ts). */
+  let chooserHooks: { open(): boolean; erase(): void; draw(): void } | undefined;
 
   /** What the footer last said (bar the mesh/machine part), so a tick redraws only when it changed. */
   let hintState: string | undefined;
@@ -985,6 +998,7 @@ async function chat(argv: string[]): Promise<void> {
     const st = stage();
     const badges = [deferred.count ? `${deferred.count} queued` : "", st.pending.length ? `${st.pending.length} img` : "", st.pastes.length ? `${st.pastes.length} pasted` : "", elsewhereBadge(hiddenCount)].filter(Boolean);
     const narrow = (process.stdout.columns || 80) < 40;
+    if (lookup === "pending" && curName) return c.dim(`${lookingFor(curName, space)}${badges.length ? ` [${badges.join(" · ")}]` : ""}> `);
     const state = targetLost && curName && targetLost.name === curName ? ` ${c.red("✕")}` : !ready && bootPhase !== "failed" && (curName || pendingName()) ? ` ${c.dim(LOADER)}` : "";
     const tail = c.dim(`${curName && filter?.kind === "agent" && !narrow ? " (only)" : ""}${badges.length ? ` [${badges.join(" · ")}]` : ""}`) + state + c.dim("> ");
     const shown = curName ?? pendingName();
@@ -1086,7 +1100,10 @@ async function chat(argv: string[]): Promise<void> {
   // something has been printed under it, each change is appended as one dim line instead. The mesh
   // line names the space (a remote one marked) and, for an agent, the machine running it right now — a
   // just-spawned agent has no card yet, so it shows the mesh alone, never a guess.
-  const fields: { status: Slot<string>; info: Slot<{ model: string; context: string } | undefined> } = { status: loadingSlot(), info: loadingSlot() };
+  const fields: { status: Slot<string>; info: Slot<{ model: string; context: string } | undefined> } = {
+    status: lookup === "pending" ? okSlot(c.dim(lookingFor(name!, space))) : loadingSlot(),
+    info: loadingSlot(),
+  };
   /** Has the endpoint's view of who is where been read? On a local space the machine is known from the
    *  persona alone; on a remote one only a card says, so it loads with the roster. */
   const whereKnown = (): boolean => roster() !== undefined;
@@ -1161,7 +1178,7 @@ async function chat(argv: string[]): Promise<void> {
       resizedSince: resizedSinceBanner,
       tty: process.stdout.isTTY === true,
       chatView: view === "chat",
-      picking,
+      picking: picking || chooserHooks?.open() === true, // an in-place repaint would wipe the chooser drawn under it
       pasting: false,
       bannerRows,
       promptRows,
@@ -1412,6 +1429,10 @@ async function chat(argv: string[]): Promise<void> {
     // The agent that couldn't be reached at startup came up after all: lines to it send again.
     if (ready && ev.type !== "offline" && ev.presence.status !== "offline" && targetLost && card.name.toLowerCase() === targetLost.name.toLowerCase()) {
       targetLost = undefined;
+      if (lookup === "absent" || lookup === "unreachable") {
+        lookup = "found";
+        closeChooser();
+      }
       if (curName?.toLowerCase() === card.name.toLowerCase()) curId = card.id;
       fields.status = okSlot(c.green("live on the mesh"));
       emit(c.green(`→ ${card.name} is on the mesh now — lines to it send again`));
@@ -1781,6 +1802,59 @@ async function chat(argv: string[]): Promise<void> {
     drawPicker();
   };
 
+  // ── the not-found chooser (src/chat-chooser.ts) ─────────────────────────────────────────────────
+  // Drawn above the prompt like the picker (erased by row count). While it is open it owns the keys it
+  // knows (stdin's emit wrapper below hands them to it before readline sees them); any other key closes
+  // it and reaches the input as usual.
+  let chooser: Chooser | undefined;
+  let chooserDrawn = 0;
+  const eraseChooser = (): void => {
+    if (!chooserDrawn || !rl || closing) return;
+    readline.cursorTo(process.stdout, 0);
+    readline.moveCursor(process.stdout, 0, -chooserDrawn);
+    readline.clearScreenDown(process.stdout);
+    chooserDrawn = 0;
+  };
+  const drawChooser = (): void => {
+    if (!chooser || !rl || closing) return;
+    eraseChooser();
+    const rows = renderChooser(chooser, c, "a new agent is `paw chat --fresh <folder>`");
+    readline.cursorTo(process.stdout, 0);
+    readline.clearLine(process.stdout, 0);
+    const text = rows.join("\n") + "\n";
+    process.stdout.write(text);
+    chooserDrawn = paintedRows(text, process.stdout.columns || 80); // a wrapped row is erased whole
+    rl.prompt(true);
+  };
+  function openChooser(ch: Chooser): void {
+    if (!rl || closing) return;
+    if (picking) closePicker();
+    eraseChooser();
+    chooser = ch;
+    drawChooser();
+  }
+  function closeChooser(): void {
+    if (!chooser) return;
+    eraseChooser();
+    chooser = undefined;
+    if (rl && !closing) rl.prompt(true);
+  }
+  chooserHooks = { open: () => chooser !== undefined, erase: eraseChooser, draw: drawChooser };
+  /** One stdin chunk while the chooser is open: true = it was the chooser's (readline never sees it). */
+  const chooserTakes = (raw: string): boolean => {
+    if (!chooser || !rl || closing) return false;
+    const r = chooserKey(chooser, raw);
+    if (r.pass) {
+      closeChooser();
+      return false;
+    }
+    chooser.sel = r.sel;
+    const pick = r.pick;
+    if (pick) setImmediate(() => void onChoice(pick).catch((e: Error) => emit(c.red(`! ${e.message}`))));
+    else drawChooser();
+    return true;
+  };
+
   // ── views: logs · chat · tasks (src/chat-views.ts, src/chat-tasks.ts) ───────────────────────────
   /** Capture the target's new transcript blocks into the history (printing them if the view shows
    *  logs). Runs every second whenever there is a target, in EVERY view — the history needs the blocks
@@ -2061,6 +2135,7 @@ async function chat(argv: string[]): Promise<void> {
     process.stdin.emit = ((event: string | symbol, ...args: unknown[]): boolean => {
       if (event !== "data") return stdinEmit(event, ...args);
       const chunk = args[0] as Buffer | string;
+      if (chooser && chooserTakes(typeof chunk === "string" ? chunk : chunk.toString("utf8"))) return true;
       const text = typeof chunk === "string" ? chunk : chunk.includes("\x1b[<") || chunk.includes(PASTE_END) ? chunk.toString("utf8") : undefined;
       // Keys typed after a paste's END marker in the SAME chunk — what the kernel hands over at once for
       // everything typed while chat was still loading — are cut off and re-emitted a tick later: the
@@ -2835,6 +2910,105 @@ async function chat(argv: string[]): Promise<void> {
     inboxRelease = undefined;
   }
 
+  /** Why the roster could not be read, for the unreachable chooser. */
+  let lookupWhy = "";
+  /**
+   * Settle a `pending` lookup against the live roster: wait (≤5s) for its first read, then the name is
+   * on it (found — the normal path from here, an offline one included), or not (absent), or the roster
+   * never loaded (unreachable — never read as "not found").
+   */
+  async function settleLookup(nm: string, signal?: AbortSignal): Promise<void> {
+    const e = ep;
+    if (!rosterSeen && e) {
+      await e.waitForPresenceSnapshot(5000);
+      onRosterSeen();
+    }
+    if (signal?.aborted) return;
+    if (!rosterSeen) {
+      lookup = "unreachable";
+      lookupWhy = `${space}'s roster didn't load in 5s`;
+      targetLost = { name: nm, reason: `couldn't reach ${space} to check @${nm}` };
+      fields.status = failedSlot(`couldn't reach ${space} to check`);
+      return;
+    }
+    const peer = findPeer(nm);
+    if (peer) {
+      lookup = "found";
+      targetLost = undefined;
+      curId = peer.status !== "offline" ? peer.card.id : await waitForPeerId(ep!, nm, 5000, signal);
+      fields.status = curId ? okSlot(c.green("live on the mesh")) : failedSlot("offline");
+      return;
+    }
+    lookup = "absent";
+    targetLost = { name: nm, reason: `no agent @${nm} in ${space}` };
+    fields.status = failedSlot(`no agent @${nm} in ${space}`);
+  }
+
+  /** The chooser for a lookup that did not find its agent (no-op otherwise). */
+  function presentLookup(): void {
+    const nm = curName;
+    if (!nm || !rl || closing) return;
+    if (lookup === "unreachable") return openChooser(unreachableChooser({ name: nm, space, why: lookupWhy }));
+    if (lookup !== "absent") return;
+    const live = (roster() ?? []).filter((p) => p.card.id !== me).map((p) => p.card.name);
+    const suggestions = suggestNames(nm, [...live, ...listAgents(space).map((a) => a.name)]).filter((n) => n.toLowerCase() !== nm.toLowerCase());
+    let elsewhere: ReturnType<typeof otherSpaceHits> = [];
+    try {
+      elsewhere = otherSpaceHits(pawHome(), nm, space);
+    } catch (e) {
+      emit(c.red(`! couldn't check the other spaces: ${(e as Error).message}`));
+    }
+    openChooser(notFoundChooser({ name: nm, space, suggestions, elsewhere }));
+  }
+
+  /** Act on a pick. Queued lines are never sent by it: they are already in the input or kept. */
+  async function onChoice(ch: Choice): Promise<void> {
+    closeChooser();
+    if (ch.kind === "quit") return void (await shutdown());
+    if (ch.kind === "space") {
+      execAfterQuit = [process.execPath, ...process.execArgv, process.argv[1]!, "chat", `@${ch.name}`, "--space", ch.space];
+      writeOut(c.dim(`\n→ opening @${ch.name} in ${ch.space}…\n`));
+      return void (await shutdown());
+    }
+    if (ch.kind === "all") {
+      curName = undefined;
+      curId = undefined;
+      targetLost = undefined;
+      lookup = undefined;
+      bang = false;
+      if (filter?.kind === "agent") filter = undefined;
+      emit(c.dim(`(showing all conversations — plain lines go to #${room} · @name starts a DM)`));
+      rl?.setPrompt(promptFor());
+      updateBanner();
+      return;
+    }
+    if (ch.kind === "switch") {
+      await handleLine(`@${ch.name}`, {});
+      if (curName === ch.name) lookup = undefined;
+      else presentLookup(); // it could not be reached either — choose again
+      updateBanner();
+      return;
+    }
+    // retry
+    const nm = curName;
+    if (!nm) return;
+    lookup = "pending";
+    targetLost = undefined;
+    fields.status = okSlot(c.dim(lookingFor(nm, space)));
+    rl?.setPrompt(promptFor());
+    updateBanner();
+    if (bootPhase === "failed") {
+      if (booting) return;
+      bootAbort = new AbortController();
+      bootSettled = boot().catch((e: Error) => emit(c.red(`! ${e.message}`)));
+      return;
+    }
+    await settleLookup(nm);
+    rl?.setPrompt(promptFor());
+    updateBanner();
+    presentLookup();
+  }
+
   /**
    * Connect behind the UI: ensure() beside the inbox + endpoint, resolve a mutating target, the wake
    * gate, the target's mesh id — then `ready`, and the queued lines replay. Failures are shown, never
@@ -2914,6 +3088,9 @@ async function chat(argv: string[]): Promise<void> {
             updateBanner();
             setPhase("roster");
             curId = r.id ?? (await waitForPeerId(ep!, name, r.spawned ? FRESH_SPAWN_MS : LIVE_AGENT_MS, signal));
+          } else if (lookup === "pending") {
+            setPhase("roster");
+            await settleLookup(name, signal);
           } else {
             setPhase("roster");
             curId = await waitForPeerId(ep!, name, 5000, signal);
@@ -2925,7 +3102,7 @@ async function chat(argv: string[]): Promise<void> {
         if (signal.aborted) return;
         if (!curId && !targetLost)
           targetLost = { name, reason: folder ? unreachableHint(name, space, busy) : `paw: no live agent named "${name}" — start one with \`paw chat <folder>\`` };
-        if (targetLost) {
+        if (targetLost && lookup !== "absent" && lookup !== "unreachable") {
           if (!interactive) throw new Error(targetLost.reason);
           fields.status = failedSlot(curId ? "not reachable" : "not on the mesh — see below");
           flushBanner(); // repaint before the reason prints under it, so the banner can still change in place
@@ -2953,6 +3130,9 @@ async function chat(argv: string[]): Promise<void> {
         (e: Error) => emit(c.red(e.message)),
       );
       await replayDeferred();
+      // Lines typed while looking were refused above (kept, or back in the input) — never sent to a
+      // choice. Now the choice.
+      presentLookup();
       markSettled();
     } catch (e) {
       if (signal.aborted) return;
@@ -2967,9 +3147,14 @@ async function chat(argv: string[]): Promise<void> {
       fields.status = failedSlot("not connected");
       emit(c.red(`✕ ${(e as Error).message}`));
       emit(c.dim("  /reconnect tries again · what you type is kept until then"));
+      if (lookup === "pending") {
+        lookup = "unreachable";
+        lookupWhy = "not connected (why is above)";
+      }
       rl?.setPrompt(promptFor());
       updateBanner();
       refreshFooter();
+      presentLookup();
     } finally {
       booting = false;
       await startup.close().catch((e: Error) => emit(c.red(`paw: chat startup control did not close cleanly: ${e.message}`)));
@@ -2991,6 +3176,8 @@ async function chat(argv: string[]): Promise<void> {
     if (draft.trim()) writeOut(c.yellow("\n✎ your unsent draft:\n") + `${draft}\n`);
   }
   let leavingAt = 0;
+  /** A command to hand the terminal to once this chat has left (the chooser's other-space pick). */
+  let execAfterQuit: string[] | undefined;
   async function shutdown(code?: number): Promise<void> {
     if (closing) {
       // A second Ctrl-C while startup settles: leave NOW. The ledger makes the promise below true.
@@ -3025,6 +3212,13 @@ async function chat(argv: string[]): Promise<void> {
       await Promise.race([bootSettled, new Promise((r) => setTimeout(r, 10_000).unref())]);
     }
     await teardown();
+    if (execAfterQuit) {
+      // "open @name in <other space>": this REPL is one space's endpoint, so the other space is a new chat.
+      const [cmd, ...args] = execAfterQuit;
+      const r = spawnSync(cmd!, args, { stdio: "inherit" });
+      if (r.error) throw r.error;
+      process.exit(r.status ?? 1);
+    }
     process.exit(code ?? (everReady ? 0 : 1));
   }
 

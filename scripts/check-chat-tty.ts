@@ -17,10 +17,15 @@
  *   8. a multi-line queued line refused at replay is kept and printed in full on quit (never lost);
  *   9. an argv error after the skeleton was painted erases it before the error prints;
  *  10. a 14-row terminal gets a one-line skeleton (a full one would strand its top in the scrollback).
+ *  11. `@echoerr` (a typo, registered nowhere): the first frame says "looking for", then the chooser
+ *      offers @echoer; a line typed meanwhile is NOT sent — it is back in the input, and goes to echoer
+ *      only once the operator picks it and presses Enter;
+ *  12. a name registered only in ANOTHER local space: the chooser offers to open it there; Esc quits.
+ *  (1. also covers a peer registered nowhere here that IS on the roster: found → the normal prompt.)
  */
 import { spawn as ptySpawn } from "@lydell/node-pty";
 import { spawn } from "node:child_process";
-import { existsSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -231,7 +236,9 @@ try {
     const errAt = r.raw.indexOf("--personality is for a new agent");
     const before = r.raw.slice(0, errAt);
     ok("9. an argv error exits 1 with its message", r.code === 1 && errAt > 0, `exit ${r.code}`);
-    ok("9. …after the skeleton was cleared (never glued onto the loader prompt)", before.lastIndexOf("\x1b[0J") > before.lastIndexOf("you → ") && before.lastIndexOf("you → ") > 0);
+    // echoer is registered nowhere here, so its skeleton prompt is the "looking for" one.
+    const promptAt = Math.max(before.lastIndexOf("you → "), before.lastIndexOf("looking for @echoer"));
+    ok("9. …after the skeleton was cleared (never glued onto the loader prompt)", before.lastIndexOf("\x1b[0J") > promptAt && promptAt > 0);
   }
 
   // 10. a short terminal: the first frame is one line, so erasing it can reach every row.
@@ -243,6 +250,44 @@ try {
     }, 30_000, 14);
     const first = strip(r.raw.slice(0, r.raw.indexOf("\x1b[0J")));
     ok("10. a 14-row terminal gets a one-line skeleton", /◌ loading/.test(first) && !/agent:/.test(first), JSON.stringify(first.slice(0, 160)));
+  }
+  // 11. a typo'd name: an honest pending frame, then the chooser; nothing sent until the operator picks.
+  {
+    dms.length = 0;
+    general.length = 0;
+    const r = await chat(["@echoerr"], async (io) => {
+      setTimeout(() => io.write("for-echoer\r"), 30);
+      const shown = await io.waitFor(/no agent @echoerr in [\s\S]*did you mean[\s\S]*1 @echoer/, 20_000);
+      ok("11. the chooser says there's no @echoerr and offers @echoer", shown, io.out().split("\n").slice(-10).join(" | "));
+      await sleep(300);
+      ok("11. …and the line typed meanwhile was not sent", !dms.some((d) => /for-echoer/.test(d)) && general.length === 0, JSON.stringify(dms));
+      io.write("1");
+      await io.waitFor(/now messaging echoer/, 10_000);
+      await sleep(200);
+      io.write("\r"); // the kept line, back in the input, now goes to the chosen agent
+      const end = Date.now() + 10_000;
+      while (Date.now() < end && !dms.some((d) => /for-echoer/.test(d))) await sleep(50);
+      await sleep(300);
+      io.write("/quit\r");
+    });
+    const first = strip(r.raw.slice(0, r.raw.indexOf("\x1b[0J")));
+    ok("11. the first frame said it was looking, not a live prompt", /looking for @echoerr on /.test(first) && !/you → /.test(first), JSON.stringify(first.slice(-160)));
+    ok("11. after picking @echoer + Enter the kept line reached echoer exactly once", dms.filter((d) => /for-echoer/.test(d)).length === 1, JSON.stringify(dms));
+    ok("11. …#general heard nothing", general.length === 0);
+  }
+
+  // 12. a name that exists only in another (isolated) local space.
+  {
+    const otherSpace = `${space}-b`;
+    mkdirSync(join(home, "spaces", otherSpace, "personas"), { recursive: true });
+    writeFileSync(join(home, "spaces", otherSpace, "personas", "only-there.md"), `---\nname: only-there\n---\n`);
+    const r = await chat(["@only-there"], async (io) => {
+      const shown = await io.waitFor(new RegExp(`no agent @only-there in ${space}[\\s\\S]*open @only-there in ${otherSpace}`), 20_000);
+      ok("12. the chooser offers to open it in the other space", shown, io.out().split("\n").slice(-8).join(" | "));
+      io.write("\x1b");
+    }, 15_000);
+    ok("12. Esc quits", r.code !== undefined, `exit ${r.code}`);
+    rmSync(join(home, "spaces", otherSpace), { recursive: true, force: true });
   }
 } finally {
   await echoer.stop().catch(() => {});
