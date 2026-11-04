@@ -13,7 +13,7 @@ import { registry, type Command } from "@cotal-ai/core";
 import { attachTmux, tmuxSession, tmuxSplit, tmuxSplitAdvice, tmuxWindowExists } from "./native-attach.ts";
 import { liveSessionProcs } from "./named.ts";
 import { existsSync, readdirSync } from "node:fs";
-import { assertUnambiguousTarget, canonicalDir, cliRestartConsent, ensureAgentSpawned, folderForName, personaFilePath, registerInstance, resolveFolderAgent, setFolderName, type Kind } from "./addressing.ts";
+import { agentNamesForFolder, assertUnambiguousTarget, canonicalDir, cleanAgentName, cliRestartConsent, ensureAgentSpawned, folderForName, personaFilePath, registerInstance, resolveFolderAgent, setFolderName, type Kind } from "./addressing.ts";
 import { KIT_AGENT, kitBinPath } from "./kit.ts";
 import { agentSummary } from "./agent-summary.ts";
 import { personaTranscriptRoots, readAgentType, readCwd, readHeadless, readKitStorage, readResumeId, transcriptPath } from "./session.ts";
@@ -25,12 +25,12 @@ import { elsewhereAttach, localManagerInstanceId, runsElsewhere } from "./hosted
 import { contractMismatchHint } from "./contract-mismatch.ts";
 import { runTeed } from "./cotal-tee.ts";
 import { isAddressHandle, resolveAddress } from "./address.ts";
-import { cotaldViaNode, readRuntimeMarker, resolveSpace } from "./lifecycle.ts";
+import { cotaldViaNode, ensure, readRuntimeMarker, resolveSpace } from "./lifecycle.ts";
 import { findMesh } from "@cotal-ai/workspace";
 import { pawCotalRoot } from "./cotal-root.ts";
 import { remoteCotalArgv } from "./dispatch.ts";
 import { readRemoteMesh } from "./remote-mesh.ts";
-import { pawServer } from "./server.ts";
+import { isRemoteSpace, pawServer } from "./server.ts";
 
 function parseArgs(argv: string[]): { space?: string; target?: string; model?: string; name?: string } {
   const out: { space?: string; target?: string; model?: string; name?: string } = {};
@@ -43,6 +43,26 @@ function parseArgs(argv: string[]): { space?: string; target?: string; model?: s
   }
   return out;
 }
+
+/**
+ * `paw open`/`attach` without a terminal can't attach, so it must not CREATE the agent first: `paw open
+ * --help` from an agent's shell once minted `evals-a17501`, left it running, then failed on the tty
+ * (#78). `wanted` is the name this open would claim at `folder` (`--name`, a handle's name), else the
+ * folder's default. An agent already registered there passes — attaching it keeps its own error.
+ */
+export function refuseCreateWithoutTty(space: string, folder: string, wanted: string | undefined, tty: boolean): void {
+  if (tty) return;
+  const names = agentNamesForFolder(space, folder);
+  if (wanted === undefined ? names.length > 0 : names.includes(cleanAgentName(wanted))) return;
+  const named = wanted === undefined ? undefined : cleanAgentName(wanted);
+  const create = named === undefined ? `paw chat --fresh ${folder}` : `paw chat ${folder} --name ${named}`;
+  throw new Error(
+    `paw: no agent${named === undefined ? "" : ` "${named}"`} for ${folder} in space ${space} — \`paw open\`/\`attach\` attaches a terminal and ` +
+      `won't create one without a tty (stdin and stdout aren't). \`${create}\` creates one.`,
+  );
+}
+
+const hasTty = (): boolean => !!process.stdin.isTTY && !!process.stdout.isTTY;
 
 async function open(argv: string[]): Promise<void> {
   const { space: spaceArg, target: rawTarget, model, name: nameFlag } = parseArgs(argv);
@@ -59,6 +79,7 @@ async function open(argv: string[]): Promise<void> {
   if (target !== undefined && isAddressHandle(target)) {
     const addr = resolveAddress(target);
     folder = addr.cwd;
+    refuseCreateWithoutTty(space, folder, nameFlag ?? addr.name, hasTty());
     // --name attaches an EXTRA instance at this folder (its own persona); no --name keeps the
     // default path (addr.name sets the folder's default, else the folder-derived default name).
     name = nameFlag !== undefined
@@ -90,10 +111,13 @@ async function open(argv: string[]): Promise<void> {
       const home = folderForName(space, target);
       if (home && existsSync(home)) folder = home;
     }
+    if (nameTarget === undefined) refuseCreateWithoutTty(space, folder as string, nameFlag, hasTty());
     name =
       nameTarget ?? (nameFlag !== undefined ? registerInstance(space, folder as string, nameFlag) : resolveFolderAgent(space, folder as string));
   }
 
+  // The mesh + manager come up only now, once this open may go ahead (a remote space needs its own).
+  await ensure({ needMesh: true, needManager: true, ...(isRemoteSpace(space) ? { space } : {}) });
   await attachResolved(space, name, { folder, model, brief, kind });
 }
 

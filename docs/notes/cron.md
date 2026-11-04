@@ -16,7 +16,7 @@ paw cron ls [--all]   ·   paw cron rm <id>   ·   paw cron tick
   dom+dow both restricted = either), local time, recurring by default. Unlike session crons: durable, no
   7-day expiry.
 - Agent defaults to the caller (`COTAL_NAME`); the default space for `cron` is `PAW_SPACE`, else the
-  caller's `COTAL_SPACE` (bin/paw.ts `callerSpace`) — a team2027 agent has no PAW_SPACE.
+  caller's `COTAL_SPACE` (src/space.ts `callerSpace`, via `defaultSpaceFor` — shared with the spawning verbs) — a team2027 agent has no PAW_SPACE.
 - `<agent>#<space>`: the hoister (`ADDRESS_ARGS.cron`, arity-based `slots` fn) only treats slot 1 as an
   address when the arity says an agent was given, so a prompt containing `#` is never mangled.
 - `add` fails loud for an unregistered name or one that runs elsewhere (teleported / remote persona not here).

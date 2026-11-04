@@ -59,7 +59,8 @@ Each entry: what it is + the most load-bearing rule. Full notes behind the link.
 - `bin/paw.ts` — endpoint-native composition root: imports ONLY @cotal-ai/core + paw command modules;
   own dispatch loading ONLY the verb's module (`src/command-modules.ts`, map checked by check:dispatch),
   NEEDS_MESH/NEEDS_MANAGER pre-gating, `paw cotal <cmd>` → cotald subprocess; unknown
-  command fails loud. Core-free above its `// FAST PATH` marker (core/lifecycle are `await import`s):
+  command fails loud. `paw <verb> --help`/`-h` answers BEFORE any gate (never spawns); open/attach off a
+  tty never create an agent; spawning verbs inside an agent default to its COTAL_SPACE (#78). Core-free above its `// FAST PATH` marker (core/lifecycle are `await import`s):
   `paw chat` on a tty paints its pre-shell first (check:chat walks the graph). → [cli.md#binpawts](docs/notes/cli.md#binpawts)
 - `bin/paw.mjs` — package `bin` shim: native TS on node ≥22.18, else node → repo tsx (no dist/ build); every launcher's no-bun fallback = `node bin/paw.mjs`, never tsx. → [cli.md#binpawmjs](docs/notes/cli.md#binpawmjs)
 - `bin/cotald.ts` — cotal composition root (runCli + manager + paw connector aliased as the default

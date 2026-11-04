@@ -17,21 +17,24 @@ import "../src/log-stamp-boot.ts"; // first: timestamps a log-redirected daemon'
 // in @cotal-ai/* is a dynamic import after it, so `paw chat` paints its first frame before ~200ms of
 // module loading instead of after.
 import type { Command } from "@cotal-ai/core";
-import { downSpace, explicitSpace, expandEqFlags, expandShortForm, failureLine, hoistAddressSpace, oneShotReplyNote, remoteCotalArgv, SHORT_FORMS, stripCotalNamespace, withDefaultSpace } from "../src/dispatch.ts";
+import { downSpace, explicitSpace, expandEqFlags, expandShortForm, failureLine, helpRequested, hoistAddressSpace, oneShotReplyNote, remoteCotalArgv, SHORT_FORMS, stripCotalNamespace, verbHelp, withDefaultSpace } from "../src/dispatch.ts";
 import { readRemoteMesh } from "../src/remote-mesh.ts";
 import { runCotalPassthrough } from "../src/cotal-tee.ts";
-import { callerSpace } from "../src/space.ts";
+import { defaultSpaceFor } from "../src/space.ts";
 
 // A short form (`paw a` = `paw attach`) is expanded HERE, before anything reads the verb, so the
 // mesh/manager gating, --space injection and the command lookup all see the real name.
 const raw = [...process.argv.slice(2)];
 if (raw.length) raw[0] = expandShortForm(raw[0]) as string;
 const cmd = raw[0];
+// `paw <verb> --help` / `-h` (as a flag — see helpRequested) prints the verb's usage and exits, answered
+// below before ANY gate: nothing loads the mesh, starts, spawns or registers (#78).
+const wantsHelp = cmd !== undefined && helpRequested(cmd, raw.slice(1));
 
 // FAST PATH: `paw chat` on a terminal paints its skeleton frame and holds the keyboard now
 // (src/chat-preshell.ts); chat.ts adopts the frame once it has loaded. A failure to lex argv here is
 // not ours to report — the real dispatch below says it properly.
-if (cmd === "chat" && process.stdin.isTTY && process.stdout.isTTY) {
+if (cmd === "chat" && process.stdin.isTTY && process.stdout.isTTY && !wantsHelp) {
   const { paintPreshell } = await import("../src/chat-preshell.ts");
   let args: string[] | undefined;
   try {
@@ -53,10 +56,11 @@ const INLINE_VERBS = new Set(["cotal", "down", "create", "send"]);
 /** Commands that talk to the mesh — they need NATS reachable before they run. */
 const NEEDS_MESH = new Set(["inbox", "msg", "ask", "who", "history", "watch", "files", "bind"]);
 /** Commands that drive the control plane — they additionally need the manager answering.
- *  `open`/`dm` are here too: they spawn the folder's agent through the manager.
+ *  `dm` is here too: it spawns the folder's agent through the manager. (`open`/`attach` ensure after
+ *  deciding they may — off a tty they refuse to create an agent, and that refusal must not boot a mesh.)
  *  (`sessions`/`log` are local reads; `adopt` runs its own ensure once it decides to start;
  *  `mailbox` is the daemon ensure() itself spawns — gating it would recurse into the lock.) */
-const NEEDS_MANAGER = new Set(["open", "attach", "dm", "tidy"]); // status, chat, rename, rm and stop ensure() themselves — each shares ensure()'s probe rail (lifecycle.ts ensureManagerOn)
+const NEEDS_MANAGER = new Set(["dm", "tidy"]); // status, chat, open, attach, rename, rm and stop ensure() themselves — each shares ensure()'s probe rail (lifecycle.ts ensureManagerOn)
 
 /** Raw cotal verbs that drive the control plane — the passthrough must bring the manager up too,
  *  or a cold-machine `paw cotal ps`/`start` dead-ends on a mesh with no manager answering. */
@@ -88,9 +92,29 @@ function help(): string {
   ].join("\n");
 }
 
+/** One verb's help (`paw <verb> --help`, `paw help <verb>`), or undefined when it isn't a verb. */
+function usageOf(verb: string): string | undefined {
+  if (verb === "down") return verbHelp({ name: "down", usage: "down [--space <s>]", summary: "stop the daemons paw started for this space" });
+  const c = registry.all<Command>("command").find((x) => x.name === verb);
+  const short = Object.entries(SHORT_FORMS).find(([, v]) => v === verb)?.[0];
+  return c && verbHelp(c, short);
+}
+
 // Only the verb's own module is evaluated (src/command-modules.ts) — loading all ~43 was most of a
 // short command's startup. help, completion and an unknown word still load every one.
 if (cmd === undefined || !INLINE_VERBS.has(cmd)) await loadCommandsFor(cmd);
+
+// Help before anything else can run: an unknown word falls through to its own loud error below.
+const helpVerb = cmd === "help" && raw[1] !== undefined && !raw[1].startsWith("-") ? expandShortForm(raw[1]) : wantsHelp && cmd !== "help" ? cmd : undefined;
+const verbUsage = helpVerb === undefined ? undefined : usageOf(helpVerb);
+if (verbUsage !== undefined) {
+  console.log(verbUsage);
+  process.exit(0);
+}
+if (cmd === "help" && helpVerb !== undefined) {
+  process.stderr.write(`paw: no command "${helpVerb}" to show help for — run \`paw help\` for the list\n`);
+  process.exit(1);
+}
 
 try {
   if (cmd === "cotal") {
@@ -186,13 +210,13 @@ try {
   // command names a REMOTE space with --space: then that space's broker/manager is the one it needs.
   // `<agent>#<space>` becomes `<agent> --space <space>` FIRST, so the gate below ensures that space.
   const args = hoistAddressSpace(cmd, raw.slice(1));
-  const named = explicitSpace(args);
-  const gate = named && isRemoteSpace(named) ? { space: named } : {};
+  // Unnamed, a spawning verb run inside an agent defaults to THAT agent's space (src/space.ts).
+  const space = explicitSpace(args) ?? defaultSpaceFor(cmd);
+  const gate = isRemoteSpace(space) ? { space } : {};
   if (NEEDS_MANAGER.has(cmd)) await ensure({ needMesh: true, needManager: true, ...gate });
   else if (NEEDS_MESH.has(cmd)) await ensure({ needMesh: true, ...gate });
 
-  // `paw cron` defaults to the CALLING agent's space (an agent on team2027 has no PAW_SPACE).
-  const argv = expandEqFlags(withDefaultSpace(args, cmd === "cron" ? callerSpace() : resolveSpace()));
+  const argv = expandEqFlags(withDefaultSpace(args, space));
   await command.run({ values: {}, positionals: [], raw: argv });
 } catch (err) {
   // A `paw chat` that failed before its banner: the skeleton frame promised a chat — take it down first.
