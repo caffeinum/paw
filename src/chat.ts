@@ -60,6 +60,7 @@ import { advanceCursor } from "./cursor.ts";
 import { attachConn, shortReason, type ConnLine, type ConnPhase } from "./conn-state.ts";
 import { DEDUP_WINDOW_MS, draftDm, draftPost, publishDraft } from "./mesh-publish.ts";
 import { Outbox, type OutEvent } from "./outbox.ts";
+import { LinkProbe, PROBE_MS, isAckTimeout } from "./link-probe.ts";
 import { PresenceHold, type PresenceLine } from "./presence-hold.ts";
 import { AwaitTracker } from "./chat-awaiting.ts";
 import { arrowRun, CLEAR_ALL, displayWidth, fitWidth, entryVisible, hintFor, hintWithTag, whereTag, History, LogFollower, navKey, scrollKey, Painter, type Entry, pickerWindow, showsChat, showsLogs, stepView, VIEW_LABEL, viewNeedsTarget, type ChatView } from "./chat-views.ts";
@@ -741,6 +742,8 @@ async function chat(argv: string[]): Promise<void> {
   let hintState: string | undefined;
   /** The outbox, once it exists (presence events can redraw the footer before it does). */
   let outboxRef: Outbox<Outgoing> | undefined;
+  /** Every connection the endpoint opens, PINGed when a send's ack times out (src/link-probe.ts). */
+  const linkProbe = new LinkProbe();
   /**
    * The hint row's RIGHT side, plain and coloured: the target's live status (or, with no target, who is
    * working), unsent messages, the connection state, the mesh and machine. Status flips live HERE, not
@@ -1557,7 +1560,16 @@ async function chat(argv: string[]): Promise<void> {
     }
     refreshFooter();
   };
-  const outbox = new Outbox<Outgoing>({ publish: (o) => publishDraft(needEp(), o.msg), onEvent: onOutEvent });
+  /** A send whose ack timed out may be riding a socket that died silently: PING it, replace it if dead. */
+  const publishProbed = async (o: Outgoing) => {
+    try {
+      return await publishDraft(needEp(), o.msg);
+    } catch (err) {
+      if (isAckTimeout(err)) void linkProbe.check().catch((e: Error) => emit(c.red(`! ${e.message}`)));
+      throw err;
+    }
+  };
+  const outbox = new Outbox<Outgoing>({ publish: publishProbed, onEvent: onOutEvent });
   outboxRef = outbox;
   /** Queue a DM to `toId` (the agent `name`). `awaitReply` false: no ⏳ tracking (a stuck seat). */
   const sendDm = (name: string, toId: string, text: string, awaitReply = true): void => {
@@ -2518,6 +2530,7 @@ async function chat(argv: string[]): Promise<void> {
         emit(c.dim(`startup: ${bootPhase}${ready ? "" : ` (${since})`}${targetLost ? ` · target lost: ${targetLost.reason}` : ""}${deferred.count ? ` · ${deferred.count} queued` : ""}`));
         if (conn && ep) {
           for (const l of conn.report(Date.now())) emit(c.dim(l));
+          emit(c.dim(`reconnects forced by a send's probe (ack timed out, then no PONG in ${PROBE_MS / 1000}s): ${linkProbe.forced}`));
           const view = ep.presenceView();
           const stuck = ep.presenceWriteFailure();
           emit(
@@ -2786,6 +2799,7 @@ async function chat(argv: string[]): Promise<void> {
       // `paw chat '#team2027'` would otherwise sit filtered on traffic it never receives. Posting needs
       // no subscription (multicast is a publish), which is why only the read side needs this.
       ...(addressed.mode === "channel" ? { channels: [room] } : {}),
+      ...linkProbe.endpointOptions(),
     });
     // cotal's endpoint reports trouble one event at a time (src/conn-state.ts); the conn state listens
     // before the endpoint starts (an unheard "error" event crashes the process).
@@ -2797,6 +2811,9 @@ async function chat(argv: string[]): Promise<void> {
     e.on("message", onMessage);
     e.on("presence", onPresence);
     e.on("presence-view", () => onRosterSeen());
+    // A fresh socket: a send in flight on the old one (or waiting out its backoff) goes now. The 1s conn
+    // tick misses a forced reconnect — its down and up land in the same millisecond.
+    e.on("transport", (st: { connected: boolean }) => st.connected && outboxRef?.kick());
     tapOwnSubject(e, space, onOwnSend);
     try {
       await startResilient(e);

@@ -6,7 +6,10 @@
  * are held, not dropped, the way a Wi-Fi drop holds them until the link is back. Then:
  *   1. send while stalled → the JetStream ack times out → `pending`; unstall → the held publish lands
  *      late AND the retry re-publishes → the receiver gets exactly ONE copy (msgID dedup);
- *   2. send while stalled past a short give-up bound → ONE `failed`; unstall; `retry()` → still one copy.
+ *   2. send while stalled past a short give-up bound → ONE `failed`; unstall; `retry()` → still one copy;
+ *   3. the flow dies SILENTLY (bytes dropped, no RST — a Wi-Fi/NAT drop): nats.js would not notice for
+ *      minutes; the link probe (src/link-probe.ts) PINGs it after the ack timeout, forces a fresh socket,
+ *      and the transport-up kick re-sends — delivered once, well inside the give-up bound.
  * Needs nats-server (PAW_NATS_SERVER, else ~/.local/share/nats/nats-server-2.14.7, else PATH).
  * Run: PAW_HOME=$(mktemp -d) PAW_SPACE=test-$$ PAW_RELEASE=dev node scripts/e2e-send-retry.ts
  */
@@ -18,6 +21,7 @@ import { join } from "node:path";
 import { CotalEndpoint, type CotalMessage, type Delivery, type MessageMeta } from "@cotal-ai/core";
 import { Outbox, type OutEvent } from "../src/outbox.ts";
 import { draftDm, publishDraft } from "../src/mesh-publish.ts";
+import { LinkProbe, isAckTimeout } from "../src/link-probe.ts";
 
 const space = `sendretry${process.pid}`;
 const pinned = join(homedir(), ".local/share/nats/nats-server-2.14.7");
@@ -44,18 +48,20 @@ for (let i = 0; i < 50; i++) {
   await sleep(100);
 }
 
-/** A TCP proxy whose links can be stalled: while stalled, bytes are queued in order, then flushed. */
+/** A TCP proxy whose links can be stalled (bytes queued in order, then flushed) or black-holed (every
+ *  byte dropped from then on, the socket left open — what a dropped Wi-Fi/NAT flow looks like). */
 let stalled = false;
-const links: { flush(): void }[] = [];
+const links: { flush(): void; blackhole(): void }[] = [];
 const proxy = createServer((client) => {
   const upstream = connect(natsPort, "127.0.0.1");
   const held: { to: Socket; data: Buffer }[] = [];
-  const pass = (to: Socket) => (data: Buffer) => (stalled ? held.push({ to, data }) : to.write(data));
+  let dead = false;
+  const pass = (to: Socket) => (data: Buffer) => (dead ? undefined : stalled ? held.push({ to, data }) : to.write(data));
   client.on("data", pass(upstream));
   upstream.on("data", pass(client));
   client.on("error", () => upstream.destroy());
   upstream.on("error", () => client.destroy());
-  links.push({ flush: () => held.splice(0).forEach(({ to, data }) => to.write(data)) });
+  links.push({ flush: () => held.splice(0).forEach(({ to, data }) => to.write(data)), blackhole: () => void (dead = true) });
 }).listen(0, "127.0.0.1");
 await new Promise((r) => proxy.once("listening", r));
 const proxyPort = (proxy.address() as AddressInfo).port;
@@ -82,19 +88,35 @@ kit.on("message", (m: CotalMessage, d: Delivery, meta: MessageMeta) => {
   d.ack();
 });
 await kit.start();
-const you = new CotalEndpoint({ space, servers: `nats://127.0.0.1:${proxyPort}`, card: { name: "you", kind: "endpoint" }, registerPresence: true, consume: false, watchPresence: true });
+// Wired exactly as paw chat wires it: the probe sees every connection, a timed-out send runs it, and a
+// fresh socket kicks the outbox.
+const probe = new LinkProbe();
+const you = new CotalEndpoint({ space, servers: `nats://127.0.0.1:${proxyPort}`, card: { name: "you", kind: "endpoint" }, registerPresence: true, consume: false, watchPresence: true, ...probe.endpointOptions() });
+const boxes: Outbox<CotalMessage>[] = [];
+you.on("transport", (st: { connected: boolean }) => st.connected && boxes.forEach((b) => b.kick()));
 const youSignals: string[] = [];
 you.on("error", (e: Error) => youSignals.push(`error: ${e.message}`));
 you.on("warning", (e: Error) => youSignals.push(`warning: ${e.message}`));
 await you.start();
 
 const events: string[] = [];
-const box = (giveUpMs?: number) =>
-  new Outbox<CotalMessage>({
-    publish: (m) => publishDraft(you, m),
+const publishProbed = async (m: CotalMessage) => {
+  try {
+    return await publishDraft(you, m);
+  } catch (err) {
+    if (isAckTimeout(err)) void probe.check();
+    throw err;
+  }
+};
+const box = (giveUpMs?: number) => {
+  const b = new Outbox<CotalMessage>({
+    publish: publishProbed,
     onEvent: (e: OutEvent<CotalMessage>) => events.push(`${e.kind}${e.kind === "failed" ? `:${e.transient ? "transient" : "loud"}:${e.error}` : e.kind === "pending" ? `:${e.error}` : ""}`),
     ...(giveUpMs ? { giveUpMs } : {}),
   });
+  boxes.push(b);
+  return b;
+};
 
 try {
   // 0. healthy: one attempt, no events but `sent`.
@@ -132,6 +154,20 @@ try {
   await sleep(1500);
   console.log(`  ·  retried send: ${again[0].state}, duplicate=${again[0].duplicate}`);
   assert(again[0].state === "sent" && got.get(m2.id) === 1, `give-up → /retry: delivered exactly ONCE (got ${got.get(m2.id) ?? 0}; the held copy ${again[0].duplicate ? "had landed and was deduped" : "had not landed"})`);
+
+  // 3. the flow dies silently: no RST, nats.js still thinks it's up. Before the probe this failed at 95s
+  //    after 8 tries over the dead socket (the transport never went down).
+  const forcedBefore = probe.forced;
+  links.forEach((l) => l.blackhole());
+  const m3 = draftDm(you, kit.card.id, "after a silent drop");
+  const t3 = Date.now();
+  const it3 = await box().submit("kit", m3);
+  const took = Date.now() - t3;
+  await sleep(1500);
+  console.log(`  ·  silent drop: ${it3.state} after ${Math.round(took / 1000)}s, ${it3.attempts} attempts, ${probe.forced - forcedBefore} forced reconnect(s)`);
+  assert(it3.state === "sent" && took < 25_000, `silent drop: delivered on a fresh socket in ${Math.round(took / 1000)}s (< 25s; was a 95s ✕ not sent)`);
+  assert(probe.forced - forcedBefore >= 1, "silent drop: the probe found the dead socket and replaced it");
+  assert(got.get(m3.id) === 1, `silent drop: the receiver got exactly ONE copy (got ${got.get(m3.id) ?? 0})`);
 } finally {
   await you.stop().catch(() => {});
   await kit.stop().catch(() => {});

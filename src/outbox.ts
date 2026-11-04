@@ -20,6 +20,9 @@ export const GIVE_UP_MS = 90_000;
 /** Waits between attempts; the last repeats. */
 export const BACKOFF_MS = [1000, 2000, 4000, 8000, 15_000];
 
+/** Why an in-flight attempt was abandoned by {@link Outbox.kick} (transient by construction). */
+const RECONNECTED = "reconnected";
+
 export type OutState = "queued" | "sending" | "retrying" | "sent" | "failed";
 
 export interface OutItem<M> {
@@ -69,6 +72,8 @@ export class Outbox<M> {
   private seq = 0;
   private busy = false;
   private cancelWait: (() => void) | undefined;
+  /** Set while an attempt is in flight: give up waiting on it (the socket it rode was replaced). */
+  private abandon: (() => void) | undefined;
   private readonly now: () => number;
   private readonly schedule: (fn: () => void, ms: number) => () => void;
   private readonly giveUpMs: number;
@@ -104,8 +109,13 @@ export class Outbox<M> {
     return again;
   }
 
-  /** The connection came back: stop waiting out the backoff and try the head now. */
+  /**
+   * The connection came back: stop waiting out the backoff and try the head now. An attempt still in
+   * flight rode the OLD socket — its ack can never come — so it is abandoned and the head re-sent at
+   * once (same id: if that copy did land, the broker dedups it; its late result is ignored).
+   */
   kick(): void {
+    if (this.abandon) return this.abandon();
     if (!this.cancelWait) return;
     this.cancelWait();
     this.cancelWait = undefined;
@@ -148,12 +158,21 @@ export class Outbox<M> {
     item.attempts++;
     let error: Error | undefined;
     let ack: { duplicate?: boolean } | void = undefined;
+    let abandoned = false;
+    const gaveUpWaiting = new Promise<void>((res) => (this.abandon = () => ((abandoned = true), res())));
     try {
-      ack = await this.o.publish(item.msg);
+      ack = await Promise.race([this.o.publish(item.msg), gaveUpWaiting]);
     } catch (e) {
       error = e instanceof Error ? e : new Error(String(e));
     }
+    this.abandon = undefined;
     this.busy = false;
+    if (abandoned) {
+      // Not a failure of the message: the link was replaced under it. Resend now, no backoff.
+      item.lastError = RECONNECTED;
+      if (this.now() - item.firstAt < this.giveUpMs) return void this.pump();
+      error = new Error(RECONNECTED);
+    }
     if (!error) {
       item.state = "sent";
       if (ack && ack.duplicate) item.duplicate = true;
