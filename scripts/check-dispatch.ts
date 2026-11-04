@@ -4,8 +4,8 @@
  * helpers left are default-space injection and the `paw cotal` namespace strip. Unknown-command
  * handling lives in bin/paw.ts (not unit-testable here). Pure; no daemons. Run: pnpm check:dispatch
  */
-import { execFile } from "node:child_process";
-import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { execFile, execFileSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -390,7 +390,45 @@ assert(
     const flag = await runPaw(["open", "--space", "test-flag"], { CWD: folder, PAW_SPACE: undefined, COTAL_SPACE: "test-caller", COTAL_NAME: "caller" });
     rmSync(flag.home, { recursive: true, force: true });
     assert(flag.code === 1 && flag.err.includes("in space test-flag"), "in-agent: an explicit --space still wins");
+
+    // `--no-attach` is the scripted way to create one (#88): off a tty it is NOT refused — it goes on to
+    // the mesh (unreachable here, so it fails THERE, after the tty gate it used to stop at).
+    const scripted = await runPaw(["open", folder, "--no-attach"], { CWD: folder });
+    rmSync(scripted.home, { recursive: true, force: true });
+    assert(
+      scripted.code === 1 && !scripted.err.includes("without a tty") && scripted.err.includes("unreachable"),
+      `no-attach: \`paw open <folder> --no-attach\` off a tty passes the tty gate and reaches the mesh (${scripted.err.trim().split("\n")[0]})`,
+    );
+    const refusal = await runPaw(["open"], { CWD: folder });
+    rmSync(refusal.home, { recursive: true, force: true });
+    assert(refusal.code === 1 && refusal.err.includes("--no-attach` creates one without attaching"), "no-attach: the no-tty refusal names `paw open … --no-attach`");
     rmSync(folder, { recursive: true, force: true });
+  }
+
+  // ── `paw open <owner>/<repo>@<branch>` (#88): a branch that isn't on origin fails loud BEFORE any agent ─
+  // A local bare repo stands in for GitHub; the paw clone is pre-made under the run's PAW_HOME.
+  {
+    const home = mkdtempSync(join(tmpdir(), "paw-open-gh-home-"));
+    const origin = join(home, "origin.git");
+    const seed = join(home, "seed");
+    const sh = (args: string[], cwd?: string) => execFileSync("git", ["-c", "user.email=t@paw", "-c", "user.name=paw", ...args], { cwd, stdio: "ignore" });
+    sh(["init", "-q", "--bare", "-b", "main", origin]);
+    sh(["clone", "-q", origin, seed]);
+    sh(["commit", "-q", "--allow-empty", "-m", "init"], seed);
+    sh(["push", "-q", "origin", "HEAD:main"], seed);
+    mkdirSync(join(home, "repos", "acme"), { recursive: true });
+    sh(["clone", "-q", origin, join(home, "repos", "acme", "widget")]);
+    const cwd = mkdtempSync(join(tmpdir(), "paw-open-gh-cwd-"));
+    const r = await runPaw(["open", "acme/widget@no-such-branch", "--no-attach"], { CWD: cwd, PAW_HOME: home });
+    const personas = join(home, "spaces", "test-help", "personas");
+    assert(
+      r.code === 1 && r.err.includes('no branch "no-such-branch" on origin for acme/widget') &&
+        !existsSync(join(home, "repos", "acme", "widget.worktrees")) && !(existsSync(personas) && readdirSync(personas).length),
+      `gh-branch: \`paw open acme/widget@no-such-branch\` fails loud naming the branch, no worktree, no agent (${r.err.trim().split("\n")[0]})`,
+    );
+    const local = await runPaw(["open", "nosuchfolder@main"], { CWD: cwd, PAW_HOME: home });
+    assert(local.code === 1 && local.err.includes("<owner>/<repo>@<branch>"), "gh-branch: `paw open <missing folder>@<branch>` names the GitHub form that works");
+    for (const d of [home, cwd, r.home, local.home]) rmSync(d, { recursive: true, force: true });
   }
 }
 

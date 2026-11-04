@@ -32,11 +32,12 @@ import { remoteCotalArgv } from "./dispatch.ts";
 import { readRemoteMesh } from "./remote-mesh.ts";
 import { isRemoteSpace, pawServer } from "./server.ts";
 
-function parseArgs(argv: string[]): { space?: string; target?: string; model?: string; name?: string } {
-  const out: { space?: string; target?: string; model?: string; name?: string } = {};
+export function parseArgs(argv: string[]): { space?: string; target?: string; model?: string; name?: string; noAttach?: boolean } {
+  const out: { space?: string; target?: string; model?: string; name?: string; noAttach?: boolean } = {};
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--space") out.space = argv[++i];
+    else if (a === "--no-attach") out.noAttach = true;
     else if (a === "--model") out.model = argv[++i];
     else if (a === "--name") out.name = argv[++i];
     else if (!a.startsWith("-") && out.target === undefined) out.target = a;
@@ -56,16 +57,19 @@ export function refuseCreateWithoutTty(space: string, folder: string, wanted: st
   if (wanted === undefined ? names.length > 0 : names.includes(cleanAgentName(wanted))) return;
   const named = wanted === undefined ? undefined : cleanAgentName(wanted);
   const create = named === undefined ? `paw chat --fresh ${folder}` : `paw chat ${folder} --name ${named}`;
+  const noAttach = `paw open ${folder}${named === undefined ? "" : ` --name ${named}`} --no-attach`;
   throw new Error(
     `paw: no agent${named === undefined ? "" : ` "${named}"`} for ${folder} in space ${space} — \`paw open\`/\`attach\` attaches a terminal and ` +
-      `won't create one without a tty (stdin and stdout aren't). \`${create}\` creates one.`,
+      `won't create one without a tty (stdin and stdout aren't). \`${noAttach}\` creates one without attaching (scripts, other agents); ` +
+      `\`${create}\` creates one and talks to it.`,
   );
 }
 
 const hasTty = (): boolean => !!process.stdin.isTTY && !!process.stdout.isTTY;
 
 async function open(argv: string[]): Promise<void> {
-  const { space: spaceArg, target: rawTarget, model, name: nameFlag } = parseArgs(argv);
+  const { space: spaceArg, target: rawTarget, model, name: nameFlag, noAttach } = parseArgs(argv);
+  const mayCreate = noAttach || hasTty(); // --no-attach never needs a terminal, so it may create
   const target = rawTarget?.startsWith("@") ? rawTarget.slice(1) : rawTarget; // `@name` = that agent
   const space = spaceArg ?? resolveSpace();
   assertUnambiguousTarget(space, target); // a bare token that's BOTH a known name and a folder here → fail loud
@@ -79,7 +83,7 @@ async function open(argv: string[]): Promise<void> {
   if (target !== undefined && isAddressHandle(target)) {
     const addr = resolveAddress(target);
     folder = addr.cwd;
-    refuseCreateWithoutTty(space, folder, nameFlag ?? addr.name, hasTty());
+    refuseCreateWithoutTty(space, folder, nameFlag ?? addr.name, mayCreate);
     // --name attaches an EXTRA instance at this folder (its own persona); no --name keeps the
     // default path (addr.name sets the folder's default, else the folder-derived default name).
     name = nameFlag !== undefined
@@ -111,14 +115,14 @@ async function open(argv: string[]): Promise<void> {
       const home = folderForName(space, target);
       if (home && existsSync(home)) folder = home;
     }
-    if (nameTarget === undefined) refuseCreateWithoutTty(space, folder as string, nameFlag, hasTty());
+    if (nameTarget === undefined) refuseCreateWithoutTty(space, folder as string, nameFlag, mayCreate);
     name =
       nameTarget ?? (nameFlag !== undefined ? registerInstance(space, folder as string, nameFlag) : resolveFolderAgent(space, folder as string));
   }
 
   // The mesh + manager come up only now, once this open may go ahead (a remote space needs its own).
   await ensure({ needMesh: true, needManager: true, ...(isRemoteSpace(space) ? { space } : {}) });
-  await attachResolved(space, name, { folder, model, brief, kind });
+  await attachResolved(space, name, { folder, model, brief, kind, noAttach });
 }
 
 /**
@@ -130,9 +134,9 @@ async function open(argv: string[]): Promise<void> {
 export async function attachResolved(
   space: string,
   name: string,
-  opts: { folder?: string; model?: string; brief?: string; kind?: Kind } = {},
+  opts: { folder?: string; model?: string; brief?: string; kind?: Kind; noAttach?: boolean } = {},
 ): Promise<void> {
-  const { folder, model, brief, kind } = opts;
+  const { folder, model, brief, kind, noAttach } = opts;
 
   // A FOREGROUND `paw claude` agent lives in the operator's OWN terminal, not under the manager — there's
   // no pty to stream and no tmux/cmux window to enter. Point at that terminal instead of trying to attach.
@@ -174,9 +178,17 @@ export async function attachResolved(
   if (folder && !windowOpen) {
     // Attaching to an offline agent starts it, and a boot can take a minute: say so, never a blank wait.
     // Only a real spawn prints (a live agent is reused silently).
-    const progress = (line: string) => process.stderr.write(`paw: attach ${name}: ${line}\n`);
+    const progress = (line: string) => process.stderr.write(`paw: ${noAttach ? "open" : "attach"} ${name}: ${line}\n`);
     const r = await withManagerControl(space, pawServer(space), (ctl) => ensureAgentSpawned(ctl, { space, name, cwd: folder, model, brief, kind, progress, restartLive: cliRestartConsent(false) }));
     if (r.stuck) process.stderr.write(`paw: ${r.stuck}\n`);
+  }
+
+  if (noAttach) {
+    if (!folder && !windowOpen) {
+      throw new Error(`paw: --no-attach spawns from a folder, and "${name}" has none registered in space ${space} — \`paw open <folder> --name ${name} --no-attach\``);
+    }
+    process.stdout.write(noAttachReport(space, name));
+    return;
   }
 
   // A HEADLESS agent (`claude -p`, docs/notes/headless.md) or a KIT agent (src/kit.ts) has no TUI
@@ -355,15 +367,30 @@ export function kitViewSession(persona: string): string[] {
   return [];
 }
 
+/** What `paw open --no-attach` prints once the agent is up: how to reach it from a terminal. */
+export function noAttachReport(space: string, name: string): string {
+  const addr = space === resolveSpace() ? name : `${name}#${space}`;
+  return `${name} is up in space ${space} — \`paw attach ${addr}\` attaches · \`paw log ${addr}\` follows it · \`paw dm ${addr} "…"\` messages it\n`;
+}
+
 /** kit's subcommands: an agent named like one is addressed as `kit @<name>`. */
 const KIT_SUBCOMMANDS = new Set(["run", "once", "auth", "dump", "help"]);
+
+const OPEN_USAGE = (verb: string): string =>
+  [
+    `${verb} [<folder>|<name>] [--name <n>] [--no-attach]   (default "."; --name attaches an extra instance at the folder)`,
+    `${verb} <owner>/<repo>@<branch>   (a GitHub branch: clones once, adds or reuses <repo>.worktrees/<repo>-<branch>; the branch must exist on origin)`,
+    `${verb} gh:<owner>/<repo>@<branch> | https://github.com/<owner>/<repo>/tree/<branch>   (the same)`,
+    `${verb} <folder>@<branch>   (an EXISTING worktree of a local repo — a local <folder> wins over <owner>/<repo>)`,
+    `${verb} … --no-attach   (spawn or reuse the agent, print how to attach, exit 0 — off a tty, the only way open creates one)`,
+  ].join("\n");
 
 const openCommand: Command = {
   kind: "command",
   name: "open",
   group: "Mesh",
-  summary: "attach to a folder's agent terminal (auto-spawns it) — open [<folder>|<name>|<repo>@<branch>] [--name <n>]",
-  usage: 'open [<folder>|<name>|<repo>@<branch>] [--name <n>]   (default: ".", --name attaches an extra instance at the folder)',
+  summary: "attach to a folder's agent terminal (auto-spawns it) — open [<folder>|<name>|<owner>/<repo>@<branch>|<folder>@<branch>] [--name <n>] [--no-attach]",
+  usage: OPEN_USAGE("open"),
   run: (a) => open([...a.raw]),
 };
 
@@ -374,7 +401,7 @@ const attachCommand: Command = {
   name: "attach",
   group: "Mesh",
   summary: "alias of open — attach to a folder's agent terminal (auto-spawns it)",
-  usage: 'attach [<folder>|<name>|<repo>@<branch>] [--name <n>]   (default: ".", --name attaches an extra instance at the folder)',
+  usage: OPEN_USAGE("attach"),
   run: (a) => open([...a.raw]),
 };
 

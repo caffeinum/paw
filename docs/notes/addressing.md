@@ -450,13 +450,43 @@ CLI-side only (ensureAgentSpawned runs in the caller) — live without a release
 
 ## worktrees
 
-- `src/worktree.ts` — worktree addressing: `<repo>@<branch>` resolves (via `git worktree list`) to the
+- `src/worktree.ts` — worktree addressing: `<folder>@<branch>` (a LOCAL repo; `<owner>/<repo>@<branch>` is the
+  GitHub form below) resolves (via `git worktree list`) to the
   folder of the worktree that has `<branch>` checked out. **Strict v1: resolves an existing worktree,
   fails loud if the branch/worktree is missing (never auto-creates).** `resolveFolderArg(target)` is
   the shared entry point used by chat/open/adopt/dm — it now resolves `github:owner/repo[#branch]`
   (clone via `src/github.ts`) first, then a `<repo>@<branch>` worktree, else a plain folder.
   `paw sessions <repo>` is repo-aware: lists every worktree + the claude transcripts inside each;
   `paw sessions <repo>@<branch>` shows just that worktree.
+
+## github branches: `<owner>/<repo>@<branch>` (#88)
+
+- `<owner>/<repo>@<branch>`, `gh:<owner>/<repo>@<branch>` and `github:<owner>/<repo>@<branch>` resolve
+  EXACTLY like `https://github.com/<owner>/<repo>/tree/<branch>`: reuse (or blobless-clone) the paw clone,
+  then add or reuse the STANDARD worktree `<repo>.worktrees/<repo>-<branch slug>` (src/repo-layout.ts) via
+  `resolveBranchTarget(…, { exact: true })` in src/address.ts. The parser is `parseGithubBranchRef`
+  (src/github.ts). Before #88, `paw open firegoat-ai/evals@feat/x` fell into the LOCAL worktree resolver
+  and failed `"firegoat-ai/evals" is not a git repository`; an agent then hand-made a worktree at a path
+  that looked like a separate repo.
+- **Disambiguation:** a bare `<x>/<y>@<branch>` is GitHub only when `<x>/<y>` is exactly one slash, the
+  owner is a GitHub name, and `<x>/<y>` is NOT a local path from the cwd. A local folder always wins
+  (`<folder>@<branch>` = an EXISTING worktree of that local repo, unchanged, never creates). `./x@b`,
+  `~/x@b`, `/abs@b`, `a/b/c@b`, `repo@b` stay local. `github:o/r#branch` (the `#` form) is unchanged —
+  it checks the branch out in the shared clone and may create it; `gh:o/r@b` USED to mean that too and
+  now means the per-branch worktree.
+- **Never creates a branch:** the branch must exist on ORIGIN (`refs/remotes/origin/<b>`; a miss fetches
+  just that ref, so a branch pushed after the clone works) — a missing one fails loud naming it, and a
+  local-only head in the paw clone is refused too. An existing standard worktree is reused WITHOUT
+  touching the network (a warm agent keeps its handle after the branch is deleted on origin). A branch
+  already checked out elsewhere (the clone's own default branch) resolves to that checkout — git never
+  checks one branch out twice; `o/r@main` is the clone itself (kind `repo`). The `/tree/` URL path gets
+  the same reuse plus a one-shot `git fetch origin` retry on a miss.
+- Non-minting verbs (adopt/rename/sessions via `resolveExistingFolderArg`, rm) find the worktree paw
+  made, never clone/fetch; none yet → "`paw open o/r@b` creates it". A `<folder>@<branch>` on a
+  non-repo names the GitHub forms in its error. `paw help open` lists every form.
+- Test: `check:addressing` (parse table, every form → the same worktree as the URL, stale-clone fetch,
+  missing/local-only branch refusals, local-folder precedence — a local bare repo is "origin", the paw
+  clone pre-made so gh is never called), `check:dispatch` (the real CLI fails loud before any agent).
 
 ## name#space
 

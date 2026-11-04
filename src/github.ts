@@ -9,7 +9,7 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { canonicalDir } from "./addressing.ts";
 
 export interface GithubHandle {
@@ -31,11 +31,7 @@ export function parseGithubHandle(target: string): GithubHandle | undefined {
   // A pasted URL is the most common way to have a repo in hand; `github:https://github.com/o/r`
   // failed with `invalid owner "https:"`, which is technically true and useless. Peel the URL/ssh
   // forms down to owner/repo; the strict grammar below still validates what's left.
-  const rest = target
-    .slice("github:".length)
-    .replace(/^(https?:\/\/)?(www\.)?github\.com[/:]/, "")
-    .replace(/^git@github\.com:/, "")
-    .replace(/\/+$/, "");
+  const rest = peelGithubUrl(target.slice("github:".length));
   const hash = rest.indexOf("#");
   const path = hash === -1 ? rest : rest.slice(0, hash);
   const branch = hash === -1 ? undefined : rest.slice(hash + 1);
@@ -58,6 +54,54 @@ export function parseGithubHandle(target: string): GithubHandle | undefined {
     }
   }
   return branch === undefined ? { owner, repo } : { owner, repo, branch };
+}
+
+function peelGithubUrl(rest: string): string {
+  return rest
+    .replace(/^(https?:\/\/)?(www\.)?github\.com[/:]/, "")
+    .replace(/^git@github\.com:/, "")
+    .replace(/\/+$/, "");
+}
+
+export interface GithubBranchRef {
+  owner: string;
+  repo: string;
+  branch: string;
+}
+
+/**
+ * Parse the GitHub BRANCH forms that mean "that branch's own worktree", the same as a pasted
+ * `https://github.com/<owner>/<repo>/tree/<branch>` URL: `gh:owner/repo@branch`,
+ * `github:owner/repo@branch`, and a bare `owner/repo@branch`. The bare form is GitHub only when
+ * `owner/repo` is NOT a local path (from `cwd`): `<folder>@<branch>` with a real local folder keeps its
+ * meaning, an existing worktree of that local repo. Returns undefined for anything else (incl. the
+ * legacy `github:o/r#branch`, which checks the branch out in the shared clone); throws when it IS a
+ * branch form but malformed (bad owner/repo, unsafe branch).
+ */
+export function parseGithubBranchRef(target: string, cwd: string = process.cwd()): GithubBranchRef | undefined {
+  let body: string;
+  if (target.startsWith("gh:")) body = peelGithubUrl(target.slice("gh:".length));
+  else if (target.startsWith("github:")) body = peelGithubUrl(target.slice("github:".length));
+  else {
+    const at = target.indexOf("@");
+    if (at <= 0) return undefined;
+    const path = target.slice(0, at);
+    if (!/^[^/]+\/[^/]+$/.test(path) || !NAME.test(path.split("/")[0]) || existsSync(resolve(cwd, path))) return undefined;
+    body = target;
+  }
+  const at = body.indexOf("@");
+  const hash = body.indexOf("#");
+  if (at <= 0 || (hash !== -1 && hash < at)) return undefined;
+  if (at === body.length - 1) throw new Error(`paw: "${target}" is missing a branch after "@" (use <owner>/<repo>@<branch>)`);
+  const handle = `github:${body.slice(0, at)}#${body.slice(at + 1)}`;
+  let parsed: GithubHandle | undefined;
+  try {
+    parsed = parseGithubHandle(handle);
+  } catch (e) {
+    throw new Error((e as Error).message.replace(`"${handle}"`, `"${target}"`).replace(`after "#"`, `after "@"`));
+  }
+  if (!parsed?.branch) throw new Error(`paw: "${target}" is not <owner>/<repo>@<branch>`);
+  return { owner: parsed.owner, repo: parsed.repo, branch: parsed.branch };
 }
 
 /** The clone root: `<PAW_HOME or ~/.paw>/repos`. Mirrors spaceDir's PAW_HOME logic; repos are
