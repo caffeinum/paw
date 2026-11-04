@@ -13,7 +13,8 @@ import { existsSync, rmSync } from "node:fs";
 import { registry, type Command } from "@cotal-ai/core";
 import { agentNamesForFolder, assertUnambiguousTarget, canonicalDir, folderForName, listAgents, lookupFolderName, personaFilePath, stopAgent } from "./addressing.ts";
 import { readForeground, unregisterForeground } from "./foreground.ts";
-import { parseGithubHandle, repoDir } from "./github.ts";
+import { parseGithubBranchRef, parseGithubHandle, repoDir } from "./github.ts";
+import { branchWorktreeDir } from "./repo-layout.ts";
 import { ensureSpaceFor, resolveSpace, withEnsuredManager } from "./lifecycle.ts";
 import { readResumeId, readSandbox } from "./session.ts";
 import { readSandboxHomeOwner, sandboxHomeDir, sandboxHomeOwnerFile } from "./sandbox.ts";
@@ -41,7 +42,10 @@ export function resolveRemoval(space: string, target: string): { name: string; f
 
   let folder: string | undefined; // a folder / worktree / github handle with a registered agent?
   try {
-    if (target.startsWith("github:")) {
+    const branchRef = parseGithubBranchRef(target);
+    if (branchRef) {
+      folder = canonicalDir(branchWorktreeDir(repoDir(branchRef.owner, branchRef.repo), branchRef.repo, branchRef.branch)); // never fetched
+    } else if (target.startsWith("github:")) {
       const h = parseGithubHandle(target);
       folder = h ? repoDir(h.owner, h.repo) : undefined; // the clone dir — do NOT fetch
     } else if (parseWorktreeRef(target)) {

@@ -1,8 +1,10 @@
 /**
- * Worktree addressing for paw: `<repo>@<branch>` resolves to the folder of the git worktree that has
- * `<branch>` checked out. A worktree is just a folder, so once resolved everything downstream
- * (folder→name, spawn, chat/open/adopt/sessions) is unchanged. v1 is strict: it RESOLVES an existing
- * worktree and FAILS LOUD if the branch or its worktree doesn't exist — paw never auto-creates one.
+ * Worktree addressing for paw: `<folder>@<branch>` (a LOCAL repo) resolves to the folder of the git
+ * worktree that has `<branch>` checked out. (`<owner>/<repo>@<branch>` with no such local folder is the
+ * GitHub form — src/github.ts parseGithubBranchRef, resolved before this in src/address.ts.) A worktree
+ * is just a folder, so once resolved everything downstream (folder→name, spawn, chat/open/adopt/sessions)
+ * is unchanged. v1 is strict: it RESOLVES an existing worktree and FAILS LOUD if the branch or its
+ * worktree doesn't exist — paw never auto-creates one.
  *
  * These are LEAF resolvers only. The top-level `resolveFolderArg`/`resolveAddress` chain that dispatches
  * across github:/url/worktree/folder lives in src/address.ts (it imports these), so this module stays
@@ -84,7 +86,12 @@ export function resolveWorktreeFolder(target: string): string {
   const ref = parseWorktreeRef(target);
   if (!ref) throw new Error(`paw: "${target}" is not a <repo>@<branch> reference`);
   const repoRoot = gitToplevel(resolve(ref.repo));
-  if (!repoRoot) throw new Error(`paw: "${ref.repo}" is not a git repository`);
+  if (!repoRoot) {
+    throw new Error(
+      `paw: "${ref.repo}" is not a local git repository — <folder>@<branch> opens an EXISTING worktree of a local repo; ` +
+        `for a GitHub branch use <owner>/<repo>@<branch> (e.g. \`paw open octocat/hello@main\`) or https://github.com/<owner>/<repo>/tree/<branch>`,
+    );
+  }
 
   const match = listWorktrees(repoRoot).find((w) => w.branch === ref.branch);
   if (match) return canonicalDir(match.path);

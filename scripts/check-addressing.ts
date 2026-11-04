@@ -423,6 +423,106 @@ rmSync(process.env.PAW_HOME!, { recursive: true, force: true });
   assert(unmanagedNote("evals") === "evals is running but not managed by the current manager — talking to it directly; `paw restart evals` re-adopts it", "note: the unmanaged-agent line");
 }
 
+// ── <owner>/<repo>@<branch> = the /tree/<branch> URL: the paw clone's STANDARD worktree (#88) ──────
+// Hermetic: a LOCAL bare repo is "origin", and the paw clone at $PAW_HOME/repos/acme/widget is a plain
+// `git clone` of it — resolveGithubTarget reuses an existing checkout, so gh/GitHub are never hit.
+{
+  const { execFileSync } = await import("node:child_process");
+  const { parseGithubBranchRef, repoDir } = await import("../src/github.ts");
+  const { branchWorktreeDir } = await import("../src/repo-layout.ts");
+  const { resolveAddress, resolveExistingFolderArg, isAddressHandle } = await import("../src/address.ts");
+  const git = (cwd: string, ...args: string[]) =>
+    execFileSync("git", ["-C", cwd, "-c", "user.email=t@paw", "-c", "user.name=paw", "-c", "init.defaultBranch=main", ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+  const msgOf = (fn: () => unknown): string => {
+    try {
+      fn();
+      return "";
+    } catch (e) {
+      return (e as Error).message;
+    }
+  };
+  const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+
+  const base = realpathSync(mkdtempSync(join(tmpdir(), "paw-ghbranch-")));
+  const origin = join(base, "origin.git");
+  const seed = join(base, "seed");
+  execFileSync("git", ["init", "-q", "--bare", "-b", "main", origin]);
+  execFileSync("git", ["clone", "-q", origin, seed], { stdio: "ignore" });
+  git(seed, "commit", "-q", "--allow-empty", "-m", "init");
+  git(seed, "push", "-q", "origin", "HEAD:main");
+  git(seed, "push", "-q", "origin", "HEAD:feat/x");
+  const clone = repoDir("acme", "widget");
+  mkdirSync(join(clone, ".."), { recursive: true });
+  execFileSync("git", ["clone", "-q", origin, clone], { stdio: "ignore" });
+  git(seed, "push", "-q", "origin", "HEAD:late/branch"); // pushed AFTER the clone: its remote-tracking refs are stale
+  git(clone, "branch", "local-only"); // in the paw clone, never on origin
+
+  const empty = realpathSync(mkdtempSync(join(tmpdir(), "paw-ghbranch-cwd-"))); // no local acme/widget here
+  const local = realpathSync(mkdtempSync(join(tmpdir(), "paw-ghbranch-local-"))); // HAS a local acme/widget repo
+  const localRepo = join(local, "acme", "widget");
+  mkdirSync(localRepo, { recursive: true });
+  git(localRepo, "init", "-q");
+  git(localRepo, "commit", "-q", "--allow-empty", "-m", "init");
+  const localWt = join(local, "widget-side");
+  git(localRepo, "worktree", "add", "-q", "-b", "side", localWt);
+
+  // Parse table: which strings are the GitHub branch form.
+  const ref = { owner: "acme", repo: "widget", branch: "feat/x" };
+  for (const t of ["acme/widget@feat/x", "gh:acme/widget@feat/x", "github:acme/widget@feat/x", "github:https://github.com/acme/widget@feat/x", "acme/widget.git@feat/x"]) {
+    assert(same(parseGithubBranchRef(t, empty), ref), `#88 parse: ${t} → acme/widget branch feat/x`);
+  }
+  for (const t of ["acme/widget", "gh:acme/widget", "github:acme/widget#feat/x", "gh:acme/widget#feat/x", "widget@feat/x", "./acme/widget@feat/x", "~/acme/widget@x", "/abs/acme@x", "a/b/c@x", "@acme", "github:git@github.com:acme/widget.git"]) {
+    assert(parseGithubBranchRef(t, empty) === undefined, `#88 parse: ${t} is not the GitHub branch form`);
+  }
+  assert(parseGithubBranchRef("acme/widget@side", local) === undefined, "#88 parse: a LOCAL acme/widget folder keeps <folder>@<branch> = its existing worktree");
+  assert(msgOf(() => parseGithubBranchRef("acme/widget@", empty)).includes('missing a branch after "@"'), "#88 parse: a trailing @ fails loud");
+  assert(msgOf(() => parseGithubBranchRef("gh:acme/widget@../evil", empty)).includes("unsafe branch"), "#88 parse: an unsafe branch fails loud");
+  assert(msgOf(() => parseGithubBranchRef("acme/wid!get@x", empty)).includes("invalid repo"), "#88 parse: a bad repo name fails loud");
+
+  // Resolution: every form lands on the SAME standard worktree as the /tree/ URL.
+  const cwd0 = process.cwd();
+  process.chdir(empty);
+  try {
+    const want = branchWorktreeDir(clone, "widget", "feat/x");
+    const byAt = resolveAddress("acme/widget@feat/x");
+    assert(byAt.kind === "worktree" && byAt.cwd === realpathSync(want), `#88 acme/widget@feat/x → the standard worktree ${want}`);
+    assert(git(byAt.cwd, "rev-parse", "--abbrev-ref", "HEAD") === "feat/x", "#88 the worktree has feat/x checked out");
+    for (const t of ["https://github.com/acme/widget/tree/feat/x", "gh:acme/widget@feat/x", "github:acme/widget@feat/x"]) {
+      assert(resolveAddress(t).cwd === byAt.cwd, `#88 ${t} → the same worktree (reused)`);
+    }
+    assert(isAddressHandle("acme/widget@feat/x"), "#88 acme/widget@feat/x is an address handle (open/chat/dm route it)");
+    assert(resolveExistingFolderArg("acme/widget@feat/x") === byAt.cwd, "#88 adopt/rename/sessions find the worktree paw made, without cloning");
+
+    const late = resolveAddress("acme/widget@late/branch");
+    assert(late.cwd === realpathSync(branchWorktreeDir(clone, "widget", "late/branch")), "#88 a branch pushed after the clone is fetched, then gets its worktree");
+    const viaUrl = resolveAddress("https://github.com/acme/widget/tree/late/branch");
+    assert(viaUrl.cwd === late.cwd, "#88 @ first, then the URL: still one worktree");
+    const main = resolveAddress("acme/widget@main");
+    assert(main.cwd === realpathSync(clone) && resolveAddress("https://github.com/acme/widget/tree/main").cwd === main.cwd, "#88 the clone's own checked-out branch (main) resolves to the clone, never a second checkout");
+    assert(main.kind === "repo" && resolveExistingFolderArg("acme/widget@main") === main.cwd, "#88 …as the repo agent's folder, for non-minting verbs too");
+
+    const missing = msgOf(() => resolveAddress("acme/widget@nope"));
+    assert(missing.includes('no branch "nope" on origin') && !existsSync(branchWorktreeDir(clone, "widget", "nope")), "#88 a branch missing on origin fails loud naming it, no worktree made");
+    assert(msgOf(() => resolveAddress("acme/widget@local-only")).includes('no branch "local-only" on origin'), "#88 a branch only in the local clone is refused too");
+    assert(msgOf(() => resolveExistingFolderArg("acme/widget@late/x")).includes("paw open acme/widget@late/x"), "#88 non-minting verbs name the open that makes the worktree");
+    const notGit = msgOf(() => resolveAddress("nosuchfolder@main"));
+    assert(notGit.includes("<owner>/<repo>@<branch>") && notGit.includes("/tree/<branch>"), "#88 <folder>@<branch> on a non-repo names the GitHub forms that work");
+  } finally {
+    process.chdir(cwd0);
+  }
+
+  process.chdir(local);
+  try {
+    assert(resolveAddress("acme/widget@side").cwd === realpathSync(localWt), "#88 local acme/widget@side → that local repo's existing worktree");
+    assert(msgOf(() => resolveAddress("acme/widget@feat/x")).includes(`no branch "feat/x" in`), "#88 a local folder wins: acme/widget@feat/x here never touches the paw clone");
+  } finally {
+    process.chdir(cwd0);
+  }
+  rmSync(base, { recursive: true, force: true });
+  rmSync(empty, { recursive: true, force: true });
+  rmSync(local, { recursive: true, force: true });
+}
+
 if (failures > 0) {
   console.error(`\n${failures} paw addressing check(s) failed`);
   process.exit(1);

@@ -575,6 +575,33 @@ rmSync(unmapped, { recursive: true, force: true });
     msg = (e as Error).message;
   }
   assert(msg.includes("paw chat --fresh") && msg.includes(`space ${space}`), "no-tty: the refusal names the space and how to create one");
+  assert(/`paw open \S+ --no-attach` creates one without attaching/.test(msg), "no-tty: the refusal names `paw open <folder> --no-attach` for scripted creates (#88)");
+  let named = "";
+  try {
+    refuseCreateWithoutTty(space, fresh, "extra-two", false);
+  } catch (e) {
+    named = (e as Error).message;
+  }
+  assert(named.includes(`paw open ${fresh} --name extra-two --no-attach`), "no-tty: an extra's refusal keeps its --name in the --no-attach form");
+}
+
+// ── `paw open --no-attach` (#88): the flag parses anywhere; the report says how to reach the agent ───
+{
+  const { parseArgs: openArgs, noAttachReport } = await import("../src/open.ts");
+  const { resolveSpace } = await import("../src/lifecycle.ts");
+  const p = openArgs(["acme/widget@feat/x", "--no-attach", "--name", "w2"]);
+  assert(p.noAttach === true && p.target === "acme/widget@feat/x" && p.name === "w2", "no-attach: parsed alongside the target and --name");
+  assert(openArgs(["--no-attach", "."]).target === ".", "no-attach: a leading --no-attach doesn't eat the target");
+  assert(openArgs(["."]).noAttach === undefined, "no-attach: absent unless given");
+  const here = noAttachReport(resolveSpace(), "w2");
+  assert(here.includes("paw attach w2`") && here.includes("paw log w2`") && here.endsWith("\n"), "no-attach: the report names attach + log for the agent");
+  assert(noAttachReport("test-other", "w2").includes("paw attach w2#test-other"), "no-attach: another space is spelled name#space");
+  const { verbHelp } = await import("../src/dispatch.ts");
+  const openHelp = verbHelp(registry.all<Command>("command").find((c) => c.name === "open")!);
+  assert(
+    openHelp.includes("<owner>/<repo>@<branch>") && openHelp.includes("<folder>@<branch>") && openHelp.includes("/tree/<branch>") && openHelp.includes("--no-attach"),
+    "help: `paw help open` spells out both @-forms, the URL and --no-attach",
+  );
 }
 
 if (failures > 0) {

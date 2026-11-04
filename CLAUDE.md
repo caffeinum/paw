@@ -60,7 +60,7 @@ Each entry: what it is + the most load-bearing rule. Full notes behind the link.
   own dispatch loading ONLY the verb's module (`src/command-modules.ts`, map checked by check:dispatch),
   NEEDS_MESH/NEEDS_MANAGER pre-gating, `paw cotal <cmd>` → cotald subprocess; unknown
   command fails loud. `paw <verb> --help`/`-h` answers BEFORE any gate (never spawns); open/attach off a
-  tty never create an agent; spawning verbs inside an agent default to its COTAL_SPACE (#78). Core-free above its `// FAST PATH` marker (core/lifecycle are `await import`s):
+  tty never create an agent unless `--no-attach` (spawn/reuse, print how to attach, exit 0 — scripted hires, #88); spawning verbs inside an agent default to its COTAL_SPACE (#78). Core-free above its `// FAST PATH` marker (core/lifecycle are `await import`s):
   `paw chat` on a tty paints its pre-shell first (check:chat walks the graph). → [cli.md#binpawts](docs/notes/cli.md#binpawts)
 - `bin/paw.mjs` — package `bin` shim: native TS on node ≥22.18, else node → repo tsx (no dist/ build); every launcher's no-bun fallback = `node bin/paw.mjs`, never tsx. → [cli.md#binpawmjs](docs/notes/cli.md#binpawmjs)
 - `bin/cotald.ts` — cotal composition root (runCli + manager + paw connector aliased as the default
@@ -207,7 +207,10 @@ Each entry: what it is + the most load-bearing rule. Full notes behind the link.
 - `src/rm.ts` — forget an agent; transcript always kept. → [addressing.md#paw-rm](docs/notes/addressing.md#paw-rm)
 - `src/named.ts` — named-session resolution via `~/.claude/sessions`. → [addressing.md#named-sessions](docs/notes/addressing.md#named-sessions)
 - `src/github.ts` — `github:owner/repo[#branch]` (pasted URLs accepted), blobless clone, no fork. → [addressing.md#github-handles](docs/notes/addressing.md#github-handles), [addressing.md#github-pasted-urls](docs/notes/addressing.md#github-pasted-urls)
-- `src/worktree.ts` — `<repo>@<branch>` → existing worktree (never auto-creates); `resolveFolderArg`. → [addressing.md#worktrees](docs/notes/addressing.md#worktrees)
+- `src/worktree.ts` — `<folder>@<branch>` (LOCAL repo) → existing worktree (never auto-creates); `resolveFolderArg`. → [addressing.md#worktrees](docs/notes/addressing.md#worktrees)
+- `<owner>/<repo>@<branch>` / `gh:`/`github:…@<branch>` = the `/tree/<branch>` URL: paw clone + STANDARD
+  worktree (`parseGithubBranchRef` + `resolveBranchTarget({exact})`); a local folder of that path wins;
+  the branch must exist on origin (fail loud, never created). → [addressing.md#github-branches-ownerrepobranch-88](docs/notes/addressing.md#github-branches-ownerrepobranch-88)
 
 ### Status → [status.md](docs/notes/status.md)
 - `src/status.ts` — `paw status`: one row per agent (registered + unregistered ps peers); INBOX lag is

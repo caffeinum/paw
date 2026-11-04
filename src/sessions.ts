@@ -24,7 +24,8 @@ function foreignWarn(pinned: string | undefined): string {
   const foreign = liveSessionProcs(pinned).filter((p) => !p.mesh);
   return foreign.length ? `  ⚠ also open outside paw (pid ${foreign.map((p) => p.pid).join(", ")})` : "";
 }
-import { gitToplevel, listWorktrees, parseWorktreeRef, resolveWorktreeFolder } from "./worktree.ts";
+import { gitToplevel, listWorktrees, parseWorktreeRef } from "./worktree.ts";
+import { resolveExistingFolderArg } from "./address.ts";
 
 const PER_WORKTREE_CAP = 6; // transcripts shown per worktree in the repo view
 
@@ -164,7 +165,7 @@ async function sessions(argv: string[]): Promise<void> {
 
   // <repo>@<branch> → just that worktree's sessions.
   if (target && parseWorktreeRef(target)) {
-    printFolder(space, resolveWorktreeFolder(target), target);
+    printFolder(space, resolveExistingFolderArg(target), target); // a local repo's worktree, or an <owner>/<repo>@<branch> one paw already made
     return;
   }
 

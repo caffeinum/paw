@@ -18,10 +18,10 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { canonicalDir, registeredAgentFor, type Kind } from "./addressing.ts";
 import { resolveSpace } from "./lifecycle.ts";
-import { listBranches, repoDir, resolveGithubTarget, parseGithubHandle } from "./github.ts";
+import { listBranches, parseGithubBranchRef, parseGithubHandle, repoDir, resolveGithubTarget } from "./github.ts";
 import { branchWorktreeDir } from "./repo-layout.ts";
 import { canonicalizeWebUrl, HOST_RE, routeUrl, type UrlPlan } from "./url.ts";
-import { resolveWorktreeFolder } from "./worktree.ts";
+import { listWorktrees, resolveWorktreeFolder } from "./worktree.ts";
 
 export type { Kind } from "./addressing.ts";
 
@@ -42,9 +42,10 @@ function pawHome(): string {
  * carrying `@` userinfo isn't mistaken for a `<repo>@<branch>` worktree ref. Order:
  *   1. http(s):// URL        → routeUrl (unambiguous)
  *   2. web:<rest>            → force website (https://<rest>)
- *   3. gh:<rest>             → github handle (thin alias; @branch → #branch)
- *   4. github:<rest>         → github handle (legacy long form)
- *   5. <repo>@<branch>       → an existing worktree
+ *   3. gh:/github:<owner>/<repo>@<branch>, or a bare <owner>/<repo>@<branch> whose <owner>/<repo>
+ *      is NOT a local path → that branch's own worktree, exactly like a /tree/<branch> URL
+ *   4. gh:<rest> / github:<rest> → github handle (`#branch` checks out in the shared clone)
+ *   5. <folder>@<branch>     → an existing worktree of that LOCAL repo
  *   6. bare host (has a dot, not a local path) → an agent you already have by that name/folder
  *      name (registeredAgentFor), else website
  *   7. else                  → a plain folder (default ".")
@@ -59,7 +60,9 @@ export function resolveAddress(target: string | undefined): ResolvedAddress {
     const url = "https://" + target.slice("web:".length);
     return resolveWebTarget(canonicalizeWebUrl(new URL(url)), url); // new URL throws (fail loud) on garbage
   }
-  if (target.startsWith("gh:")) return resolveGithubAddress("github:" + target.slice("gh:".length).replace("@", "#"));
+  const branchRef = parseGithubBranchRef(target);
+  if (branchRef) return resolveBranchTarget(branchRef.owner, branchRef.repo, branchRef.branch, { exact: true });
+  if (target.startsWith("gh:")) return resolveGithubAddress("github:" + target.slice("gh:".length));
   if (target.startsWith("github:")) return resolveGithubAddress(target);
   if (isWorktreeRef(target)) return { cwd: resolveWorktreeFolder(target), kind: "worktree" };
   if (HOST_RE.test(target) && !existsSync(resolve(process.cwd(), target))) {
@@ -93,6 +96,18 @@ export function resolveFolderArg(target: string | undefined): string {
  */
 export function resolveExistingFolderArg(target: string | undefined): string {
   if (target === undefined) return canonicalDir(".");
+  const branchRef = parseGithubBranchRef(target);
+  if (branchRef) {
+    const { owner, repo, branch } = branchRef;
+    const clone = repoDir(owner, repo);
+    const wt = branchWorktreeDir(clone, repo, branch);
+    const checkedOut = !existsSync(wt) && existsSync(join(clone, ".git")) ? listWorktrees(clone).find((w) => w.branch === branch) : undefined;
+    if (checkedOut) return canonicalDir(checkedOut.path);
+    if (!existsSync(wt)) {
+      throw new Error(`paw: no worktree yet for ${owner}/${repo}@${branch} (${wt}) — \`paw open ${owner}/${repo}@${branch}\` creates it`);
+    }
+    return canonicalDir(wt);
+  }
   if (/^https?:\/\//.test(target) || target.startsWith("web:") || target.startsWith("gh:") || target.startsWith("github:")) {
     throw new Error(
       `paw: "${target}" is a remote/website handle — adopt/rename operate on a local folder or existing agent, ` +
@@ -151,16 +166,53 @@ function git(cwd: string, args: string[]): void {
   execFileSync("git", ["-C", cwd, ...args], { stdio: ["ignore", "pipe", "pipe"] });
 }
 
-/** A branch name reduced to a safe single path/name segment (`feature/foo` → `feature-foo`). */
+/** The stderr-or-message of a failed git call, for wrapping in a `paw:` error. */
+function gitReason(e: unknown): string {
+  const err = e as { stderr?: Buffer | string; message: string };
+  return (err.stderr?.toString().trim() || err.message).trim();
+}
+
+function hasRef(clone: string, ref: string): boolean {
+  try {
+    git(clone, ["rev-parse", "--verify", "--quiet", ref]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** An `<owner>/<repo>@<branch>` names a branch on GitHub, so it must exist on ORIGIN — never a local-only
+ *  head, never created. A clone's remote-tracking refs go stale (the branch was pushed after the clone),
+ *  so a miss fetches just that ref before failing loud. */
+function requireOriginBranch(clone: string, owner: string, repo: string, branch: string): void {
+  if (hasRef(clone, `refs/remotes/origin/${branch}`)) return;
+  try {
+    git(clone, ["fetch", "--quiet", "origin", `+refs/heads/${branch}:refs/remotes/origin/${branch}`]);
+  } catch (e) {
+    throw new Error(
+      `paw: no branch "${branch}" on origin for ${owner}/${repo} — paw never creates one for <owner>/<repo>@<branch>. ` +
+        `Push it first, or check the name (\`git -C ${clone} ls-remote --heads origin\`). (${gitReason(e)})`,
+    );
+  }
+}
+
 /**
  * Resolve a URL-derived ref CANDIDATE (`main`, or the greedy `feature/foo/src/x.ts` from a /blob/ URL)
  * to an ACTUAL branch of the clone. A URL can't unambiguously split "<ref>/<path>", so we match the
  * candidate against the repo's real branch list and pick the LONGEST branch that is either the whole
- * candidate or a leading path segment of it. FAILS LOUD if none matches — a URL-derived ref must never
- * silently create a branch (unlike the `github:o/r#branch` handle path). */
+ * candidate or a leading path segment of it; a miss re-fetches origin once (a stale clone). FAILS LOUD if
+ * none matches — a URL-derived ref must never silently create a branch (unlike `github:o/r#branch`). */
 function resolveUrlBranch(clone: string, candidate: string): string {
-  const branches = listBranches(clone);
-  const matches = branches.filter((b) => candidate === b || candidate.startsWith(b + "/"));
+  const match = (): string[] => listBranches(clone).filter((b) => candidate === b || candidate.startsWith(b + "/"));
+  let matches = match();
+  if (matches.length === 0) {
+    try {
+      git(clone, ["fetch", "--quiet", "origin"]);
+    } catch (e) {
+      throw new Error(`paw: no branch matches "${candidate}" in ${clone}, and fetching origin failed (${gitReason(e)})`);
+    }
+    matches = match();
+  }
   if (matches.length === 0) {
     throw new Error(
       `paw: no branch in this repo matches "${candidate}" from the URL — a URL-derived branch is never ` +
@@ -172,17 +224,37 @@ function resolveUrlBranch(clone: string, candidate: string): string {
 }
 
 /**
- * Resolve a github `/tree/<ref>` or `/blob/<ref>/<path>` URL to its OWN local git worktree (one agent
- * per branch): clone the repo once (reusing src/github.ts), resolve the greedy ref candidate to a REAL
- * branch (fail loud, never create), then add a per-branch worktree beside the clone checked out to it.
- * Idempotent: an existing worktree is reused. This is deliberately NOT the shared-clone checkout the
- * bare `github:o/r#branch` handle uses — a per-branch worktree can't flip a warm sibling's branch.
+ * Resolve a github branch to its OWN local git worktree (one agent per branch) at the standard path
+ * (src/repo-layout.ts `<repo>.worktrees/<repo>-<branch slug>`): clone the repo once (reusing
+ * src/github.ts), then add — or reuse — the per-branch worktree beside the clone. Two callers, one path:
+ *   - a `/tree/<ref>` or `/blob/<ref>/<path>` URL passes a greedy ref CANDIDATE (resolveUrlBranch);
+ *   - `<owner>/<repo>@<branch>` (and gh:/github: with `@`) passes `exact`: the branch must exist on
+ *     origin (requireOriginBranch); an existing standard worktree is reused without touching the network.
+ * A branch already checked out elsewhere (the clone's own default branch) resolves to that checkout —
+ * git won't check one branch out twice. Never creates a branch. Deliberately NOT the shared-clone checkout of `github:o/r#branch` — a
+ * per-branch worktree can't flip a warm sibling's branch.
  */
-export function resolveBranchTarget(owner: string, repo: string, refCandidate: string): ResolvedAddress {
+export function resolveBranchTarget(owner: string, repo: string, ref: string, opts: { exact?: boolean } = {}): ResolvedAddress {
   const clone = repoDir(owner, repo);
+  if (opts.exact) {
+    const warm = branchWorktreeDir(clone, repo, ref);
+    if (existsSync(warm)) return { cwd: canonicalDir(warm), kind: "worktree" };
+  }
   resolveGithubTarget(`github:${owner}/${repo}`); // ensure the base clone exists (idempotent), no checkout
-  const branch = resolveUrlBranch(clone, refCandidate); // verify → real branch, or fail loud
+  let branch: string;
+  if (opts.exact) {
+    requireOriginBranch(clone, owner, repo, ref);
+    branch = ref;
+  } else branch = resolveUrlBranch(clone, ref);
   const wt = branchWorktreeDir(clone, repo, branch); // sibling of the clone → distinct cwd/agent
+
+  // git checks a branch out in ONE worktree only: when that's already somewhere else (the clone itself on
+  // its default branch, or a worktree made by hand), that folder IS the branch's checkout — use it.
+  const elsewhere = existsSync(wt) ? undefined : listWorktrees(clone).find((w) => w.branch === branch);
+  if (elsewhere) {
+    const cwd = canonicalDir(elsewhere.path);
+    return { cwd, kind: cwd === canonicalDir(clone) ? "repo" : "worktree" };
+  }
 
   if (!existsSync(wt)) {
     mkdirSync(dirname(wt), { recursive: true });
@@ -191,9 +263,7 @@ export function resolveBranchTarget(owner: string, repo: string, refCandidate: s
       // origin/<branch> when only the remote-tracking ref exists); it never creates a branch from nothing.
       git(clone, ["worktree", "add", wt, branch]);
     } catch (e) {
-      const err = e as { stderr?: Buffer | string; message: string };
-      const reason = (err.stderr?.toString().trim() || err.message).trim();
-      throw new Error(`paw: couldn't add a worktree for ${owner}/${repo} branch "${branch}" at ${wt} (${reason})`);
+      throw new Error(`paw: couldn't add a worktree for ${owner}/${repo} branch "${branch}" at ${wt} (${gitReason(e)})`);
     }
   }
 
