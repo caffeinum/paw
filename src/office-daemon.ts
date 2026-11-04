@@ -13,11 +13,13 @@ import { existsSync, rmSync } from "node:fs";
 import { spacePrefix, type CotalEndpoint } from "@cotal-ai/core";
 import { operatorName } from "./company.ts";
 import { dropSharedManagerControl, sharedManagerControl } from "./control.ts";
-import { sendAsYou } from "./dm.ts";
+import { listAgents } from "./addressing.ts";
+import { sendAsYou, sendToPeerId } from "./dm.ts";
 import { messageText, observerEndpoint } from "./feed.ts";
 import { officeClient } from "./office-api.ts";
 import { OFFICE_PEER, OfficeBridge, speechFor, withPresence, type PresenceLike, type TappedMessage } from "./office-bridge.ts";
 import { bridgeStatePath, officeLinkPath, readBridgeState, readOfficeLink, writeBridgeState, type OfficeLink } from "./office-link.ts";
+import { rosterRows, type RosterPresence } from "./office-roster.ts";
 import { humanPeer } from "./names.ts";
 import { isRemoteSpace } from "./server.ts";
 import { collectStatus, type AgentStatus } from "./status.ts";
@@ -39,9 +41,20 @@ interface Active {
   stop: StopBridge;
 }
 
-const linkKey = (l: OfficeLink): string => JSON.stringify([l.url, l.office, l.joinKey]);
+const linkKey = (l: OfficeLink): string => JSON.stringify([l.url, l.office, l.joinKey, l.roster ?? ""]);
 
-export async function startOfficeBridge(space: string, server: string, log: (line: string) => void = (l) => console.error(`[office] ${l}`)): Promise<() => Promise<void>> {
+export interface BridgeHostOpts {
+  /** `paw office serve`: no mailbox, possibly no registry — with no local agents it mirrors the whole roster. */
+  headless?: boolean;
+}
+
+/** Which agents a link mirrors: the whole mesh roster (`--roster all`, or a headless serve with no agents
+ *  registered here), else this paw home's agents. */
+export function rosterMode(link: Pick<OfficeLink, "roster">, opts: BridgeHostOpts, localAgents: () => number): boolean {
+  return link.roster === "all" || (opts.headless === true && localAgents() === 0);
+}
+
+export async function startOfficeBridge(space: string, server: string, log: (line: string) => void = (l) => console.error(`[office] ${l}`), opts: BridgeHostOpts = {}): Promise<() => Promise<void>> {
   let active: Active | undefined;
   let lastLinkError = "";
   let lastStartError = "";
@@ -68,7 +81,7 @@ export async function startOfficeBridge(space: string, server: string, log: (lin
         log(link ? "office link changed — restarting the bridge" : "office disconnected — agents walked out, bridge stopped");
       }
       if (link) {
-        active = { key, office: link.office, stop: await runBridge(space, server, link, log, () => void check()) };
+        active = { key, office: link.office, stop: await runBridge(space, server, link, log, () => void check(), opts) };
         lastStartError = "";
       }
     } catch (e) {
@@ -95,22 +108,25 @@ function tapSubjects(space: string): Array<string | undefined> {
   return [`${p}.chat.>`, `${p}.inst.>`, `${p}.svc.>`];
 }
 
-async function runBridge(space: string, server: string, link: OfficeLink, log: (line: string) => void, recheck: () => void): Promise<StopBridge> {
+async function runBridge(space: string, server: string, link: OfficeLink, log: (line: string) => void, recheck: () => void, opts: BridgeHostOpts): Promise<StopBridge> {
   const state = readBridgeState(space, link.office); // throws on a bad file — before anything needs stopping
   const linked = (): boolean => existsSync(officeLinkPath(space));
   const ep: CotalEndpoint = await observerEndpoint(space, server, { watchPresence: true });
   ep.on("error", (e: Error) => log(`mesh: ${e.message}`));
   try {
     await ep.start();
-    return wire(space, server, link, log, recheck, state, linked, ep);
+    const roster = rosterMode(link, opts, () => listAgents(space).length);
+    return roster ? wireRoster(space, server, link, log, recheck, state, linked, ep) : wire(space, server, link, log, recheck, state, linked, ep);
   } catch (e) {
     await ep.stop().catch(() => {});
     throw e;
   }
 }
 
-function wire(space: string, server: string, link: OfficeLink, log: (line: string) => void, recheck: () => void, state: ReturnType<typeof readBridgeState>, linked: () => boolean, ep: CotalEndpoint): StopBridge {
-  const bridge = new OfficeBridge({
+type Deliver = (agent: string, text: string) => Promise<{ from: string }>;
+
+function makeBridge(space: string, link: OfficeLink, log: (line: string) => void, state: ReturnType<typeof readBridgeState>, linked: () => boolean, deliver: Deliver): OfficeBridge {
+  return new OfficeBridge({
     call: officeClient(link),
     state,
     save: (s) => {
@@ -121,18 +137,20 @@ function wire(space: string, server: string, link: OfficeLink, log: (line: strin
         log(`couldn't save office-agents.json: ${(e as Error).message}`);
       }
     },
-    // from the office peer, never "you": nothing said in the office carries the operator's authority (#81)
-    deliver: async (agent, text) => ({ from: (await sendAsYou({ space, server, target: agent, text, byName: true, sender: OFFICE_PEER })).from }),
+    deliver,
     log,
     operator: operatorName(),
   });
-  log(`bridging space "${space}" into ${link.url}/o/${link.office}`);
+}
 
-  const names = new Map<string, string>();
+/** Tapped mesh traffic → office speech. `displayName` maps a sender's mesh id to its office name (roster
+ *  mode renames colliding agents); `names` is id → name for DM targets, kept current by the caller. */
+function tapSpeech(space: string, ep: CotalEndpoint, bridge: OfficeBridge, names: Map<string, string>, log: (line: string) => void, displayName: (id: string, name: string) => string = (_id, name) => name): void {
   const seen = new Set<string>(); // one frame can arrive on more than one tapped subject
   const onTap = (_subject: string, m: unknown): void => {
     try {
-      const msg = m as TappedMessage | undefined;
+      const raw = m as TappedMessage | undefined;
+      const msg = raw?.from?.id && raw.from.name ? { ...raw, from: { ...raw.from, name: displayName(raw.from.id, raw.from.name) } } : raw;
       if (msg?.from?.id && msg.from.name) names.set(msg.from.id, msg.from.name);
       if (typeof msg?.id === "string") {
         if (seen.has(msg.id)) return;
@@ -146,6 +164,82 @@ function wire(space: string, server: string, link: OfficeLink, log: (line: strin
     }
   };
   for (const subject of tapSubjects(space)) ep.tap(onTap, subject ? { subject } : undefined);
+}
+
+/** How long the first roster read waits for the presence watch's initial snapshot before retrying. */
+const SNAPSHOT_MS = 5_000;
+
+/**
+ * Roster mode: every live agent on the mesh roster, from presence alone (src/office-roster.ts) — no
+ * registry, no manager ps, no transcripts, no git. Rows are recomputed from the observer's roster each
+ * tick (a pure pass over memory). Office chat is delivered to the agent's mesh ID from the `office` peer:
+ * the name may be another machine's, or shared by two.
+ */
+function wireRoster(space: string, server: string, link: OfficeLink, log: (line: string) => void, recheck: () => void, state: ReturnType<typeof readBridgeState>, linked: () => boolean, ep: CotalEndpoint): StopBridge {
+  const idOf = new Map<string, string>(); // office name → mesh id, from the latest roster pass
+  const displayOf = new Map<string, string>(); // mesh id → office name
+  const bridge = makeBridge(space, link, log, state, linked, async (agent, text) => {
+    const id = idOf.get(agent);
+    if (!id) throw new Error(`"${agent}" is no longer on the mesh roster`);
+    return sendToPeerId({ space, server, id, text, sender: OFFICE_PEER });
+  });
+  log(`bridging EVERY agent on space "${space}"'s mesh roster (presence only) into ${link.url}/o/${link.office}`);
+  const names = new Map<string, string>();
+  tapSpeech(space, ep, bridge, names, log, (id, name) => displayOf.get(id) ?? name);
+
+  let unread = "";
+  const refresh = async (): Promise<void> => {
+    // An unread or silent roster is not "everyone left": keep the office as it is until it reads again.
+    let view = ep.presenceView();
+    if (view.state === "unpopulated") {
+      await ep.waitForPresenceSnapshot(SNAPSHOT_MS);
+      view = ep.presenceView();
+    }
+    if (!view.fresh) {
+      if (unread !== view.state) log(`mesh roster ${view.state === "stale" ? "silent past the liveness window" : "not read yet"} — office left as it was until it reads again`);
+      unread = view.state;
+      return;
+    }
+    if (unread) log("mesh roster readable again");
+    unread = "";
+    const roster = ep.getRoster() as unknown as RosterPresence[];
+    const rows = rosterRows(roster, Date.now());
+    for (const p of roster) names.set(p.card.id, p.card.name);
+    idOf.clear();
+    displayOf.clear();
+    for (const r of rows) {
+      idOf.set(r.name, r.id);
+      displayOf.set(r.id, r.name);
+      names.set(r.id, r.name);
+    }
+    bridge.setRows(rows);
+  };
+  let busy = false;
+  const tick = (): void => {
+    if (!linked()) return recheck(); // disconnected: stop now (walking the agents out), not at the next link poll
+    if (busy) return;
+    busy = true;
+    void refresh()
+      .then(() => bridge.tick())
+      .catch((e: Error) => log(`roster pass failed: ${e.message}`))
+      .finally(() => (busy = false));
+  };
+  tick();
+  const tickTimer = setInterval(tick, TICK_MS);
+  return async (leave) => {
+    clearInterval(tickTimer);
+    const left = await bridge.shutdown(leave);
+    if (leave) log(`walked ${left} agent(s) out of ${link.url}/o/${link.office}`);
+    await ep.stop().catch(() => {});
+  };
+}
+
+function wire(space: string, server: string, link: OfficeLink, log: (line: string) => void, recheck: () => void, state: ReturnType<typeof readBridgeState>, linked: () => boolean, ep: CotalEndpoint): StopBridge {
+  // from the office peer, never "you": nothing said in the office carries the operator's authority (#81)
+  const bridge = makeBridge(space, link, log, state, linked, async (agent, text) => ({ from: (await sendAsYou({ space, server, target: agent, text, byName: true, sender: OFFICE_PEER })).from }));
+  log(`bridging space "${space}" into ${link.url}/o/${link.office}`);
+  const names = new Map<string, string>();
+  tapSpeech(space, ep, bridge, names, log);
 
   let rowsError = "";
   let rowsBusy = false;

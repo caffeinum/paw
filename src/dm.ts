@@ -259,6 +259,26 @@ export async function sendAsYou(opts: {
   }
 }
 
+/**
+ * Send `text` to the mesh id `id` as the non-human peer `sender` — no name resolution, no wake, no spawn.
+ * The office bridge's roster mode uses it: it mirrors agents this machine doesn't host, and two of them can
+ * share a name, so the id read off the roster is the only unambiguous address.
+ */
+export async function sendToPeerId(opts: { space: string; server: string; id: string; text: string; sender: string }): Promise<{ from: string }> {
+  const { space, server, id, text, sender } = opts;
+  const auth = await senderEndpointAuth(space, sender);
+  const card = auth.creds ? { name: sender, kind: "endpoint" as const } : { name: sender, kind: "endpoint" as const, id: stableSenderId(space, sender) };
+  const ep = new CotalEndpoint({ space, servers: server, ...auth, card, registerPresence: false, consume: false, watchPresence: false });
+  ep.on("error", (e: Error) => console.error(c.red("! " + e.message)));
+  await ep.start();
+  try {
+    await unicastResilient(ep, id, text);
+    return { from: ep.card.id };
+  } finally {
+    await ep.stop().catch(() => {});
+  }
+}
+
 /** Read stdin to EOF — the `-` message form. */
 async function readStdin(): Promise<string> {
   const chunks: Buffer[] = [];

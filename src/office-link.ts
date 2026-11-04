@@ -1,7 +1,7 @@
 /**
  * The per-space link to an agent-office (`paw office connect`) and the bridge's per-agent tokens.
  *
- *   $PAW_HOME/spaces/<space>/office.json         { space, url, office, joinKey, ownerKey?, viewKey?, ts }
+ *   $PAW_HOME/spaces/<space>/office.json         { space, url, office, joinKey, ownerKey?, viewKey?, roster?, ts }
  *   $PAW_HOME/spaces/<space>/office-agents.json  { office, agents: { <paw name>: { id, token, joinedAt, since? } }, lastHuman?, officePeer? }
  *
  * Both 0600, written atomically (tmp + rename), beside the space's other paw state so an isolated
@@ -24,6 +24,9 @@ export interface OfficeLink {
   joinKey: string;
   ownerKey?: string;
   viewKey?: string;
+  /** `"all"`: mirror every agent on the mesh roster from presence alone (src/office-roster.ts), not just
+   *  this paw home's registered agents. Absent = this home's agents (a headless serve with none picks roster mode itself). */
+  roster?: "all";
   ts: string;
 }
 
@@ -86,7 +89,7 @@ export function checkOfficeUrl(raw: string): string {
 }
 
 /** Build a link from CLI input: every key must route to the SAME office. */
-export function makeLink(space: string, url: string, keys: { joinKey: string; ownerKey?: string; viewKey?: string }): OfficeLink {
+export function makeLink(space: string, url: string, keys: { joinKey: string; ownerKey?: string; viewKey?: string; roster?: "all" }): OfficeLink {
   const origin = checkOfficeUrl(url);
   const office = officeOfKey(keys.joinKey, "--join-key");
   for (const [flag, key] of [["--owner-key", keys.ownerKey], ["--view-key", keys.viewKey]] as const) {
@@ -99,6 +102,7 @@ export function makeLink(space: string, url: string, keys: { joinKey: string; ow
     joinKey: keys.joinKey,
     ...(keys.ownerKey ? { ownerKey: keys.ownerKey } : {}),
     ...(keys.viewKey ? { viewKey: keys.viewKey } : {}),
+    ...(keys.roster === "all" ? { roster: "all" as const } : {}),
     ts: new Date().toISOString(),
   };
 }
@@ -119,7 +123,8 @@ function parseLink(space: string, path: string, raw: string): OfficeLink {
   }
   if (typeof v !== "object" || v === null || v.space !== space || typeof v.url !== "string" || typeof v.office !== "string" || typeof v.joinKey !== "string" || typeof v.ts !== "string")
     throw new Error(`paw: office link ${path} is malformed (needs space="${space}", url, office, joinKey, ts) — \`paw office disconnect --space ${space}\` and connect again`);
-  const link = makeLink(space, v.url, { joinKey: v.joinKey, ownerKey: v.ownerKey, viewKey: v.viewKey });
+  if (v.roster !== undefined && v.roster !== "all") throw new Error(`paw: office link ${path} has roster=${JSON.stringify(v.roster)} (only "all" is known) — reconnect`);
+  const link = makeLink(space, v.url, { joinKey: v.joinKey, ownerKey: v.ownerKey, viewKey: v.viewKey, roster: v.roster });
   if (link.office !== v.office) throw new Error(`paw: office link ${path} names office ${v.office} but its join key routes to ${link.office}`);
   return { ...link, ts: v.ts };
 }
@@ -176,7 +181,7 @@ export function viewerUrl(link: OfficeLink): string | undefined {
 /** A link rendered for humans — keys reduced to which ones are stored, never their values. */
 export function describeLink(link: OfficeLink): string {
   const keys = ["join", ...(link.ownerKey ? ["owner"] : []), ...(link.viewKey ? ["view"] : [])].join(", ");
-  return `${link.url}/o/${link.office} (keys stored: ${keys}; since ${link.ts})`;
+  return `${link.url}/o/${link.office} (keys stored: ${keys}; mirrors ${link.roster === "all" ? "every agent on the mesh roster" : "this home's agents"}; since ${link.ts})`;
 }
 
 /** What paw web's ~office renders: the viewer to embed, or the exact command that would connect one. */

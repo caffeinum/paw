@@ -79,6 +79,13 @@ MAIN=$$   # exec below keeps this pid: it becomes cotal up
     fi
   done ) &
 
+# Optional agent-office bridge (README "Office bridge"): only when OFFICE_URL / OFFICE_JOIN_KEY are set,
+# as its own supervised background process. Unset (the default) = nothing here runs.
+if [ -n "${OFFICE_URL:-}" ] || [ -n "${OFFICE_JOIN_KEY:-}" ]; then
+  /usr/local/bin/office-bridge.sh &
+  unset OFFICE_URL OFFICE_JOIN_KEY OFFICE_OWNER_KEY OFFICE_VIEW_KEY   # the broker's own env never holds the office keys
+fi
+
 cd /data/cotal
 exec cotal up $ROTATE --no-manager --space "$COTAL_SPACE" \
   --server "tls://$PUBLIC_HOST:4222" --host 0.0.0.0 \

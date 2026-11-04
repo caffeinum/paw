@@ -6,12 +6,16 @@
  *   2. the link file: URL/key validation, 0600, keys never rendered; `paw office` arg parsing.
  *   3. the engine against a fake office: join → status → poll, change detection, leave, 429 backoff
  *      (respects retryAfter), 401 → rejoin, inbound delivery + reply routing, retry, join budget.
- *   4. integration against a REAL agent-office when PAW_OFFICE_TEST_URL + PAW_OFFICE_TEST_ADMIN_KEY are
+ *   4. roster mode (src/office-roster.ts): agents from the roster only, cross-machine name collisions,
+ *      presence-only status; mode selection; `paw office serve` config (flags/env/stored); the cotal-host
+ *      hook is a no-op unless OFFICE_URL + OFFICE_JOIN_KEY are set.
+ *   5. integration against a REAL agent-office when PAW_OFFICE_TEST_URL + PAW_OFFICE_TEST_ADMIN_KEY are
  *      set (`npm run dev` in agent-office); skipped with a note otherwise.
  *
  * Hermetic for 1–3 (temp PAW_HOME, no mesh). 4 creates a throwaway office on the given deployment.
  */
-import { mkdtempSync, statSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, readFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -19,7 +23,9 @@ process.env.PAW_HOME = mkdtempSync(join(tmpdir(), "paw-office-"));
 const { clip, desiredFor, inboundFor, inboundText, joinPayload, OFFICE_PEER, OfficeBridge, pollInterval, senderOf, singleEmoji, speechFor, statusKey, statusPayload, toolName, withPresence } = await import("../src/office-bridge.ts");
 const { describeLink, makeLink, officeEmbed, readBridgeState, readOfficeLink, removeOfficeLink, viewerUrl, writeBridgeState, writeOfficeLink } = await import("../src/office-link.ts");
 const { OfficeError, officeClient } = await import("../src/office-api.ts");
-const { parseOfficeArgs, verifyLink } = await import("../src/commands/office.ts");
+const { parseOfficeArgs, serveConfig, verifyLink } = await import("../src/commands/office.ts");
+const { collisionName, rosterRows, rosterSuffix } = await import("../src/office-roster.ts");
+const { rosterMode } = await import("../src/office-daemon.ts");
 type BridgeState = import("../src/office-link.ts").BridgeState;
 
 let failures = 0;
@@ -395,7 +401,95 @@ console.log("3. engine (fake office)");
   assert(Object.keys(s2.agents).length === 12, "…the rest a minute later");
 }
 
-console.log("4. integration (real agent-office)");
+console.log("4. roster mode + serve");
+{
+  const now = 10_000_000;
+  const agent = (name: string, id: string, over: Record<string, unknown> = {}, meta: Record<string, unknown> = {}) => ({
+    card: { id, name, kind: "agent", meta },
+    status: "idle",
+    ts: now - 1_000,
+    ...over,
+  });
+  const roster = [
+    agent("ada", "o.ada1", { status: "working", activity: "reviewing PR #12\nline two" }, { host: "macbook", emoji: "🦊", hue: 24 }),
+    agent("bob", "o.bob1", { status: "waiting", statusSince: now - 60_000, activeAt: now - 5_000 }, { host: "mini" }),
+    agent("cy", "o.cy1", { status: "waiting", statusSince: now - 60_000, activeAt: now - 90_000 }, { host: "mini" }),
+    agent("queue", "o.q-mac", {}, { host: "macbook" }),
+    agent("queue", "o.q-fly", { status: "working" }, { host: "fly-box" }),
+    agent("dee", "o.dee-old", { ts: now - 4_000 }, { host: "mini" }),
+    agent("dee", "o.dee-new", { ts: now - 1_000, status: "working" }, { host: "mini" }),
+    agent("gone", "o.gone", { status: "offline" }),
+    agent("stale", "o.stale", { ts: now - 60_000 }),
+    { card: { id: "o.you", name: "you", kind: "endpoint" }, status: "idle", ts: now },
+    { card: { id: "o.office", name: "office", kind: "endpoint" }, status: "idle", ts: now },
+    { card: { id: "o.sleepy", name: "zed", kind: "agent", description: "asleep (paw sleep) — a DM wakes it" }, status: "idle", ts: now },
+  ];
+  const rows = rosterRows(roster, now);
+  const names = rows.map((r) => r.name);
+  assert(!names.includes("you") && !names.includes("office"), "roster: endpoints (humans, the office/cron senders) are not agents");
+  assert(!names.includes("gone") && !names.includes("stale"), "roster: offline and stale (no heartbeat for 15s) records are not in the office");
+  assert(!names.includes("zed"), "roster: a paw sleep stand-in is not the agent");
+  const q = rows.filter((r) => r.meshName === "queue");
+  assert(q.length === 2 && q.every((r) => r.name === `queue~${rosterSuffix(r.id)}`) && q[0]!.name !== q[1]!.name, `roster: one name on two machines → both shown, each suffixed from its mesh id (${q.map((r) => r.name).join(", ")})`);
+  assert(rosterSuffix("o.q-fly") === rosterSuffix("o.q-fly") && /^[0-9a-f]{4}$/.test(rosterSuffix("o.q-fly")), "roster: the suffix is deterministic (4 hex of sha256(id))");
+  assert(collisionName("x".repeat(40), "o.a").length === 32, "roster: a suffixed long name still fits the office's 32");
+  const dee = rows.filter((r) => r.meshName === "dee");
+  assert(dee.length === 1 && dee[0]!.name === "dee" && dee[0]!.id === "o.dee-new", "roster: two live records of one name on ONE machine (restart overlap) = one agent, the newest, no suffix");
+  assert(rows.find((r) => r.name === "ada")?.id === "o.ada1", "roster: each row carries the mesh id office chat is delivered to");
+  const st = (n: string) => desiredFor(rows.find((r) => r.name === n)!);
+  assert(st("ada").status === "working" && st("ada").activity === "reviewing PR #12 line two", `presence-only: working + its published activity, one line (${st("ada").activity})`);
+  assert(st("bob").status === "working", "presence-only: waiting, but harness activity after the waiting stamp → working");
+  assert(st("cy").status === "waiting", "presence-only: waiting with no progress since → waiting");
+  assert(st(q.find((r) => r.id === "o.q-mac")!.name).status === "idle", "presence-only: idle → idle");
+  assert(rows.every((r) => r.git === undefined && r.tool === undefined), "presence-only: no git, no tool (nothing local is read)");
+  const j = joinPayload(rows.find((r) => r.name === "ada")!);
+  assert(j.emoji === "🦊" && j.hue === 24, "roster: the card's meta emoji/hue reach office_join");
+  assert(rosterRows([], now).length === 0, "roster: empty roster → no rows");
+
+  assert(rosterMode({ roster: "all" }, {}, () => 5), "mode: --roster all → roster, even with local agents");
+  assert(rosterMode({}, { headless: true }, () => 0), "mode: a headless serve with no local agents → roster");
+  assert(!rosterMode({}, { headless: true }, () => 2), "mode: a headless serve with local agents → this home's agents");
+  assert(!rosterMode({}, {}, () => 0), "mode: the mailbox's bridge without --roster stays local (no #84 regression)");
+
+  const K = (o: string) => `${o}.${"A".repeat(43)}`;
+  const rl = makeLink("r", "https://office.example.com", { joinKey: K("abcdefghijkm"), roster: "all" });
+  writeOfficeLink(rl);
+  assert(readOfficeLink("r")?.roster === "all" && /every agent on the mesh roster/.test(describeLink(readOfficeLink("r")!)), "link: roster=all is stored and described");
+  writeOfficeLink({ ...rl, roster: "some" as "all" });
+  throws(() => readOfficeLink("r"), /only "all" is known/, "link: an unknown roster value fails loud");
+  removeOfficeLink("r");
+  assert(makeLink("r", "https://office.example.com", { joinKey: K("abcdefghijkm") }).roster === undefined, "link: no --roster → no roster field (local mode)");
+
+  assert(parseOfficeArgs(["connect", "--url", "http://127.0.0.1:1", "--join-key", "k", "--roster", "all", "--space", "s"]).roster === "all", "args: connect --roster all");
+  throws(() => parseOfficeArgs(["connect", "--url", "http://127.0.0.1:1", "--join-key", "k", "--roster", "mine", "--space", "s"]), /takes only "all"/, "args: --roster takes only all");
+  throws(() => parseOfficeArgs(["status", "--roster", "all", "--space", "s"]), /belong to/, "args: --roster only on connect/serve");
+  const sv = parseOfficeArgs(["serve", "--space", "s"]);
+  assert(sv.verb === "serve", "args: serve");
+  throws(() => parseOfficeArgs(["serve", "--url", "http://127.0.0.1:1", "--space", "s"]), /needs both --url and --join-key/, "args: serve with half a link");
+  const env = { OFFICE_URL: "https://o.example.com", OFFICE_JOIN_KEY: "jk", OFFICE_OWNER_KEY: "ok" };
+  const fromEnv = serveConfig(sv, env);
+  assert(fromEnv.from === "env" && fromEnv.url === env.OFFICE_URL && fromEnv.joinKey === "jk" && fromEnv.ownerKey === "ok" && fromEnv.roster === undefined, "serve config: OFFICE_URL + OFFICE_JOIN_KEY (+ OFFICE_OWNER_KEY) from the env");
+  const fromFlags = serveConfig(parseOfficeArgs(["serve", "--url", "http://127.0.0.1:1", "--join-key", "fk", "--roster", "all", "--space", "s"]), env);
+  assert(fromFlags.from === "flags" && fromFlags.joinKey === "fk" && fromFlags.ownerKey === undefined && fromFlags.roster === "all", "serve config: flags win over the env (and don't mix in its keys)");
+  throws(() => serveConfig(sv, { OFFICE_URL: "https://o.example.com" }), /BOTH OFFICE_URL and OFFICE_JOIN_KEY/, "serve config: half the env fails loud");
+  assert(serveConfig(sv, { OFFICE_ROSTER: "all" }).roster === "all" && serveConfig(sv, {}).from === "stored", "serve config: OFFICE_ROSTER; nothing set → the stored link");
+  throws(() => serveConfig(sv, { OFFICE_ROSTER: "yes" }), /OFFICE_ROSTER takes only "all"/, "serve config: a bad OFFICE_ROSTER fails loud");
+
+  // cotal-host: merging redeploys the live broker, so the hook must be inert unless configured
+  const host = join(import.meta.dirname, "..", "cotal-host");
+  const start = readFileSync(join(host, "start.sh"), "utf8").split("\n");
+  const refs = start.map((l, i) => [l, i] as const).filter(([l]) => l.includes("office-bridge.sh") && !l.trim().startsWith("#"));
+  const guard = start.findIndex((l) => l.trim() === 'if [ -n "${OFFICE_URL:-}" ] || [ -n "${OFFICE_JOIN_KEY:-}" ]; then');
+  assert(refs.length === 1 && guard >= 0 && refs[0]![1] === guard + 1 && start[guard + 3]?.trim() === "fi", "cotal-host start.sh: the bridge is started only inside the OFFICE_URL/OFFICE_JOIN_KEY guard");
+  assert(start.findIndex((l) => l.startsWith("exec cotal up")) > guard, "cotal-host start.sh: `exec cotal up` is unchanged and after the hook");
+  const clean = { PATH: process.env.PATH!, PUBLIC_HOST: "h", COTAL_SPACE: "s" };
+  const r1 = spawnSync("sh", [join(host, "office-bridge.sh")], { env: clean, encoding: "utf8", timeout: 5000 });
+  assert(r1.status === 0 && /not starting/.test(r1.stderr), `office-bridge.sh with no OFFICE_* → exits 0, starts nothing (${r1.stderr.trim()})`);
+  const r2 = spawnSync("sh", [join(host, "office-bridge.sh")], { env: { ...clean, OFFICE_URL: "https://o", OFFICE_JOIN_KEY: "k", PAW_DIR: "/nonexistent" }, encoding: "utf8", timeout: 5000 });
+  assert(r2.status === 0 && /paw is not in this image/.test(r2.stderr), `office-bridge.sh in an image built without PAW_REF → exits 0, starts nothing (${r2.stderr.trim()})`);
+}
+
+console.log("5. integration (real agent-office)");
 const url = process.env.PAW_OFFICE_TEST_URL;
 const admin = process.env.PAW_OFFICE_TEST_ADMIN_KEY;
 if (!url || !admin) {

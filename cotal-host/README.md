@@ -55,6 +55,44 @@ last 30 days and need `cotal down` + `cotal up --rotate-sys`; next due 2026-11-1
 
 The machine must never auto-stop (`auto_stop_machines = "off"`): a stopped machine is a dead mesh.
 
+## Office bridge (optional, off by default)
+
+`paw office serve` can run next to the broker and mirror EVERY agent on the `team2027` mesh into one
+agent-office, whichever machine each agent runs on (paw #85; design in paw's docs/notes/office.md
+"Roster mode"). It is OFF unless both of these are set, and with neither the image and `start.sh`
+behave exactly as before (the hook is one `if` that doesn't fire):
+
+1. **paw in the image**: build arg `PAW_REF` = a caffeinum/paw commit (public repo: no build secret).
+   Empty by default, which installs nothing. To turn it on, add to `fly.toml` (this repo auto-deploys
+   `cotal-host/` from `main`, so that commit redeploys the broker):
+   ```toml
+   [build.args]
+     PAW_REF = "<full commit sha of caffeinum/paw>"
+   ```
+2. **the office link**, as Fly secrets (never in fly.toml):
+   ```sh
+   fly secrets set -a 2027-cotal OFFICE_URL=https://<agent-office> OFFICE_JOIN_KEY=<joinKey> [OFFICE_OWNER_KEY=<ownerKey>]
+   ```
+   Optional: `OFFICE_HUMAN=<name>` (the human name the bridge's paw home uses on the space: agent DMs to
+   that name are mirrored to the office's owner), `OFFICE_ROSTER=all`, `OFFICE_BRIDGE_HEAP_MB` (192).
+
+What runs: `start.sh` starts `office-bridge.sh` in the background (and unsets the OFFICE_* keys before
+`exec cotal up`, so the broker's env never holds them). That script records the space as a paw remote
+mesh whose signer is the box's own `/data/cotal` (`paw mesh add … --root /data/cotal`, retried while
+cotal up writes its auth on first boot), then supervises `paw office serve --space $COTAL_SPACE`:
+`nice -n 10`, `NODE_OPTIONS=--max-old-space-size=192`, restart with backoff 10s → 10 min. Its paw home is
+`/data/office-bridge` (link + agent tokens, so a redeploy resumes the same characters). It never runs
+`cotal`, never signals nats or `cotal up`, and every failure is a log line (`fly logs`: `office-bridge:` /
+`[office]`) — it cannot stop or restart the broker. Creds: the read-only `admin` observer (no presence,
+no publish) for the roster and speech, and the `office` sender's own `operator` mint for office→agent DMs.
+
+**Single bridge rule**: once this runs, disconnect every per-machine bridge into the same office
+(`paw office disconnect --space team2027` on each linked laptop/box), or every agent appears twice.
+
+Turn it off: `fly secrets unset -a 2027-cotal OFFICE_URL OFFICE_JOIN_KEY OFFICE_OWNER_KEY` (the characters
+stay until the office times them out; `PAW_HOME=/data/office-bridge node /opt/paw/bin/paw.mjs office
+disconnect --space team2027` over `fly ssh console` walks them out first).
+
 ## Known
 
 - nats-server also opens an unencrypted websocket listener on a random port. Fly routes only
