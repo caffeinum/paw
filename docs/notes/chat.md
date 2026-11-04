@@ -83,6 +83,35 @@ no longer between `paw chat` and a prompt that takes keys. Three moments, in a t
    `concurrentStartup` → mutating target resolution (`--fresh`/`--name`/`--agent`/a cloning URL still
    resolve here, after ensure, as before) → wake gate → `waitForPeerId` → `ready`.
 
+**Is the agent there? Files first, then the roster** (operator, 2026-11-04: "the instant load first paints
+the prompt and then checks if the agent exists, but if the agent doesn't exist the prompt is real bad").
+Before painting, the pre-shell asks the FILES (`src/chat-lookup.ts` `checkChatTarget`, core-free,
+measured ~0.15–0.4ms in a real run, PAW_CHAT_TIMING `preshell` mark carries `lookup` + `lookupMs`): a
+name with a persona `cwd:` here whose folder exists (or an unmigrated folders.json/agents.json entry) →
+`known` → the normal `you → name ◌>` frame. A valid bare/`@` name registered nowhere here → `unknown`:
+the frame says `◌ looking for @name on <space>…` in the status row AND the prompt (keys still held and
+queued). Folders, `.`, URLs, `#channel`, `--all`, `--fresh/--name/--agent` → painted as before. chat.ts
+keeps its own verdict (`lookup = "pending"` for a non-mutating, interactive bare name with no folder —
+pipe mode is unchanged) and settles it on the live roster in `boot()` (`settleLookup`): roster read and
+the name on it (a peer hosted on another machine — the team2027 case) → `found`, normal prompt, queued
+lines replay to it; roster read and no such name → `absent`; roster never read in 5s, or boot failed →
+`unreachable` — never a guessed "not found". For `absent`/`unreachable` the queued lines are refused at
+replay exactly like any lost target (first single line back in the input, the rest kept and printed on
+quit), THEN the chooser opens (`src/chat-chooser.ts`) above the prompt:
+`✕ no agent @x in <space> — did you mean:` + suggestions (`suggestNames`: same-modulo-punctuation,
+prefix, substring, OSA distance ≤1–2, typo'd prefix; live roster + local registry; `noAgentMessage` uses
+the same helper) + `open @x in <other space>` (another local space's persona, or a peer of that name in its
+`peers.json` ledger — "seen on its mesh") + `show all conversations` + `quit`; the unreachable form offers
+`retry` (re-settles, or re-runs boot after a failed one) + `quit`. Keys: ↑/↓ + Enter, 1–9, Esc/Ctrl-C
+quit; any other key closes it and reaches the input (so `@other`, `/who`, editing the kept line all work).
+It owns its keys via stdin's emit wrapper (readline never sees them), is erased/redrawn around every
+printed line like the picker (row count via `paintedRows`, so wrapped rows erase whole), and blocks the
+banner's in-place repaint while open. A switch goes through the ordinary `@name` path; "show all" drops
+the target in-process; another space is a new `paw chat @x --space <s>` exec'd after this one's clean
+shutdown (one REPL = one space's endpoint). Nothing is ever created (`--fresh` is named as text only).
+The agent coming up later closes the chooser (the existing "is on the mesh now" path).
+`check:chat` (lookup/suggest/elsewhere/chooser keys) + `check:chat-tty` cases 11–12.
+
 **Loaders, never guesses.** Each banner field is a `Slot` (`src/chat-boot.ts`): loading = dim `◌`,
 ok = the value, err = red `✕ why`. The machine (`on …`) waits for the presence view's FIRST read on
 every space; the footer's peer status is `<name> ◌` until then — `peerStatusTag` never says `offline`

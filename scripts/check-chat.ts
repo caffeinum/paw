@@ -1392,6 +1392,100 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
   assert(lexChatArgs(["--all"], "/x").mode === "all" && lexChatArgs(["#ops"], "/x").label === "ops", "preshell lex: --all, #channel");
 }
 
+// ── is the target there? the files first, then the roster (src/chat-lookup.ts, src/chat-chooser.ts) ──
+{
+  const { mkdirSync, writeFileSync, mkdtempSync: mk } = await import("node:fs");
+  const { checkChatTarget, localAgentFolder, otherSpaceHits, suggestNames, editDistance } = await import("../src/chat-lookup.ts");
+  const { notFoundChooser, unreachableChooser, chooserKey, renderChooser } = await import("../src/chat-chooser.ts");
+  const { PLAIN } = await import("../src/chat-banner.ts");
+  const home = mk(join(tmpdir(), "paw-lookup-"));
+  const work = mk(join(tmpdir(), "paw-lookup-cwd-"));
+  const persona = (space: string, name: string, cwd?: string) => {
+    mkdirSync(join(home, "spaces", space, "personas"), { recursive: true });
+    writeFileSync(join(home, "spaces", space, "personas", `${name}.md`), `---\nname: ${name}\n${cwd ? `cwd: ${cwd}\n` : ""}---\n`);
+  };
+  mkdirSync(join(work, "harbor"), { recursive: true });
+  mkdirSync(join(work, "afolder"), { recursive: true });
+  persona("lk", "harbor", join(work, "harbor"));
+  persona("lk", "queue", join(work, "harbor"));
+  persona("lk", "gone", join(work, "nowhere"));
+  persona("lk", "orphan");
+  writeFileSync(join(home, "spaces", "lk", "registry.v2"), "x\n");
+  persona("other", "evals-intern", join(work, "harbor"));
+  mkdirSync(join(home, "spaces", "remote2"), { recursive: true });
+  writeFileSync(join(home, "spaces", "remote2", "peers.json"), JSON.stringify({ "id-1": { name: "fleet-bot", first: 1, last: 2 } }));
+
+  // fast path: local-known paints the normal prompt; an unregistered name is "unknown" (looking…)
+  assert(eq(checkChatTarget(["@harbor"], work, home, "lk"), { kind: "known", name: "harbor" }), "lookup: @name registered here (folder exists) → known");
+  assert(eq(checkChatTarget(["@harbr"], work, home, "lk"), { kind: "unknown", name: "harbr" }), "lookup: an unregistered @name → unknown (the frame says it is looking)");
+  assert(eq(checkChatTarget(["harbr", "--space", "lk"], work, home, "lk"), { kind: "unknown", name: "harbr" }), "lookup: a bare unregistered name → unknown");
+  assert(checkChatTarget(["@gone"], work, home, "lk").kind === "unknown" && checkChatTarget(["@orphan"], work, home, "lk").kind === "unknown", "lookup: a persona with a missing folder or no cwd: is not 'known' (chat.ts can't wake it either)");
+  assert(checkChatTarget(["afolder"], work, home, "lk").kind === "other" && checkChatTarget(["."], work, home, "lk").kind === "other" && checkChatTarget([], work, home, "lk").kind === "other", "lookup: a folder / . / no target is chat.ts's to resolve");
+  for (const argv of [["--all"], ["#ops"], ["@x", "--fresh"], ["x", "--name", "y"], ["x", "--agent", "kit"], ["@getslash.co"], ["github:o/r"]])
+    assert(checkChatTarget(argv, work, home, "lk").kind === "other", `lookup: ${argv.join(" ")} → painted as before`);
+  // legacy (unmigrated) registry is read, never migrated
+  mkdirSync(join(home, "spaces", "legacy"), { recursive: true });
+  writeFileSync(join(home, "spaces", "legacy", "folders.json"), JSON.stringify({ [join(work, "harbor")]: "old-default" }));
+  writeFileSync(join(home, "spaces", "legacy", "agents.json"), JSON.stringify({ "old-extra": join(work, "harbor") }));
+  assert(localAgentFolder(home, "legacy", "old-default") === join(work, "harbor") && localAgentFolder(home, "legacy", "old-extra") === join(work, "harbor"), "lookup: an unmigrated folders.json/agents.json still counts");
+  writeFileSync(join(home, "spaces", "legacy", "agents.json"), "{nope");
+  let threw = "";
+  try {
+    localAgentFolder(home, "legacy", "nobody");
+  } catch (e) {
+    threw = (e as Error).message;
+  }
+  assert(/agents\.json is corrupt/.test(threw), "lookup: a corrupt legacy registry fails loud (the pre-shell then paints today's frame)");
+  // speed: the fast path is ~ms, nowhere near the 100ms budget
+  const t0 = performance.now();
+  for (let i = 0; i < 100; i++) checkChatTarget(["@harbr"], work, home, "lk");
+  const per = (performance.now() - t0) / 100;
+  assert(per < 10, `lookup: the files-only check takes ${per.toFixed(3)}ms (budget 100ms)`);
+
+  // suggestions: same-modulo-punctuation, prefix, substring, then a typo or two
+  const pool = ["harbor", "harbor-ea", "queue", "queue-ea", "getslash-co", "evals", "web"];
+  assert(eq(suggestNames("harbr", pool), ["harbor", "harbor-ea"]), `suggest: a dropped letter → harbor first (${suggestNames("harbr", pool).join(",")})`);
+  assert(eq(suggestNames("qeueu", pool), ["queue", "queue-ea"]), "suggest: a transposition is one edit (the exact-length hit first)");
+  assert(eq(suggestNames("queue", pool), ["queue", "queue-ea"]), "suggest: exact, then the prefix");
+  assert(eq(suggestNames("getslash.co", pool), ["getslash-co"]), "suggest: punctuation-insensitive");
+  assert(eq(suggestNames("q", pool), []) && eq(suggestNames("zzzzzz", pool), []), "suggest: a 1-2 char token or nothing close → nothing");
+  assert(editDistance("abc", "acb") === 1 && editDistance("kitten", "sitting") === 3, "suggest: OSA distance");
+
+  // another space: a persona there, or a peer on its mesh's ledger
+  assert(eq(otherSpaceHits(home, "evals-intern", "lk"), [{ space: "other", how: "registered" }]), "elsewhere: a persona in another local space");
+  assert(eq(otherSpaceHits(home, "fleet-bot", "lk"), [{ space: "remote2", how: "seen" }]), "elsewhere: a peer seen on another space's mesh (peers.json)");
+  assert(eq(otherSpaceHits(home, "harbor", "lk"), []) && eq(otherSpaceHits(home, "harbor", "other"), [{ space: "lk", how: "registered" }]), "elsewhere: the current space is excluded");
+
+  // the chooser
+  const ch = notFoundChooser({ name: "harbr", space: "lk", suggestions: ["harbor"], elsewhere: [{ space: "other", how: "registered" }] });
+  assert(eq(ch.options.map((o) => o.choice.kind), ["switch", "space", "all", "quit"]), "chooser: suggestions, other space, show all, quit — in that order");
+  assert(ch.options.every((o) => !/fresh|create/i.test(o.label)), "chooser: no option creates an agent");
+  const rows = renderChooser(ch, PLAIN, "a new agent is `paw chat --fresh <folder>`");
+  assert(/✕ no agent @harbr in lk — did you mean:/.test(rows[0]!) && rows.some((r) => /▸ 1 @harbor/.test(r)) && rows.some((r) => /open @harbr in other/.test(r)) && /--fresh/.test(rows.at(-1)!), "chooser: says what is wrong, marks the selection, names --fresh as text only");
+  assert(chooserKey(ch, "\x1b[B").sel === 1 && chooserKey(ch, "\x1b[A").sel === 3 && chooserKey({ ...ch, sel: 3 }, "\x1b[B").sel === 0, "chooser keys: ↓/↑ move and wrap");
+  assert(eq(chooserKey(ch, "\r").pick, { kind: "switch", name: "harbor" }) && eq(chooserKey({ ...ch, sel: 1 }, "\r").pick, { kind: "space", name: "harbr", space: "other" }), "chooser keys: Enter picks the selection");
+  assert(eq(chooserKey(ch, "3").pick, { kind: "all" }) && chooserKey(ch, "9").pick === undefined, "chooser keys: a number picks that row; one past the end does nothing");
+  assert(eq(chooserKey(ch, "\x1b").pick, { kind: "quit" }) && eq(chooserKey(ch, "\x03").pick, { kind: "quit" }), "chooser keys: Esc and Ctrl-C quit");
+  assert(chooserKey(ch, "@").pass === true && chooserKey(ch, "h").pass === true && chooserKey(ch, "\x15").pass === true, "chooser keys: anything else closes it and reaches the input");
+  const none = notFoundChooser({ name: "zz9", space: "lk", suggestions: [], elsewhere: [] });
+  assert(!/did you mean/.test(none.title[0]!) && eq(none.options.map((o) => o.choice.kind), ["all", "quit"]), "chooser: nothing close → no invented suggestion");
+  const un = unreachableChooser({ name: "harbr", space: "lk", why: "roster didn't load in 5s" });
+  assert(/couldn't reach lk to check @harbr/.test(un.title[0]!) && !/no agent/.test(un.title[0]!) && eq(un.options.map((o) => o.choice.kind), ["retry", "quit"]), "chooser: an unread roster says it couldn't check — never 'not found'");
+  rmSync(home, { recursive: true, force: true });
+  rmSync(work, { recursive: true, force: true });
+}
+
+// ── the chooser is wired: settle on the roster, refuse queued lines, open after the replay ──────────
+{
+  const { readFileSync } = await import("node:fs");
+  const src = readFileSync(new URL("../src/chat.ts", import.meta.url), "utf8");
+  const boot = src.slice(src.indexOf("async function boot(): Promise<void> {"), src.indexOf("// ── one way out"));
+  assert(boot.indexOf("await replayDeferred();") < boot.indexOf("presentLookup();"), "chat: queued lines are refused (kept) BEFORE the chooser opens — never sent to a choice");
+  const settle = src.slice(src.indexOf("async function settleLookup("), src.indexOf("function presentLookup("));
+  assert(settle.indexOf('lookup = "unreachable"') < settle.indexOf('lookup = "absent"') && /if \(!rosterSeen\)/.test(settle), "chat: an unread roster is 'unreachable', checked before 'absent'");
+  assert(/if \(chooser && chooserTakes\(/.test(src), "chat: the chooser takes its keys before readline sees them");
+}
+
 // ── the remote inbox's cleanup ledger (src/human-inbox.ts) ───────────────────────────────────────
 {
   const { writeRemoteMesh } = await import("../src/remote-mesh.ts");
@@ -1488,7 +1582,7 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
     visit(entry, text);
     return bad;
   };
-  for (const f of ["src/chat-preshell.ts", "src/chat-banner.ts", "src/chat-boot.ts", "src/chat-consent.ts"]) {
+  for (const f of ["src/chat-preshell.ts", "src/chat-banner.ts", "src/chat-boot.ts", "src/chat-consent.ts", "src/chat-lookup.ts", "src/chat-chooser.ts"]) {
     const bad = walk(resolve(root, f));
     assert(bad.length === 0, `core-free: ${f}'s import graph has no @cotal-ai/* (${bad.join(", ") || "clean"})`);
   }

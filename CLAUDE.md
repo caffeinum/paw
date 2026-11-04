@@ -238,7 +238,10 @@ Each entry: what it is + the most load-bearing rule. Full notes behind the link.
   ~25ms, keys from ~250ms, connect behind it; loaders (`◌`) never guessed values (no `offline` from an
   unread roster); lines typed early queue + replay in order; a lost target REFUSES plain lines (never
   #general); restart consent only from a y/n line typed after the question; remote inbox LEDGERED before
-  provisioning (`chat-inboxes/<uid>.json`, swept by the next chat). → [chat.md#instant-ui](docs/notes/chat.md#instant-ui)
+  provisioning (`chat-inboxes/<uid>.json`, swept by the next chat). `chat-lookup.ts` + `chat-chooser.ts`: a name
+  registered nowhere here paints `◌ looking for @x on <space>…` (files-only check, <1ms), the roster settles it —
+  not there → a chooser (suggestions · open in another space · show all · quit), never a dead prompt, never a
+  guessed "not found" from an unread roster. → [chat.md#instant-ui](docs/notes/chat.md#instant-ui)
 - `src/chat-own.ts` — chat's echo tap + tasks seed; remote: only "you"'s own send subjects (narrow
   `chat-echo`/`chat-history` creds), never the space wildcard. → [remote-mesh.md#paw-chat--paw-web-taps](docs/notes/remote-mesh.md#paw-chat--paw-web-taps)
 - `src/conn-state.ts` — mesh connection state for chat / inbox --watch / web: cotal's per-event `warning`/`error`

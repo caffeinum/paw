@@ -8,6 +8,9 @@
  * prompt with loaders for everything unknown, and puts the tty in raw mode so keys typed now are held
  * by the kernel — not echoed by the line discipline, not lost — until chat's readline reads them.
  * chat.ts then adopts the frame (`takeFrame`): erases it and paints the real one in the same write.
+ * A bare name registered nowhere here is NOT painted as a live prompt: a files-only check
+ * (src/chat-lookup.ts, well under a millisecond) makes it say `◌ looking for @name on <space>…` until
+ * chat.ts has read the roster.
  *
  * Known cost: Ctrl-C during those ~200ms does nothing (raw mode; no reader yet).
  *
@@ -17,43 +20,25 @@ import { appendFileSync, writeSync } from "node:fs";
 import { basename } from "node:path";
 import * as readline from "node:readline";
 import { renderBanner, paintedRows, type BannerState } from "./chat-banner.ts";
-import { loading, LOADER } from "./chat-boot.ts";
+import { loading, LOADER, ok } from "./chat-boot.ts";
 import { DISABLE_BRACKETED_PASTE, ENABLE_BRACKETED_PASTE } from "./paste.ts";
 import { readRemoteMesh } from "./remote-mesh.ts";
 import { resolveSpace } from "./space.ts";
-
-/** Flags of `paw chat` that take a value — their value is never the target. */
-const VALUE_FLAGS = new Set(["--space", "--server", "--model", "--agent", "--provider", "--name", "--personality"]);
+import { checkChatTarget, pawHome, scanChatArgs, type TargetCheck } from "./chat-lookup.ts";
 
 /** What the first frame can say from argv alone. Pure; `check:chat`. */
 export function lexChatArgs(argv: string[], cwd: string): { space?: string; label?: string; mode: "agent" | "channel" | "all"; only: boolean } {
-  let space: string | undefined;
-  let positional: string | undefined;
-  let all = false;
-  let only = false;
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i]!;
-    const eq = a.startsWith("--") ? a.indexOf("=") : -1;
-    if (eq > 0 && VALUE_FLAGS.has(a.slice(0, eq))) {
-      // `--space=team2027` is the same flag as `--space team2027` (expandEqFlags runs after this).
-      if (a.slice(0, eq) === "--space") space = a.slice(eq + 1);
-      continue;
-    }
-    if (a === "--space") space = argv[i + 1];
-    if (VALUE_FLAGS.has(a)) {
-      i++;
-      continue;
-    }
-    if (a === "--all") all = true;
-    else if (a === "--only") only = true;
-    else if (!a.startsWith("-") && positional === undefined) positional = a;
-  }
-  if (all) return { ...(space ? { space } : {}), mode: "all", only };
+  const { space, positional, flags } = scanChatArgs(argv);
+  const only = flags.has("--only");
+  if (flags.has("--all")) return { ...(space ? { space } : {}), mode: "all", only };
   const raw = positional ?? ".";
   if (raw.startsWith("#")) return { ...(space ? { space } : {}), label: raw.slice(1), mode: "channel", only };
   const bare = raw.startsWith("@") ? raw.slice(1) : raw;
   return { ...(space ? { space } : {}), label: bare === "." ? basename(cwd) : bare, mode: "agent", only: only || raw.startsWith("@") };
 }
+
+/** The pending state's words — the pre-shell and chat.ts say the same thing. */
+export const lookingFor = (name: string, space: string): string => `${LOADER} looking for @${name} on ${space}…`;
 
 const tty = process.stdout.isTTY === true;
 const wrap = (code: string) => (s: string) => (tty ? `\x1b[${code}m${s}\x1b[0m` : s);
@@ -90,20 +75,33 @@ export function paintPreshell(argv: string[]): void {
   const lex = lexChatArgs(argv, process.cwd());
   const space = lex.space ?? resolveSpace();
   const remote = readRemoteMesh(space) !== undefined;
+  // Files only, before any paint: is the name registered here? An unknown one gets an honest
+  // "looking for" frame, never a live-looking prompt (src/chat-lookup.ts). A lookup that throws (a
+  // corrupt legacy registry) paints today's frame — chat.ts fails loud on it with its real message.
+  const t0 = performance.now();
+  let check: TargetCheck;
+  try {
+    check = lex.mode === "agent" ? checkChatTarget(argv, process.cwd(), pawHome(), space) : { kind: "other" };
+  } catch {
+    check = { kind: "other" };
+  }
+  const lookupMs = performance.now() - t0;
+  const looking = check.kind === "unknown" ? lookingFor(check.name, space) : undefined;
   const st: BannerState =
     lex.mode === "channel"
       ? { mode: "channel", space, remote, room: lex.label! }
       : lex.mode === "all"
         ? { mode: "all", space, remote, room: "general", roster: loading() }
-        : { mode: "agent", space, remote, agent: `${c.cyan(lex.label!)} ${c.dim(LOADER)}`, where: "", status: loading(), machine: loading(), info: loading(), only: lex.only, bang: true };
+        : { mode: "agent", space, remote, agent: `${c.cyan(lex.label!)} ${c.dim(LOADER)}`, where: "", status: looking ? ok(c.dim(looking)) : loading(), machine: loading(), info: loading(), only: lex.only, bang: true };
   const full = renderBanner(st, c);
   const cols = process.stdout.columns || 80;
   // A frame taller than the screen scrolls its top into the scrollback, where erase() can't reach it —
   // the real banner would then print under a stranded copy. A short screen gets a one-line frame.
   const tooTall = paintedRows(full, cols) + 2 >= (process.stdout.rows || 24);
   const text = tooTall ? `${c.bold("  🐾 paw chat")}  ${c.dim(`${LOADER} loading`)}\n` : full;
-  const prompt =
-    lex.mode === "agent" ? `${c.dim("you → ")}${c.dim(lex.label!)} ${c.dim(LOADER)}${c.dim("> ")}` : `${c.dim(`you → #${lex.mode === "channel" ? lex.label : "general"}`)} ${c.dim(LOADER)}${c.dim("> ")}`;
+  const prompt = looking
+    ? `${c.dim(looking)}${c.dim("> ")}`
+    : lex.mode === "agent" ? `${c.dim("you → ")}${c.dim(lex.label!)} ${c.dim(LOADER)}${c.dim("> ")}` : `${c.dim(`you → #${lex.mode === "channel" ? lex.label : "general"}`)} ${c.dim(LOADER)}${c.dim("> ")}`;
   // Raw mode: keys now wait in the kernel for readline — no cooked echo, nothing lost. Bracketed paste
   // from the same moment: a paste that lands before chat.ts has loaded must still arrive marked, or
   // its lines would be read as typed — N messages, a pasted `!…` line run as a command.
@@ -116,7 +114,7 @@ export function paintPreshell(argv: string[]): void {
     } catch {} // the terminal is gone — nothing to restore
   });
   process.stdout.write(text + prompt);
-  if (process.env.PAW_CHAT_TIMING) appendFileSync(process.env.PAW_CHAT_TIMING, JSON.stringify({ mark: "preshell", ms: Math.round(performance.now()) }) + "\n");
+  if (process.env.PAW_CHAT_TIMING) appendFileSync(process.env.PAW_CHAT_TIMING, JSON.stringify({ mark: "preshell", ms: Math.round(performance.now()), lookup: check.kind, lookupMs: Math.round(lookupMs * 1000) / 1000 }) + "\n");
   const rows = paintedRows(text, cols);
   let erased = false;
   frame = {
