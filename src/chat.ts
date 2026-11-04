@@ -2209,12 +2209,20 @@ async function chat(argv: string[]): Promise<void> {
       }
       if (!bang && curName && raw === "!" && !consent.open && !replaying) {
         setImmediate(() => {
-          if (!rl || rl.line !== "!" || bang) return;
+          // `!` as the FIRST character switches to command mode — on an empty line, and also when it is
+          // typed at the start of a line already written ("typed the command first, then went to the
+          // beginning and typed !", operator 2026-11-04). The rest of the line is kept as the command.
+          if (!rl || bang || !rl.line.startsWith("!") || rl.cursor !== 1) return;
+          const rest = rl.line.slice(1);
           bang = true;
           rl.write(null, { ctrl: true, name: "u" });
           rl.write(null, { ctrl: true, name: "k" });
           rl.setPrompt(promptFor());
           rl.prompt(true);
+          if (rest) {
+            rl.write(rest);
+            rl.write(null, { ctrl: true, name: "a" }); // the cursor stays where you typed `!`
+          }
         });
       }
     });
