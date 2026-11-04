@@ -2,7 +2,7 @@
  * The per-space link to an agent-office (`paw office connect`) and the bridge's per-agent tokens.
  *
  *   $PAW_HOME/spaces/<space>/office.json         { space, url, office, joinKey, ownerKey?, viewKey?, ts }
- *   $PAW_HOME/spaces/<space>/office-agents.json  { office, agents: { <paw name>: { id, token, joinedAt, since? } }, lastHuman? }
+ *   $PAW_HOME/spaces/<space>/office-agents.json  { office, agents: { <paw name>: { id, token, joinedAt, since? } }, lastHuman?, officePeer? }
  *
  * Both 0600, written atomically (tmp + rename), beside the space's other paw state so an isolated
  * PAW_HOME isolates them. Every key and agentToken is a BEARER secret: nothing here prints one, and
@@ -40,8 +40,11 @@ export interface BridgedAgent {
 export interface BridgeState {
   office: string;
   agents: Record<string, BridgedAgent>;
-  /** The office human who last wrote to any paw agent — where an agent's reply to "you" goes. */
+  /** The office's OWNER (a `sender: "owner"` human) who last wrote to any paw agent — where an agent's DM
+   *  to "you" is mirrored. Never set by a guest or an office agent. */
   lastHuman?: string;
+  /** The mesh id office messages are delivered from (OFFICE_PEER): a DM to it is a reply into the office. */
+  officePeer?: string;
 }
 
 const KEY_RE = /^([a-z0-9]{12})\.[A-Za-z0-9_-]{43}$/;
@@ -157,7 +160,7 @@ export function readBridgeState(space: string, office: string): BridgeState {
   if (v.office !== office) return fresh;
   if (typeof v.agents !== "object" || v.agents === null || Object.values(v.agents).some((a) => typeof a?.id !== "string" || typeof a.token !== "string"))
     throw new Error(`paw: office bridge state ${path} is malformed — delete it; the bridge rejoins every agent`);
-  return { office, agents: v.agents, ...(typeof v.lastHuman === "string" ? { lastHuman: v.lastHuman } : {}) };
+  return { office, agents: v.agents, ...(typeof v.lastHuman === "string" ? { lastHuman: v.lastHuman } : {}), ...(typeof v.officePeer === "string" ? { officePeer: v.officePeer } : {}) };
 }
 
 export function writeBridgeState(space: string, state: BridgeState): void {

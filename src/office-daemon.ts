@@ -16,7 +16,7 @@ import { dropSharedManagerControl, sharedManagerControl } from "./control.ts";
 import { sendAsYou } from "./dm.ts";
 import { messageText, observerEndpoint } from "./feed.ts";
 import { officeClient } from "./office-api.ts";
-import { OfficeBridge, speechFor, type TappedMessage } from "./office-bridge.ts";
+import { OFFICE_PEER, OfficeBridge, speechFor, withPresence, type PresenceLike, type TappedMessage } from "./office-bridge.ts";
 import { bridgeStatePath, officeLinkPath, readBridgeState, readOfficeLink, writeBridgeState, type OfficeLink } from "./office-link.ts";
 import { humanPeer } from "./names.ts";
 import { isRemoteSpace } from "./server.ts";
@@ -27,6 +27,8 @@ const ROWS_MS = 10_000;
 /** Only the repo NAME reaches the office and it rarely changes: git (≈5 processes per agent) runs this often, not every roster read. */
 const GIT_MS = 5 * 60_000;
 const TICK_MS = 2_000;
+/** A presence change (status, its stamp, harness activity) re-reads just those agents' rows, at most this often. */
+const FAST_MS = 2_000;
 
 /** `leave`: the link is gone (or now names another office) — walk the agents out instead of keeping their tokens. */
 type StopBridge = (leave: boolean) => Promise<void>;
@@ -119,9 +121,8 @@ function wire(space: string, server: string, link: OfficeLink, log: (line: strin
         log(`couldn't save office-agents.json: ${(e as Error).message}`);
       }
     },
-    deliver: async (agent, text) => {
-      await sendAsYou({ space, server, target: agent, text, byName: true });
-    },
+    // from the office peer, never "you": nothing said in the office carries the operator's authority (#81)
+    deliver: async (agent, text) => ({ from: (await sendAsYou({ space, server, target: agent, text, byName: true, sender: OFFICE_PEER })).from }),
     log,
     operator: operatorName(),
   });
@@ -138,7 +139,7 @@ function wire(space: string, server: string, link: OfficeLink, log: (line: strin
         if (seen.size > 2000) seen.clear();
         seen.add(msg.id);
       }
-      const s = speechFor(msg, { humanId: ep.card.id, humanName: humanPeer(space), names, bridged: bridge.bridged(), text: (x) => messageText(x as Parameters<typeof messageText>[0]) });
+      const s = speechFor(msg, { humanId: ep.card.id, humanName: humanPeer(space), officeId: bridge.officeId(), names, bridged: bridge.bridged(), text: (x) => messageText(x as Parameters<typeof messageText>[0]) });
       if (s) bridge.noteSpeech(s);
     } catch (e) {
       log(`tap: ${(e as Error).message}`);
@@ -162,7 +163,7 @@ function wire(space: string, server: string, link: OfficeLink, log: (line: strin
         for (const r of rows) gitOf.set(r.name, r.git);
       } else for (const r of rows) r.git = gitOf.get(r.name);
       for (const p of ep.getRoster()) names.set(p.card.id, p.card.name);
-      bridge.setRows(rows);
+      bridge.setRows(withPresence(rows, ep.getRoster() as PresenceLike[]));
       if (rowsError) log("roster readable again");
       rowsError = "";
     } catch (e) {
@@ -174,8 +175,43 @@ function wire(space: string, server: string, link: OfficeLink, log: (line: strin
       rowsBusy = false;
     }
   };
+  // #82: a presence change (an agent's status, when it entered it, or its harness's turn progress) re-reads
+  // only those agents, so the office follows a working/waiting/idle flip within seconds instead of the 10s roster.
+  const seenPresence = new Map<string, string>();
+  const dirty = new Set<string>();
+  let fastAt = 0;
+  let fastError = "";
+  ep.on("presence", (e: { presence?: PresenceLike }) => {
+    const p = e?.presence;
+    if (!p?.card?.name) return;
+    const sig = `${p.status}|${p.statusSince ?? ""}|${p.activeAt ?? ""}`;
+    if (seenPresence.get(p.card.name) === sig) return;
+    seenPresence.set(p.card.name, sig);
+    dirty.add(p.card.name);
+  });
+  const refreshDirty = async (): Promise<void> => {
+    if (!dirty.size || rowsBusy || Date.now() - fastAt < FAST_MS) return;
+    const want = new Set(dirty);
+    dirty.clear();
+    fastAt = Date.now();
+    rowsBusy = true;
+    try {
+      const { rows } = await collectStatus(space, await sharedManagerControl(space, server), { roster: () => ep.getRoster(), git: false, only: (all) => new Set(all.filter((n) => want.has(n))) });
+      for (const r of rows) r.git = gitOf.get(r.name);
+      bridge.patchRows(withPresence(rows, ep.getRoster() as PresenceLike[]));
+      fastError = "";
+    } catch (e) {
+      for (const n of want) dirty.add(n); // the full read every 10s still covers them; logged there
+      const msg = (e as Error).message;
+      if (msg !== fastError) log(`targeted roster read failed (the full read every ${ROWS_MS / 1000}s still runs; logged once): ${msg}`);
+      fastError = msg;
+      return;
+    } finally {
+      rowsBusy = false;
+    }
+  };
   const tick = (): void => {
-    if (linked()) void bridge.tick();
+    if (linked()) void refreshDirty().then(() => bridge.tick());
     else recheck(); // disconnected: stop now (walking the agents out), not at the next link poll
   };
   void refreshRows().then(tick);

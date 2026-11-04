@@ -231,7 +231,7 @@ export async function sendAsYou(opts: {
   byName?: boolean;
   /** Send as this non-human peer instead of "you" (paw cron fires as "cron"). */
   sender?: string;
-}): Promise<{ name: string }> {
+}): Promise<{ name: string; from: string }> {
   const { space, server, target, text, model, name: nameFlag, restartLive, byName, sender } = opts;
   if (!byName) assertUnambiguousTarget(space, target); // a bare token that's BOTH a known name and a folder here → fail loud
 
@@ -253,7 +253,7 @@ export async function sendAsYou(opts: {
     const away = files.length ? runsElsewhere(space, tgt.name, ep.getRoster().find((p) => p.card.id === tgt.id)?.card) : undefined;
     if (away) throw new Error(`paw: ${elsewhereFiles(tgt.name, away, files)}`);
     await unicastResilient(ep, tgt.id, text);
-    return { name: tgt.name };
+    return { name: tgt.name, from: ep.card.id };
   } finally {
     await ep.stop().catch(() => {});
   }

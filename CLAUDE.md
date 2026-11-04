@@ -275,7 +275,9 @@ Each entry: what it is + the most load-bearing rule. Full notes behind the link.
   `spaces/<s>/office{,-agents}.json`, never printed or logged.
 - `src/office-bridge.ts` (pure + engine) + `src/office-daemon.ts` — hosted by the MAILBOX daemon (re-reads the link
   every 10s): live rows → `office_join`/`office_status` (change-only; tool NAME + repo, never args/paths), offline →
-  `office_leave`, agent DMs/channel posts → office chat/say, office chat to an agent → paw DM from you. One
+  `office_leave`, agent DMs/channel posts → office chat/say, office chat to an agent → paw DM from the peer `office`, NEVER "you"
+  (labelled by agent-office's `sender`; non-owner = "not from the operator"; no sender = guest; `lastHuman` only from
+  owner); a waiting agent shows working only on turn progress after its `statusSince` (busy alone can't tell). One
   sequential worker, local budgets, 429 pauses for `retryAfter`; a refused JOIN KEY pauses the link and keeps the tokens
   (only an unknown agentToken rejoins); the link file gone ⇒ the bridge walks everyone out and never saves tokens
   again (disconnect deletes the link first); errors are `[office]` log lines, never a crash.
