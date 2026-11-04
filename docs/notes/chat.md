@@ -65,15 +65,21 @@ no longer between `paw chat` and a prompt that takes keys. Three moments, in a t
    core-free `src/chat-preshell.ts` BEFORE @cotal-ai/core: it lexes the target from argv (no
    validation), paints the banner + `you → <label> ◌>` through the same pure `renderBanner`
    (`src/chat-banner.ts`) chat uses, and puts the tty in raw mode — keys typed now wait in the kernel
-   (not cooked-echoed, not lost) until readline reads them. Bracketed paste is switched on in the
-   SAME write, before raw mode: a paste landing before chat.ts has loaded still arrives marked (one
+   (not cooked-echoed, not lost) until readline reads them. Bracketed paste is switched on right
+   after raw mode, before the frame: a paste landing before chat.ts has loaded still arrives marked (one
    `[Pasted text #1]`, never N messages or a pasted `!…` line run as a command); chat.ts's stdin
    wrapper splits a chunk after the paste's end marker, so keys the kernel hands over in the same
    chunk land after the paste is staged. `--space=X` is lexed like `--space X`. A frame that would not
    fit on screen (banner + prompt ≥ rows) is ONE line (`🐾 paw chat ◌ loading`) — a taller one's top
    would scroll out of erase's reach and strand a copy in the scrollback. A failure before chat's own
    banner (bad argv, unknown name) erases the frame first (`eraseFrame`, idempotent, also called from
-   bin/paw.ts's failure handler). Ctrl-C does nothing during the ~200ms import (known cost).
+   bin/paw.ts's failure handler). Ctrl-C during the ~200ms import is held like any key; chat.ts quits
+   on it once loaded. The terminal restore is ONE idempotent `restoreTerminal` armed BEFORE raw mode,
+   on `exit` and on SIGINT/SIGTERM/SIGHUP (a signal chat.ts doesn't listen for yet: frame erased,
+   paste off, cooked mode, then die of the same signal). Raw goes on before paste, so a Ctrl-C can no
+   longer SIGINT the process between "paste on" and its undo; one typed before the raw switch (~60ms
+   node) is the kernel's SIGINT on a terminal paw never touched — `check:chat-tty` 5 asserts "paste
+   switched on ⇒ switched off", not an unconditional `\e[?2004l`.
    `PAW_CHAT_PRESHELL=0` skips it.
 2. **Readline live (~250ms, the core import floor)** — chat.ts resolves a READ-ONLY target from the
    registry (an unknown/ambiguous name still fails loud here, before any network; the pre-shell frame
@@ -182,7 +188,7 @@ a dead endpoint's roster (a live agent shown `offline`, `@name` "no peer") nor l
 **Pipe mode** (stdin or stdout not a tty) keeps today's order: connect + resolve, then the banner, then
 read lines; a failure throws. `check:chat-tty` (isolated space, real pty, a bare `echoer` peer)
 covers type-ahead delivery (once, in order, nothing to #general), `@ghost` refusal, an unreachable
-target, a DM at join, Ctrl-C at +80/+400ms, pipe mode, an early multi-line paste (one message), a
+target, a DM at join, Ctrl-C at +20/50/80/120/400ms, SIGTERM in the pre-shell window, pipe mode, an early multi-line paste (one message), a
 refused multi-line queued line (kept, printed on quit), an argv error (frame erased first) and a
 14-row terminal (one-line frame). `pnpm measure:chat -- chat @x` measures it
 (read-only: one early key, Ctrl-U + Ctrl-D, never Enter; `--repo <dir>` measures another checkout).

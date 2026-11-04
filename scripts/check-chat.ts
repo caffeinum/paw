@@ -1555,9 +1555,12 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
   assert(/rosterSeen = false/.test(drop) && /ep = undefined/.test(drop) && /me = undefined/.test(drop) && /peerHold = new PresenceHold/.test(drop) && /if \(ep === x\.ep\) dropEndpoint\(\)/.test(src), "chat: stopping a startup endpoint resets ep/conn/me/rosterSeen/peerHold");
   // Banner deltas are skipped on redraw (the repainted banner already says them).
   assert(/e\.kind === "chat" && e\.bannerDelta && bannerEntry\) continue/.test(src), "chat: a redraw doesn't repeat banner field lines under the banner that now shows them");
-  // The pre-shell turns bracketed paste on BEFORE raw mode, and off on exit.
+  // The pre-shell arms its restore (exit + signals) first, then goes raw — so a Ctrl-C is a byte, never a
+  // SIGINT that kills it between the two — and only then turns bracketed paste on, before the frame.
   const pre = readFileSync(new URL("../src/chat-preshell.ts", import.meta.url), "utf8");
-  assert(pre.indexOf("write(ENABLE_BRACKETED_PASTE)") > 0 && pre.indexOf("write(ENABLE_BRACKETED_PASTE)") < pre.indexOf("setRawMode(true)") && /writeSync\(1, DISABLE_BRACKETED_PASTE\)/.test(pre), "preshell: bracketed paste is on before the first key can be read, off on exit");
+  const paint = pre.slice(pre.indexOf("export function paintPreshell"));
+  const [armAt, rawAt, pasteAt, frameAt] = ["holdTerminal();", "setRawMode(true)", "write(ENABLE_BRACKETED_PASTE)", "write(text + prompt)"].map((k) => paint.indexOf(k));
+  assert(armAt > 0 && armAt < rawAt && rawAt < pasteAt && pasteAt < frameAt && /if \(pasteOn\) writeSync\(1, DISABLE_BRACKETED_PASTE\)/.test(pre) && /process\.on\("exit", restoreTerminal\)/.test(pre) && /"SIGINT", "SIGTERM", "SIGHUP"/.test(pre), "preshell: restore armed (exit + signals), then raw, then bracketed paste on — before the first key can be read, off on every way out");
   assert(/e\.on\("message", onMessage\)/.test(se) && /e\.on\("presence", onPresence\)/.test(se) && /tapOwnSubject\(e,/.test(se) && /attachConn\(e,/.test(se), "chat: message/presence/tap/conn listeners are attached BEFORE startResilient");
   // The plain-line branch never falls back to the room while a target is set.
   const plain = src.slice(src.indexOf("} else if (curName) {\n        // The sticky target."), src.indexOf("/** Run the queued lines"));

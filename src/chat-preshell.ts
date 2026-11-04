@@ -12,7 +12,9 @@
  * (src/chat-lookup.ts, well under a millisecond) makes it say `◌ looking for @name on <space>…` until
  * chat.ts has read the roster.
  *
- * Known cost: Ctrl-C during those ~200ms does nothing (raw mode; no reader yet).
+ * Known cost: Ctrl-C during those ~200ms is held like any key — chat.ts reads it and quits once loaded.
+ * (One before the raw switch is still the kernel's SIGINT: the process dies before touching the terminal.)
+ * Every way out of the window — exit, or a signal nobody else handles yet — restores the terminal once.
  *
  * CORE-FREE by contract: `check:chat` walks this module's import graph and fails on any @cotal-ai/*.
  */
@@ -68,6 +70,44 @@ export function eraseFrame(): void {
   painted?.erase();
 }
 
+let rawOn = false;
+let pasteOn = false;
+let held = false;
+
+/** Put the terminal back as the pre-shell found it: bracketed paste off, cooked mode. Idempotent —
+ *  every exit path may call it, in any order, and a mode never switched on is never "restored". */
+function restoreTerminal(): void {
+  try {
+    if (pasteOn) writeSync(1, DISABLE_BRACKETED_PASTE);
+    if (rawOn && process.stdin.isTTY) process.stdin.setRawMode(false);
+  } catch {} // the terminal is gone — nothing to restore
+  pasteOn = false;
+  rawOn = false;
+}
+
+const LEAVE_SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP"] as const;
+
+/** Arm restoreTerminal() on process exit and on a signal that would kill us before chat.ts is up. A
+ *  signal chat.ts already listens for is its to handle (its shutdown restores the terminal itself);
+ *  otherwise: frame down, terminal back, then die of the same signal so the exit status stays honest. */
+function holdTerminal(): void {
+  if (held) return;
+  held = true;
+  process.on("exit", restoreTerminal);
+  for (const sig of LEAVE_SIGNALS) {
+    const onSignal = (): void => {
+      if (process.listenerCount(sig) > 1) return;
+      try {
+        frame?.erase();
+      } catch {} // the terminal is gone
+      restoreTerminal();
+      process.removeListener(sig, onSignal);
+      process.kill(process.pid, sig);
+    };
+    process.on(sig, onSignal);
+  }
+}
+
 /** Paint the skeleton and hold the keyboard. Only for a terminal on both ends; never throws past a
  *  failed paint (the real chat paints its own banner then). */
 export function paintPreshell(argv: string[]): void {
@@ -102,17 +142,16 @@ export function paintPreshell(argv: string[]): void {
   const prompt = looking
     ? `${c.dim(looking)}${c.dim("> ")}`
     : lex.mode === "agent" ? `${c.dim("you → ")}${c.dim(lex.label!)} ${c.dim(LOADER)}${c.dim("> ")}` : `${c.dim(`you → #${lex.mode === "channel" ? lex.label : "general"}`)} ${c.dim(LOADER)}${c.dim("> ")}`;
-  // Raw mode: keys now wait in the kernel for readline — no cooked echo, nothing lost. Bracketed paste
-  // from the same moment: a paste that lands before chat.ts has loaded must still arrive marked, or
-  // its lines would be read as typed — N messages, a pasted `!…` line run as a command.
-  process.stdout.write(ENABLE_BRACKETED_PASTE);
+  // The terminal goes back on EVERY way out of this window — exit or signal — before it is touched.
+  holdTerminal();
+  // Raw mode FIRST: from here a Ctrl-C is a byte waiting for readline, not a SIGINT that could kill us
+  // between switching a mode on and arming its undo. Bracketed paste from the same moment: a paste
+  // that lands before chat.ts has loaded must still arrive marked, or its lines would be read as
+  // typed — N messages, a pasted `!…` line run as a command.
   process.stdin.setRawMode(true);
-  process.on("exit", () => {
-    try {
-      writeSync(1, DISABLE_BRACKETED_PASTE);
-      if (process.stdin.isTTY) process.stdin.setRawMode(false);
-    } catch {} // the terminal is gone — nothing to restore
-  });
+  rawOn = true;
+  pasteOn = true;
+  process.stdout.write(ENABLE_BRACKETED_PASTE);
   process.stdout.write(text + prompt);
   if (process.env.PAW_CHAT_TIMING) appendFileSync(process.env.PAW_CHAT_TIMING, JSON.stringify({ mark: "preshell", ms: Math.round(performance.now()), lookup: check.kind, lookupMs: Math.round(lookupMs * 1000) / 1000 }) + "\n");
   const rows = paintedRows(text, cols);
