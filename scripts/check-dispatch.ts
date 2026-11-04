@@ -5,13 +5,14 @@
  * handling lives in bin/paw.ts (not unit-testable here). Pure; no daemons. Run: pnpm check:dispatch
  */
 import { execFile } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 import { registry, type Command } from "@cotal-ai/core";
-import { downSpace, expandEqFlags, failureLine, oneShotReplyNote, stripCotalNamespace, withDefaultSpace } from "../src/dispatch.ts";
+import { downSpace, expandEqFlags, failureLine, helpRequested, oneShotReplyNote, stripCotalNamespace, verbHelp, withDefaultSpace } from "../src/dispatch.ts";
+import { CALLER_SPACE_VERBS, defaultSpaceFor } from "../src/space.ts";
 import { assertRuntimeUsable, resolveRuntime, runtimePreferencePath, writeRuntimePreference } from "../src/lifecycle.ts";
 
 let failures = 0;
@@ -250,6 +251,38 @@ assert(oneShotReplyNote(["join", "--name", "mini"]) === undefined && oneShotRepl
   );
 }
 
+// helpRequested: `--help`/`-h` is a help request only where it is a FLAG (#78).
+assert(helpRequested("open", ["--help"]) && helpRequested("open", ["-h"]) && helpRequested("open", [".", "--help"]), "help flag: --help / -h anywhere among the verb's flags");
+assert(helpRequested("dm", ["x", "--help"]), "help flag: `paw dm x --help` is a request");
+assert(!helpRequested("dm", ["x", "--", "--help"]), "help flag: after `--` it's the message (`paw dm x -- --help`)");
+assert(!helpRequested("open", ["--name", "--help"]) && !helpRequested("chat", ["--model", "-h"]), "help flag: a flag's VALUE is not a request");
+assert(!helpRequested("mcp", ["add", "x", "--", "npx", "--help"]), "help flag: a passthrough command's --help stays its own");
+assert(!helpRequested("cotal", ["attach", "--help"]) && !helpRequested("__complete", ["open", "--help"]), "help flag: cotal's own help and completion's half-typed line are untouched");
+assert(!helpRequested("dm", ["x", "please see --help-ish"]) && !helpRequested("open", []), "help flag: a word merely containing it is not a request");
+assert(verbHelp({ name: "x", summary: "does x", usage: "paw x <y>\n  x --z" }, "q") === "usage: paw x <y>\n       paw x --z\n\n  does x\n  short form: paw q", "help text: usage lines (paw prefix normalised), summary, short form");
+assert(
+  verbHelp({ name: "y", summary: "does y", positionals: "<a>", flags: [{ name: "n", short: "n", type: "string", value: "<N>" }, { name: "v", type: "boolean" }] }).startsWith("usage: paw y <a> [-n|--n <N>] [--v]"),
+  "help text: a verb with no usage gets one built from its registry declaration",
+);
+
+// defaultSpaceFor: a spawning verb run inside an agent (COTAL_SPACE, no PAW_SPACE) defaults to THAT space.
+{
+  const saved = { p: process.env.PAW_SPACE, c: process.env.COTAL_SPACE };
+  delete process.env.PAW_SPACE;
+  process.env.COTAL_SPACE = "team-x";
+  for (const v of ["open", "attach", "chat", "start", "dm", "claude", "cron"]) assert(CALLER_SPACE_VERBS.has(v) && defaultSpaceFor(v) === "team-x", `caller space: \`paw ${v}\` inside an agent of team-x → team-x`);
+  assert(defaultSpaceFor("status") === "paw" && defaultSpaceFor("inbox") === "paw", "caller space: other verbs keep the current space");
+  process.env.PAW_SPACE = "test-env";
+  assert(defaultSpaceFor("open") === "test-env", "caller space: PAW_SPACE wins");
+  delete process.env.PAW_SPACE;
+  delete process.env.COTAL_SPACE;
+  assert(defaultSpaceFor("open") === "paw", "caller space: a human shell (no COTAL_SPACE) is unchanged");
+  if (saved.p === undefined) delete process.env.PAW_SPACE;
+  else process.env.PAW_SPACE = saved.p;
+  if (saved.c === undefined) delete process.env.COTAL_SPACE;
+  else process.env.COTAL_SPACE = saved.c;
+}
+
 // Lazy command loading (src/command-modules.ts): bin/paw.ts evaluates ONLY the verb's mapped module,
 // so each entry must register its verb ALONE, in a fresh process (no sibling already loaded it), and the
 // map must name every verb the full module set registers.
@@ -285,6 +318,80 @@ assert(oneShotReplyNote(["join", "--name", "mini"]) === undefined && oneShotRepl
   assert(full.length === all.length, "command-modules: completion loads every command (it lists the whole registry)");
   const unknown = await names(`await m.loadCommandsFor("no-such-verb")`);
   assert(unknown.length === all.length, "command-modules: an unknown verb loads every command before failing loud");
+
+  // ── `paw <verb> --help` never touches the mesh (#78: `paw open --help` spawned an agent) ─────────────
+  // Every registered verb, run for real through bin/paw.ts off a tty, in a fresh PAW_HOME whose broker
+  // (PAW_SERVER) is unreachable. The spy is the home itself: ensure() takes a lock file under it, spawning
+  // writes personas and the mesh registry under it — so it must still be EMPTY afterwards. And with the
+  // broker unreachable, any ensure() would also have failed the run, not exited 0.
+  const pawBin = join(root, "bin", "paw.ts");
+  const runPaw = (argv: string[], env: Record<string, string | undefined> = {}): Promise<{ code: number | null; out: string; err: string; home: string }> => {
+    const home = mkdtempSync(join(tmpdir(), "paw-help-home-"));
+    return new Promise((resolve) => {
+      const child = execFile(
+        process.execPath,
+        [pawBin, ...argv],
+        { cwd: env.CWD ?? root, env: { ...process.env, NODE_OPTIONS: "", PAW_HOME: home, PAW_SPACE: "test-help", PAW_RELEASE: "dev", PAW_SERVER: "nats://127.0.0.1:1", COTAL_NAME: undefined, COTAL_SPACE: undefined, ...env, CWD: undefined } },
+        (err, out, errOut) => resolve({ code: err ? ((err as { code?: number }).code ?? 1) : 0, out, err: errOut, home }),
+      );
+      child.stdin?.end();
+    });
+  };
+  const emptyHome = (home: string): boolean => {
+    const left = readdirSync(home);
+    rmSync(home, { recursive: true, force: true });
+    return left.length === 0;
+  };
+  const verbs = [...all.filter((v) => v !== "__complete"), "down"];
+  const helpRuns: string[] = [];
+  const helpQueue = verbs.flatMap((v) => [[v, "--help"], [v, "-h"]]);
+  await Promise.all(
+    Array.from({ length: 8 }, async () => {
+      for (let argv = helpQueue.shift(); argv !== undefined; argv = helpQueue.shift()) {
+        const r = await runPaw(argv);
+        const clean = emptyHome(r.home);
+        if (r.code !== 0 || !r.out.startsWith(`usage: paw ${argv[0]}`) || !clean)
+          helpRuns.push(`${argv.join(" ")} (exit ${r.code}, home ${clean ? "empty" : "WRITTEN"}: ${(r.err || r.out).trim().split("\n")[0]})`);
+      }
+    }),
+  );
+  assert(helpRuns.length === 0, `help: all ${verbs.length} verbs answer --help and -h with their usage, exit 0, nothing written${helpRuns.length ? ` — ${helpRuns.join("; ")}` : ""}`);
+  {
+    const r = await runPaw(["help", "a"]);
+    assert(r.code === 0 && r.out.startsWith("usage: paw attach") && emptyHome(r.home), "help: `paw help a` shows attach's usage (short form expanded)");
+    const bad = await runPaw(["help", "no-such-verb"]);
+    assert(bad.code === 1 && bad.err.includes("no-such-verb") && emptyHome(bad.home), "help: `paw help <unknown>` fails loud");
+    const top = await runPaw(["--help"]);
+    assert(top.code === 0 && top.out.includes("usage: paw <command>") && emptyHome(top.home), "help: `paw --help` still lists every command");
+    const word = await runPaw(["help"]);
+    assert(word.code === 0 && word.out.includes("usage: paw <command>") && emptyHome(word.home), "help: `paw help` still lists every command");
+  }
+
+  // ── `paw open`/`attach` off a tty never CREATES an agent (#78) — refused before the mesh is touched ─
+  // And inside an agent (COTAL_SPACE, no PAW_SPACE) the verb defaults to THAT agent's space.
+  {
+    const folder = mkdtempSync(join(tmpdir(), "paw-open-notty-"));
+    for (const argv of [["open"], ["attach", "."], ["open", folder, "--name", "extra1"]]) {
+      const r = await runPaw(argv, { CWD: folder });
+      const personas = join(r.home, "spaces", "test-help", "personas");
+      const born = existsSync(personas) ? readdirSync(personas) : [];
+      rmSync(r.home, { recursive: true, force: true });
+      assert(
+        r.code === 1 && r.err.includes("won't create one without a tty") && r.err.includes("creates one") && born.length === 0,
+        `no-tty: \`paw ${argv.join(" ")}\` in a folder with no agent refuses, registers nothing${born.length ? ` (born: ${born.join(", ")})` : ""}`,
+      );
+    }
+    const inAgent = await runPaw(["open"], { CWD: folder, PAW_SPACE: undefined, COTAL_SPACE: "test-caller", COTAL_NAME: "caller" });
+    rmSync(inAgent.home, { recursive: true, force: true });
+    assert(inAgent.code === 1 && inAgent.err.includes("in space test-caller"), "in-agent: `paw open` from an agent of test-caller acts on test-caller, not the default space");
+    const pinned = await runPaw(["open"], { CWD: folder, PAW_SPACE: "test-env", COTAL_SPACE: "test-caller", COTAL_NAME: "caller" });
+    rmSync(pinned.home, { recursive: true, force: true });
+    assert(pinned.code === 1 && pinned.err.includes("in space test-env"), "in-agent: PAW_SPACE still wins over the calling agent's space");
+    const flag = await runPaw(["open", "--space", "test-flag"], { CWD: folder, PAW_SPACE: undefined, COTAL_SPACE: "test-caller", COTAL_NAME: "caller" });
+    rmSync(flag.home, { recursive: true, force: true });
+    assert(flag.code === 1 && flag.err.includes("in space test-flag"), "in-agent: an explicit --space still wins");
+    rmSync(folder, { recursive: true, force: true });
+  }
 }
 
 if (failures > 0) {

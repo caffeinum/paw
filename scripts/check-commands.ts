@@ -547,6 +547,36 @@ rmSync(unmapped, { recursive: true, force: true });
   assert(mismatch, "restart swap: <agent>#<space> disagreeing with --space fails loud");
 }
 
+// ── every verb has help to print (`paw <verb> --help`, #78) ─────────────────────────────────────────
+{
+  const { loadAllCommands } = await import("../src/command-modules.ts");
+  const { verbHelp } = await import("../src/dispatch.ts");
+  await loadAllCommands();
+  const bare = registry.all<Command>("command").filter((c) => !verbHelp(c).startsWith(`usage: paw ${c.name}`) || !c.summary.trim());
+  assert(bare.length === 0, `help: every registered verb renders \`usage: paw <verb>\` and a summary${bare.length ? ` (not: ${bare.map((c) => c.name).join(", ")})` : ""}`);
+}
+
+// ── `paw open`/`attach` off a tty refuses to CREATE an agent; an existing one passes (#78) ───────────
+{
+  const { refuseCreateWithoutTty } = await import("../src/open.ts");
+  const { registerInstance } = await import("../src/addressing.ts");
+  const fresh = realpathSync(mkdtempSync(join(tmpdir(), "paw-notty-")));
+  assert(throws(() => refuseCreateWithoutTty(space, fresh, undefined, false)), "no-tty: a folder with no agent is refused");
+  assert(!throws(() => refuseCreateWithoutTty(space, fresh, undefined, true)), "no-tty: on a tty the same open may create it");
+  folderToName(space, fresh);
+  assert(!throws(() => refuseCreateWithoutTty(space, fresh, undefined, false)), "no-tty: a registered default agent passes (attach keeps its own tty error)");
+  assert(throws(() => refuseCreateWithoutTty(space, fresh, "extra-one", false)), "no-tty: --name for an extra that doesn't exist yet is refused");
+  registerInstance(space, fresh, "extra-one");
+  assert(!throws(() => refuseCreateWithoutTty(space, fresh, "extra-one", false)), "no-tty: an existing extra passes");
+  let msg = "";
+  try {
+    refuseCreateWithoutTty(space, realpathSync(mkdtempSync(join(tmpdir(), "paw-notty-"))), undefined, false);
+  } catch (e) {
+    msg = (e as Error).message;
+  }
+  assert(msg.includes("paw chat --fresh") && msg.includes(`space ${space}`), "no-tty: the refusal names the space and how to create one");
+}
+
 if (failures > 0) {
   console.error(`\n${failures} paw command check(s) failed`);
   process.exit(1);

@@ -41,7 +41,8 @@ import { ensureBypassConsent, launchesBypass } from "./bypass-consent.ts";
 import { attachResolved } from "./open.ts";
 import { readForeground, registerForeground, unregisterForeground } from "./foreground.ts";
 import { readTeleported, teleportedRefusal } from "./teleport-plan.ts";
-import { daemonEnv, resolveSpace, withEnsuredManager } from "./lifecycle.ts";
+import { daemonEnv, withEnsuredManager } from "./lifecycle.ts";
+import { callerSpace } from "./space.ts";
 import { withFileLockAsync } from "./lock.ts";
 import { resolveNamedSession } from "./named.ts";
 import { readClaudeArgs, readModel, readResumeId, readSandbox } from "./session.ts";
@@ -226,7 +227,7 @@ async function runManaged(
 
 export async function runClaude(argv: string[]): Promise<void> {
   const { space: spaceArg, name: nameArg, fg, noAttach, sandbox, claudeArgs } = peelArgs(argv);
-  const space = spaceArg ?? resolveSpace();
+  const space = spaceArg ?? callerSpace(); // inside an agent: that agent's space (#78)
   const folder = canonicalDir("."); // always the operator's current directory — no folder positional
   // `--sandbox` refuses BEFORE anything is written (the name binding below, the persona): a persona pinned
   // `sandbox:` on a space it can't run on would refuse every later start.

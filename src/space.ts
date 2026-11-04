@@ -20,3 +20,13 @@ export function callerSpace(): string {
   if (process.env.PAW_SPACE !== undefined) return resolveSpace();
   return process.env.COTAL_SPACE?.trim() || DEFAULT_SPACE;
 }
+
+/** Verbs that default to the CALLING agent's space ({@link callerSpace}): `cron`, and every verb that can
+ *  spawn an agent. An agent on team2027 that ran `paw open` got its new agent in `paw`, where its peers
+ *  couldn't reach it (#78). A human shell has no COTAL_SPACE, so for it this is resolveSpace(). */
+export const CALLER_SPACE_VERBS: ReadonlySet<string> = new Set(["cron", "open", "attach", "chat", "start", "dm", "claude"]);
+
+/** The space `paw <verb>` acts on when no --space / `#space` names one. */
+export function defaultSpaceFor(verb: string): string {
+  return CALLER_SPACE_VERBS.has(verb) ? callerSpace() : resolveSpace();
+}

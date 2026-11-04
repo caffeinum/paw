@@ -15,6 +15,17 @@ Moved verbatim from CLAUDE.md (2026-10-02 split). Index: [CLAUDE.md](../../CLAUD
   commands' two-token parsers). No args → paw's own one-screen help. `down` → lifecycle `stop()`;
   bare `create`/`send` fail-loud with redirects (`chat --fresh` / `dm|msg|ask`); unknown command →
   one-line error, exit 1 (no silent fallthrough).
+  **`--help`/`-h` on any verb (#78):** answered centrally in bin/paw.ts right after the verb's module
+  loads, BEFORE the chat pre-shell, every gate and the verb's `run` — prints `verbHelp` (the registry's
+  `usage`, else one built from its positionals/flags; summary; short form) and exits 0. `helpRequested`
+  only counts it as a FLAG: not after `--`, not as a value-flag's value; `cotal`/`__complete` keep theirs.
+  `paw help <verb>` is the same text. check:dispatch runs every verb's `--help`/`-h` through the real
+  bin off a tty and asserts exit 0 + an EMPTY PAW_HOME (ensure's lock/personas would land there).
+  `open`/`attach` left NEEDS_MANAGER: they ensure() themselves after `refuseCreateWithoutTty` — off a
+  tty they won't CREATE an agent (an existing one still attaches/keeps its tty error).
+  **Default space:** `defaultSpaceFor(verb)` (src/space.ts) — for `CALLER_SPACE_VERBS` (cron and the
+  spawning verbs open/attach/chat/start/dm/claude) it's `callerSpace()`: PAW_SPACE, else the calling
+  agent's COTAL_SPACE, else `paw`. A human shell has no COTAL_SPACE → unchanged. Explicit --space wins.
   **`paw cotal <cmd>` namespace:** spawns `bin/cotald.ts` as a SUBPROCESS (node+tsx via
   `cotaldViaNode`) with mesh ensured + `--space` injected — control-plane verbs (start/ps/stop/
   attach/spawn/despawn, `COTAL_NEEDS_MANAGER`) also bring the manager up. Bare `paw cotal` prints

@@ -446,3 +446,41 @@ export function failureLine(cmd: string | undefined, err: unknown, stamped: bool
   }
   return stamped ? `${msg}\n[${now.toISOString()}] paw ${cmd ?? ""} failed (exit 1)` : msg;
 }
+
+/**
+ * Does `paw <cmd> <args>` ask for the verb's help? `--help`/`-h` counts only where it is a FLAG: before a
+ * `--` terminator (after it, the words are someone else's — `paw dm x -- --help` sends "--help") and not
+ * the value of a flag that takes one (`--name --help` names something). `paw cotal …` keeps cotal's own
+ * help, and `__complete`'s argv is a half-typed line, never a request. Pure; check:dispatch covers it.
+ * bin/paw.ts answers it BEFORE any gate — `paw open --help` once spawned an agent named after the folder.
+ */
+export function helpRequested(cmd: string, args: string[]): boolean {
+  if (cmd === "cotal" || cmd === "__complete") return false;
+  const spec = Object.hasOwn(ADDRESS_ARGS, cmd) ? ADDRESS_ARGS[cmd] : undefined;
+  const valued = [...(spec?.values ?? []), ...(spec?.names ?? [])];
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === "--") return false;
+    if (a === "--help" || a === "-h") return true;
+    if (valued.includes(a)) i++;
+  }
+  return false;
+}
+
+/** What `paw <verb> --help` prints, from the verb's registry entry: its usage line (or one built from its
+ *  declared positionals/flags when it has none), its summary, and its short form. */
+export function verbHelp(
+  c: { name: string; summary: string; usage?: string; positionals?: string; flags?: readonly { name: string; short?: string; type: string; value?: string }[] },
+  short?: string,
+): string {
+  const built = [c.name, ...(c.positionals ? [c.positionals] : []), ...(c.flags ?? []).map((f) => `[${f.short ? `-${f.short}|` : ""}--${f.name}${f.type === "string" ? ` ${f.value ?? "<value>"}` : ""}]`)].join(" ");
+  const [first, ...more] = (c.usage ?? built).split("\n");
+  const bare = (l: string) => l.trim().replace(/^paw /, "");
+  return [
+    `usage: paw ${bare(first)}`,
+    ...more.map((l) => `       paw ${bare(l)}`),
+    "",
+    `  ${c.summary}`,
+    ...(short ? [`  short form: paw ${short}`] : []),
+  ].join("\n");
+}
