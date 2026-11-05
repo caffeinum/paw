@@ -48,6 +48,26 @@ if (cmd === "chat" && process.stdin.isTTY && process.stdout.isTTY && !wantsHelp)
 const { registry } = await import("@cotal-ai/core");
 const { cotaldViaNode, ensure, resolveSpace, stop } = await import("../src/lifecycle.ts");
 const { loadAllCommands, loadCommandsFor } = await import("../src/command-modules.ts");
+
+/** `paw dm`'s gate: a broker paw doesn't run (PAW_SERVER, a remote space) that is mid-restart — the
+ *  team2027 broker redeploys on every push — is waited out within dm's budget instead of refused
+ *  (src/dm-wait.ts). The same clock then bounds the send's own presence wait. */
+async function gateDm(ensureFn: () => Promise<unknown>, args: string[], space: string): Promise<void> {
+  const { dmWaitMs, retryUntil, startDmClock, dmDeadline, waitExpiredMessage, waitingForMeshLine } = await import("../src/dm-wait.ts");
+  const { MeshUnreachableError } = await import("../src/lifecycle.ts");
+  const { pawServer } = await import("../src/server.ts");
+  const at = args.indexOf("--wait-for");
+  const eq = args.find((a) => a.startsWith("--wait-for="));
+  const waitMs = dmWaitMs(at >= 0 ? args[at + 1] : eq?.slice("--wait-for=".length));
+  startDmClock();
+  const server = pawServer(space);
+  await retryUntil(ensureFn, {
+    deadline: dmDeadline(waitMs),
+    retryable: (e) => e instanceof MeshUnreachableError,
+    onWait: () => process.stderr.write(`${process.stderr.isTTY ? "\x1b[2m" : ""}${waitingForMeshLine(server)}${process.stderr.isTTY ? "\x1b[0m" : ""}\n`),
+    expired: (e) => new Error(waitExpiredMessage({ server, budgetMs: waitMs, meshUp: false, lastError: e.message })),
+  });
+}
 const { isRemoteSpace } = await import("../src/server.ts");
 
 /** Verbs bin/paw.ts answers itself without any registry Command — they load no command module. */
@@ -213,7 +233,8 @@ try {
   // Unnamed, a spawning verb run inside an agent defaults to THAT agent's space (src/space.ts).
   const space = explicitSpace(args) ?? defaultSpaceFor(cmd);
   const gate = isRemoteSpace(space) ? { space } : {};
-  if (NEEDS_MANAGER.has(cmd)) await ensure({ needMesh: true, needManager: true, ...gate });
+  if (cmd === "dm") await gateDm(() => ensure({ needMesh: true, needManager: true, ...gate }), args, space);
+  else if (NEEDS_MANAGER.has(cmd)) await ensure({ needMesh: true, needManager: true, ...gate });
   else if (NEEDS_MESH.has(cmd)) await ensure({ needMesh: true, ...gate });
 
   const argv = expandEqFlags(withDefaultSpace(args, space));

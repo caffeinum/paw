@@ -37,6 +37,10 @@ import {
   waitForPeerId,
 } from "./addressing.ts";
 import { isAddressHandle, resolveAddress } from "./address.ts";
+import { classifyEndpointError } from "./conn-state.ts";
+import { absentVerdict, dmDeadline, dmWaitMs, retryUntil, seenInLedger, unknownAgentMessage, waitExpiredMessage, waitingForMeshLine, waitingLine } from "./dm-wait.ts";
+import { draftDm, publishDraft } from "./mesh-publish.ts";
+import { readLedger } from "./peer-ledger.ts";
 import { withManagerControl } from "./control.ts";
 import { attachedPlaceholders, composeMessage, peelWords, stageAttachment } from "./images.ts";
 import { elsewhereFiles, runsElsewhere } from "./hosted.ts";
@@ -47,6 +51,16 @@ import { pawServer } from "./server.ts";
 const tty = process.stdout.isTTY === true;
 const wrap = (code: string) => (s: string) => (tty ? `\x1b[${code}m${s}\x1b[0m` : s);
 const c = { dim: wrap("2"), cyan: wrap("36"), red: wrap("31") };
+const errDim = (s: string) => (process.stderr.isTTY ? `\x1b[2m${s}\x1b[0m` : s);
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** One deadline shared by the connect wait and the presence wait (src/dm-wait.ts). */
+interface Budget {
+  ms: number;
+  deadline: number;
+  server: string;
+}
+const left = (b: Budget) => Math.max(0, b.deadline - Date.now());
 
 interface Args {
   target?: string;
@@ -57,6 +71,7 @@ interface Args {
   server?: string;
   model?: string;
   name?: string;
+  waitFor?: string;
   restart: boolean;
 }
 
@@ -70,8 +85,9 @@ function parseArgs(argv: string[]): Args {
     else if (a === "--model") out.model = argv[++i];
     else if (a === "--name") out.name = argv[++i];
     else if (a === "--restart") out.restart = true;
+    else if (a === "--wait-for") out.waitFor = argv[++i];
     else if (a.startsWith("--"))
-      throw new Error(`paw: unknown flag "${a}" — dm <name|folder|repo@branch> "<message>" [--name n] [--model m] [--restart] [--space s]`);
+      throw new Error(`paw: unknown flag "${a}" — dm <name|folder|repo@branch> "<message>" [--name n] [--model m] [--restart] [--wait-for s] [--space s]`);
     else words.push(a);
   }
   out.target = words.shift();
@@ -117,13 +133,14 @@ async function resolveTarget(
   model: string | undefined,
   nameFlag: string | undefined,
   restartLive: RestartConsent | undefined,
-  byName = false,
+  byName: boolean,
+  budget: Budget,
 ): Promise<{ id: string; name: string }> {
   if (target.startsWith("@")) target = target.slice(1); // `@name` = that agent, like everywhere else
   const me = ep.card.id;
   const live = (name: string) =>
     ep.getRoster().filter((p) => p.card.name.toLowerCase() === name.toLowerCase() && p.card.id !== me).find((p) => p.status !== "offline");
-  if (byName) return resolveByName(ep, space, server, target, model, restartLive, live);
+  if (byName) return resolveByName(ep, space, server, target, model, restartLive, live, budget);
 
   // A URL / web: / gh: / github: handle, a repo@branch worktree, or a bare host → spawn-if-absent under
   // its name; a plain folder path too. An explicit handle's errors surface (fail loud); a plain string
@@ -161,7 +178,7 @@ async function resolveTarget(
       `paw: --name adds an extra agent to a FOLDER — combine it with a folder path (e.g. \`paw dm . "…" --name ${nameFlag}\`), ` +
         `not with an agent name "${target}"`,
     );
-  return resolveByName(ep, space, server, target, model, restartLive, live);
+  return resolveByName(ep, space, server, target, model, restartLive, live, budget);
 }
 
 /** An agent NAME: prefer a live peer; wake a known-but-offline one via its registered folder. Never
@@ -174,32 +191,63 @@ async function resolveByName(
   model: string | undefined,
   restartLive: RestartConsent | undefined,
   live: (name: string) => { card: { id: string; name: string } } | undefined,
+  budget: Budget,
 ): Promise<{ id: string; name: string }> {
+  // An unread roster can't support an absence verdict (it said "not present" for a live agent).
+  await ep.waitForPresenceSnapshot(Math.max(1000, Math.min(5000, left(budget))));
   const present = live(target);
-  if (present) return { id: present.card.id, name: present.card.name };
   const home = folderForName(space, target);
-  if (home) {
-    const r = await withManagerControl(space, server, (ctl) => ensureAgentSpawned(ctl, { space, name: target, cwd: home, model, restartLive }));
+  const want = target.toLowerCase();
+  const verdict = absentVerdict({
+    present: !!present,
+    registered: !!home,
+    onRoster: ep.getRoster().some((p) => p.card.name.toLowerCase() === want && p.card.id !== ep.card.id),
+    inLedger: !present && !home && seenInLedger(readLedger(space), target, Date.now()),
+  });
+  if (verdict === "send") return { id: present!.card.id, name: present!.card.name };
+  if (verdict === "wake") {
+    const r = await withManagerControl(space, server, (ctl) => ensureAgentSpawned(ctl, { space, name: target, cwd: home!, model, restartLive }));
     return { id: await readyId(ep, target, r), name: target };
   }
-  throw new Error(`paw: no agent "${target}" present or known (\`paw ps\` for live names)`);
+  if (verdict === "unknown") throw new Error(unknownAgentMessage(target));
+  // Known (seen on this mesh) but not here right now — a broker redeploy / reconnect gap. Wait, bounded.
+  console.error(errDim(waitingLine(target)));
+  await waitForPeerId(ep, target, left(budget));
+  const back = live(target);
+  if (back) return { id: back.card.id, name: back.card.name };
+  throw new Error(waitExpiredMessage({ name: target, server: budget.server, budgetMs: budget.ms, meshUp: ep.presenceView().state === "current" }));
 }
 
-/** Send, tolerating the boot-race window. A just-spawned agent publishes PRESENCE before it runs
- *  `ensureStreams` (cotal endpoint boot order), so a send right after presence can hit a not-yet-created
- *  DM stream ("jetstream is not enabled"). It's transient — the stream lands within ~1-2s — so retry a
- *  few times; a non-transient error (bad recipient) still fails fast. */
-async function unicastResilient(ep: CotalEndpoint, id: string, text: string): Promise<void> {
-  const transient = (m: string) => /jetstream is not enabled|no stream|stream not found|no responders|timeout|503/i.test(m);
+/** `ep.start()`, waiting out a DOWN mesh (refused/reset/DNS/timeout) within the budget. Auth and anything
+ *  unrecognised still throw at once. Re-calling start() on the same endpoint is safe (startResilient). */
+function startWithin(ep: CotalEndpoint, budget: Budget): Promise<void> {
+  return retryUntil(() => ep.start(), {
+    deadline: budget.deadline,
+    retryable: (e) => classifyEndpointError(e) === "transient",
+    onWait: () => console.error(errDim(waitingForMeshLine(budget.server))),
+    expired: (e) => new Error(waitExpiredMessage({ server: budget.server, budgetMs: budget.ms, meshUp: false, lastError: e.message })),
+  });
+}
+
+/** Send, tolerating the boot-race window and a reconnecting link. A just-spawned agent publishes PRESENCE
+ *  before it runs `ensureStreams` (cotal endpoint boot order), so a send right after presence can hit a
+ *  not-yet-created DM stream ("jetstream is not enabled"); a publish mid-reconnect times out or finds no
+ *  `js`. Both are transient, so retry — at least 6 tries, and on until the wait budget ends. Every retry
+ *  re-publishes the SAME drafted message (paw-owned id → JetStream `msgID` dedup), so an attempt whose ack
+ *  was lost but that did land is not delivered twice. A non-transient error (bad recipient) fails fast. */
+async function unicastResilient(ep: CotalEndpoint, id: string, text: string, budget?: Budget): Promise<void> {
+  const bootRace = (m: string) => /jetstream is not enabled|no stream|stream not found|no responders|timeout|503/i.test(m);
+  const msg = draftDm(ep, id, text);
   let lastErr: unknown;
-  for (let attempt = 0; attempt < 6; attempt++) {
+  for (let attempt = 0; attempt < 6 || (budget && left(budget) > 0); attempt++) {
     try {
-      await ep.unicast(id, text);
+      await publishDraft(ep, msg);
       return;
     } catch (e) {
       lastErr = e;
-      if (!transient((e as Error).message)) throw e;
-      await new Promise((r) => setTimeout(r, 800));
+      const err = e as Error;
+      if (!bootRace(err.message) && classifyEndpointError(err) !== "transient") throw e;
+      await sleep(800);
     }
   }
   throw lastErr;
@@ -231,8 +279,12 @@ export async function sendAsYou(opts: {
   byName?: boolean;
   /** Send as this non-human peer instead of "you" (paw cron fires as "cron"). */
   sender?: string;
+  /** How long to wait for a down mesh / a known-but-absent agent (src/dm-wait.ts); default PAW_DM_WAIT or 20s. */
+  waitMs?: number;
 }): Promise<{ name: string; from: string }> {
-  const { space, server, target, text, model, name: nameFlag, restartLive, byName, sender } = opts;
+  const { space, server, target, text, model, name: nameFlag, restartLive, byName = false, sender } = opts;
+  const waitMs = opts.waitMs ?? dmWaitMs(undefined);
+  const budget: Budget = { ms: waitMs, deadline: dmDeadline(waitMs), server };
   if (!byName) assertUnambiguousTarget(space, target); // a bare token that's BOTH a known name and a folder here → fail loud
 
   // Pure sender: watch the roster to resolve/spawn the target, but don't register presence (the mailbox
@@ -245,14 +297,14 @@ export async function sendAsYou(opts: {
     : { name: peerName, kind: "endpoint" as const, id: sender ? stableSenderId(space, sender) : stableHumanId(space) };
   const ep = new CotalEndpoint({ space, servers: server, ...humanAuth, card, registerPresence: false, consume: false, watchPresence: true });
   ep.on("error", (e: Error) => console.error(c.red("! " + e.message)));
-  await ep.start();
   try {
-    const tgt = await resolveTarget(ep, space, server, target, model, nameFlag, restartLive, byName);
+    await startWithin(ep, budget);
+    const tgt = await resolveTarget(ep, space, server, target, model, nameFlag, restartLive, byName, budget);
     // Attachments are paths on THIS machine — an agent running elsewhere would be told about files it can't open.
     const files = attachedPlaceholders(text);
     const away = files.length ? runsElsewhere(space, tgt.name, ep.getRoster().find((p) => p.card.id === tgt.id)?.card) : undefined;
     if (away) throw new Error(`paw: ${elsewhereFiles(tgt.name, away, files)}`);
-    await unicastResilient(ep, tgt.id, text);
+    await unicastResilient(ep, tgt.id, text, budget);
     return { name: tgt.name, from: ep.card.id };
   } finally {
     await ep.stop().catch(() => {});
@@ -287,7 +339,8 @@ async function readStdin(): Promise<string> {
 }
 
 async function dm(argv: string[]): Promise<void> {
-  const { target, words, space: spaceArg, server: serverArg, model, name: nameFlag, restart } = parseArgs(argv);
+  const { target, words, space: spaceArg, server: serverArg, model, name: nameFlag, restart, waitFor } = parseArgs(argv);
+  const waitMs = dmWaitMs(waitFor);
   const space = spaceArg ?? resolveSpace();
   const server = serverArg ?? pawServer(space);
 
@@ -328,7 +381,7 @@ async function dm(argv: string[]): Promise<void> {
 
   // Send AS the stable "you" so the reply is addressed to your durable inbox — through the SHARED
   // sender, so the web composer and this command cannot drift apart.
-  const { name } = await sendAsYou({ space, server, target, text, model, name: nameFlag, restartLive: cliRestartConsent(restart) });
+  const { name } = await sendAsYou({ space, server, target, text, model, name: nameFlag, restartLive: cliRestartConsent(restart), waitMs });
   console.log(`${c.cyan("→ " + name)}${c.dim(":")} ${text}`);
   console.log(c.dim("sent → read replies with `paw inbox`"));
 }
@@ -338,7 +391,7 @@ const dmCommand: Command = {
   name: "dm",
   group: "Mesh",
   summary: "fire-and-forget DM to an agent — read replies with `paw inbox` (use `paw chat` for a live conversation)",
-  usage: 'dm <name|folder|repo@branch>[#space] "<message>"|- [--name n] [--model m] [--restart] [--space s]   (x#space = x --space space; --restart = may restart it if it looks stuck, else a tty asks)',
+  usage: 'dm <name|folder|repo@branch>[#space] "<message>"|- [--name n] [--model m] [--restart] [--wait-for s] [--space s]   (x#space = x --space space; --restart = may restart it if it looks stuck, else a tty asks; --wait-for s = how long to wait for a known agent or the mesh to come back, default 20, env PAW_DM_WAIT)',
   run: (a) => dm([...a.raw]),
 };
 

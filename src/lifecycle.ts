@@ -844,7 +844,7 @@ async function ensureMesh(space: string, server: string): Promise<void> {
   }
 
   if (customServer())
-    throw new Error(`paw: PAW_SERVER=${server} is unreachable — paw only starts the default mesh; start that broker yourself (e.g. \`nats-server -js -p <port>\`).`);
+    throw new MeshUnreachableError(`paw: PAW_SERVER=${server} is unreachable — paw only starts the default mesh; start that broker yourself (e.g. \`nats-server -js -p <port>\`).`);
 
   const recorded = readPid(meshPidPath(space));
   if (recorded !== undefined && alive(recorded)) {
@@ -859,6 +859,12 @@ async function ensureMesh(space: string, server: string): Promise<void> {
   }
 
   await bootLocalMesh(space, server, { open, creds });
+}
+
+/** The broker for a space paw does not start (PAW_SERVER, a remote record) did not answer — a network
+ *  or broker-restart condition, never auth. Typed so `paw dm` can wait it out (src/dm-wait.ts). */
+export class MeshUnreachableError extends Error {
+  override name = "MeshUnreachableError";
 }
 
 /** `cotal up` is a short-lived bootstrapper; past this it is killed and the boot reported failed. */
@@ -961,7 +967,8 @@ async function ensureRemoteMesh(space: string, server: string): Promise<void> {
       : r.reason === "stale-auth"
         ? `the minted creds read as expired — check this machine's clock`
         : explainConnectFailure(r.reason, await diagnoseConnect(server), REMOTE_CONNECT_MS);
-  throw new Error(`paw: remote mesh "${space}" at ${server}: ${why}. paw never starts a remote broker.`);
+  const msg = `paw: remote mesh "${space}" at ${server}: ${why}. paw never starts a remote broker.`;
+  throw r.reason === "timeout" || r.reason === "unreachable" ? new MeshUnreachableError(msg) : new Error(msg);
 }
 
 /** The mesh step of ensure()/restartManager: prove a remote broker, or start/adopt the local one. */
