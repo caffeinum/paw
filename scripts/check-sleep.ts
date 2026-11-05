@@ -92,6 +92,11 @@ ok("unreadable activity stays up", !sleepDecision(base, H, at("2026-10-02T12:00:
 ok("extra channel stays up", !sleepDecision(base, H, at("2026-10-02T12:00:00Z"), quiet, ["team"]).sleep);
 ok("global never sleeps", !sleepDecision({ ...base, name: "global" }, H, at("2026-10-02T12:00:00Z"), quiet, []).sleep);
 ok("non-claude harness stays up", !sleepDecision({ ...base, harness: "codex" }, H, at("2026-10-02T12:00:00Z"), quiet, []).sleep);
+for (const h of ["codex", "hermes", "acp", "opencode"]) {
+  const r = sleepDecision({ ...base, harness: h }, H, at("2026-10-02T12:00:00Z"), quiet, []).reason;
+  ok(`unsupported harness ${h} says so`, r === `harness ${h} not supported yet (paw sleep reads claude and kit sessions)`, r);
+}
+ok("a kit agent, idle with nothing running, sleeps", sleepDecision({ ...base, harness: "kit" }, H, at("2026-10-02T12:00:00Z"), quiet, []).sleep);
 ok("offline is not slept again", !sleepDecision({ ...base, live: false }, H, at("2026-10-02T12:00:00Z"), quiet, []).sleep);
 
 // host helpers
@@ -421,6 +426,82 @@ ok("G5 one space failing is logged and does not stop the others", res.find((r) =
 // remote space: an opted-in agent this machine doesn't host is skipped, named (never slept)
 const remoteRows = await S.sleepSweep("dr", sweepCtl, { ...sweepDeps([row("d1")], () => host([])), status: async () => ({ rows: [row("d1")], ps: new Map() }) });
 ok("G5 local space: hosting is always here", remoteRows.slept.join() === "d1");
+
+
+// G6: kit agents (persona `agent: kit`) — idle from kit's own store, running work from the `kit run` seat's tree.
+const kitPs = (extra: string[] = []) =>
+  parsePs(
+    [
+      "  400     1   400 09:00:00 0:01.00 node cotald.ts supervise --space kt",
+      "  700   400   700 05:00:00 0:01.00 /Users/x/.paw/bin/kit run --cwd . --name k1 --space kt --server nats://127.0.0.1:4222 --provider codex --channels general --actor A --lifecycle-uid U --resume PIN-k1 COTAL_NAME=k1 COTAL_SPACE=kt",
+      "  701   700   701 05:00:00 0:00.10 /bin/bash --noprofile --norc COTAL_NAME=k1 COTAL_SPACE=kt",
+      "  800   400   800 05:00:00 0:01.00 /Users/x/.local/bin/claude --resume PIN-c COTAL_NAME=c COTAL_SPACE=kt",
+      ...extra,
+    ].join("\n"),
+  );
+const nowK = at("2026-10-02T12:00:00Z");
+const kQuiet = S.kitSessionProcs("kt", "k1", kitPs(), nowK);
+ok("G6 an idle kit seat: its persistent shell is plumbing, not work", kQuiet.ok && !kQuiet.shells.length && kQuiet.startedAt === nowK - 5 * 3_600_000, JSON.stringify(kQuiet));
+const kBusy = S.kitSessionProcs("kt", "k1", kitPs(["  702   701   701 00:30:00 0:00.10 npm run dev COTAL_NAME=k1 COTAL_SPACE=kt", "  703   702   701 00:30:00 0:00.10 node server.js COTAL_NAME=k1 COTAL_SPACE=kt"]), nowK);
+ok("G6 a command backgrounded in kit's shell is running work", kBusy.ok && kBusy.shells.length === 2 && kBusy.shells[0].startsWith("702 "), JSON.stringify(kBusy));
+ok("G6 … and keeps the kit agent awake, named", /process\(es\) running under kit: 702 npm run dev/.test(sleepDecision({ ...base, harness: "kit" }, H, nowK, { tasks: [], shells: kBusy.ok ? kBusy.shells : [] }, []).reason));
+const kOrphan = S.kitSessionProcs("kt", "k1", kitPs(["  704     1   704 00:10:00 0:00.10 node detached.js COTAL_NAME=k1 COTAL_SPACE=kt"]), nowK);
+ok("G6 a process kit detached (reparented, outlives the seat) is reported, not blocking", kOrphan.ok && !kOrphan.shells.length && kOrphan.detached.join().startsWith("704 "), JSON.stringify(kOrphan));
+const kNone = S.kitSessionProcs("kt", "k2", kitPs(), nowK);
+ok("G6 no `kit run` seat for the name → can't tell (stays awake)", !kNone.ok && /0 `kit run` processes run as "k2"/.test(kNone.unknown), JSON.stringify(kNone));
+const kTwo = S.kitSessionProcs("kt", "k1", kitPs(["  900   400   900 01:00:00 0:01.00 /Users/x/.paw/bin/kit run --cwd . --name k1 --space kt --resume PIN-k1 COTAL_NAME=k1 COTAL_SPACE=kt"]), nowK);
+ok("G6 two kit seats for one name → can't tell", !kTwo.ok && /2 `kit run`/.test(kTwo.unknown));
+ok("G6 a claude seat is never read as a kit seat", !S.kitSessionProcs("kt", "c", kitPs(), nowK).ok);
+
+// kit's own store (storage absent = kit's): the transcript under KIT_HOME is where activity + the wake's --resume come from.
+process.env.KIT_HOME = mkdtempSync(join(tmpdir(), "pawsleep-kithome-"));
+process.env.KIT_BIN = process.execPath; // an existing binary; kitArgs are empty, so no preflight runs
+const { kitSessionsRoot, transcriptMtime } = await import("../src/session.ts");
+const { utimesSync, rmSync } = await import("node:fs");
+mkAgent("kt", "k1", { hibernate: "3h", agent: "kit", provider: "fake" });
+const kRoots = personaTranscriptRoots(personaFilePath("kt", "k1"));
+ok("G6 a kit agent's sessions are looked up in kit's store first", kRoots[0] === kitSessionsRoot(), kRoots.join());
+mkdirSync(join(kitSessionsRoot(), "proj"), { recursive: true });
+const kFile = join(kitSessionsRoot(), "proj", "PIN-k1.jsonl");
+writeFileSync(kFile, t("2026-10-02T08:00:00Z", { type: "assistant", message: { content: [{ type: "text", text: "done" }] } }) + "\n");
+utimesSync(kFile, new Date("2026-10-02T08:00:00Z"), new Date("2026-10-02T08:00:00Z"));
+ok("G6 kit idle time is its own store's transcript", transcriptMtime("PIN-k1", kRoots) === at("2026-10-02T08:00:00Z"));
+const kRow = { ...base, name: "k1", harness: "kit", pin: "PIN-k1", activeMs: transcriptMtime("PIN-k1", kRoots)! };
+const kitInspect = (extra: string[] = []): import("../src/sleep.ts").ProcInspector => (o) => (seen.push(`${o.name}:${o.harness}`), S.kitSessionProcs(o.space, o.name, kitPs(extra), nowK));
+seen.length = 0;
+const kSlept: string[] = [];
+const kOk = await S.sleepSweep("kt", sweepCtl, sweepDeps([kRow], kitInspect(), kSlept));
+ok("G6 the inspector is told the agent runs on kit", seen.join() === "k1:kit", seen.join());
+ok("G6 a kit agent idle 4h ≥ 3h with nothing under its seat sleeps", kSlept.join() === "k1" && !kOk.skipped.length, JSON.stringify(kOk));
+const kStillBusy = await S.sleepSweep("kt", sweepCtl, sweepDeps([{ ...kRow, mesh: "working", busy: true }], kitInspect()));
+ok("G6 a kit agent mid-turn (presence working) stays awake", !kStillBusy.slept.length && /mesh working|turn is in flight/.test(kStillBusy.skipped[0]?.reason ?? ""), JSON.stringify(kStillBusy));
+const kShell = await S.sleepSweep("kt", sweepCtl, sweepDeps([kRow], kitInspect(["  702   701   701 00:30:00 0:00.10 sleep 9999 COTAL_NAME=k1 COTAL_SPACE=kt"])));
+ok("G6 a busy kit seat (work under its shell) stays awake", !kShell.slept.length && /running under kit: 702 sleep 9999/.test(kShell.skipped[0]?.reason ?? ""), JSON.stringify(kShell));
+const { kitAgentDir } = await import("../src/kit.ts");
+mkdirSync(kitAgentDir("kt", "k1"), { recursive: true });
+writeFileSync(join(kitAgentDir("kt", "k1"), "schedules.json"), JSON.stringify({ version: 1, jobs: [{ id: "j1", kind: "cron", prompt: "check CI", schedule: "0 * * * *", next: "2026-10-02T13:00:00Z" }] }));
+const kSched = await S.sleepSweep("kt", sweepCtl, sweepDeps([kRow], kitInspect()));
+ok("G6 an armed kit schedule keeps it awake (it fires only while kit runs)", !kSched.slept.length && /kit schedule\(s\) armed: j1 \(cron\)/.test(kSched.skipped[0]?.reason ?? ""), JSON.stringify(kSched));
+writeFileSync(join(kitAgentDir("kt", "k1"), "schedules.json"), "{not json");
+const kSchedBad = await S.sleepSweep("kt", sweepCtl, sweepDeps([kRow], kitInspect()));
+ok("G6 an unreadable schedules.json is 'can't tell', never 'none'", !kSchedBad.slept.length && /kit's schedules can't be read/.test(kSchedBad.skipped[0]?.reason ?? ""), JSON.stringify(kSchedBad));
+writeFileSync(join(kitAgentDir("kt", "k1"), "schedules.json"), JSON.stringify({ version: 1, jobs: [] }));
+ok("G6 an empty schedule list does not block", (await S.sleepSweep("kt", sweepCtl, sweepDeps([kRow], kitInspect(), []))).skipped.length === 0);
+// the wake must be able to RESUME it — else it never sleeps
+process.env.KIT_BIN = join(process.env.KIT_HOME, "no-such-kit");
+const kNoBin = await S.sleepSweep("kt", sweepCtl, sweepDeps([kRow], kitInspect()));
+ok("G6 no kit binary to relaunch it → refuses to sleep, says why", !kNoBin.slept.length && /couldn't wake it back into its session: no kit binary at/.test(kNoBin.skipped[0]?.reason ?? ""), JSON.stringify(kNoBin));
+process.env.KIT_BIN = process.execPath;
+rmSync(kFile);
+const kNoTr = await S.sleepSweep("kt", sweepCtl, sweepDeps([kRow], kitInspect()));
+ok("G6 no transcript in its store → refuses (a wake would start a fresh session)", !kNoTr.slept.length && /a wake would start a fresh session/.test(kNoTr.skipped[0]?.reason ?? ""), JSON.stringify(kNoTr));
+writeFileSync(kFile, "");
+setPersonaKeys("kt", "k1", { provider: "claude-sonnet" });
+const kBadPersona = await S.sleepSweep("kt", sweepCtl, sweepDeps([kRow], kitInspect()));
+ok("G6 a persona the kit connector would refuse → refuses to sleep", !kBadPersona.slept.length && /couldn't wake it back.*kit drives codex or grok/.test(kBadPersona.skipped[0]?.reason ?? ""), JSON.stringify(kBadPersona));
+setPersonaKeys("kt", "k1", { provider: "fake" });
+ok("G6 kitWakeBlocker: kitArgs kit's own parse rejects → refuses", /does not accept/.test(S.kitWakeBlocker(personaFilePath("kt", "k1"), "PIN-k1", kRoots, { preflight: () => { throw new Error("paw: x: `kit run` does not accept the kit args [\"--nope\"]"); } }) ?? ""));
+ok("G6 kitWakeBlocker: a resumable kit agent has no blocker", S.kitWakeBlocker(personaFilePath("kt", "k1"), "PIN-k1", kRoots) === undefined);
 
 process.env.HOME = realHome;
 console.log(fails ? `\n${fails} FAILED` : "\nall passed");

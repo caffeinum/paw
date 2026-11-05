@@ -20,12 +20,13 @@
  * and is re-delivered to it once it is on the mesh. See src/sleep-state.ts for why the stand-in is needed.
  */
 import { execFileSync } from "node:child_process";
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { registry, parsePrincipalKey, unicastRecvFilter, type Command } from "@cotal-ai/core";
 import { agentRecord, humanEndpointAuth, listAgents, personaFilePath, setPersonaKeys, wirePrincipal, type PsRow } from "./addressing.ts";
 import { withManagerControl, type ManagerControl } from "./control.ts";
 import { groupProcs, parsePs, type Proc } from "./fleet.ts";
+import { KIT_AGENT, kitAgentDir, kitBinPath, preflightKitArgs, readKitPersona } from "./kit.ts";
 import { PS_ALL_ENV } from "./ps-env.ts";
 import { containerBin, reapSandbox, SANDBOX_CLAUDE_BIN } from "./sandbox.ts";
 import { liveSandboxContainer } from "./sandbox-exec.ts";
@@ -34,7 +35,7 @@ import { presenceLive, readMeshRoster } from "./roster.ts";
 import { dmLastSeqOn, openStreamInfo } from "./sleep-dial.ts";
 import { managerProcs, pawHomeDir, resolveSpace, withEnsuredManager } from "./lifecycle.ts";
 import { liveSessionProcs } from "./named.ts";
-import { personaTranscriptRoots, personaValue, readResumeId, readSandbox, transcriptMtime, transcriptPath } from "./session.ts";
+import { personaTranscriptRoots, personaValue, readAgentType, readResumeId, readSandbox, transcriptMtime, transcriptPath } from "./session.ts";
 import { dmsSince } from "./sleep-host.ts";
 import { listSleeping, readSleepRecord, readWakingRecord, scanRecords, sleepLog, sleepState, writeSleepRecord, type SleepRecord } from "./sleep-state.ts";
 import { collectStatus, readManagerPs, type AgentStatus } from "./status.ts";
@@ -45,6 +46,9 @@ import { isRemoteSpace, pawServer } from "./server.ts";
 export const MIN_HIBERNATE_MS = 60 * 60_000;
 /** Never put the always-on wake authority to sleep (and its 60s keeper tick would wake it anyway). */
 const NEVER_SLEEP = new Set(["global"]);
+/** Harnesses whose idleness paw can judge: claude (and cotal's default, which is claude) by its transcript +
+ *  session index, kit by its Claude-Code-format transcript + its `kit run` seat in the process table. */
+const SLEEPABLE_HARNESSES = new Set(["claude", "cotal", KIT_AGENT]);
 /** The transcript lines that can open or close background work or change channel membership. */
 const MARKERS = "backgroundTaskId|async_launched|Monitor started|task-notification|TaskStop|cotal_join|cotal_leave";
 const MARKER_RE = new RegExp(MARKERS);
@@ -225,6 +229,10 @@ export interface Activity {
   joined?: string[];
   /** Why activity could not be read — reported, and blocks the sleep (unknown is not "nothing"). */
   unknown?: string;
+  /** kit's own armed schedules (`schedules.json`): they fire only while kit runs, so they block like a Monitor. */
+  schedules?: string[];
+  /** Why a wake could NOT resume this agent's session — blocks the sleep (a sleep must be undoable by a DM). */
+  wake?: string;
 }
 
 /**
@@ -236,7 +244,7 @@ export type SessionProcs =
   | { ok: false; unknown: string };
 
 /** Reads {@link SessionProcs} for one agent. Injectable so the sweep can be exercised without real processes. */
-export type ProcInspector = (o: { space: string; name: string; pin: string; sandboxed: boolean }) => SessionProcs;
+export type ProcInspector = (o: { space: string; name: string; pin: string; sandboxed: boolean; harness?: string }) => SessionProcs;
 
 const procLabel = (p: { pid: number; argv: string }) => `${p.pid} ${p.argv.trim().slice(0, 80)}`;
 const psTable = (procs: Proc[]) => procs.map((p) => `${p.pid} ${p.ppid} ${p.argv}`).join("\n");
@@ -254,6 +262,42 @@ export function hostSessionProcs(space: string, name: string, pin: string, procs
     .orphans.filter((o) => o.agent === name && o.tree[0].ageMs <= ageMs)
     .map((o) => procLabel(o.tree[0]));
   return { ok: true, where: "host", startedAt: claude.startedAt, shells: shellDescendants(claude.pid, psTable(procs)), detached };
+}
+
+/** kit's ONE persistent shell (tools/bash.go: `/bin/bash --noprofile --norc`, a child of kit for its whole
+ *  life): every shell-tool call is sourced INTO it, so the shell itself is idle plumbing, never work. */
+const KIT_PERSISTENT_SHELL = /^\/bin\/bash --noprofile --norc\s*$/;
+
+/**
+ * Pure: a kit agent's seat in the host process table → {@link SessionProcs}. The seat is the ONE `kit run …
+ * --name <name> --space <space>` root stamped with its COTAL_NAME (kit writes no Claude Code session index, so
+ * {@link liveSessionProcs} never sees it). Running work = any process under kit except its persistent shell —
+ * a command kit's shell tool started and backgrounded (`cmd &`) stays a child of that shell, and dies with the
+ * seat. Detached ones (reparented to launchd, stamped, younger than kit) are reported like a claude agent's:
+ * they outlive the seat, so they never block on their own.
+ */
+export function kitSessionProcs(space: string, name: string, procs: Proc[], now = Date.now()): SessionProcs {
+  const g = groupProcs(procs, space);
+  const isKitRun = (argv: string) => {
+    const tok = argv.trim().split(/\s+/);
+    return tok[1] === "run" && argv.includes(` --name ${name} `) && argv.includes(` --space ${space} `);
+  };
+  const seats = (g.agents.get(name)?.roots ?? []).filter((p) => isKitRun(p.argv + " "));
+  if (seats.length !== 1) return { ok: false, unknown: `${seats.length} \`kit run\` processes run as "${name}" in ${space}` };
+  const kit = seats[0];
+  const kids = new Map<number, Proc[]>();
+  for (const p of procs) if (p.pid !== p.ppid) kids.set(p.ppid, [...(kids.get(p.ppid) ?? []), p]);
+  const running: string[] = [];
+  const walk = (pid: number) => {
+    for (const k of kids.get(pid) ?? []) {
+      const plumbing = (pid === kit.pid && KIT_PERSISTENT_SHELL.test(k.argv.trim())) || COTAL_RECLAIM_WATCHER.test(k.argv);
+      if (!plumbing) running.push(procLabel(k));
+      walk(k.pid);
+    }
+  };
+  walk(kit.pid);
+  const detached = g.orphans.filter((o) => o.agent === name && o.tree[0].ageMs <= kit.ageMs).map((o) => procLabel(o.tree[0]));
+  return { ok: true, where: "host", startedAt: now - kit.ageMs, shells: running, detached };
 }
 
 /** `container exec <id> ps -eo pid=,ppid=,etimes=,args=` → rows (pure). */
@@ -292,11 +336,10 @@ export function vmSessionProcs(psText: string, now = Date.now()): SessionProcs {
  *  per sandboxed agent. A VM that can't be read is "unknown", never "nothing running". */
 export function liveInspector(): ProcInspector {
   let table: Proc[] | undefined;
-  return ({ space, name, pin, sandboxed }) => {
-    if (!sandboxed) {
-      table ??= parsePs(execFileSync("ps", [...PS_ALL_ENV, "-o", "pid=,ppid=,pgid=,etime=,time=,command="], { encoding: "utf8", maxBuffer: 256 * 1024 * 1024 }));
-      return hostSessionProcs(space, name, pin, table);
-    }
+  const hostTable = () => (table ??= parsePs(execFileSync("ps", [...PS_ALL_ENV, "-o", "pid=,ppid=,pgid=,etime=,time=,command="], { encoding: "utf8", maxBuffer: 256 * 1024 * 1024 })));
+  return ({ space, name, pin, sandboxed, harness }) => {
+    if (harness === KIT_AGENT) return sandboxed ? { ok: false, unknown: "a sandboxed kit seat (paw sandboxes claude only)" } : kitSessionProcs(space, name, hostTable());
+    if (!sandboxed) return hostSessionProcs(space, name, pin, hostTable());
     try {
       const bin = containerBin();
       const id = liveSandboxContainer(space, name, bin);
@@ -325,12 +368,59 @@ export function readActivity(pin: string, procs: SessionProcs, now = Date.now(),
   return { tasks: backed, shells: procs.shells, detached: procs.where === "vm" ? procs.detached : [], stale, joined };
 }
 
+/** kit's armed schedules for `name` (kit `schedule` package: `<kit agent dir>/schedules.json`, the dir paw
+ *  hands kit as its brief's). Absent = none; unreadable throws — an unknown schedule is not "no schedule". */
+export function kitSchedules(space: string, name: string): string[] {
+  const file = join(kitAgentDir(space, name), "schedules.json");
+  if (!existsSync(file)) return [];
+  const s = JSON.parse(readFileSync(file, "utf8")) as { jobs?: Array<{ id?: unknown; kind?: unknown }> };
+  if (!Array.isArray(s.jobs)) throw new Error(`${file} has no jobs list`);
+  return s.jobs.map((j) => `${String(j.id)} (${String(j.kind)})`);
+}
+
+/**
+ * Why waking this kit agent could NOT resume its session, or undefined when it can. A wake is the ordinary
+ * spawn (`ensureAgentSpawned` → the kit connector), so it needs exactly what that needs: a persona the
+ * connector accepts (pin, provider, storage, kitArgs), a kit binary, the kitArgs kit's own parse accepts, and
+ * a transcript in the persona's store so the launch is `--resume <pin>` — not a fresh `--session-id`.
+ */
+export function kitWakeBlocker(file: string, pin: string, roots: string[], deps: { bin?: string; preflight?: typeof preflightKitArgs } = {}): string | undefined {
+  try {
+    const persona = readKitPersona(file);
+    if (persona.pin !== pin) return `its persona's resume pin (${persona.pin ?? "none"}) is not the session paw reads (${pin})`;
+    if (!transcriptPath(pin, roots)) return `no transcript for ${pin} in ${roots.join(" or ")} — a wake would start a fresh session`;
+    const bin = deps.bin ?? kitBinPath();
+    if (!existsSync(bin)) return `no kit binary at ${bin} to relaunch it`;
+    (deps.preflight ?? preflightKitArgs)(bin, persona.kitArgs, `kitArgs in ${file}`);
+    return undefined;
+  } catch (e) {
+    return (e as Error).message.replace(/^paw: /, "");
+  }
+}
+
+/** A kit agent's activity: kit has no background-task tool (no Monitor, no run_in_background), so the transcript
+ *  carries no task records to scan — what runs is what the process table shows under its seat, plus kit's own
+ *  armed schedules. The wake check rides along: a kit agent whose wake couldn't resume it never sleeps. */
+export function kitActivity(space: string, name: string, file: string, pin: string, procs: SessionProcs, roots: string[], wakeDeps?: Parameters<typeof kitWakeBlocker>[3]): Activity {
+  if (!procs.ok) return { tasks: [], shells: [], unknown: procs.unknown };
+  let schedules: string[];
+  try {
+    schedules = kitSchedules(space, name);
+  } catch (e) {
+    return { tasks: [], shells: [], unknown: `kit's schedules can't be read (${(e as Error).message.split("\n")[0]})` };
+  }
+  return { tasks: [], shells: procs.shells, detached: [], schedules, wake: kitWakeBlocker(file, pin, roots, wakeDeps) };
+}
+
 /** {@link readActivity} for a status row, through `inspect`. */
 export function rowActivity(space: string, row: Pick<AgentStatus, "name" | "pin">, inspect: ProcInspector, now = Date.now()): Activity {
   if (!row.pin) return { tasks: [], shells: [], unknown: "no resume pin" };
   const file = personaFilePath(space, row.name);
-  const procs = inspect({ space, name: row.name, pin: row.pin, sandboxed: !!readSandbox(file) });
-  return readActivity(row.pin, procs, now, personaTranscriptRoots(file));
+  const harness = readAgentType(file);
+  const roots = personaTranscriptRoots(file);
+  const procs = inspect({ space, name: row.name, pin: row.pin, sandboxed: !!readSandbox(file), harness });
+  if (harness === KIT_AGENT) return kitActivity(space, row.name, file, row.pin, procs, roots);
+  return readActivity(row.pin, procs, now, roots);
 }
 
 export interface SleepDecision {
@@ -345,7 +435,7 @@ export function sleepDecision(row: AgentStatus, hibernateMs: number, now: number
   if (!row.live) return no("not live");
   if (row.runtime === "fg") return no("a foreground `paw claude` (not the manager's to despawn)");
   if (row.unregistered) return no("not registered with paw");
-  if (row.harness && row.harness !== "claude" && row.harness !== "cotal") return no(`harness ${row.harness} — v1 reads only claude transcripts`);
+  if (row.harness && !SLEEPABLE_HARNESSES.has(row.harness)) return no(`harness ${row.harness} not supported yet (paw sleep reads claude and kit sessions)`);
   if (row.mesh !== "idle") return no(`mesh ${row.mesh}`);
   if (row.busy || row.tool) return no(`a turn is in flight${row.tool ? ` (${row.tool.name})` : ""}`);
   if (row.inbox.kind === "error") return no("inbox lag unknown");
@@ -355,8 +445,10 @@ export function sleepDecision(row: AgentStatus, hibernateMs: number, now: number
   if (allChannels.length) return no(`in ${allChannels.map((c) => "#" + c).join(", ")} — channel replay is 1h, traffic there would be lost asleep (v1)`);
   if (activity.unknown) return no(`can't tell what is running (${activity.unknown})`);
   if (activity.tasks.length) return no(`background task(s) running: ${activity.tasks.join(", ")}`);
-  if (activity.shells.length) return no(`shell process(es) running under claude: ${activity.shells.join("; ")}`);
+  if (activity.schedules?.length) return no(`kit schedule(s) armed: ${activity.schedules.join(", ")} — they fire only while kit runs (\`paw cron\` wakes a sleeper instead)`);
+  if (activity.shells.length) return no(row.harness === KIT_AGENT ? `process(es) running under kit: ${activity.shells.join("; ")}` : `shell process(es) running under claude: ${activity.shells.join("; ")}`);
   if (activity.detached?.length) return no(`process(es) running in its VM outside claude (they die with the container): ${activity.detached.join("; ")}`);
+  if (activity.wake) return no(`a DM couldn't wake it back into its session: ${activity.wake}`);
   if (row.activeMs === undefined) return no("no transcript activity known");
   const idle = now - row.activeMs;
   if (idle < hibernateMs) return no(`idle ${Math.round(idle / 60_000)}m < ${Math.round(hibernateMs / 60_000)}m`);

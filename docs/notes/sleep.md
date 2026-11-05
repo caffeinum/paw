@@ -74,3 +74,33 @@ The operator opted all 19 team2027 agents into `--after 12h`; one slept in a day
 `paw sleep --sweep --dry-run [--space s]` prints each opted-in agent's verdict and sleeps nobody (no DM-cursor
 read, no ensure — a space whose manager isn't running here fails loud). Tests: check:sleep G1–G5 (hermetic,
 injectable inspector/status/sleep), `scripts/e2e-sleep-spaces.ts` (two real isolated managers + one without).
+
+## kit agents (2026-11-04)
+
+The verdict refused every non-claude harness ("v1 reads only claude transcripts"), so a kit agent (tracepaper)
+never slept. kit writes Claude Code JSONL, so `agent: kit` is now judged like claude, with kit's own evidence:
+
+- **idle** = its transcript's mtime, from the store its persona's `storage:` names (`personaTranscriptRoots`:
+  kit's `<KIT_HOME>/sessions` then claude's, or claude's alone for `storage: claude`) — the same lookup `paw log`
+  / `paw status` use, so `activeMs` and the pre-despawn recheck already read the right file. Busy = presence
+  alone (`liveTurn`: kit sets `working` for exactly the turn).
+- **running** = the process table under its seat (`kitSessionProcs`): the ONE `kit run … --name <n> --space <s>`
+  root stamped COTAL_NAME/COTAL_SPACE (kit writes no Claude Code session index, so `liveSessionProcs` can't find
+  it; 0 or 2 seats → "can't tell", stays awake). kit's persistent `/bin/bash --noprofile --norc` is plumbing;
+  ANY process under kit besides it (a `cmd &` from its shell tool stays a child of that bash) blocks. Detached,
+  reparented processes are reported but never block (they outlive the seat), as for claude. kit has no
+  Monitor/run_in_background tool, so there are no transcript task records to scan.
+- **kit's own schedules** (`<PAW_HOME>/spaces/<s>/kit/<n>/schedules.json`, kit's `schedule` package) fire only
+  while kit runs → armed jobs block like a Monitor (`paw cron` wakes a sleeper instead). Unreadable → "can't tell".
+- **the wake must resume it**: a wake is the ordinary `ensureAgentSpawned` → kit connector with the persona's
+  `agent:` pin, so the launch is `kit run … --resume <pin> [--overwrite] <kitArgs>`. `kitWakeBlocker` refuses
+  the sleep when that can't happen: a persona the connector would refuse (`readKitPersona`), no transcript for the
+  pin in its store (a wake would start a fresh session), no kit binary at `kitBinPath()`, or kitArgs kit's own
+  parse rejects (`preflightKitArgs`). Reason: "a DM couldn't wake it back into its session: …".
+- Other harnesses (codex, opencode, hermes, acp) stay awake with "harness <x> not supported yet". None is a
+  drop-in: hermes/acp keep their sessions outside any transcript paw reads, codex/opencode in their own formats.
+
+Tests: check:sleep G6 (hermetic: seat attribution, shell plumbing vs work, schedules, wake blockers, sweep);
+`scripts/lean/kit/e2e-kit-sleep.ts` (real isolated manager, kit `fake:codex`: dry-run verdict, a backgrounded
+`sleep` blocks `--now`, sleep → seat gone + stand-in, DM wakes it `--resume <pin>` with its kitArgs into the same
+transcript).

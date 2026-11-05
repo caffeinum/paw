@@ -102,6 +102,9 @@ kitArgs: ["-e","high"] # optional — kit's own flags, verbatim, appended last (
   `working` for exactly the turn and `idle` after, but its transcript never closes a turn the claude
   way — the turn ends right after the reply cotal_dm, last record a tool_result, no turn_duration — so
   the transcript turn inference read every idle kit agent as busy.
+- **sleep**: `paw sleep` / the keeper judge a kit agent by its transcript (idle), the `kit run` seat's process
+  tree (running) and its armed schedules, and refuse it unless the wake can `--resume` the pin →
+  [sleep.md#kit-agents-2026-11-04](sleep.md#kit-agents-2026-11-04).
 - RAM, measured in the e2e: 7 MB footprint / 15 MB RSS at boot, 12–13 MB / 21 MB after real codex
   turns (claude TUI: 190–250 MB; headless claude: 150–185 MB).
 

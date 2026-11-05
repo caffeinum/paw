@@ -192,7 +192,9 @@ Each entry: what it is + the most load-bearing rule. Full notes behind the link.
   mailbox hosts a stand-in presence so a DM wakes the agent and the backlog is re-published. The keeper sweeps
   EVERY space with opt-ins whose manager runs here (never starts one); a transcript Bash/Monitor task counts only
   with a live process behind it (timestamp-less request-blob lines are ignored); sandboxed agents are read inside
-  their VM (`container exec ps`); `--sweep --dry-run` prints verdicts. → [sleep.md](docs/notes/sleep.md)
+  their VM (`container exec ps`); `--sweep --dry-run` prints verdicts. kit agents sleep too: idle from
+  their store's transcript, running = anything under the `kit run` seat but its persistent bash, armed kit
+  schedules block, and a sleep is refused unless the wake can `--resume` the pin. → [sleep.md](docs/notes/sleep.md)
 
 ### Addressing → [addressing.md](docs/notes/addressing.md)
 - `src/addressing.ts` — folder→name registry (`folders.json` defaults + `agents.json` extras, never
