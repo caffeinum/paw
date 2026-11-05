@@ -17,7 +17,7 @@ import { join } from "node:path";
 import { registry, type Command } from "@cotal-ai/core";
 import { canonicalDir, ensureAgentSpawned, lookupFolderName, setFolderName, stuckWarning } from "./addressing.ts";
 import { resolveSpace, withEnsuredManager } from "./lifecycle.ts";
-import { optedIn, sleepSweep } from "./sleep.ts";
+import { optedIn, sleepSweep, sweepOtherSpaces } from "./sleep.ts";
 import { tidySweep } from "./commands/tidy.ts";
 import { cronSweep } from "./commands/cron.ts";
 
@@ -71,9 +71,13 @@ async function globalUp(argv: string[]): Promise<void> {
   // `paw cron` fires on this tick too (every space), AFTER global and even when bringing global up fails:
   // a scheduled wake-up must not depend on the wake authority being healthy. A fire is a DM, nothing else.
   const cronAfter = () => cronSweep().catch((e: Error) => console.error(`paw keeper: cron sweep failed: ${e.message}`));
+  // The hibernation sweep of every OTHER space with opted-in agents (team2027, a remote mesh…): each on its own
+  // manager handle, only where this machine's manager already runs, failures isolated per space — and, like
+  // cron, regardless of whether bringing global up worked.
+  const othersAfter = () => sweepOtherSpaces(space).catch((e: Error) => console.error(`paw keeper: sleep sweep of other spaces failed: ${e.message}`));
   const { spawned, starting, stuck } = await withEnsuredManager(space, async (ctl) => {
     const r = await ensureAgentSpawned(ctl, { space, name, cwd: folder, brief: GLOBAL_BRIEF });
-    // The hibernation sweep rides this 60s keeper tick. It only ever touches agents the operator OPTED IN
+    // The hibernation sweep rides this 60s keeper tick (this space here; the others after, see othersAfter). It only ever touches agents the operator OPTED IN
     // (`hibernate:` in the persona, via `paw sleep <name> --after 60m`), logs every sleep to sleep.log, and
     // costs nothing when nobody has opted in. A sweep failure is logged, never fails the tick.
     if (optedIn(space).length) {
@@ -89,7 +93,10 @@ async function globalUp(argv: string[]): Promise<void> {
       (e: Error) => console.error(`paw keeper: tidy sweep failed: ${e.message}`),
     );
     return r;
-  }).finally(cronAfter);
+  }).finally(async () => {
+    await othersAfter();
+    await cronAfter();
+  });
   // No automatic unstick sweep here any more. The keeper pressed Esc on canary-env-52 at a permission
   // prompt (2026-09-16), rejecting the call; the operator's rule is that nothing touches a live agent
   // without their go. `paw unstick <name>` is the manual tool.
