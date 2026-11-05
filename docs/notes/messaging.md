@@ -22,6 +22,23 @@ Moved verbatim from CLAUDE.md (2026-10-02 split). Index: [CLAUDE.md](../../CLAUD
   resolve/spawn the target like chat (folder→spawn, offline name→respawn via `folderForName`). No
   wait/stream mode — the LIVE conversation is `paw chat`, the ASYNC hand-off is dm + inbox (a former
   `--wait` bound the durable consumer and could starve inbox/chat; removed). NEEDS_MANAGER.
+- **A known agent mid-reconnect is waited for, not refused** (`src/dm-wait.ts`, 2026-11-04). The team2027
+  broker (one Fly node) redeploys on every push to paw main: a 10–60s gap with the connection down, then
+  presence (memory-backed, republished by each endpoint's 2s heartbeat) briefly empty. `paw dm evals` from
+  cron / an agent / the office bridge failed at once with `no agent "evals" present or known` against a
+  healthy agent. Now, for a bare name, after the presence snapshot is read (an unread roster never
+  supports an absence verdict): present → send; registered here → wake (ensureAgentSpawned, unchanged);
+  on the roster offline or in the peer ledger (`peers.json`) within 7 days → print one dim `waiting for
+  <name> to come back on the mesh…` and wait; never seen → fail at once (today's message). A DOWN mesh is
+  waited out too: `startWithin` retries `ep.start()` on transient connect errors (conn-state's
+  classifier; auth fails at once), and `paw dm`'s CLI gate retries `ensure()` on `MeshUnreachableError`
+  (PAW_SERVER / remote space only — the default local mesh is just booted). ONE budget for all of it
+  (`startDmClock` in bin/paw.ts): `--wait-for <s>` > `PAW_DM_WAIT` (s) > 20s; expiry names the half that
+  failed (`mesh unreachable — <server> …` vs `"<name>" stayed offline — the mesh is up …`). The publish
+  retry re-sends ONE drafted message (`draftDm` + `publishDraft`, JetStream `msgID` dedup), so a retried
+  publish whose ack was lost is stored once. paw chat's send path (its own outbox) is untouched.
+  `pnpm check:dm` (pure), `scripts/e2e-dm-wait.ts` (own nats-server: down→up delivered once, stays down →
+  loud after budget, unknown → immediate, broker restart mid-send → delivered once, broker gone → names the mesh).
 
 ## paw mailbox
 
