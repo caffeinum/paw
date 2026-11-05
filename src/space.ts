@@ -27,9 +27,22 @@ export function callerSpace(): string {
 /** `status` and `log` too: they read the agents a spawning verb just made. An agent on team2027 ran
  *  `paw dm github:firegoat-ai/canary` (→ team2027), then `paw status` and `paw log canary` read `paw`,
  *  where neither canary nor canary-env is registered — both "missing" while live (#96). */
-export const CALLER_SPACE_VERBS: ReadonlySet<string> = new Set(["cron", "open", "attach", "chat", "start", "dm", "claude", "status", "log"]);
+/** `relocate` too: an agent relocating ITSELF from team2027 got "no agent named … in space paw" (canary-env). */
+export const CALLER_SPACE_VERBS: ReadonlySet<string> = new Set(["cron", "open", "attach", "chat", "start", "dm", "claude", "status", "log", "relocate"]);
 
 /** The space `paw <verb>` acts on when no --space / `#space` names one. */
 export function defaultSpaceFor(verb: string): string {
   return CALLER_SPACE_VERBS.has(verb) ? callerSpace() : resolveSpace();
+}
+
+/** Whether the space this invocation acts on was CHOSEN (`--space`, `<agent>#<space>`, `PAW_SPACE`) or only
+ *  defaulted (the caller agent's COTAL_SPACE / the machine default). bin/paw.ts records it before dispatch;
+ *  anything that never ran through it (tests, other entry points) reads "chosen" — the safe answer, since
+ *  only a defaulted space may be swapped for the one space that actually holds the agent. */
+let spaceChosen = true;
+export function noteSpaceChosen(chosen: boolean): void {
+  spaceChosen = chosen;
+}
+export function spaceWasChosen(): boolean {
+  return spaceChosen;
 }

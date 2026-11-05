@@ -20,7 +20,7 @@ import type { Command } from "@cotal-ai/core";
 import { downSpace, explicitSpace, expandEqFlags, expandShortForm, failureLine, helpRequested, hoistAddressSpace, oneShotReplyNote, remoteCotalArgv, SHORT_FORMS, stripCotalNamespace, verbHelp, withDefaultSpace } from "../src/dispatch.ts";
 import { readRemoteMesh } from "../src/remote-mesh.ts";
 import { runCotalPassthrough } from "../src/cotal-tee.ts";
-import { defaultSpaceFor } from "../src/space.ts";
+import { defaultSpaceFor, noteSpaceChosen } from "../src/space.ts";
 
 // A short form (`paw a` = `paw attach`) is expanded HERE, before anything reads the verb, so the
 // mesh/manager gating, --space injection and the command lookup all see the real name.
@@ -232,6 +232,7 @@ try {
   const args = hoistAddressSpace(cmd, raw.slice(1));
   // Unnamed, a spawning verb run inside an agent defaults to THAT agent's space (src/space.ts).
   const space = explicitSpace(args) ?? defaultSpaceFor(cmd);
+  noteSpaceChosen(explicitSpace(args) !== undefined || process.env.PAW_SPACE !== undefined);
   const gate = isRemoteSpace(space) ? { space } : {};
   if (cmd === "dm") await gateDm(() => ensure({ needMesh: true, needManager: true, ...gate }), args, space);
   else if (NEEDS_MANAGER.has(cmd)) await ensure({ needMesh: true, needManager: true, ...gate });

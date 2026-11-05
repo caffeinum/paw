@@ -10,7 +10,7 @@
  * fakes. Run: pnpm check:relocate
  */
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -18,6 +18,9 @@ const home = realpathSync(mkdtempSync(join(tmpdir(), "paw-relocate-home-")));
 process.env.HOME = home;
 process.env.PAW_HOME = join(home, ".paw");
 process.env.PAW_ALLOW_ANY_CWD = "1";
+process.env.PAW_RELEASE = "dev"; // the detached-handoff check runs this checkout's bin/paw.ts
+delete process.env.COTAL_NAME; // run from inside an agent: never read as that agent
+delete process.env.COTAL_SPACE;
 delete process.env.PAW_SPACE;
 delete process.env.CLAUDE_COWORK_MEMORY_PATH_OVERRIDE;
 delete process.env.CLAUDE_CODE_REMOTE_MEMORY_DIR;
@@ -107,8 +110,9 @@ const running = (d: import("../src/relocate.ts").RelocateDisk, activeMs = Date.n
 // ── args ────────────────────────────────────────────────────────────────────────────────────────
 console.log("args");
 {
-  const a = rl.parseRelocateArgs(["skills", "~/x", "--all", "--dry-run", "--yes", "--space", S]);
-  assert(a.name === "skills" && a.target === "~/x" && a.all && a.dryRun && a.yes && a.space === S, "full flag set parses");
+  const a = rl.parseRelocateArgs(["skills", "~/x", "--all", "--archive-old", "--dry-run", "--yes", "--space", S]);
+  assert(a.name === "skills" && a.target === "~/x" && a.all && a.archiveOld && a.dryRun && a.yes && a.space === S, "full flag set parses");
+  assert(!rl.parseRelocateArgs(["skills", "~/x"]).archiveOld, "--archive-old is off by default");
   throws(() => rl.parseRelocateArgs(["skills"]), /where to/, "no folder fails loud");
   throws(() => rl.parseRelocateArgs([]), /which agent/, "no agent fails loud");
   throws(() => rl.parseRelocateArgs(["./x", "y"]), /not an agent name/, "a path as the agent is refused");
@@ -311,6 +315,114 @@ console.log("transcript clash + rollback");
   const u = fakeDeps({ unreleased: true });
   await rejects(rl.applyRelocate(d, running(d), u.deps, () => d), /still held .* nothing was relocated/, "session not released after the stop → nothing relocated");
   assert(existsSync(r1) && JSON.stringify(u.calls.map((c) => c[0])) === JSON.stringify(["stop", "start"]), "…and it was started again where it was");
+}
+
+// ── --archive-old: both folders exist ──────────────────────────────────────────────────────────────
+console.log("--archive-old");
+{
+  const o = join(work, "arch-old");
+  const n = join(work, "arch-new");
+  const pin = seed(S, "arch", o, { memory: "arch\n" });
+  mkdirSync(n, { recursive: true });
+  writeFileSync(join(o, "old.txt"), "old\n");
+  const plain = rl.relocateDisk({ space: S, name: "arch", target: n, all: false });
+  const b = plain.blockers.find((x) => x.includes("never merges folders")) ?? "";
+  assert(b.includes("--archive-old") && b.includes(`${o}.archived`), `without the flag: blocked, and the message names --archive-old + where it would go (${b})`);
+  const d = rl.relocateDisk({ space: S, name: "arch", target: n, all: false, archiveOld: true });
+  assert(d.blockers.length === 0 && d.mode === "repoint" && d.archive === `${o}.archived`, `with it: repoint, archive ${d.archive} (${d.blockers.join(" | ")})`);
+  const plan = rl.relocatePlan(d, idle(d), { now: Date.now() }).join("\n");
+  assert(plan.includes(`archive ${o} → ${o}.archived`) && plan.includes(`${n} is the folder now`), "plan: the archive line");
+  mkdirSync(`${o}.archived`);
+  assert(rl.archivePath(o) === `${o}.archived.2`, "an existing .archived → .archived.2");
+  const d2 = rl.relocateDisk({ space: S, name: "arch", target: n, all: false, archiveOld: true });
+  const f = fakeDeps();
+  await rl.applyRelocate(d2, running(d2), f.deps, () => rl.relocateDisk({ space: S, name: "arch", target: n, all: false, archiveOld: true }));
+  assert(!existsSync(o) && readFileSync(join(`${o}.archived.2`, "old.txt"), "utf8") === "old\n" && existsSync(`${o}.archived`), "old folder renamed aside to .archived.2, never merged or deleted");
+  assert(readCwd(personaFilePath(S, "arch")) === n && existsSync(join(proj(n), `${pin}.jsonl`)), "persona + session follow to the new folder");
+  assert(JSON.stringify(f.calls) === JSON.stringify([["stop", S, "arch"], ["start", S, "arch", n]]), "stopped, started in the new folder");
+
+  // rollback puts the archived folder back
+  const o2 = join(work, "arch2-old");
+  const n2 = join(work, "arch2-new");
+  seed(S, "arch2", o2);
+  mkdirSync(n2, { recursive: true });
+  const d3 = rl.relocateDisk({ space: S, name: "arch2", target: n2, all: false, archiveOld: true });
+  const ff = fakeDeps({ failStart: (cwd) => cwd === n2 });
+  await rejects(rl.applyRelocate(d3, running(d3), ff.deps, () => rl.relocateDisk({ space: S, name: "arch2", target: n2, all: false, archiveOld: true })), /rolled back/, "a failed start after archiving rolls back");
+  assert(existsSync(o2) && !existsSync(`${o2}.archived`) && readCwd(personaFilePath(S, "arch2")) === o2, "…the archive is renamed back, persona restored");
+  const noop = rl.relocateDisk({ space: S, name: "arch2", target: join(work, "arch2-fresh"), all: false, archiveOld: true });
+  assert(noop.mode === "move" && !noop.archive && noop.notes.some((x) => x.includes("nothing to archive")), "--archive-old with no clash: a plain move, and a note says so");
+}
+
+// ── a bare name in the wrong (defaulted) space ─────────────────────────────────────────────────────
+console.log("space resolution");
+{
+  seed("other", "lonely", join(work, "lonely"));
+  const picked = rl.relocateSpace("lonely", S, false, "/x");
+  assert(picked.space === "other" && !!picked.note?.includes("lonely#other"), `defaulted space, one match elsewhere → used, and said (${picked.note})`);
+  throws(() => rl.relocateSpace("lonely", S, true, "/x"), /paw relocate lonely#other \/x/, "a CHOSEN space is kept; the error prints the exact command");
+  mkdirSync(join(spaces, "third"), { recursive: true });
+  seed("third", "lonely", join(work, "lonely3"));
+  throws(() => rl.relocateSpace("lonely", S, false, "/x"), /lonely#other \/x\n.*lonely#third \/x/s, "two matches → fail loud with both commands");
+  assert(rl.relocateSpace("arch", S, false, "/x").space === S, "registered here → stays");
+  assert(rl.relocateSpace("nobody", S, false, "/x").space === S, "nowhere → stays (relocateDisk says no agent named …)");
+}
+
+// ── self-relocate: detection, the busy guard, the detached handoff ─────────────────────────────────
+console.log("self-relocate");
+{
+  const m = { space: S, name: "me", persona: "", agent: "claude", pin: "p1", from: "/a", to: "/b" };
+  assert(rl.callerIsMover(m, { COTAL_NAME: "me", COTAL_SPACE: S }, () => false), "COTAL_NAME + COTAL_SPACE of the mover → self");
+  assert(!rl.callerIsMover(m, { COTAL_NAME: "me", COTAL_SPACE: "other" }, () => false), "same name, other space → not self");
+  assert(rl.callerIsMover(m, {}, (pin) => pin === "p1"), "no env, but an ancestor holds its session → self");
+  assert(!rl.callerIsMover(m, {}, () => false), "neither → not self");
+
+  const sOld = join(work, "self-a");
+  seed(S, "selfie", sOld);
+  const d = rl.relocateDisk({ space: S, name: "selfie", target: join(work, "self-b"), all: false });
+  const hot = running(d, Date.now() - 5_000);
+  assert(rl.liveBlockers(d, hot, { yes: false, now: Date.now() })[0]?.includes("is busy"), "another agent written 5s ago: busy");
+  assert(rl.liveBlockers(d, hot, { yes: false, now: Date.now(), self: new Set([`selfie#${S}`]) }).length === 0, "the CALLER written 5s ago: not busy (its own turn wrote it)");
+
+  const { spawnDetachedHandoff, handoffLogPath, handoffInFlight, finishDetachedHandoff, handoffEnvKey } = await import("../src/lifecycle.ts");
+  assert(handoffEnvKey("adopt") === "PAW_ADOPT_INFLIGHT" && handoffEnvKey("relocate") === "PAW_RELOCATE_INFLIGHT", "env keys: adopt's unchanged, relocate's own");
+  assert(!handoffInFlight(S, "relocate"), "no pidfile → not in flight");
+  assert(spawnDetachedHandoff(S, "relocate", ["relocate", "--help"]), "the detached child spawns");
+  const log = handoffLogPath(S, "relocate");
+  const deadline = Date.now() + 30_000;
+  while (Date.now() < deadline && !(existsSync(log) && readFileSync(log, "utf8").includes("--archive-old"))) await new Promise((r) => setTimeout(r, 200));
+  assert(readFileSync(log, "utf8").includes("--archive-old"), `the child ran this checkout's paw and logged to ${log}`);
+  finishDetachedHandoff(S, "relocate");
+  assert(!handoffInFlight(S, "relocate"), "finish drops the pidfile");
+}
+
+// ── links that break ───────────────────────────────────────────────────────────────────────────────
+console.log("links");
+{
+  const lo = join(work, "links-old");
+  seed(S, "linky", lo);
+  mkdirSync(join(lo, "sub"), { recursive: true });
+  symlinkSync(join(lo, "sub"), join(lo, "abs-in")); // absolute into the folder: breaks
+  symlinkSync("sub", join(lo, "rel-in")); // relative: moves with it
+  mkdirSync(join(lo, "node_modules"), { recursive: true });
+  symlinkSync(join(lo, "sub"), join(lo, "node_modules", "skipped"));
+  symlinkSync(lo, join(work, "links-alias")); // beside it, pointing at it
+  symlinkSync(join(lo, "sub"), join(home, "home-alias")); // in $HOME
+  const d = rl.relocateDisk({ space: S, name: "linky", target: join(work, "links-new"), all: false });
+  const inside = d.notes.find((n) => n.includes("inside the folder")) ?? "";
+  assert(inside.startsWith("1 symlink(s)") && inside.includes("abs-in") && !inside.includes("rel-in") && !inside.includes("skipped") && inside.includes("break after the move"), `absolute link inside: noted; relative and node_modules not (${inside})`);
+  const beside = d.notes.find((n) => n.includes("elsewhere point into")) ?? "";
+  assert(beside.includes("links-alias") && beside.includes("home-alias"), `links beside it and in $HOME: noted (${beside})`);
+
+  const repo = join(work, "wt-repo");
+  mkdirSync(repo, { recursive: true });
+  git(repo, "init", "-q");
+  git(repo, "-c", "user.email=a@b", "-c", "user.name=a", "commit", "--allow-empty", "-qm", "x");
+  git(repo, "worktree", "add", "-q", join(work, "wt-linked"), "-b", "side");
+  seed(S, "wt", repo);
+  const w = rl.relocateDisk({ space: S, name: "wt", target: join(work, "wt-repo2"), all: false });
+  const wn = w.notes.find((n) => n.includes("linked git worktree")) ?? "";
+  assert(wn.startsWith("1 linked git worktree(s)") && wn.includes(realpathSync(join(work, "wt-linked"))) && wn.includes("worktree repair"), `the linked worktree is named (${wn})`);
 }
 
 console.log(failures ? `\n${failures} failure(s)` : "\nall relocate checks passed");

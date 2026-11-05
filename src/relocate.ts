@@ -16,11 +16,11 @@
  * Pure planning ({@link relocateDisk}, {@link relocateBlockers}, {@link relocatePlan}) is split from the
  * cutover ({@link applyRelocate}), whose stop/start are injected so check:relocate drives it hermetically.
  */
-import { constants, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { constants, copyFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { homedir } from "node:os";
-import { basename, dirname, join, relative, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { registry, type Command } from "@cotal-ai/core";
 import {
@@ -31,13 +31,15 @@ import {
   psRowAlive,
   quietFor,
   SESSION_RELEASE_MS,
+  spacesHoldingAgent,
   stopAgent,
   withRegistryLock,
   type PsRow,
 } from "./addressing.ts";
 import { readForeground } from "./foreground.ts";
-import { resolveSpace, withEnsuredManager } from "./lifecycle.ts";
-import { liveSessionProcs, meshIdentity } from "./named.ts";
+import { finishDetachedHandoff, handoffEnvKey, handoffInFlight, handoffLogPath, resolveSpace, spawnDetachedHandoff, wakeAgent, withEnsuredManager } from "./lifecycle.ts";
+import { isSelfAncestor, liveSessionProcs, meshIdentity } from "./named.ts";
+import { spaceWasChosen } from "./space.ts";
 import { personaTranscriptRoots, readAgentType, readCwd, readResumeId, transcriptExists, transcriptMtime, transcriptPath, writesClaudeTranscript } from "./session.ts";
 import { sleepState } from "./sleep-state.ts";
 import { readTeleported, rewriteCwdText, sessionChain } from "./teleport-plan.ts";
@@ -46,12 +48,12 @@ import { claudeMemoryBase, LAST_DREAM, MEMORY_SLUG_MAX, memoryManifest, memoryOv
 /** A running agent whose transcript was written this recently is mid-work: relocating it needs `--yes` (as `paw move`). */
 export const RELOCATE_BUSY_MS = 10 * 60_000;
 
-export const RELOCATE_USAGE = "relocate <agent>[#<space>] <new-folder> [--all] [--dry-run] [--yes]";
+export const RELOCATE_USAGE = "relocate <agent>[#<space>] <new-folder> [--all] [--archive-old] [--dry-run] [--yes]";
 
-export type RelocateArgs = { name: string; space?: string; target: string; all: boolean; dryRun: boolean; yes: boolean };
+export type RelocateArgs = { name: string; space?: string; target: string; all: boolean; archiveOld: boolean; dryRun: boolean; yes: boolean };
 
 export function parseRelocateArgs(argv: string[]): RelocateArgs {
-  const out: { name?: string; space?: string; target?: string; all: boolean; dryRun: boolean; yes: boolean } = { all: false, dryRun: false, yes: false };
+  const out: { name?: string; space?: string; target?: string; all: boolean; archiveOld: boolean; dryRun: boolean; yes: boolean } = { all: false, archiveOld: false, dryRun: false, yes: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--space") {
@@ -59,6 +61,7 @@ export function parseRelocateArgs(argv: string[]): RelocateArgs {
       if (v === undefined || v.startsWith("-")) throw new Error(`paw: --space needs a value — ${RELOCATE_USAGE}`);
       out.space = v;
     } else if (a === "--all") out.all = true;
+    else if (a === "--archive-old") out.archiveOld = true;
     else if (a === "--dry-run") out.dryRun = true;
     else if (a === "--yes" || a === "-y") out.yes = true;
     else if (a.startsWith("-")) throw new Error(`paw: unknown flag "${a}" — ${RELOCATE_USAGE}`);
@@ -95,6 +98,39 @@ export function resolveNewFolder(target: string, base: string, home: string): st
   return existsSync(dirname(abs)) ? join(realpathSync(dirname(abs)), basename(abs)) : abs;
 }
 
+/** True when anything — even a dangling symlink — sits at `p` (existsSync follows links, rename(2) doesn't). */
+function taken(p: string): boolean {
+  try {
+    lstatSync(p);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Where `--archive-old` renames the old folder: `<folder>.archived`, else `<folder>.archived.2`, `.3`, … */
+export function archivePath(folder: string): string {
+  if (!taken(`${folder}.archived`)) return `${folder}.archived`;
+  for (let n = 2; n < 1000; n++) if (!taken(`${folder}.archived.${n}`)) return `${folder}.archived.${n}`;
+  throw new Error(`paw: ${folder}.archived through .archived.999 all exist — clear some out first`);
+}
+
+/**
+ * The space `paw relocate <name>` acts on. A space the operator CHOSE (`#space`, `--space`, PAW_SPACE) is
+ * kept as is (relocateDisk then says where the agent is). A DEFAULTED one that doesn't hold the agent
+ * gives way to the one local space that does; several → fail loud with each exact command to copy.
+ */
+export function relocateSpace(name: string, space: string, chosen: boolean, target: string): { space: string; note?: string } {
+  if (existsSync(personaFilePath(space, name))) return { space };
+  const others = spacesHoldingAgent(name, space);
+  if (!others.length) return { space };
+  if (others.length === 1 && !chosen) return { space: others[0], note: `paw: no "${name}" in space "${space}" — using ${name}#${others[0]}, the only space that has it` };
+  throw new Error(
+    `paw: no agent named "${name}" in space "${space}" — it's in ${others.map((o) => `"${o}"`).join(", ")}; run one of:\n` +
+      others.map((o) => `  paw relocate ${name}#${o} ${target}`).join("\n"),
+  );
+}
+
 /** One agent that follows the folder: its old and new `cwd`. */
 export type Mover = { space: string; name: string; persona: string; agent: string; pin?: string; from: string; to: string };
 
@@ -111,6 +147,8 @@ export type RelocateDisk = {
   mode?: "move" | "repoint";
   from: string;
   to: string;
+  /** `--archive-old` with both folders there: the old one is renamed here first, then a re-point to `to`. */
+  archive?: string;
   movers: Mover[];
   /** Agents in the old folder (or under it) that were not asked to follow — `--all` takes them along. */
   others: Mover[];
@@ -172,7 +210,7 @@ export function copyContent(c: FileCopy): Buffer {
 }
 
 /** What the disk says. Pure reads; check:relocate builds it over a temp HOME + PAW_HOME. */
-export function relocateDisk(a: { space: string; name: string; target: string; all: boolean }, deps: Deps = {}): RelocateDisk {
+export function relocateDisk(a: { space: string; name: string; target: string; all: boolean; archiveOld?: boolean }, deps: Deps = {}): RelocateDisk {
   const home = deps.home ?? homedir();
   const env = deps.env ?? process.env;
   const { space, name } = a;
@@ -186,11 +224,20 @@ export function relocateDisk(a: { space: string; name: string; target: string; a
   const fromExists = existsSync(from);
   const toExists = existsSync(to);
   let mode: RelocateDisk["mode"];
+  let archive: string | undefined;
 
   if (to === from) blockers.push(`${to} is already "${name}"'s folder — nothing to relocate`);
   else if (under(to, from)) blockers.push(`${to} is inside "${name}"'s own folder ${from} — a folder can't move into itself`);
-  else if (fromExists && toExists)
-    blockers.push(`both ${from} (its folder) and ${to} exist — paw never merges folders or guesses which one is the agent's; move one aside first`);
+  else if (fromExists && toExists && a.archiveOld) {
+    mode = "repoint";
+    if (!statSync(from).isDirectory()) blockers.push(`${from} is not a directory — --archive-old only sets a folder aside`);
+    if (!statSync(to).isDirectory()) blockers.push(`${to} is not a directory`);
+    archive = archivePath(from);
+  } else if (fromExists && toExists)
+    blockers.push(
+      `both ${from} (its folder) and ${to} exist — paw never merges folders or guesses which one is the agent's; ` +
+        `move one aside first, or --archive-old renames ${from} to ${archivePath(from)} and re-points to ${to}`,
+    );
   else if (!fromExists && !toExists) blockers.push(`neither ${from} (its folder) nor ${to} exists — where did the folder go? point at the folder it lives in now`);
   else if (fromExists) {
     mode = "move";
@@ -202,6 +249,7 @@ export function relocateDisk(a: { space: string; name: string; target: string; a
     mode = "repoint";
     if (!statSync(to).isDirectory()) blockers.push(`${to} is not a directory`);
   }
+  if (a.archiveOld && !archive && mode) notes.push(`--archive-old: nothing to archive — ${mode === "move" ? `${to} doesn't exist yet` : `${from} is already gone`}`);
 
   const all = agentsUnder(from).map((m) => ({ ...m, to: moveUnder(m.from, from, to) }));
   const self = all.find((m) => m.space === space && m.name === name)!;
@@ -396,17 +444,96 @@ export function relocateDisk(a: { space: string; name: string; target: string; a
       notes.push(`~/.claude.json unreadable (${(e as Error).message}) — couldn't check its per-folder settings`);
     }
   }
-  if (mode === "move") {
-    const dotGit = join(from, ".git");
-    if (existsSync(dotGit) && statSync(dotGit).isFile()) notes.push(`${from} is a linked git worktree — after the move: git -C ${to} worktree repair`);
-    else if (existsSync(dotGit)) {
-      const r = spawnSync("git", ["worktree", "list", "--porcelain"], { cwd: from, encoding: "utf8" });
-      const linked = r.status === 0 ? r.stdout.split("\n").filter((l) => l.startsWith("worktree ")).length - 1 : 0;
-      if (linked > 0) notes.push(`${linked} linked git worktree(s) point into ${from}/.git — after the move: git -C ${to} worktree repair`);
+  if (mode) notes.push(...linkNotes({ from, to, mode, ...(archive ? { archive } : {}), home }));
+
+  return { space, name, ...(mode ? { mode } : {}), from, to, ...(archive ? { archive } : {}), movers, others, sessions, sessionDirs, sessionsSame, memory, legacy, backups: [...backups], notes, blockers };
+}
+
+/** How many entries {@link linksInside} walks before it stops and says so. */
+export const LINK_SCAN_MAX = 20_000;
+const LINKS_SHOWN = 8;
+
+/** Symlinks under `dir` (not following links; `.git` and `node_modules` skipped) whose ABSOLUTE target
+ *  points at `old` or under it — a relative link moves with the folder and keeps working. */
+export function linksInside(dir: string, old: string): { links: string[]; capped: boolean } {
+  const links: string[] = [];
+  let seen = 0;
+  const stack = [dir];
+  while (stack.length) {
+    const cur = stack.pop()!;
+    let names: string[];
+    try {
+      names = readdirSync(cur);
+    } catch {
+      continue; // unreadable subdir: not ours to judge
+    }
+    for (const n of names) {
+      if (++seen > LINK_SCAN_MAX) return { links, capped: true };
+      const p = join(cur, n);
+      const st = lstatSync(p, { throwIfNoEntry: false });
+      if (!st) continue;
+      if (st.isSymbolicLink()) {
+        const t = readlinkSync(p);
+        if (isAbsolute(t) && under(t, old)) links.push(`${p} → ${t}`);
+      } else if (st.isDirectory() && n !== ".git" && n !== "node_modules") stack.push(p);
     }
   }
+  return { links, capped: false };
+}
 
-  return { space, name, ...(mode ? { mode } : {}), from, to, movers, others, sessions, sessionDirs, sessionsSame, memory, legacy, backups: [...backups], notes, blockers };
+/** Symlinks directly in `dir` (one level) that resolve to `old` or under it. */
+function linksBeside(dir: string, old: string): string[] {
+  if (!existsSync(dir)) return [];
+  const out: string[] = [];
+  for (const n of readdirSync(dir)) {
+    const p = join(dir, n);
+    const st = lstatSync(p, { throwIfNoEntry: false });
+    if (!st?.isSymbolicLink()) continue;
+    const t = resolve(dir, readlinkSync(p));
+    if (under(t, old)) out.push(`${p} → ${readlinkSync(p)}`);
+  }
+  return out;
+}
+
+const listed = (xs: string[]) => xs.slice(0, LINKS_SHOWN).join("; ") + (xs.length > LINKS_SHOWN ? `; +${xs.length - LINKS_SHOWN} more` : "");
+
+/**
+ * What breaks because the old path stops being the folder: symlinks inside the folder with an absolute
+ * target into it, symlinks beside it (its parent dir) and in $HOME pointing at it, and git worktrees linked
+ * to it. Said, never fixed — paw can't see every link on the disk, only these likely places.
+ */
+function linkNotes(o: { from: string; to: string; mode: "move" | "repoint"; archive?: string; home: string }): string[] {
+  const { from, to, mode, archive, home } = o;
+  const notes: string[] = [];
+  const here = mode === "move" || archive ? from : to; // where the folder's tree is right now
+  const now = archive ? "will point at the archived copy" : mode === "move" ? "break after the move" : "already point at nothing";
+  const inside = linksInside(here, from);
+  if (inside.links.length) notes.push(`${inside.links.length} symlink(s) inside the folder have an absolute target in ${from} and ${now}: ${listed(inside.links)}`);
+  if (inside.capped) notes.push(`symlink scan of ${here} stopped after ${LINK_SCAN_MAX} entries — links deeper in were not checked`);
+  const beside = [...new Set([dirname(from), home])].flatMap((d) => linksBeside(d, from)).filter((l) => !l.startsWith(`${from} `));
+  if (beside.length) notes.push(`symlink(s) elsewhere point into ${from} and ${now}: ${listed(beside)}`);
+
+  const dotGit = join(here, ".git");
+  const fixAt = archive ?? to;
+  if (existsSync(dotGit) && statSync(dotGit).isFile())
+    notes.push(`${here} is a linked git worktree — ${mode === "move" ? "after the move" : "now"}: git -C ${to} worktree repair`);
+  else if (existsSync(dotGit)) {
+    const r = spawnSync("git", ["worktree", "list", "--porcelain"], { cwd: here, encoding: "utf8" });
+    const linked =
+      r.status === 0
+        ? r.stdout
+            .split("\n")
+            .filter((l) => l.startsWith("worktree "))
+            .map((l) => l.slice("worktree ".length))
+            .filter((p) => p !== here && p !== from)
+        : [];
+    if (linked.length)
+      notes.push(
+        `${linked.length} linked git worktree(s) point into ${from}/.git (${listed(linked)}) — ` +
+          (archive ? `they follow the archived repo: git -C ${fixAt} worktree repair` : `after the move: git -C ${to} worktree repair`),
+      );
+  }
+  return notes;
 }
 
 /** What the live mesh/processes say about one mover. */
@@ -415,7 +542,7 @@ export type RelocateLive = Map<string, MoverLive>;
 export const moverKey = (m: Pick<Mover, "space" | "name">) => `${m.name}#${m.space}`;
 
 /** The live half of the blockers. Pure; check:relocate covers each. */
-export function liveBlockers(d: RelocateDisk, live: RelocateLive, o: { yes: boolean; now: number }): string[] {
+export function liveBlockers(d: RelocateDisk, live: RelocateLive, o: { yes: boolean; now: number; self?: ReadonlySet<string> }): string[] {
   const out: string[] = [];
   for (const m of d.movers) {
     const l = live.get(moverKey(m));
@@ -423,7 +550,8 @@ export function liveBlockers(d: RelocateDisk, live: RelocateLive, o: { yes: bool
     const at = moverKey(m);
     if (l.strangers.length) out.push(`${at}'s session ${m.pin} is held by ${l.strangers.join(", ")} — two writers on one transcript; close ${l.strangers.length === 1 ? "it" : "them"} first`);
     if (l.unmanaged) out.push(`${at} is live on the mesh but not under this machine's manager (${l.unmanaged}) — paw can't stop it; \`paw restart ${at}\` re-adopts it if it runs here`);
-    if (l.running && !o.yes && l.activeMs !== undefined && o.now - l.activeMs >= 0 && o.now - l.activeMs < RELOCATE_BUSY_MS)
+    // The caller itself: its own current turn is what wrote the transcript, and it asked for this.
+    if (l.running && !o.yes && !o.self?.has(at) && l.activeMs !== undefined && o.now - l.activeMs >= 0 && o.now - l.activeMs < RELOCATE_BUSY_MS)
       out.push(`${at} is busy — its transcript was written ${quietFor(o.now - l.activeMs)} ago (< ${RELOCATE_BUSY_MS / 60_000}m); wait for it, or --yes to stop it mid-work`);
   }
   return out;
@@ -441,6 +569,8 @@ export function relocatePlan(d: RelocateDisk, live: RelocateLive | undefined, o:
     `relocate ${d.name}#${d.space}: ${d.from} → ${d.to}`,
     d.mode === "move"
       ? `  ${"folder".padEnd(10)} mv ${d.from} → ${d.to}  (same filesystem, one rename)`
+      : d.archive
+        ? `  ${"folder".padEnd(10)} archive ${d.from} → ${d.archive}  (renamed aside, kept); ${d.to} is the folder now — re-pointing`
       : d.mode === "repoint"
         ? `  ${"folder".padEnd(10)} already moved — ${d.from} is gone, ${d.to} is there; re-pointing only`
         : `  ${"folder".padEnd(10)} ?`,
@@ -502,9 +632,9 @@ export async function applyRelocate(d0: RelocateDisk, live: RelocateLive, deps: 
     }
   }
   const d = replan();
-  if (d.blockers.length || d.mode !== d0.mode) {
+  if (d.blockers.length || d.mode !== d0.mode || d.archive !== d0.archive) {
     const notes = await restartOld();
-    throw new Error(`paw: the disk changed after the stop — nothing was relocated:\n  ${d.blockers.join("\n  ") || `mode ${d0.mode} → ${d.mode}`}${notes.length ? `\n  ${notes.join("; ")}` : ""}`);
+    throw new Error(`paw: the disk changed after the stop — nothing was relocated:\n  ${d.blockers.join("\n  ") || (d.mode !== d0.mode ? `mode ${d0.mode} → ${d.mode}` : `archive ${d0.archive} → ${d.archive}`)}${notes.length ? `\n  ${notes.join("; ")}` : ""}`);
   }
   const undo: Array<{ what: string; run: () => void }> = [];
   const started: Mover[] = [];
@@ -513,6 +643,12 @@ export async function applyRelocate(d0: RelocateDisk, live: RelocateLive, deps: 
       if (existsSync(d.to)) throw new Error(`${d.to} appeared during the relocate — not moving onto it`);
       renameSync(d.from, d.to);
       undo.push({ what: `move ${d.to} back to ${d.from}`, run: () => renameSync(d.to, d.from) });
+    }
+    if (d.archive) {
+      const archive = d.archive;
+      if (taken(archive)) throw new Error(`${archive} appeared during the relocate — not archiving onto it`);
+      renameSync(d.from, archive);
+      undo.push({ what: `move ${archive} back to ${d.from}`, run: () => renameSync(archive, d.from) });
     }
     for (const c of [...d.sessions, ...d.memory.flatMap((mm) => mm.copies)]) {
       const made = mkdirSync(dirname(c.dst), { recursive: true });
@@ -571,11 +707,15 @@ export async function applyRelocate(d0: RelocateDisk, live: RelocateLive, deps: 
 async function relocateLive(d: RelocateDisk): Promise<RelocateLive> {
   const out: RelocateLive = new Map();
   for (const space of [...new Set(d.movers.map((m) => m.space))]) {
-    const rows = await withEnsuredManager(space, async (ctl) => {
-      const ps = await ctl.ps();
-      if (!ps.ok) throw new Error(`paw: "${space}"'s manager isn't answering (${ps.error ?? "no reply"})`);
-      return (ps.data as PsRow[]) ?? [];
-    });
+    const rows = await withEnsuredManager(
+      space,
+      async (ctl) => {
+        const ps = await ctl.ps();
+        if (!ps.ok) throw new Error(`paw: "${space}"'s manager isn't answering (${ps.error ?? "no reply"})`);
+        return (ps.data as PsRow[]) ?? [];
+      },
+      QUIET,
+    );
     for (const m of d.movers.filter((x) => x.space === space)) {
       const row = rows.find((r) => r.name === m.name);
       const running = row !== undefined && psRowAlive(row);
@@ -596,15 +736,20 @@ async function relocateLive(d: RelocateDisk): Promise<RelocateLive> {
   return out;
 }
 
+/** relocate stops and starts an agent on whatever manager already runs it, so that manager's runtime is the
+ *  one the agent ran under before — ensure()'s "a manager paw doesn't own, its runtime may not be <r>"
+ *  advisory doesn't apply, and printed mid-dry-run it read as a fault (canary-env, 2026-11). */
+const QUIET = { quietForeignManager: true } as const;
+
 const liveDeps: RelocateDeps = {
   stop: async (space, name, pin) => {
-    await withEnsuredManager(space, (ctl) => stopAgent(ctl, name));
+    await withEnsuredManager(space, (ctl) => stopAgent(ctl, name), QUIET);
     const deadline = Date.now() + SESSION_RELEASE_MS;
     while (pin && liveSessionProcs(pin).length && Date.now() < deadline) await new Promise((r) => setTimeout(r, 1000));
     return { released: !pin || liveSessionProcs(pin).length === 0 };
   },
   start: async (space, name, cwd) => {
-    const r = await withEnsuredManager(space, (ctl) => ensureAgentSpawned(ctl, { space, name, cwd, reuseUnmanaged: false }));
+    const r = await withEnsuredManager(space, (ctl) => ensureAgentSpawned(ctl, { space, name, cwd, reuseUnmanaged: false }), QUIET);
     if (r.stuck) throw new Error(`paw: "${name}" is stuck starting in ${space}: ${r.stuck}`);
   },
   log: (s) => console.log(s),
@@ -619,14 +764,40 @@ async function confirm(question: string): Promise<boolean> {
   }
 }
 
+/** Wait after a self-relocate hands off, before the child stops the caller: its Bash tool gets the
+ *  handoff message back and the turn can close, so the resumed session knows what happened. */
+export const SELF_HANDOFF_GRACE_MS = 5_000;
+/** The detached child learns which movers called it (it has no ancestry to read) from this env var. */
+const WAKE_ENV = "PAW_RELOCATE_WAKE";
+
+/** Is THIS process running inside mover `m`? cotal stamps COTAL_NAME/COTAL_SPACE on an agent and every tool
+ *  subprocess it spawns; a process holding its session that is our ancestor says the same without the env. */
+export function callerIsMover(m: Mover, env: NodeJS.ProcessEnv = process.env, ancestorHolds: (pin: string) => boolean = holdsAsAncestor): boolean {
+  if (env.COTAL_NAME?.trim() === m.name && env.COTAL_SPACE?.trim() === m.space) return true;
+  return !!m.pin && ancestorHolds(m.pin);
+}
+function holdsAsAncestor(pin: string): boolean {
+  return liveSessionProcs(pin).some((p) => isSelfAncestor(p.pid));
+}
+
 export async function relocate(a: RelocateArgs): Promise<void> {
-  const space = a.space?.trim() || resolveSpace();
-  const args = { space, name: a.name, target: a.target, all: a.all };
+  const picked = relocateSpace(a.name, a.space?.trim() || resolveSpace(), spaceWasChosen(), a.target);
+  if (picked.note) console.error(picked.note);
+  const space = picked.space;
+  const args = { space, name: a.name, target: a.target, all: a.all, archiveOld: a.archiveOld };
+  const child = process.env[handoffEnvKey("relocate")] !== undefined; // we ARE the detached self-relocate
   const d = relocateDisk(args);
   const live = d.blockers.length ? undefined : await relocateLive(d);
   const now = Date.now();
-  const blockers = [...d.blockers, ...(live ? liveBlockers(d, live, { yes: a.yes, now }) : [])];
+  // Inside a mover: the stop would kill this very command mid-cutover, so a real run hands off (below).
+  const self = new Set(child || !live ? [] : d.movers.filter((m) => live.get(moverKey(m))?.running && callerIsMover(m)).map(moverKey));
+  const blockers = [...d.blockers, ...(live ? liveBlockers(d, live, { yes: a.yes, now, self }) : [])];
+  if (!child && handoffInFlight(space, "relocate")) blockers.push(`a relocate is already in flight for space ${space} — wait for it (progress: ${handoffLogPath(space, "relocate")})`);
   for (const line of relocatePlan(d, live, { now })) console.log(line);
+  if (self.size)
+    console.log(
+      `  ${"self".padEnd(10)} you are running inside ${[...self].join(", ")} — the cutover runs in a detached child; THIS session ends and resumes in ${d.to}`,
+    );
   if (blockers.length) {
     console.log("");
     console.log(`blocked — ${blockers.length} thing(s) to fix first:`);
@@ -640,12 +811,49 @@ export async function relocate(a: RelocateArgs): Promise<void> {
   }
   const running = d.movers.filter((m) => live!.get(moverKey(m))?.running).map(moverKey);
   if (!a.yes) {
-    const what = `${d.mode === "move" ? `move ${d.from} → ${d.to} and ` : ""}re-point ${d.movers.map(moverKey).join(", ")}${running.length ? ` — running: ${running.join(", ")} (stopped, then started again in the new folder)` : ""}`;
+    const what = `${d.mode === "move" ? `move ${d.from} → ${d.to} and ` : d.archive ? `archive ${d.from} → ${d.archive} and ` : ""}re-point ${d.movers.map(moverKey).join(", ")}${running.length ? ` — running: ${running.join(", ")} (stopped, then started again in the new folder)` : ""}`;
     if (!process.stdin.isTTY || !process.stderr.isTTY) throw new Error(`paw: no terminal to confirm on — pass --yes to ${what}`);
     if (!(await confirm(`${what}? [y/N] `))) throw new Error("paw: relocate cancelled — nothing was changed");
   }
-  const { started } = await applyRelocate(d, live!, liveDeps, () => relocateDisk(args));
+  if (self.size) {
+    // Every check above ran HERE, so a refusal reaches the agent; the child re-checks after it stops it.
+    const sub = ["relocate", d.name, d.to, "--space", space, "--yes", ...(a.all ? ["--all"] : []), ...(a.archiveOld ? ["--archive-old"] : [])];
+    if (!spawnDetachedHandoff(space, "relocate", sub, { [WAKE_ENV]: [...self].join(",") }))
+      throw new Error(`paw: a relocate is already in flight for space ${space} — not stacking another (progress: ${handoffLogPath(space, "relocate")})`);
+    console.log(
+      `⟳ relocating ${d.movers.map(moverKey).join(", ")} in a detached child — in ~${SELF_HANDOFF_GRACE_MS / 1000}s it stops ${[...self].join(", ")} (THIS session ends),\n` +
+        `  ${d.archive ? `archives ${d.from} → ${d.archive}` : d.mode === "move" ? `moves ${d.from} → ${d.to}` : "re-points"}, and starts it again in ${d.to} on the same session — a DM there says how it went.\n` +
+        `  progress: ${handoffLogPath(space, "relocate")}`,
+    );
+    return;
+  }
+  if (!child) return cutover(d, live!, args, space);
+  const wake = (process.env[WAKE_ENV] ?? "").split(",").filter(Boolean);
+  try {
+    console.log(`[${new Date().toISOString()}] self-relocate: waiting ${SELF_HANDOFF_GRACE_MS / 1000}s for ${wake.join(", ") || "the caller"} to finish its turn`);
+    await new Promise((r) => setTimeout(r, SELF_HANDOFF_GRACE_MS));
+    await cutover(d, live!, args, space);
+    for (const w of wake) wakeOne(w, `📁 relocated: your folder is now ${d.to} (was ${d.from}${d.archive ? `, archived at ${d.archive}` : ""}) — resume where you left off`);
+  } catch (e) {
+    const first = (e as Error).message.split("\n")[0];
+    for (const w of wake) wakeOne(w, `✗ your relocate to ${d.to} failed: ${first} — see ${handoffLogPath(space, "relocate")}`);
+    throw e;
+  } finally {
+    finishDetachedHandoff(space, "relocate");
+  }
+}
+
+function wakeOne(at: string, text: string): void {
+  const [name, space] = at.split("#");
+  if (!name || !space) throw new Error(`paw: ${WAKE_ENV} holds "${at}", not <name>#<space>`);
+  const r = wakeAgent(space, name, text);
+  if (!r.ok) console.error(`paw: couldn't DM ${at} after the relocate (${r.detail}) — it is idle until messaged`);
+}
+
+async function cutover(d: RelocateDisk, live: RelocateLive, args: Parameters<typeof relocateDisk>[0], space: string): Promise<void> {
+  const { started } = await applyRelocate(d, live, liveDeps, () => relocateDisk(args));
   console.log(`✓ relocated ${d.movers.map(moverKey).join(", ")}: ${d.from} → ${d.to}`);
+  if (d.archive) console.log(`  old folder archived at ${d.archive}`);
   if (d.backups.length) console.log(`  originals kept (backup) in: ${d.backups.join(", ")}`);
   for (const m of d.movers) {
     const pinned = !!m.pin && writesClaudeTranscript(m.agent);
