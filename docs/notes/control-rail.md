@@ -57,6 +57,27 @@ action needs. So `ensureAgentSpawned` takes the acceptance and then `waitForMesh
 Consequence to keep in mind: a boot failure now surfaces as paw's readiness timeout, not as the
 manager's own `ok:false`, so the message says "accepted but never reached the mesh" and points at
 `paw status` / `paw log`.
+
+**THE VERDICT ASKS THE OS, NOT ONLY THE MANAGER'S PS (#96, 2026-11-05).** team2027: `paw dm
+github:firegoat-ai/canary "hi"` launched `canary` as pid 49934 at 03:40:49Z; within 2s the manager dropped
+the seat from its table and retired its incarnation (`static retirement canary: … retired 1 issuance(s)
+bound to uid plw…` — cotal's "orphaned spawn" rollback: a step after `runtime.spawn` threw, the
+footprint was torn down, the pty process was never stopped). The seat was on the mesh at 03:40:50 and
+still runs; paw saw no ps row for 60s and said "its process is gone (ps row: missing)", blamed a
+connector refusal and an old manager, and dropped the DM. Now (`ensureAgentSpawned`, `src/seat-witness.ts`):
+- the launched seat is found in the process table by cotal's stamps `COTAL_NAME`/`COTAL_SPACE` +
+  `COTAL_LIFECYCLE_UID` = the spawn reply's `uid` (this launch only, root pid only — children inherit the
+  env), and the manager log is read for THIS uid's retirement line (`seatRetirement`), every 5s;
+- not listed + pid alive → `SeatAliveError`: "launched as pid N, its process is alive (on the mesh / not),
+  but the manager no longer lists it — it retired this incarnation (manager.log: "…")", given as soon as
+  the retirement line appears; `paw restart <n>#<s>` is the fix;
+- the budget counts from the acceptance (= the launch). A FRESH session (no transcript) whose pid is alive
+  gets `FIRST_SPAWN_READY_MS` (180s), said out loud ("launched as pid N, alive, not on the mesh yet after
+  60s — waiting up to 180s"); the extension ends the moment that pid exits;
+- "gone" only when no live pid: "it ran as pid N and exited" when one was seen; the connector-refusal /
+  old-manager hint only when no process carrying the launch was EVER seen and nothing was logged;
+- `SPAWN_LOCK_HOLD_MS` covers the first-spawn budget. Tests: check:wake-gate (#96 cases), check:rail
+  `PAW_RAIL_SPAWN=1` (a real claude made a slow joiner with a 0.3s plain budget).
 **The reply's SHAPE changed too:** it is `{name, owner, actor, uid, goalId, …}`, so the agent's wire
 principal is now STATED (`principalKey(owner, actor)`) rather than re-derived from a raw nkey by
 `wirePrincipal` — which is strictly better, since paw no longer has to guess an owner. A reply missing

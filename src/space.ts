@@ -24,7 +24,10 @@ export function callerSpace(): string {
 /** Verbs that default to the CALLING agent's space ({@link callerSpace}): `cron`, and every verb that can
  *  spawn an agent. An agent on team2027 that ran `paw open` got its new agent in `paw`, where its peers
  *  couldn't reach it (#78). A human shell has no COTAL_SPACE, so for it this is resolveSpace(). */
-export const CALLER_SPACE_VERBS: ReadonlySet<string> = new Set(["cron", "open", "attach", "chat", "start", "dm", "claude"]);
+/** `status` and `log` too: they read the agents a spawning verb just made. An agent on team2027 ran
+ *  `paw dm github:firegoat-ai/canary` (→ team2027), then `paw status` and `paw log canary` read `paw`,
+ *  where neither canary nor canary-env is registered — both "missing" while live (#96). */
+export const CALLER_SPACE_VERBS: ReadonlySet<string> = new Set(["cron", "open", "attach", "chat", "start", "dm", "claude", "status", "log"]);
 
 /** The space `paw <verb>` acts on when no --space / `#space` names one. */
 export function defaultSpaceFor(verb: string): string {

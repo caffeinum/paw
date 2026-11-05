@@ -55,3 +55,26 @@ function seatLines(path: string, name: string, from: number): string[] {
   const ours = (line: string) => line.startsWith(`seat reaped: ${name} (`) || line.startsWith(`${name} exited on launch`) || line.includes(` ${name} exited on launch`);
   return buf.toString("utf8").split("\n").map(stripStamp).filter(ours);
 }
+
+/** The manager's `static retirement <name>: retired N issuance(s) bound to uid <uid>` line for THIS
+ *  incarnation after `from`, if any. cotal logs it when it tears down a seat's footprint: credentials,
+ *  DM/deliver durables, ACL row. Paired with a pid that still runs, it means the manager dropped a seat
+ *  it had launched without stopping it (#96). Undefined when none. */
+export function seatRetirement(path: string, name: string, uid: string, from: number): string | undefined {
+  const size = logOffset(path);
+  if (size <= from) return undefined;
+  const start = Math.max(from, size - MAX_READ);
+  const buf = Buffer.alloc(size - start);
+  const fd = openSync(path, "r");
+  try {
+    readSync(fd, buf, 0, buf.length, start);
+  } finally {
+    closeSync(fd);
+  }
+  const want = `static retirement ${name}: retired `;
+  return buf
+    .toString("utf8")
+    .split("\n")
+    .find((l) => l.includes(want) && l.trimEnd().endsWith(` bound to uid ${uid}`))
+    ?.trim();
+}

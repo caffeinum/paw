@@ -183,8 +183,22 @@ try {
     const t = Date.now();
     const ctl = new ManagerControl(space, pawServer());
     try {
-      const r = await ensureAgentSpawned(ctl, { space, name, cwd: agentFolder });
-      ok("spawn over the rail brings a real agent to the mesh", r.spawned, `spawned=${r.spawned} id=${r.id ?? "—"} in ${Date.now() - t}ms`);
+      // A 0.3s plain budget makes a real cold claude a SLOW JOINER (#96): its pid must be found by this
+      // launch's uid and its boot waited out on the first-spawn budget, never called gone.
+      const said: string[] = [];
+      const seen: string[] = [];
+      const { seatPids, pidAlive } = await import("../src/seat-witness.ts");
+      const r = await ensureAgentSpawned(ctl, {
+        space,
+        name,
+        cwd: agentFolder,
+        timing: { readyMs: 300, firstSpawnMs: SPAWN_READY_MS },
+        say: (l) => (console.log(`  ${l}`), said.push(l)),
+        witness: { pids: (uid) => { const p = seatPids({ space, name, uid }); seen.push(`${uid}:${p.join(",")}`); return p; }, alive: pidAlive },
+      });
+      ok("spawn over the rail brings a real agent to the mesh", r.spawned && !r.starting, `spawned=${r.spawned} id=${r.id ?? "—"} in ${Date.now() - t}ms`);
+      ok("the launched pid is found by this launch's uid", seen.some((x) => /^[a-z0-9]+:\d+/.test(x)), seen.slice(-3).join(" | ") || "never looked");
+      ok("a slow first boot is waited out, said as alive", said.some((l) => /launched as pid \d+, alive, not on the mesh yet/.test(l)), said.join(" | ") || "nothing said");
     } finally {
       await ctl.close();
     }
