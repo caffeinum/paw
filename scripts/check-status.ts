@@ -608,6 +608,26 @@ assert(!inferBusy("idle", true, BUSY_NOW + 5_000, BUSY_NOW), "an mtime in the FU
   assert(threw, "stampHost: a persona without frontmatter fails loud");
 }
 
+// #96: a live AGENT on the roster that no table here knows (the manager dropped it after launching it,
+// or paw never registered its name) still gets a row — on a remote space only when this machine runs it.
+{
+  const { liveUnlistedAgents } = await import("../src/roster.ts");
+  const now = Date.now();
+  const p = (name: string, o: { kind?: string; status?: string; age?: number; host?: string } = {}) =>
+    ({ card: { id: `local.${name.toUpperCase()}`, name, kind: o.kind ?? "agent", meta: { host: o.host ?? "Aleks-Mac-Mini.local", connector: "claude" } }, status: o.status ?? "idle", ts: now - (o.age ?? 1000) }) as never;
+  const roster = [p("canary"), p("canary-env"), p("queue"), p("you", { kind: "endpoint" }), p("stale", { age: 60_000 }), p("gone", { status: "offline" }), p("evals", { host: "fly-box" })];
+  const local = { host: "Aleks-Mac-Mini.local", name: "aleks-mac-mini" };
+  const known = new Set(["canary-env", "queue"]);
+  const remote = liveUnlistedAgents("team2027", roster, known, { remote: true, local }, now);
+  assert([...remote.keys()].join() === "canary", `roster-only: a live unknown agent hosted HERE gets a row; known, endpoints, stale, offline and other machines' don't (${[...remote.keys()].join()})`);
+  assert(remote.get("canary")?.harness === "claude" && remote.get("canary")?.id === "local.CANARY", "roster-only: carries the card's harness and principal");
+  const localSpace = liveUnlistedAgents("paw", roster, known, { remote: false, local }, now);
+  assert([...localSpace.keys()].sort().join() === "canary,evals", "roster-only: on a local space every live unknown agent counts");
+  const row = { name: "canary", host: { label: "aleks-mac-mini", via: "mesh" as const, here: true }, folder: "", mesh: "idle", live: true, durable: false, conflictPids: [], inbox: { kind: "none" as const }, busy: false, unmanaged: true, unregistered: { agent: "claude", via: "roster" as const }, harness: "claude" };
+  const out = formatStatus([row as never], now);
+  assert(out.includes("canary") && out.includes("live (unmanaged)") && out.includes("unregistered claude seat — live on the mesh"), `roster-only: renders live with an honest note (${out.split("\n").find((l) => l.includes("canary"))?.trim()})`);
+}
+
 if (failures > 0) {
   console.error(`\n${failures} paw status check(s) failed`);
   process.exit(1);
@@ -643,6 +663,7 @@ console.log("\nall paw status checks passed 🐾");
   assert(out.includes("gpt-6_2") && out.includes("unregistered codex peer"), "status: an unregistered manager-listed agent renders with its harness and a note");
   assert(/gpt-6_2\s+idle\s+aleks-macbook\s+tmux\s+—/.test(out), "status: an unregistered agent shows — for CWD, never a fabricated folder");
 }
+
 console.log("✓ keeper unstickDecision");
 }
 

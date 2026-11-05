@@ -30,7 +30,7 @@ import { isRemoteSpace, natsTls, pawServer } from "./server.ts";
 import { elsewhereStatus, localMachine, localManagerInstanceId, machineOf, runsElsewhere, type Elsewhere, type Machine } from "./hosted.ts";
 import { readTeleported } from "./teleport-plan.ts";
 import { lagReaderCreds, presenceProbeCreds } from "./remote-creds.ts";
-import { pickRoster, presenceLive, readMeshRoster } from "./roster.ts";
+import { liveUnlistedAgents, pickRoster, presenceLive, readRosterSnapshot } from "./roster.ts";
 import { probePresenceWrites, probeRefusedLine } from "./presence-health.ts";
 import { personaGlyph } from "./personality.ts";
 
@@ -101,7 +101,7 @@ export interface AgentStatus {
   /** The manager lists this agent but paw's registry does NOT (a `cotal_spawn` / `paw cotal spawn`
    *  peer, 2026-09-09): shown so the dashboard agrees with the mesh, with the harness the manager
    *  reports. No folder, pin, transcript or revival — paw only ever knows what the ps row says. */
-  unregistered?: { agent: string };
+  unregistered?: { agent: string; via?: "roster" };
   /** Persona `agent:` pin (claude/opencode/codex/…). Absent = paw's default claude. The claude-only
    *  pin/transcript columns must not be judged against a non-claude harness. */
   harness?: string;
@@ -395,6 +395,8 @@ function stuckOf(space: string, name: string): { stuck?: { since: number; restar
 /** A trailing durability/health note, or "" when the agent is quietly durable. */
 function note(r: AgentStatus, now: number): string {
   if (r.personalityError) return `⚠ ${r.personalityError.replace(/^paw: /, "")}`;
+  if (r.unregistered?.via === "roster")
+    return `unregistered ${r.unregistered.agent} seat — live on the mesh, but no persona here and not in this manager's ps`;
   if (r.unregistered) return `unregistered ${r.unregistered.agent} peer (cotal_spawn) — paw restart registers + revives it`;
   if (r.elsewhere) return elsewhereStatus(r.elsewhere);
   // A hung tool outranks everything: it is WHY the inbox isn't draining, and `paw unstick` is the fix.
@@ -954,9 +956,10 @@ export async function collectStatus(space: string, ctl?: ManagerControl, opts: C
   // agent's presence + card.id live there, and so does an agent a previous manager spared on its way
   // down (cotal >=0.49) — running and reachable, but invisible to this manager's ps.
   const unlisted = agents.map(({ name }) => name).filter((name) => !psByName.has(name));
-  const roster = opts.roster
-    ? Promise.resolve(pickRoster(space, opts.roster(), new Set(unlisted), Date.now()))
-    : humanEndpointAuth(space, "operator").then((a) => readMeshRoster(space, server, a.creds, new Set(unlisted)));
+  // The WHOLE roster, once: the unlisted registered names are looked up in it, and so are live agents no
+  // table here knows (liveUnlistedAgents, below).
+  const snapshot = opts.roster ? Promise.resolve(opts.roster()) : humanEndpointAuth(space, "operator").then((a) => readRosterSnapshot(space, server, a.creds));
+  const roster = snapshot.then((r) => pickRoster(space, r, new Set(unlisted), Date.now()));
   roster.catch(() => {});
   // One CONCURRENT pass over every folder before the rows are built. Serially, 54 agents × 5 git
   // processes was 2.5s of a 3.9s collect — what the Raycast roster sat on showing "Reading the roster…".
@@ -1124,6 +1127,32 @@ export async function collectStatus(space: string, ctl?: ManagerControl, opts: C
       busy: false,
       unregistered: { agent: psRow.agent ?? "?" },
       harness: psRow.agent,
+    });
+  }
+  // Live AGENTS on the roster that neither the registry nor this manager's ps nor the foreground registry
+  // knows — a seat the manager launched and then dropped while its process ran on (team2027 #96), or one
+  // born under a name paw never registered. The ps-row loop above can't see them: they have no ps row.
+  // Shown with what the roster carries and nothing invented; on a remote space only this machine's.
+  const listedHere = new Set([...registered, ...psByName.keys(), ...fgByName.keys()]);
+  const rosterOnly = liveUnlistedAgents(space, await snapshot, listedHere, { remote, local: here }, now);
+  const wanted = opts.only ? opts.only([...rosterOnly.keys()]) : undefined;
+  for (const [name, ros] of rosterOnly) {
+    if (wanted && !wanted.has(name)) continue;
+    const host = machineOf({ card: { host: ros.host, machine: ros.machine }, running: true, local: here });
+    rows.push({
+      name,
+      space,
+      ...(host ? { host } : {}),
+      folder: "",
+      mesh: ros.status,
+      live: true,
+      durable: false,
+      conflictPids: [],
+      inbox: { kind: "none" },
+      busy: false,
+      unmanaged: true,
+      unregistered: { agent: ros.harness ?? "?", via: "roster" },
+      ...(ros.harness ? { harness: ros.harness } : {}),
     });
   }
   // Live agents first, then most-recently-active, so the useful rows sit at the top.

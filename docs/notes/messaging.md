@@ -7,7 +7,7 @@ Moved verbatim from CLAUDE.md (2026-10-02 split). Index: [CLAUDE.md](../../CLAUD
 ("you" below is the DEFAULT human name; on a remote space with a record `human` it is that name —
 `humanPeer(space)`, [remote-mesh.md#human-name](remote-mesh.md#human-name).)
 
-- `src/dm.ts` — `paw dm <name|folder|repo@branch> "<msg>"|-`: **fire-and-forget** DM to an agent. A lone
+- `src/dm.ts` — `paw dm <name|folder|repo@branch|github:owner/repo|…> "<msg>"|-`: **fire-and-forget** DM to an agent. A lone
   **`-`** reads the message on **STDIN** — for producers that hand text to a command rather than build an
   argv (voice dictation prompted it: yapless runs its `output.command` with the transcript on stdin).
   NOT `"$(cat)"` at the call site: dictation is full of apostrophes and newlines so shell quoting breaks
@@ -22,6 +22,15 @@ Moved verbatim from CLAUDE.md (2026-10-02 split). Index: [CLAUDE.md](../../CLAUD
   resolve/spawn the target like chat (folder→spawn, offline name→respawn via `folderForName`). No
   wait/stream mode — the LIVE conversation is `paw chat`, the ASYNC hand-off is dm + inbox (a former
   `--wait` bound the durable consumer and could starve inbox/chat; removed). NEEDS_MANAGER.
+- **A just-launched agent that is alive but not ready (#96, 2026-11-05).** The target forms are one
+  string, `DM_TARGETS` (name, `@name`, folder, `folder@branch`, `owner/repo@branch`,
+  `github:owner/repo[#branch]`, a URL, a host) in every usage/error line — `github:` worked but only `rm`
+  listed it. A slow first boot is waited out inside `ensureAgentSpawned` (first-spawn budget 180s while its
+  pid lives, control-rail.md) and the DM goes out once it joins (same drafted msg id → `msgID` dedup);
+  listed-but-starting still queues to its durable inbox. When the gate throws `SeatAliveError` (pid alive,
+  but the manager dropped the seat / it never joined), `sendAsYou` rethrows with `notSentMessage`: "<name>
+  is alive (pid N) — the DM was NOT sent. Retry once it's reachable: paw dm <name>#<space> '<text>'"
+  (`shellQuote`d). `check:dm`.
 - **A known agent mid-reconnect is waited for, not refused** (`src/dm-wait.ts`, 2026-11-04). The team2027
   broker (one Fly node) redeploys on every push to paw main: a 10–60s gap with the connection down, then
   presence (memory-backed, republished by each endpoint's 2s heartbeat) briefly empty. `paw dm evals` from

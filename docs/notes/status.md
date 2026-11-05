@@ -43,6 +43,16 @@ Moved verbatim from CLAUDE.md (2026-10-02 split). Index: [CLAUDE.md](../../CLAUD
   shows the same. Registering after the fact is still manual (a persona with `agent: codex` + a
   folders.json/agents.json entry — the codex1/opencode1 pattern); `paw adopt` is a claude-transcript
   verb and has no codex form yet. Test: `check:status`.
+- **Roster-only rows (#96, 2026-11-05):** a live `kind: agent` presence that neither the registry, this
+  manager's ps nor the foreground registry knows (a seat the manager launched then dropped, a name paw never
+  registered) gets a row too: `live (unmanaged)`, `unregistered: {agent, via: "roster"}`, note "live on the
+  mesh, but no persona here and not in this manager's ps". On a remote space only cards whose `meta.host`
+  (else `meta.machine`) is THIS machine. `liveUnlistedAgents` (src/roster.ts) is pure; the collect reads the
+  whole roster once (`readRosterSnapshot`). Test: `check:status`.
+- **In-agent default space (#96):** `status` and `log` joined `CALLER_SPACE_VERBS` — inside an agent they
+  read its COTAL_SPACE. The #96 "missing from status" was this: an agent on team2027 ran `paw dm` (→
+  team2027) then `paw status` / `paw log canary` (→ the default `paw` space), where neither canary nor
+  canary-env is registered. Test: `check:dispatch`.
 
 ## failure
 

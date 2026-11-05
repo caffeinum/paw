@@ -132,7 +132,9 @@ Each entry: what it is + the most load-bearing rule. Full notes behind the link.
 ### Control rail → [control-rail.md](docs/notes/control-rail.md)
 - `src/control.ts` — the ONE door to the manager: v0.4 service endpoint (`resolveService` once, invoke
   many); ops `ps`/`spawn`/`inspect`/`despawn`/`attach` (despawn/attach targeted by principal triple);
-  **spawn is an acceptance, not an outcome** — paw then `waitForMeshLive`s; `sharedManagerControl` for
+  **spawn is an acceptance, not an outcome** — paw then waits for the mesh, judging the launched seat by
+  its PID (`src/seat-witness.ts`: COTAL_LIFECYCLE_UID = the reply's uid) and the manager log, never ps alone
+  (#96: a seat the manager dropped is `SeatAliveError`, never "gone"; fresh session + live pid → 180s); `sharedManagerControl` for
   long-running processes, dropped on transport failure or a stale-epoch refusal. `check:rail` covers it.
 
 ### Agents: connector, spawn, attach → [agents.md](docs/notes/agents.md)
@@ -218,7 +220,8 @@ Each entry: what it is + the most load-bearing rule. Full notes behind the link.
   the branch must exist on origin (fail loud, never created). → [addressing.md#github-branches-ownerrepobranch-88](docs/notes/addressing.md#github-branches-ownerrepobranch-88)
 
 ### Status → [status.md](docs/notes/status.md)
-- `src/status.ts` — `paw status`: one row per agent (registered + unregistered ps peers); INBOX lag is
+- `src/status.ts` — `paw status`: one row per agent (registered + unregistered ps peers + live roster-only
+  agents hosted here, #96; inside an agent it reads that agent's space); INBOX lag is
   the zombie detector (`?` on query failure, never a fabricated 0); `failure` from synthetic API-error
   turns; `busy` = paw's inference, distinct from the mesh's `working`; `--json`. → [status.md#srcstatusts](docs/notes/status.md#srcstatusts)
 

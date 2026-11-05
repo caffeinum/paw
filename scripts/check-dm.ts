@@ -103,6 +103,21 @@ assert(/nothing was sent$|nothing was sent \(/.test(waitExpiredMessage({ server:
   assert(authErr === "Authorization Violation" && calls === 1 && t === 0, "a non-retryable error (auth) throws at once, no wait");
 }
 
+// ── #96: the usage names every target form; a live-but-unready seat says the DM was NOT sent ─────
+{
+  const { DM_TARGETS, notSentMessage, shellQuote } = await import("../src/dm.ts");
+  const { SeatAliveError } = await import("../src/addressing.ts");
+  const { registry } = await import("@cotal-ai/core");
+  const cmd = registry.all<{ kind: "command"; name: string; usage?: string }>("command").find((c) => c.name === "dm");
+  for (const form of ["github:owner/repo", "owner/repo@branch", "folder@branch", "folder", "name"])
+    assert(DM_TARGETS.includes(form) && !!cmd?.usage?.includes(form), `dm usage lists ${form}`, cmd?.usage ?? "no dm command registered");
+  assert(shellQuote("hi") === "hi" && shellQuote("it's done") === `'it'\\''s done'`, "shellQuote: bare word as is, an apostrophe survives", shellQuote("it's done"));
+  const e = new SeatAliveError('paw: "canary" was launched as pid 49934 and its process is alive', { name: "canary", space: "team2027", pids: [49934] });
+  const m = notSentMessage(e, "hi there");
+  console.log(`    → ${m.replace(/\n/g, " ⏎ ")}`);
+  assert(m.includes("alive (pid 49934)") && m.includes("the DM was NOT sent") && m.endsWith("paw dm canary#team2027 'hi there'"), "not sent: alive, NOT sent, the exact retry command", m);
+}
+
 if (failures) {
   console.error(`\n${failures} check(s) FAILED`);
   process.exit(1);

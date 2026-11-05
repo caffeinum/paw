@@ -43,6 +43,8 @@ const {
   restartQuestion,
   restartRefusal,
   unreachableHint,
+  SeatAliveError,
+  FIRST_SPAWN_READY_MS,
 } = await import("../src/addressing.ts");
 const { readResumeId } = await import("../src/session.ts");
 const { withFileLockAsync } = await import("../src/lock.ts");
@@ -173,6 +175,142 @@ try {
     };
     await ensureAgentSpawned(ctl, { space: "g5", name: "dead", cwd: folder, probePresence: healthy, timing: fast }).catch((e: Error) => (err = e.message));
     assert(err.includes("its process is gone (ps row: status=exited)"), "ready timeout + process exited → throws loud");
+  }
+
+  // --- #96: the readiness verdict asks the OS, not only the manager's ps ---------------------------
+  {
+    // The canary case: the manager launched pid 4242, then dropped the seat and retired its uid. ps has
+    // no row; the pid runs and is on the mesh. Not "gone", not a connector refusal — and said at once.
+    const calls: string[] = [];
+    transcriptAged("g96a", "canary", folder, undefined);
+    const ctl = fakeCtl(() => [], calls);
+    (ctl as unknown as { spawn: (a: { name: string }) => Promise<unknown> }).spawn = async (a) => {
+      calls.push(`spawn ${a.name}`);
+      return { ok: true, data: { name: a.name, owner: "local", actor: "ACTOR96", uid: "uid96" } };
+    };
+    const asked: string[] = [];
+    let err: Error | undefined;
+    const t = Date.now();
+    await ensureAgentSpawned(ctl, {
+      space: "g96a",
+      name: "canary",
+      cwd: folder,
+      probePresence: healthy,
+      timing: { ...fast, readyMs: 60_000, firstSpawnMs: 180_000 },
+      witness: {
+        pids: (uid) => (asked.push(`pids ${uid}`), [4242]),
+        alive: () => true,
+        retired: (uid) => `static retirement canary: retired 1 issuance(s) bound to uid ${uid}`,
+        onMesh: async (id) => (asked.push(`onMesh ${id}`), true),
+      },
+    }).catch((e: Error) => (err = e));
+    const m = err?.message ?? "";
+    console.log(`    → ${m.split("\n")[0]}`);
+    assert(err instanceof SeatAliveError && (err as InstanceType<typeof SeatAliveError>).pids.join() === "4242", "#96 disowned: throws SeatAliveError carrying the live pid");
+    assert(m.includes("launched as pid 4242") && m.includes("alive") && m.includes("it is on the mesh") && m.includes("no longer lists it"), "#96 disowned: says launched, alive, on the mesh, unlisted");
+    assert(m.includes("bound to uid uid96") && m.includes(`paw restart canary#g96a`), "#96 disowned: quotes the manager's retirement line and names the fix");
+    assert(!m.includes("process is gone") && !m.includes("connector") && !m.includes("paw release"), "#96 disowned: no false 'gone', no connector/old-manager blame");
+    assert(asked.includes("pids uid96") && asked.includes("onMesh local.ACTOR96"), `#96 disowned: the OS is asked for THIS launch's uid, the roster for its principal (${asked.join(", ")})`);
+    assert(Date.now() - t < 15_000, `#96 disowned: the verdict comes from the evidence, not after the 60s budget (${Date.now() - t}ms)`);
+  }
+  {
+    // A slow first boot: listed, alive, joins after the 60s-equivalent → waited for, said out loud, ready.
+    const calls: string[] = [];
+    transcriptAged("g96b", "slow", folder, undefined);
+    let joinAt = Infinity;
+    const ctl = fakeCtl(() => (calls.includes("spawn slow") ? [{ name: "slow", status: "running", mesh: Date.now() >= joinAt ? "idle" : "absent" }] : []), calls);
+    const spawn = (ctl as unknown as { spawn: (a: { name: string }) => Promise<unknown> }).spawn;
+    (ctl as unknown as { spawn: (a: { name: string }) => Promise<unknown> }).spawn = async (a) => {
+      joinAt = Date.now() + 1500;
+      return spawn(a);
+    };
+    const said: string[] = [];
+    const r = await ensureAgentSpawned(ctl, {
+      space: "g96b",
+      name: "slow",
+      cwd: folder,
+      probePresence: healthy,
+      timing: { ...fast, readyMs: 600, firstSpawnMs: 5000 },
+      say: (l) => said.push(l),
+      witness: { pids: () => [5151], alive: () => true, retired: () => undefined, onMesh: async () => false },
+    });
+    console.log(`    → ${said.join(" | ")}`);
+    assert(r.spawned && !r.starting, `#96 slow joiner: live once it joins, not 'starting' (${JSON.stringify(r)})`);
+    assert(said.some((l) => l.includes("launched as pid 5151, alive, not on the mesh yet after") && l.includes("waiting up to 5s")), "#96 slow joiner: says launched as pid N, alive, not on the mesh yet");
+  }
+  {
+    // Not first: a resumed session keeps the plain budget even with its pid alive → 'starting' at readyMs.
+    const calls: string[] = [];
+    transcriptAged("g96c", "resumed", folder, 3_600_000);
+    const ctl = fakeCtl(() => (calls.includes("spawn resumed") ? [{ name: "resumed", status: "running", mesh: "absent" }] : []), calls);
+    const said: string[] = [];
+    const t = Date.now();
+    const r = await ensureAgentSpawned(ctl, {
+      space: "g96c",
+      name: "resumed",
+      cwd: folder,
+      probePresence: healthy,
+      restartLive: "allow",
+      timing: { ...fast, readyMs: 600, firstSpawnMs: 30_000 },
+      say: (l) => said.push(l),
+      witness: { pids: () => [6161], alive: () => true, retired: () => undefined, onMesh: async () => false },
+    });
+    assert(r.starting === true && Date.now() - t < 5000, `#96 resumed session: plain budget, then starting (${JSON.stringify(r)})`);
+    assert(said.some((l) => l.includes("launched as pid 6161, alive, not on the mesh yet")), `#96 resumed session: the starting line names the live pid (${said.join(" | ")})`);
+  }
+  {
+    // Truly dead: it ran, exited, and the manager reaped + retired it → still a loud failure, with the
+    // honest reason (it ran and exited), never a "never launched" connector story.
+    let n = 0;
+    const ctl = fakeCtl(() => [], []);
+    (ctl as unknown as { spawn: (a: { name: string }) => Promise<unknown> }).spawn = async (a) => ({ ok: true, data: { name: a.name, owner: "local", actor: "ACTORDEAD", uid: "uiddead" } });
+    let err = "";
+    const tDead = Date.now();
+    await ensureAgentSpawned(ctl, {
+      space: "g96d",
+      name: "dead96",
+      cwd: folder,
+      probePresence: healthy,
+      timing: { ...fast, readyMs: 600, firstSpawnMs: 30_000 },
+      witness: { pids: () => (n++ < 1 ? [7171] : []), alive: () => true, retired: () => undefined, onMesh: async () => false },
+    }).catch((e: Error) => (err = e.message));
+    console.log(`    → ${err.split("\n")[0]}`);
+    assert(err.includes("its process is gone (ps row: missing; it ran as pid 7171 and exited)"), "#96 dead pid: gone, naming the pid that ran");
+    assert(Date.now() - tDead < 12_000, `#96 dead pid: the extension ends when the pid dies, not at the 30s budget (${Date.now() - tDead}ms)`);
+    assert(!err.includes("connector may have refused"), "#96 dead pid: no connector-refusal claim once a process was seen");
+  }
+  {
+    // Never seen at all: the connector-refusal hypothesis is still offered, marked as a possibility.
+    let err = "";
+    await ensureAgentSpawned(fakeCtl(() => [], []), {
+      space: "g96e",
+      name: "ghost",
+      cwd: folder,
+      probePresence: healthy,
+      timing: fast,
+      witness: { pids: () => [], alive: () => false, retired: () => undefined, onMesh: async () => false },
+    }).catch((e: Error) => (err = e.message));
+    assert(err.includes("process is gone (ps row: missing)") && err.includes("no process carrying this launch was ever seen"), "#96 never launched: says no process was ever seen");
+  }
+  {
+    const { seatPidsIn } = await import("../src/seat-witness.ts");
+    const ps = [
+      "  100     1 /bin/zsh",
+      "49934 95273 /Users/a/.local/bin/claude --x server:cotal COTAL_NAME=canary COTAL_SPACE=team2027 COTAL_LIFECYCLE_UID=plw",
+      "49991 49934 node mcp.js COTAL_NAME=canary COTAL_SPACE=team2027 COTAL_LIFECYCLE_UID=plw",
+      " 8071 27863 rg COTAL_NAME=canary  COTAL_SPACE=team2027",
+      "  300   200 claude COTAL_NAME=canary COTAL_SPACE=team2027 COTAL_LIFECYCLE_UID=older",
+      "  400   200 claude COTAL_NAME=canary COTAL_SPACE=paw COTAL_LIFECYCLE_UID=plw",
+    ].join("\n");
+    assert(seatPidsIn(ps, { space: "team2027", name: "canary", uid: "plw" }).join() === "49934", "seatPidsIn: this launch's root pid only (not its children, an older uid, another space)");
+    assert(seatPidsIn(ps, { space: "team2027", name: "canary-env", uid: "plw" }).length === 0, "seatPidsIn: name is exact");
+    const { seatRetirement } = await import("../src/manager-log.ts");
+    const log = join(home, "manager.log");
+    writeFileSync(log, "2026-11-05T03:00:00.000Z static retirement canary: retired 1 issuance(s) bound to uid plw\n");
+    const from = 0;
+    writeFileSync(log, "2026-11-05T03:00:00.000Z static retirement canary: retired 1 issuance(s) bound to uid old\n2026-11-05T03:40:51.333Z static retirement canary: retired 1 issuance(s) bound to uid plw\n");
+    assert(!!seatRetirement(log, "canary", "plw", from)?.endsWith("bound to uid plw") && !seatRetirement(log, "canary", "nope", from), "seatRetirement: finds THIS uid's retirement line only");
+    assert(!seatRetirement(log, "canary-env", "plw", from), "seatRetirement: name is exact");
   }
 
   // --- fix 3: the global loop — running + offline + idle transcript, with the fleet offline too ------
@@ -452,8 +590,8 @@ try {
 
   // --- fix 2: spawn-lock waiters outlast a legitimate holder ---------------------------------------
   assert(
-    SPAWN_LOCK_HOLD_MS >= STARTING_GRACE_MS + 2 * SESSION_RELEASE_MS + RETIREMENT_RETRY_MS + 2 * SPAWN_ACCEPT_MS + SPAWN_READY_MS,
-    `lock: wait (${SPAWN_LOCK_HOLD_MS / 1000}s) covers grace + session release + held-name retries + retirement re-drive + two spawn calls + readiness`,
+    SPAWN_LOCK_HOLD_MS >= STARTING_GRACE_MS + 2 * SESSION_RELEASE_MS + RETIREMENT_RETRY_MS + 2 * SPAWN_ACCEPT_MS + FIRST_SPAWN_READY_MS && FIRST_SPAWN_READY_MS > SPAWN_READY_MS,
+    `lock: wait (${SPAWN_LOCK_HOLD_MS / 1000}s) covers grace + session release + held-name retries + retirement re-drive + two spawn calls + the first-spawn readiness budget`,
   );
   assert(SPAWN_LOCK_OPTS.maxWaitMs === SPAWN_LOCK_HOLD_MS && SPAWN_LOCK_OPTS.staleMs === SPAWN_LOCK_HOLD_MS, "lock: waiters wait the hold bound, and a live holder isn't aged out sooner");
   {

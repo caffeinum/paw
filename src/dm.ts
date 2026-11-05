@@ -1,5 +1,5 @@
 /**
- * `paw dm <name|folder|repo@branch> <message…>` — fire-and-forget DM to an agent.
+ * `paw dm <name|folder|repo@branch|github:owner/repo|…> <message…>` — fire-and-forget DM to an agent.
  *
  * Send it and walk away; read the reply later with `paw inbox`. It sends under the stable "you"
  * identity (the same peer `paw inbox`/`paw chat` use), NOT cotal's throwaway `send` peer — that one
@@ -25,6 +25,7 @@ import {
   humanEndpointAuth,
   cliRestartConsent,
   ensureAgentSpawned,
+  SeatAliveError,
   stuckWarning,
   type RestartConsent,
   folderForName,
@@ -47,6 +48,10 @@ import { elsewhereFiles, runsElsewhere } from "./hosted.ts";
 import { resolveSpace } from "./lifecycle.ts";
 import { humanPeer } from "./names.ts";
 import { pawServer } from "./server.ts";
+
+/** Every target form `paw dm` resolves (resolveTarget): an agent name, a folder, a local worktree, a
+ *  GitHub repo/branch (cloned on first use), a URL or a website host. One string for every usage line. */
+export const DM_TARGETS = "<name|@name|folder|folder@branch|owner/repo@branch|github:owner/repo[#branch]|https://…|host>";
 
 const tty = process.stdout.isTTY === true;
 const wrap = (code: string) => (s: string) => (tty ? `\x1b[${code}m${s}\x1b[0m` : s);
@@ -87,7 +92,7 @@ function parseArgs(argv: string[]): Args {
     else if (a === "--restart") out.restart = true;
     else if (a === "--wait-for") out.waitFor = argv[++i];
     else if (a.startsWith("--"))
-      throw new Error(`paw: unknown flag "${a}" — dm <name|folder|repo@branch> "<message>" [--name n] [--model m] [--restart] [--wait-for s] [--space s]`);
+      throw new Error(`paw: unknown flag "${a}" — dm ${DM_TARGETS} "<message>" [--name n] [--model m] [--restart] [--wait-for s] [--space s]`);
     else words.push(a);
   }
   out.target = words.shift();
@@ -218,6 +223,17 @@ async function resolveByName(
   throw new Error(waitExpiredMessage({ name: target, server: budget.server, budgetMs: budget.ms, meshUp: ep.presenceView().state === "current" }));
 }
 
+/** POSIX single-quote a word for a copy-pasteable command line. Pure. */
+export function shellQuote(word: string): string {
+  return /^[A-Za-z0-9_@%+=:,./#-]+$/.test(word) ? word : `'${word.replace(/'/g, `'\\''`)}'`;
+}
+
+/** A just-launched agent whose process is alive but couldn't take the DM: say it is alive, that the DM
+ *  was NOT sent, and the exact command that sends it once the agent is reachable (#96). Pure. */
+export function notSentMessage(e: SeatAliveError, text: string): string {
+  return `${e.message}\npaw: "${e.agent}" is alive (pid ${e.pids.join(", ")}) — the DM was NOT sent. Retry once it's reachable: paw dm ${e.agent}#${e.space} ${shellQuote(text)}`;
+}
+
 /** `ep.start()`, waiting out a DOWN mesh (refused/reset/DNS/timeout) within the budget. Auth and anything
  *  unrecognised still throw at once. Re-calling start() on the same endpoint is safe (startResilient). */
 function startWithin(ep: CotalEndpoint, budget: Budget): Promise<void> {
@@ -299,7 +315,10 @@ export async function sendAsYou(opts: {
   ep.on("error", (e: Error) => console.error(c.red("! " + e.message)));
   try {
     await startWithin(ep, budget);
-    const tgt = await resolveTarget(ep, space, server, target, model, nameFlag, restartLive, byName, budget);
+    const tgt = await resolveTarget(ep, space, server, target, model, nameFlag, restartLive, byName, budget).catch((e: unknown) => {
+      if (e instanceof SeatAliveError) throw new Error(notSentMessage(e, text));
+      throw e;
+    });
     // Attachments are paths on THIS machine — an agent running elsewhere would be told about files it can't open.
     const files = attachedPlaceholders(text);
     const away = files.length ? runsElsewhere(space, tgt.name, ep.getRoster().find((p) => p.card.id === tgt.id)?.card) : undefined;
@@ -370,7 +389,7 @@ async function dm(argv: string[]): Promise<void> {
         `       To message the EXISTING agent "${nameFlag}", drop --name: \`paw dm ${nameFlag} "${target ?? "…"}"\` — from a directory where that name isn't also a folder, or use its path.`,
     );
   if (!target || (!peeled.body && !peeled.paths.length))
-    throw new Error('paw: usage — dm <name|folder|repo@branch> "<message>" (or `-` to read it on stdin, or an image path to attach)');
+    throw new Error(`paw: usage — dm ${DM_TARGETS} "<message>" (or \`-\` to read it on stdin, or an image path to attach)`);
 
   // Checked BEFORE the attachments are staged: an ambiguous target must fail without having copied
   // files into the space first. sendAsYou re-checks, so every sender carries the guard.
@@ -391,7 +410,7 @@ const dmCommand: Command = {
   name: "dm",
   group: "Mesh",
   summary: "fire-and-forget DM to an agent — read replies with `paw inbox` (use `paw chat` for a live conversation)",
-  usage: 'dm <name|folder|repo@branch>[#space] "<message>"|- [--name n] [--model m] [--restart] [--wait-for s] [--space s]   (x#space = x --space space; --restart = may restart it if it looks stuck, else a tty asks; --wait-for s = how long to wait for a known agent or the mesh to come back, default 20, env PAW_DM_WAIT)',
+  usage: `dm ${DM_TARGETS}[#space] "<message>"|- [--name n] [--model m] [--restart] [--wait-for s] [--space s]   (x#space = x --space space; --restart = may restart it if it looks stuck, else a tty asks; --wait-for s = how long to wait for a known agent or the mesh to come back, default 20, env PAW_DM_WAIT)`,
   run: (a) => dm([...a.raw]),
 };
 

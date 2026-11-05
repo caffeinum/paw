@@ -270,8 +270,8 @@ assert(
   const saved = { p: process.env.PAW_SPACE, c: process.env.COTAL_SPACE };
   delete process.env.PAW_SPACE;
   process.env.COTAL_SPACE = "team-x";
-  for (const v of ["open", "attach", "chat", "start", "dm", "claude", "cron"]) assert(CALLER_SPACE_VERBS.has(v) && defaultSpaceFor(v) === "team-x", `caller space: \`paw ${v}\` inside an agent of team-x → team-x`);
-  assert(defaultSpaceFor("status") === "paw" && defaultSpaceFor("inbox") === "paw", "caller space: other verbs keep the current space");
+  for (const v of ["open", "attach", "chat", "start", "dm", "claude", "cron", "status", "log"]) assert(CALLER_SPACE_VERBS.has(v) && defaultSpaceFor(v) === "team-x", `caller space: \`paw ${v}\` inside an agent of team-x → team-x`);
+  assert(defaultSpaceFor("inbox") === "paw" && defaultSpaceFor("rm") === "paw", "caller space: other verbs keep the current space");
   process.env.PAW_SPACE = "test-env";
   assert(defaultSpaceFor("open") === "test-env", "caller space: PAW_SPACE wins");
   delete process.env.PAW_SPACE;

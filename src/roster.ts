@@ -57,18 +57,38 @@ export function pickRoster(space: string, roster: Presence[], want: Set<string>,
 }
 
 /**
- * Read the presence roster for `want` names. Waits for the presence watch's initial snapshot (fast — a
- * KV read, not a heartbeat wait) rather than sleeping a fixed time. A snapshot that times out means the
- * roster may be partial, so the result is only ever used to say "running", never "not running".
+ * The live AGENTS on the roster that no other source of a status row covers (`known`: registered,
+ * manager-listed, foreground). A seat the manager launched and then dropped, or one born under a name
+ * paw never registered, is on the mesh and in nobody's table — and a dashboard that omits a live agent
+ * answers the wrong question (#96). On a REMOTE space only the ones whose card says THIS machine
+ * launched them: another machine's agents are its own `paw status`'s rows. Pure.
  */
-export async function readMeshRoster(
+export function liveUnlistedAgents(
   space: string,
-  server: string,
-  creds: string | undefined,
-  want: Set<string>,
-  timeoutMs = 2500,
-): Promise<Map<string, RosterEntry>> {
-  if (want.size === 0) return new Map();
+  roster: Presence[],
+  known: Set<string>,
+  o: { remote: boolean; local: { host: string; name: string } },
+  now: number,
+): Map<string, RosterEntry & { harness?: string }> {
+  const out = new Map<string, RosterEntry & { harness?: string }>();
+  for (const p of roster) {
+    const name = p.card.name;
+    if (p.card.kind !== "agent" || known.has(name) || isStandIn(space, name, p.card.id) || !presenceLive(p, now)) continue;
+    const host = metaString(p.card.meta, "host");
+    const machine = metaString(p.card.meta, "machine");
+    if (o.remote && !(host ? host === o.local.host : machine === o.local.name)) continue;
+    const harness = metaString(p.card.meta, "connector");
+    const next = { id: p.card.id, status: p.status, ts: p.ts, ...(host ? { host } : {}), ...(machine ? { machine } : {}), ...(harness ? { harness } : {}) };
+    const cur = out.get(name);
+    if (!cur || next.ts > cur.ts) out.set(name, next);
+  }
+  return out;
+}
+
+/** One snapshot of the whole presence roster. Waits for the presence watch's initial snapshot (a KV
+ *  read, not a heartbeat wait). A snapshot that times out may be partial, so it only ever says
+ *  "running", never "not running". */
+export async function readRosterSnapshot(space: string, server: string, creds: string | undefined, timeoutMs = 2500): Promise<Presence[]> {
   const ep = new CotalEndpoint({
     space,
     servers: server,
@@ -84,8 +104,20 @@ export async function readMeshRoster(
   await ep.start();
   try {
     await ep.waitForPresenceSnapshot(timeoutMs);
-    return pickRoster(space, ep.getRoster(), want, Date.now());
+    return ep.getRoster();
   } finally {
     await ep.stop().catch(() => {});
   }
+}
+
+/** Read the presence roster for `want` names (see {@link readRosterSnapshot}). */
+export async function readMeshRoster(
+  space: string,
+  server: string,
+  creds: string | undefined,
+  want: Set<string>,
+  timeoutMs = 2500,
+): Promise<Map<string, RosterEntry>> {
+  if (want.size === 0) return new Map();
+  return pickRoster(space, await readRosterSnapshot(space, server, creds, timeoutMs), want, Date.now());
 }
