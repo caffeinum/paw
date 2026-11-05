@@ -83,6 +83,10 @@ export interface EnsureOpts {
    *  own mesh work (paw chat's inbox + endpoint) concurrently with the manager/mailbox steps. Never
    *  called when ensure() fails before that point. */
   onMeshUp?: () => void;
+  /** Don't print the "adopting an existing manager paw doesn't own — its runtime may not be <r>" advisory.
+   *  For callers that only stop/start agents on whatever manager runs (relocate): the runtime is the one
+   *  the agent already ran under, so the line is noise there (and printed mid-dry-run, it read as a fault). */
+  quietForeignManager?: boolean;
 }
 
 /** Machine-wide default space. A folder maps to an agent NAME, not a space, so every paw agent
@@ -506,57 +510,90 @@ export function finishDetachedRestart(space: string, agent: string): void {
   }
 }
 
-// ---- detached self-adopt (mirror of the self-restart handoff above) ----------------------------
-function adoptPidPath(space: string): string {
-  return join(pawDir(space), "adopt.pid");
+// ---- detached self-handoffs: a verb that would kill its own caller (adopt, relocate) ---------------
+/** A verb run from INSIDE the agent/claude it is about to stop: it hands the work to a detached child
+ *  (see {@link spawnDetachedHandoff}) whose progress lands in `<kind>.log`, guarded by `<kind>.pid`. */
+export type HandoffKind = "adopt" | "relocate";
+function handoffPidPath(space: string, kind: HandoffKind): string {
+  return join(pawDir(space), `${kind}.pid`);
 }
-/** Where a detached self-adopt streams progress (the claude that launched it is dead by the time the
- *  new mesh agent is live — this log is the record). */
-export function adoptLogPath(space: string): string {
-  return join(pawDir(space), "adopt.log");
+/** Where a detached handoff streams progress (its caller is dead by the time it finishes — this log is the record). */
+export function handoffLogPath(space: string, kind: HandoffKind): string {
+  return join(pawDir(space), `${kind}.log`);
 }
-/** True while a detached self-adopt is in flight (its pidfile names a LIVE process). Stops a second
- *  `paw adopt .` from stacking a competing takeover. */
-export function adoptInFlight(space: string): boolean {
-  const pid = readPid(adoptPidPath(space));
+/** True while a detached handoff of `kind` is in flight (its pidfile names a LIVE process). */
+export function handoffInFlight(space: string, kind: HandoffKind): boolean {
+  const pid = readPid(handoffPidPath(space, kind));
   return pid !== undefined && alive(pid);
 }
+/** The env var a detached handoff child carries, so it knows not to hand off again and to drop its pidfile. */
+export function handoffEnvKey(kind: HandoffKind): string {
+  return `PAW_${kind.toUpperCase()}_INFLIGHT`;
+}
 /**
- * Hand a self-adopt to a DETACHED child that outlives the claude it's about to kill. `paw adopt .` run
- * from INSIDE a claude session can't finish synchronously: making the session a mesh agent means killing
- * the very claude whose Bash tool is running this command. So the caller spawns a detached `paw adopt`
- * (plain node, reparented to launchd, COTAL_* stripped so it isn't seen as an agent, PAW_ADOPT_INFLIGHT
- * set so it drops the pidfile when done) that runs the SYNCHRONOUS make-before-break takeover — it has
- * no claude ancestor, so it brings the new agent up, confirms it live, THEN kills the old claude.
- * Pidfile-guarded so it can't stack. Returns false if an adopt is already in flight.
+ * Run `paw <sub…>` as a DETACHED child that outlives its caller: plain node, reparented to launchd,
+ * COTAL_* stripped (it isn't an agent, so it can't re-detach), `PAW_<KIND>_INFLIGHT=1` set so it drops
+ * the pidfile when done. The in-flight CHECK + pidfile WRITE run under a lock so two near-simultaneous
+ * calls can't both spawn (TOCTOU) — a caller's own handoffInFlight check is advisory, this one is
+ * authoritative. Returns false if one is already in flight.
  */
-export function spawnDetachedAdopt(space: string, folder: string, sessionId: string, name: string | undefined): boolean {
-  // Serialize the in-flight CHECK + pidfile WRITE under a lock so two near-simultaneous `paw adopt .`
-  // can't both pass the check and spawn competing takeovers of the same session (TOCTOU). The caller's
-  // own adoptInFlight check is advisory — this locked one is authoritative.
-  return withFileLock(`${adoptPidPath(space)}.lock`, () => {
-    if (adoptInFlight(space)) return false;
-    const out = openSync(adoptLogPath(space), "a");
+export function spawnDetachedHandoff(space: string, kind: HandoffKind, sub: string[], extraEnv: NodeJS.ProcessEnv = {}): boolean {
+  return withFileLock(`${handoffPidPath(space, kind)}.lock`, () => {
+    if (handoffInFlight(space, kind)) return false;
+    const out = openSync(handoffLogPath(space, kind), "a");
     try {
-      const sub = ["adopt", folder, "--resume", sessionId, "--force", "--no-attach", "--space", space];
-      if (name) sub.push("--name", name);
       const [cmd, args] = pawViaNode(sub);
-      const env = loggedDaemonEnv({ PAW_ADOPT_INFLIGHT: "1" });
+      const env = loggedDaemonEnv({ ...extraEnv, [handoffEnvKey(kind)]: "1" });
       for (const k of Object.keys(env)) if (k.startsWith("COTAL_")) delete env[k]; // child isn't an agent
       const child = spawn(cmd, args, { detached: true, stdio: ["ignore", out, out], env });
       child.unref();
-      if (child.pid) writePid(adoptPidPath(space), child.pid);
+      if (!child.pid) throw new Error(`paw: couldn't spawn the detached ${kind} (no pid) — see ${handoffLogPath(space, kind)}`);
+      writePid(handoffPidPath(space, kind), child.pid);
       return true;
     } finally {
       closeSync(out);
     }
   });
 }
+/** A detached handoff child's final step: drop the in-flight pidfile. */
+export function finishDetachedHandoff(space: string, kind: HandoffKind): void {
+  rmSync(handoffPidPath(space, kind), { force: true });
+}
+
+/** Where a detached self-adopt streams progress (the claude that launched it is dead by the time the
+ *  new mesh agent is live — this log is the record). */
+export function adoptLogPath(space: string): string {
+  return handoffLogPath(space, "adopt");
+}
+/** True while a detached self-adopt is in flight. Stops a second `paw adopt .` stacking a competing takeover. */
+export function adoptInFlight(space: string): boolean {
+  return handoffInFlight(space, "adopt");
+}
+/**
+ * Hand a self-adopt to a DETACHED child that outlives the claude it's about to kill. `paw adopt .` run
+ * from INSIDE a claude session can't finish synchronously: making the session a mesh agent means killing
+ * the very claude whose Bash tool is running this command. The child runs the SYNCHRONOUS
+ * make-before-break takeover — it has no claude ancestor, so it brings the new agent up, confirms it
+ * live, THEN kills the old claude. Returns false if an adopt is already in flight.
+ */
+export function spawnDetachedAdopt(space: string, folder: string, sessionId: string, name: string | undefined): boolean {
+  const sub = ["adopt", folder, "--resume", sessionId, "--force", "--no-attach", "--space", space];
+  if (name) sub.push("--name", name);
+  return spawnDetachedHandoff(space, "adopt", sub);
+}
 /** The detached self-adopt child's final step: drop the in-flight pidfile. No wake-dm — unlike a restart
  *  (which nudges the agent to resume its task), an adopted session comes up idle and the operator
  *  attaches it, so there's nothing to wake. */
 export function finishDetachedAdopt(space: string): void {
-  rmSync(adoptPidPath(space), { force: true });
+  finishDetachedHandoff(space, "adopt");
+}
+
+/** Nudge a revived agent into a turn via `paw dm` (a respawned session sits idle until messaged). Best-effort:
+ *  the caller logs a failure, it never strands a pidfile. */
+export function wakeAgent(space: string, agent: string, text: string): { ok: boolean; detail: string } {
+  const [cmd, args] = pawViaNode(["dm", agent, text, "--space", space]);
+  const r = spawnSync(cmd, args, { stdio: "inherit", timeout: 90_000, env: daemonEnv() });
+  return r.status === 0 ? { ok: true, detail: "" } : { ok: false, detail: r.error?.message ?? `paw dm exited ${r.status ?? r.signal}` };
 }
 
 /** Where `cotal up --detach` records the detached mesh server's pid. Root-RELATIVE, so it must use
@@ -1618,7 +1655,7 @@ export function runtimeMismatchAction(switchRuntime: boolean, envRuntime: string
   return switchRuntime || envRuntime !== undefined ? "switch" : "warn";
 }
 
-async function ensureManagerUp(space: string, server: string, switchRuntime = false, probe?: () => Promise<boolean>): Promise<MailboxScan | undefined> {
+async function ensureManagerUp(space: string, server: string, switchRuntime = false, probe?: () => Promise<boolean>, quietForeign = false): Promise<MailboxScan | undefined> {
   const runtime = resolveRuntime(space);
   let previous: Runtime | undefined; // the known-good runtime we killed on a switch — the rollback target
 
@@ -1645,7 +1682,7 @@ async function ensureManagerUp(space: string, server: string, switchRuntime = fa
       // PREFERENCE (paw runtime <r> / paw start) gets silently adopted-around instead of honored — with
       // no visible switch message, so a "why did my agents come up pty when I set tmux" mystery has NO
       // diagnostic trail. Costs nothing to always print; only fires on the actually-surprising path.
-      if (!ownedByUs) {
+      if (!ownedByUs && !quietForeign) {
         console.error(
           `paw: adopting an existing manager paw doesn't own — its runtime may not be ${runtime}. ` +
             `\`paw down\` then re-run to force ${runtime}.`,
@@ -2029,7 +2066,7 @@ export async function ensure(opts: EnsureOpts = {}): Promise<{ space: string; se
         if (!answered) await ensureRemoteMesh(space, server);
         probe = async () => answered;
       }
-      mailboxes = await ensureManagerUp(space, server, opts.switchRuntime, probe);
+      mailboxes = await ensureManagerUp(space, server, opts.switchRuntime, probe, opts.quietForeignManager);
     }
     // Any mesh-up context keeps "you" reachable — so a fire-and-forget `paw dm` gets a reply later.
     if (opts.needMesh || opts.needManager) ensureMailbox(space, mailboxes);
@@ -2059,11 +2096,11 @@ export function reviveListPath(space: string): string {
  * it always did. A probe that didn't answer drops `ctl`'s rails: ensure() may then have started a
  * fresh manager, and a rail resolved against the one before would address a ghost.
  */
-export async function ensureManagerOn(ctl: ManagerControl, ensureSpace: string = ctl.space, opts: { onMeshUp?: () => void } = {}): Promise<void> {
+export async function ensureManagerOn(ctl: ManagerControl, ensureSpace: string = ctl.space, opts: { onMeshUp?: () => void; quietForeignManager?: boolean } = {}): Promise<void> {
   let answered = false;
   const managerProbe = async () => (answered = (await ctl.ps(2000, READY_PROBE_MS)).ok);
   const shared = ensureSpace === ctl.space && ctl.server === pawServer(ensureSpace);
-  await ensure({ needMesh: true, needManager: true, space: ensureSpace, ...(shared ? { managerProbe } : {}), ...(opts.onMeshUp ? { onMeshUp: opts.onMeshUp } : {}) });
+  await ensure({ needMesh: true, needManager: true, space: ensureSpace, ...(shared ? { managerProbe } : {}), ...(opts.onMeshUp ? { onMeshUp: opts.onMeshUp } : {}), ...(opts.quietForeignManager ? { quietForeignManager: true } : {}) });
   if (!answered) await ctl.close();
 }
 
@@ -2079,11 +2116,11 @@ export function ensureSpaceFor(space: string): string {
 export async function withEnsuredManager<T>(
   space: string,
   fn: (ctl: ManagerControl, server: string) => Promise<T>,
-  opts: { ensureSpace?: string } = {},
+  opts: { ensureSpace?: string; quietForeignManager?: boolean } = {},
 ): Promise<T> {
   const server = pawServer(space);
   return withManagerControl(space, server, async (ctl) => {
-    await ensureManagerOn(ctl, opts.ensureSpace ?? space);
+    await ensureManagerOn(ctl, opts.ensureSpace ?? space, opts.quietForeignManager ? { quietForeignManager: true } : {});
     return fn(ctl, server);
   });
 }

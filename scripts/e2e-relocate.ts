@@ -11,6 +11,9 @@
  *   5  its claude runs in the new folder on the same session id, and it still knows the secret word
  *   6  `paw relocate skills <tmp>/skills-v2 --yes`: paw moves the folder itself; same session, same word
  *   7  the new project dir's transcript grows; the original (the backup) does not
+ *   8  the AGENT relocates ITSELF (`paw relocate skills <tmp>/skills-v3 --yes` from its own Bash tool): the
+ *      call returns the handoff message, a detached child stops it, moves the folder, starts it again on
+ *      the same session and DMs it; it still knows the word
  *
  *   PAW_HOME=$(mktemp -d) PAW_SPACE=relocate-test-$$ PAW_RELEASE=dev PAW_COTAL_ROOT=$(mktemp -d) \
  *   PAW_BEADS_DIR=$(mktemp -d) node scripts/e2e-relocate.ts
@@ -19,7 +22,7 @@
  */
 import { execFileSync, spawn } from "node:child_process";
 import { createConnection, createServer } from "node:net";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -86,6 +89,7 @@ const base = realpathSync(mkdtempSync(join(tmpdir(), "pawreloc-")));
 const v1 = join(base, "2027-skills");
 const v2 = join(base, "skills");
 const v3 = join(base, "skills-v2");
+const v4 = join(base, "skills-v3");
 const projects = join(homedir(), ".claude", "projects");
 const proj = (p: string) => join(projects, sanitizePath(p));
 const secret = `ZEBRA-${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
@@ -165,7 +169,38 @@ try {
   await ask("6", `One more time: the secret word? Reply by calling cotal_dm to "you" with exactly that word followed by -OK6 and nothing else.`, t6);
   const st = await paw("status", name);
   console.log(st.out.replace(/^/gm, "    "));
-  ok("6 paw status shows it in the new folder", st.out.includes(name));
+  ok("6 paw status shows it in the new folder", st.out.includes(name), (st.out + st.err).slice(-600));
+
+  // 8 ─ the agent relocates itself (the canary-env feedback: no `nohup sh -c "sleep 5; …" &` hack)
+  const selfOut = join(base, "self-relocate.out");
+  const envs = ["PAW_HOME", "PAW_SPACE", "PAW_RELEASE", "PAW_SERVER", "PAW_COTAL_ROOT", "PAW_BEADS_DIR", "PAW_MODEL", "PAW_RUNTIME"].map((k) => `${k}=${process.env[k]}`).join(" ");
+  const script = join(base, "move-me.sh");
+  writeFileSync(script, `#!/bin/sh\n${envs} ${process.execPath} ${join(REPO, "bin/paw.ts")} relocate ${name} ${v4} --yes > ${selfOut} 2>&1\n`);
+  const go = await paw("dm", name, `The operator wants you to move to a new folder, ${v4}, as part of a paw relocate test. Run \`sh ${script}\` with your Bash tool, once — it ends this session and resumes it in the new folder, which is expected.`);
+  ok("8 asked it to relocate itself", go.code === 0, (go.out + go.err).slice(-400));
+  let handed = await until(() => (existsSync(selfOut) && readFileSync(selfOut, "utf8").includes("progress:") ? readFileSync(selfOut, "utf8") : undefined), 150_000);
+  const fromAgent = !!handed;
+  if (!handed) {
+    // A model may decline to move its own folder; the mechanics are still checked, with the caller marked as the
+    // agent the way cotal marks its tool processes (COTAL_NAME/COTAL_SPACE).
+    console.log("    (the agent didn't run it — simulating its Bash tool with COTAL_NAME/COTAL_SPACE)");
+    execFileSync("sh", [script], { env: { ...process.env, COTAL_NAME: name, COTAL_SPACE: space } });
+    handed = readFileSync(selfOut, "utf8");
+  }
+  console.log((handed ?? "").replace(/^/gm, "    "));
+  ok(`8 the caller (${fromAgent ? "the agent's own Bash tool" : "simulated"}) got the handoff message (THIS session ends, resumes in the new folder)`, !!handed?.includes("THIS session ends") && handed.includes(v4), handed?.slice(-600));
+  const s4 = await until(() => {
+    const s = meshAgentSession(space, name);
+    return s && s.pid !== s3?.pid && s.cwd === v4 ? s : undefined;
+  }, 120_000);
+  ok("8 it runs in skills-v3 on the same session", s4?.sessionId === pin, JSON.stringify(s4));
+  ok("8 folder moved, persona follows", existsSync(v4) && !existsSync(v3) && readCwd(personaFilePath(space, name)) === v4);
+  const relLog = join(process.env.PAW_HOME!, "spaces", space, "relocate.log");
+  const logged = await until(() => (existsSync(relLog) && readFileSync(relLog, "utf8").includes("✓ relocated") ? readFileSync(relLog, "utf8") : undefined), 60_000);
+  ok("8 the detached child logged the cutover", !!logged, existsSync(relLog) ? readFileSync(relLog, "utf8").slice(-800) : "no log");
+  ok("8 the in-flight pidfile is gone", !!(await until(() => !existsSync(join(process.env.PAW_HOME!, "spaces", space, "relocate.pid")) || undefined, 120_000)));
+  const t8 = `${secret}-OK8`;
+  await ask("8", `Still there? Reply by calling cotal_dm to "you" with exactly the secret word followed by -OK8 and nothing else.`, t8);
 } catch (e) {
   fails++;
   console.error("✗ e2e aborted:", (e as Error).stack ?? e);
@@ -175,7 +210,7 @@ try {
   if (s) process.kill(s.pid, "SIGTERM");
   removeMesh(space);
   nats.kill("SIGTERM");
-  for (const p of [v1, v2, v3]) rmSync(proj(p), { recursive: true, force: true });
+  for (const p of [v1, v2, v3, v4]) rmSync(proj(p), { recursive: true, force: true });
   rmSync(base, { recursive: true, force: true });
 }
 console.log(fails ? `\n${fails} failure(s)` : "\nall relocate e2e checks passed");

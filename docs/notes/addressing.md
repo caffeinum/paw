@@ -362,7 +362,7 @@ CLI-side only (ensureAgentSpawned runs in the caller) — live without a release
 
 ## paw relocate
 
-- `src/relocate.ts` — `paw relocate <agent>[#<space>] <new-folder> [--all] [--dry-run] [--yes]` (2026-10-28):
+- `src/relocate.ts` — `paw relocate <agent>[#<space>] <new-folder> [--all] [--archive-old] [--dry-run] [--yes]` (2026-10-28):
   the agent's FOLDER moved (or should move) on disk; the agent follows it. Incident: `skills` ran in
   `~/Github/team2027/2027-skills`; the operator ran `mv 2027-skills skills`; its `cwd:` was gone, so it
   couldn't come back, and its transcript sat under `-Users-aleks-Github-team2027-2027-skills`. (`paw rename`
@@ -401,6 +401,25 @@ CLI-side only (ensureAgentSpawned runs in the caller) — live without a release
 - **Said, not done:** `~/.claude.json` per-folder settings (`mcpServers`, `allowedTools`, …) are noted, not
   copied (claude writes that file without a lock); a moved git checkout with linked worktrees (or a moved
   linked worktree) gets the `git -C <new> worktree repair` hint.
+- **Self-relocate, `--archive-old`, space pick, links (2026-11-04, canary-env's feedback):**
+  - An agent relocating ITSELF (`COTAL_NAME`/`COTAL_SPACE` of a running mover, or an ancestor process holding
+    its session — `callerIsMover`) can't run the cutover inline: the stop kills the command. Every check
+    (disk + live blockers, consent) runs in the CALLER, then `spawnDetachedHandoff(space, "relocate", …)` (the
+    generalized self-adopt machinery in lifecycle.ts: `<kind>.pid` under a lock, `<kind>.log`, COTAL_* stripped,
+    `PAW_RELOCATE_INFLIGHT=1`) runs `paw relocate … --yes`; the caller prints "THIS session ends and resumes in
+    <new folder>" + the log path. The child waits `SELF_HANDOFF_GRACE_MS` (5s, so the tool result lands), cuts
+    over, then DMs each caller-mover (`PAW_RELOCATE_WAKE`) "relocated … resume" — or "failed … see relocate.log"
+    after a rollback — and drops the pidfile. The caller's own fresh transcript doesn't count as "busy".
+  - `--archive-old`: both folders exist → rename the OLD one to `<folder>.archived` (`.archived.2`, …) and
+    re-point to the new one. Still never merges; the blocked message names the flag. Rolled back like a move.
+  - Space: `relocate` is a caller-space verb (src/space.ts). A DEFAULTED space (no `#space`/`--space`/PAW_SPACE —
+    `noteSpaceChosen` in bin/paw.ts) that lacks the agent gives way to the ONE local space that has it (said on
+    stderr); several, or a chosen space → fail loud printing each exact `paw relocate <a>#<s> <folder>`.
+  - relocate ensures the manager with `quietForeignManager`: it stops/starts on whatever manager already runs
+    the agent, so "adopting an existing manager paw doesn't own — its runtime may not be …" doesn't apply.
+  - Plan notes for links that break (`linkNotes`): absolute symlinks inside the folder into it (`.git`,
+    `node_modules` skipped, 20k-entry cap said), symlinks beside it and in `$HOME` pointing at it, and each
+    linked git worktree by path (+ `worktree repair`). Said, never fixed — paw can't see every link on disk.
 - `paw rename <word> …` where the word is neither an agent nor a folder here used to die on
   `ENOENT: lstat '…/2027-skills'`; it now says `no agent named "2027-skills"` and, when a registered agent's
   folder by that basename is gone, points at `paw relocate <agent> <new-folder>` (`noAgentNamed`, src/rename.ts).
