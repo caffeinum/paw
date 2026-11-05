@@ -6,7 +6,7 @@ before changing anything; this page is only a map. Commits: a34b0b1, 3f4311a, 65
 
 ## What it is
 
-`paw sleep [<name>…] [--after 60m | --off] [--now [--force]] [--sweep] [--space s]`. **Opt-in per agent**
+`paw sleep [<name>…] [--after 60m | --off] [--now [--force]] [--sweep [--dry-run]] [--space s]`. **Opt-in per agent**
 (`hibernate:` in the persona, set by `paw sleep <name> --after 60m`) because no automation touches a
 live agent without the operator's go. The `paw global` keeper tick sweeps ONLY opted-in agents: idle
 ≥ the threshold (minimum 60m = the prompt-cache TTL), mesh idle, no turn in flight, inbox drained, no
@@ -40,3 +40,37 @@ External wakes (`paw dm`/`chat`/`start`) go through `prepareWake` in `ensureAgen
   while it yields the name to a boot). The wake gate gives such a row `STARTING_GRACE_MS` before
   restarting it (2026-10-11: the host's own wake restarted the seat `paw chat @evals` had just spawned).
   `paw sleep` polls ps after the despawn and refuses to record a sleep while the seat is still listed.
+
+## Every space, live evidence, sandboxed agents (2026-11-04)
+
+The operator opted all 19 team2027 agents into `--after 12h`; one slept in a day. Three causes:
+
+- **The keeper swept only its own space.** launchd runs `paw global --space paw`, and the tick swept `paw`
+  alone. Now `sweepOtherSpaces` (src/sleep.ts, called from src/global.ts after the tick, like cron — even when
+  global fails) sweeps every `$PAW_HOME/spaces/<s>` with an opted-in persona, each on its own
+  `withManagerControl` handle, ONLY where this machine's manager for it already runs (`managerProcs`, never
+  `ensure` — no mesh/manager is started to sweep). On a remote space the rail is pinned to our instance and the
+  sweep skips any agent `hosting()` says is not ours. A failing space is logged, the rest continue.
+- **Stale task records.** Claude Code writes `api-request-blob`/`api-request` lines: copies of whole request
+  bodies, old tool results included, with NO `timestamp`. `scanActivity` let a timestamp-less line through the
+  "since the process started" filter, so a Monitor/Bash started (and TaskStop'd) weeks before re-opened forever
+  (firegoat-cli's bbdqj945e from 10-20, mcp-intern's five). Lines without a timestamp are now skipped. Second
+  belt: a Bash/Monitor task is believed only while a LIVE process backs it — a shell under the agent's claude, or a
+  process it detached (stamped COTAL_NAME/COTAL_SPACE, reparented to launchd, younger than its claude — `paw
+  top`/`tidy`'s attribution). No live process → "stale task record(s), ignored" in the verdict. An async
+  agent/workflow runs inside claude (no process), so its record still blocks. Monitor's newer `expires in 30m`
+  wording now gives it a deadline. Nothing is ever killed.
+- **Sandboxed agents read as "0 live processes hold the session"** — their claude runs in the VM, invisible to
+  the host's session index. The `ProcInspector` now reads a `sandbox: container` agent INSIDE its VM:
+  `container exec <live id> ps -eo pid=,ppid=,etimes=,args=` → the image's claude (exactly one), its shells, and
+  anything else parented to the VM's init (that dies with the container, so it blocks — e.g. fly's
+  `flyctl agent`). ppid-0 processes are `container exec` sessions (port forwarder, `!cmd`), not the agent's. A VM
+  that can't be read stays awake: "can't tell what is running (its VM can't be inspected: …)". Sleeping one
+  reaps its container exactly like `paw stop` (`reapSandbox`, after the record is written — the seat is gone
+  either way and a DM must still wake it; a container that won't go is logged and fails loud). Waking is the
+  ordinary `ensureAgentSpawned` → sandbox launch (the launcher removes any leftover container of the agent first);
+  the mailbox daemon's PATH has `container`.
+
+`paw sleep --sweep --dry-run [--space s]` prints each opted-in agent's verdict and sleeps nobody (no DM-cursor
+read, no ensure — a space whose manager isn't running here fails loud). Tests: check:sleep G1–G5 (hermetic,
+injectable inspector/status/sleep), `scripts/e2e-sleep-spaces.ts` (two real isolated managers + one without).

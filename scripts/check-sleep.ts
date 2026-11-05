@@ -249,5 +249,179 @@ let psErr = "";
 await seatLingers({ ps: async () => ({ ok: false, error: "down" }) } as unknown as Parameters<typeof seatLingers>[0], "z", "local.Z", 0).catch((e: Error) => (psErr = e.message));
 ok("B a silent ps is no proof the seat went — it throws", /can't confirm the seat is gone/.test(psErr), psErr);
 
+// ── 2026-11-04: stale transcript tasks, sandboxed agents, the multi-space keeper sweep, --dry-run ──────────
+const { mkdirSync } = await import("node:fs");
+const S = await import("../src/sleep.ts");
+const { personaTranscriptRoots } = await import("../src/session.ts");
+const { setFolderName, personaFilePath } = await import("../src/addressing.ts");
+
+// G1: Claude Code's api-request-blob lines copy whole request bodies (old tool results included) with NO
+// timestamp — live: firegoat-cli's Monitor bbdqj945e, TaskStop'd on 10-20, kept "open" by a blob after it.
+const monStart = t("2026-10-02T10:00:00Z", { type: "user", message: { content: [{ type: "tool_result", content: "Monitor started (task bbdq). You will be notified" }] } });
+const monStop = t("2026-10-02T10:02:00Z", { type: "assistant", message: { content: [{ type: "tool_use", name: "TaskStop", input: { task_id: "bbdq" } }] } });
+const blob = JSON.stringify({ type: "api-request-blob", sessionId: "x", message: { role: "user", content: [{ type: "tool_result", content: "Monitor started (task bbdq). You will be notified" }] } });
+ok("G1 a timestamp-less request blob replaying a stopped Monitor does not reopen it", openBackgroundTasks([monStart, monStop, blob], since, at("2026-10-02T11:00:00Z")).length === 0);
+ok("G1 nor does one from a previous incarnation", openBackgroundTasks([blob], at("2026-10-02T11:00:00Z"), at("2026-10-02T11:01:00Z")).length === 0);
+const monExpires = t("2026-10-02T10:00:00Z", { type: "user", message: { content: [{ type: "tool_result", content: "Monitor started (task mE, expires in 30m unless the source ends first; …)" }] } });
+ok("G1 a Monitor that 'expires in 30m' is open before then", openBackgroundTasks([monExpires], since, at("2026-10-02T10:20:00Z")).join() === "mE");
+ok("G1 … and closed after", openBackgroundTasks([monExpires], since, at("2026-10-02T10:31:00Z")).length === 0);
+ok("G1 task kinds are reported", JSON.stringify(scanActivity([bash, wf, monForever], since, at("2026-10-02T10:01:00Z")).open.map((o) => o.kind).sort()) === '["agent","bash","monitor"]');
+
+// G2: a transcript task is believed only while a live process backs it.
+const troot = mkdtempSync(join(tmpdir(), "pawsleep-tr-"));
+mkdirSync(join(troot, "proj"));
+writeFileSync(join(troot, "proj", "PIN.jsonl"), [bash, wf].join("\n") + "\n");
+const startedAt = at("2026-10-02T09:30:00Z");
+const nowG = at("2026-10-02T12:00:00Z");
+const host = (shells: string[], detached: string[] = []) => ({ ok: true as const, where: "host" as const, startedAt, shells, detached });
+const noProc = S.readActivity("PIN", host([]), nowG, [troot]);
+ok("G2 a Bash task record with no live process is stale, not running", !noProc.tasks.includes("bA") && noProc.stale?.join() === "bA", JSON.stringify(noProc));
+ok("G2 an async agent task runs in-process — its record alone still blocks", noProc.tasks.join() === "wW");
+writeFileSync(join(troot, "proj", "PIN.jsonl"), bash + "\n");
+const staleOnly = S.readActivity("PIN", host([]), nowG, [troot]);
+const dStale = sleepDecision(base, H, nowG, staleOnly, []);
+ok("G2 a stale record does not block the sleep, and the verdict says it was ignored", dStale.sleep && /stale task record\(s\), ignored — no live process: bA/.test(dStale.reason), dStale.reason);
+const withShell = S.readActivity("PIN", host(["9 /bin/zsh -c source …shell-snapshots… eval 'sleep 600'"]), nowG, [troot]);
+ok("G2 with a live shell under claude the task is real and blocks", withShell.tasks.join() === "bA" && !sleepDecision(base, H, nowG, withShell, []).sleep);
+const withOrphan = S.readActivity("PIN", host([], ["77 pnpm dev"]), nowG, [troot]);
+ok("G2 a reparented orphan carrying its name backs the task too", withOrphan.tasks.join() === "bA" && !sleepDecision(base, H, nowG, withOrphan, []).sleep);
+writeFileSync(join(troot, "proj", "EMPTY.jsonl"), "");
+ok("G2 a host orphan alone (no open task) does not block — it outlives the seat", sleepDecision(base, H, nowG, S.readActivity("EMPTY", host([], ["77 x"]), nowG, [troot]), []).sleep);
+ok("G2 an uninspectable process table keeps it awake", /can't tell what is running \(boom\)/.test(sleepDecision(base, H, nowG, S.readActivity("PIN", { ok: false, unknown: "boom" }, nowG, [troot]), []).reason));
+// host attribution: shells under claude + orphans stamped with its name, younger than its claude
+const { parsePs } = await import("../src/fleet.ts");
+const hostPs = parsePs([
+  "  400     1   400 02:00:00 0:01.00 node cotald.ts supervise --space s",
+  "  500   400   500 01:00:00 0:01.00 /Users/x/.local/bin/claude --resume PIN COTAL_NAME=a COTAL_SPACE=s",
+  "  501   500   500 00:10:00 0:00.10 /bin/zsh -c source /Users/x/.claude/shell-snapshots/s.sh eval 'sleep 600' COTAL_NAME=a COTAL_SPACE=s",
+  "  600     1   600 00:20:00 0:00.10 node dev-server.js COTAL_NAME=a COTAL_SPACE=s",
+  "  601     1   601 9-00:00:00 0:00.10 node old-server.js COTAL_NAME=a COTAL_SPACE=s",
+  "  602     1   602 00:05:00 0:00.10 node other.js COTAL_NAME=b COTAL_SPACE=s",
+].join("\n"));
+const groupOrph = (await import("../src/fleet.ts")).groupProcs(hostPs, "s").orphans.filter((o) => o.agent === "a" && o.tree[0].ageMs <= 3_600_000).map((o) => o.tree[0].pid);
+ok("G2 host attribution: only its own orphans younger than its claude", groupOrph.join() === "600", groupOrph.join());
+
+// G3: sandboxed agents — read INSIDE the VM (container exec … ps).
+const vmPs = (extra: string[] = []) =>
+  [
+    "      1       0  309735 /.cz-init -- docker-entrypoint.sh /usr/local/bin/claude --dangerously-load-development-channels server:cotal",
+    "      2       1  309735 /usr/local/bin/claude --dangerously-load-development-channels server:cotal --resume PIN",
+    "     31       2  309734 node --optimize-for-size /x/connector-claude-code/dist/mcp.cjs",
+    " 250238       0       0 ps -eo pid=,ppid=,etimes=,args=",
+    " 250100       0       3 cat /proc/net/tcp /proc/net/tcp6",
+    ...extra,
+  ].join("\n");
+const vmQuiet = S.vmSessionProcs(vmPs(), nowG);
+ok("G3 an idle VM: one claude, no shells, exec sessions (ppid 0) are not the agent's", vmQuiet.ok && vmQuiet.where === "vm" && !vmQuiet.shells.length && !vmQuiet.detached.length && vmQuiet.startedAt === nowG - 309_735_000, JSON.stringify(vmQuiet));
+const vmShell = S.vmSessionProcs(vmPs(["    300       2     100 /bin/bash -c source /root/.claude/shell-snapshots/s.sh eval 'npm test'"]), nowG);
+ok("G3 a shell under the VM's claude is seen", vmShell.ok && vmShell.shells.length === 1 && vmShell.shells[0].startsWith("300 "));
+const vmFly = S.vmSessionProcs(vmPs(["  124154       1    9000 /root/.fly/bin/flyctl agent run /root/.fly/agent-logs/1.log"]), nowG);
+ok("G3 a process detached to the VM's init is seen", vmFly.ok && vmFly.detached.length === 1 && vmFly.detached[0].startsWith("124154 "));
+const twoSeats = S.vmSessionProcs(vmPs(["      9       1     10 /usr/local/bin/claude --resume OTHER"]), nowG);
+ok("G3 two claudes in the VM → can't tell", !twoSeats.ok && /2 claude processes/.test(twoSeats.unknown));
+ok("G3 an empty ps → can't tell", !S.vmSessionProcs("", nowG).ok);
+
+// The sweep, with the sandbox verdict coming through an injectable inspector.
+const mkAgent = (space: string, name: string, keys: Record<string, string>) => {
+  const folder = mkdtempSync(join(tmpdir(), `pawsleep-${name}-`));
+  setFolderName(space, folder, name);
+  ensurePersonaFile(space, name);
+  setPersonaKeys(space, name, { cwd: folder, resume: `PIN-${name}`, ...keys });
+  return folder;
+};
+mkAgent("sb", "vm1", { hibernate: "60m", sandbox: "container" });
+const vmRoot = personaTranscriptRoots(personaFilePath("sb", "vm1"))[0];
+ok("G3 a sandboxed agent's transcripts are read from its own claude dir", /sandbox/.test(vmRoot), vmRoot);
+mkdirSync(join(vmRoot, "proj"), { recursive: true });
+writeFileSync(join(vmRoot, "proj", "PIN-vm1.jsonl"), "");
+const row = (name: string) => ({ ...base, name, pin: `PIN-${name}`, activeMs: at("2026-10-02T09:00:00Z") });
+const sweepCtl = {} as unknown as Parameters<typeof S.sleepSweep>[1];
+const seen: string[] = [];
+const sweepDeps = (rows: ReturnType<typeof row>[], inspect: import("../src/sleep.ts").ProcInspector, slept: string[] = []) => ({
+  now: nowG,
+  inspect,
+  cursorSeq: async () => 1,
+  status: async () => ({ rows, ps: new Map() }),
+  sleep: (async (_s: string, _c: unknown, name: string) => void slept.push(name)) as unknown as typeof S.sleepAgent,
+});
+const vmDown = await S.sleepSweep("sb", sweepCtl, sweepDeps([row("vm1")], (o) => (seen.push(`${o.name}:${o.sandboxed}`), { ok: false, unknown: "its VM can't be inspected: not running" })));
+ok("G3 the inspector is told the agent is sandboxed", seen.join() === "vm1:true", seen.join());
+ok("G3 a VM that can't be inspected stays awake with that reason", !vmDown.slept.length && /can't tell what is running \(its VM can't be inspected/.test(vmDown.skipped[0]?.reason ?? ""), JSON.stringify(vmDown));
+const vmSlept: string[] = [];
+const vmOk = await S.sleepSweep("sb", sweepCtl, sweepDeps([row("vm1")], () => S.vmSessionProcs(vmPs(), nowG), vmSlept));
+ok("G3 an idle, inspectable VM sleeps", vmSlept.join() === "vm1", JSON.stringify(vmOk));
+const vmBusy = await S.sleepSweep("sb", sweepCtl, sweepDeps([row("vm1")], () => S.vmSessionProcs(vmPs(["  124154       1    9000 /root/.fly/bin/flyctl agent run"]), nowG)));
+ok("G3 work detached inside the VM keeps it awake (it dies with the container)", !vmBusy.slept.length && /in its VM outside claude/.test(vmBusy.skipped[0]?.reason ?? ""), JSON.stringify(vmBusy));
+
+const vmCtl = () => {
+  let gone = false;
+  return { space: "sb", ps: async () => ({ ok: true, data: gone ? [] : [{ name: "vm1", status: "running", mesh: "idle", id: "local.VM1" }] }), despawn: async () => ((gone = true), { ok: true }) } as unknown as Parameters<typeof sleepAgent>[1];
+};
+// sleeping a sandboxed agent cleans its container up (like paw stop), after recording it asleep
+const reaped: string[] = [];
+await sleepAgent("sb", vmCtl(), "vm1", "test", { cursorSeq: 1, force: true, reap: async (_s, n) => (reaped.push(n), ["old-ctr"]) }).catch((e: Error) => console.log("   (sleepAgent threw:", e.message, ")"));
+ok("G3 sleeping a sandboxed agent reaps its container", reaped.join() === "vm1" && isAsleep("sb", "vm1"));
+clearSleep("sb", "vm1");
+let reapErr = "";
+await sleepAgent("sb", vmCtl(), "vm1", "test", { cursorSeq: 1, force: true, reap: async () => { throw new Error("delete failed"); } }).catch((e: Error) => (reapErr = e.message));
+ok("G3 a container that won't go fails loud — but the agent IS recorded asleep (a DM still wakes it)", /asleep, but its container was not cleaned up/.test(reapErr) && isAsleep("sb", "vm1"), reapErr);
+clearSleep("sb", "vm1");
+
+// G4/G5 agents are host agents: their transcripts are read from ~/.claude/projects — a throwaway HOME, never the real one.
+const realHome = process.env.HOME;
+process.env.HOME = mkdtempSync(join(tmpdir(), "pawsleep-home-"));
+mkdirSync(join(process.env.HOME, ".claude", "projects", "proj"), { recursive: true });
+for (const n of ["d1", "d2", "a2"]) writeFileSync(join(process.env.HOME, ".claude", "projects", "proj", `PIN-${n}.jsonl`), "");
+// G4: --dry-run prints verdicts, sleeps nobody, reads no DM cursor.
+mkAgent("dr", "d1", { hibernate: "60m" });
+mkAgent("dr", "d2", { hibernate: "60m" });
+const drSlept: string[] = [];
+let cursorRead = false;
+const dry = await S.sleepSweep("dr", sweepCtl, {
+  ...sweepDeps([row("d1"), { ...row("d2"), busy: true }], () => host([]), drSlept),
+  cursorSeq: async () => ((cursorRead = true), 1),
+  dryRun: true,
+});
+ok("G4 dry run: the eligible agent is listed as would-sleep", dry.would.map((w) => w.name).join() === "d1" && dry.skipped.map((x) => x.name).join() === "d2", JSON.stringify(dry));
+ok("G4 dry run: nobody slept, no cursor read", !drSlept.length && !dry.slept.length && !cursorRead);
+const { spawnSync } = await import("node:child_process");
+const cli = (args: string[]) => spawnSync(process.execPath, [join(import.meta.dirname, "..", "bin", "paw.mjs"), "sleep", ...args], { encoding: "utf8", env: { ...process.env, PAW_SPACE: "dr", PAW_RELEASE: "dev" } });
+const noSweep = cli(["--dry-run"]);
+ok("G4 --dry-run without --sweep fails loud", noSweep.status !== 0 && /--dry-run goes with --sweep/.test(noSweep.stderr), noSweep.stderr.trim());
+const noMgr = cli(["--sweep", "--dry-run", "--space", "dr"]);
+ok("G4 --sweep --dry-run on a space with no manager here fails loud and starts nothing", noMgr.status !== 0 && /no manager of this machine runs space "dr"/.test(noMgr.stderr), noMgr.stderr.trim());
+
+// G5: the keeper sweeps EVERY space with opted-in agents, each on its own handle, failures isolated.
+mkAgent("k1", "a1", { hibernate: "60m" });
+mkAgent("k2", "a2", { hibernate: "60m" });
+mkAgent("k3", "a3", { hibernate: "60m" });
+mkAgent("k4", "a4", {}); // registered, not opted in
+const listed = S.spacesWithOptIns();
+ok("G5 spaces with opted-in agents are found (and only those)", ["k1", "k2", "k3", "sb", "dr"].every((x) => listed.includes(x)) && !listed.includes("k4"), listed.join());
+const sleptBy: Record<string, string[]> = {};
+const handles: string[] = [];
+const logs: string[] = [];
+const res = await S.sweepOtherSpaces("k1", {
+  spaces: () => ["k1", "k2", "k3", "dr"],
+  managerUp: (s) => s !== "k3",
+  withCtl: async (s, fn) => (handles.push(s), fn({ space: s } as unknown as Parameters<typeof S.sleepSweep>[1])),
+  sweep: async (s, ctl) => {
+    if ((ctl as unknown as { space: string }).space !== s) throw new Error("wrong handle");
+    if (s === "dr") throw new Error("broker down");
+    const slept: string[] = (sleptBy[s] = []);
+    return S.sleepSweep(s, ctl, sweepDeps([row(`a${s.slice(1)}`)], () => host([]), slept));
+  },
+  log: (l) => logs.push(l),
+});
+ok("G5 the primary space is left to the tick's own sweep", !handles.includes("k1"));
+ok("G5 another space is swept on its own manager handle", handles.join() === "k2,dr" && sleptBy.k2?.join() === "a2", JSON.stringify({ handles, sleptBy }));
+ok("G5 a space whose manager isn't running here is skipped, nothing started", res.find((r) => r.space === "k3")?.skipped === "no manager of this machine runs it");
+ok("G5 one space failing is logged and does not stop the others", res.find((r) => r.space === "dr")?.error === "broker down" && logs.some((l) => /sleep sweep of dr failed: broker down/.test(l)) && logs.some((l) => /put to sleep in k2: a2/.test(l)), logs.join(" | "));
+
+// remote space: an opted-in agent this machine doesn't host is skipped, named (never slept)
+const remoteRows = await S.sleepSweep("dr", sweepCtl, { ...sweepDeps([row("d1")], () => host([])), status: async () => ({ rows: [row("d1")], ps: new Map() }) });
+ok("G5 local space: hosting is always here", remoteRows.slept.join() === "d1");
+
+process.env.HOME = realHome;
 console.log(fails ? `\n${fails} FAILED` : "\nall passed");
 process.exit(fails ? 1 : 0);

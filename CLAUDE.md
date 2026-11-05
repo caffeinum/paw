@@ -189,7 +189,10 @@ Each entry: what it is + the most load-bearing rule. Full notes behind the link.
   `personas/replaced-by-teleport/`, never deleted; bypasses no other blocker). A stale source blocks; a clone a
   failed run made is removed. → [teleport.md](docs/notes/teleport.md)
 - `src/sleep.ts`, `src/sleep-host.ts`, `src/sleep-state.ts` — `paw sleep`: opt-in hibernation; the
-  mailbox hosts a stand-in presence so a DM wakes the agent and the backlog is re-published. → [sleep.md](docs/notes/sleep.md)
+  mailbox hosts a stand-in presence so a DM wakes the agent and the backlog is re-published. The keeper sweeps
+  EVERY space with opt-ins whose manager runs here (never starts one); a transcript Bash/Monitor task counts only
+  with a live process behind it (timestamp-less request-blob lines are ignored); sandboxed agents are read inside
+  their VM (`container exec ps`); `--sweep --dry-run` prints verdicts. → [sleep.md](docs/notes/sleep.md)
 
 ### Addressing → [addressing.md](docs/notes/addressing.md)
 - `src/addressing.ts` — folder→name registry (`folders.json` defaults + `agents.json` extras, never

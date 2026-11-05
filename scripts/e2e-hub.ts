@@ -47,7 +47,7 @@ const { hubSocketPath } = await import("../src/hub/paths.ts");
 const { liveSessionProcs } = await import("../src/named.ts");
 const { readResumeId, personaValue } = await import("../src/session.ts");
 const { collectStatus, inboxText } = await import("../src/status.ts");
-const { dmLastSeq, extraChannels, readActivity, sleepAgent, sleepDecision } = await import("../src/sleep.ts");
+const { dmLastSeq, extraChannels, rowActivity, liveInspector, sleepAgent, sleepDecision } = await import("../src/sleep.ts");
 const { isAsleep, standInHolder } = await import("../src/sleep-state.ts");
 const { pawServer } = await import("../src/server.ts");
 
@@ -171,7 +171,7 @@ try {
   const s = "h3";
   const pin = readResumeId(personaFilePath(space, s))!;
   const row = (await collectStatus(space, ctl, { git: false })).rows.find((r) => r.name === s)!;
-  const decision = sleepDecision(row, 0, Date.now(), readActivity(pin), extraChannels(personaValue(personaFilePath(space, s), "subscribe")));
+  const decision = sleepDecision(row, 0, Date.now(), rowActivity(space, { name: s, pin }, liveInspector()), extraChannels(personaValue(personaFilePath(space, s), "subscribe")));
   ok("sleep gate passes for idle h3", decision.sleep, decision.reason);
   await sleepAgent(space, ctl, s, "e2e-hub", { cursorSeq: await dmLastSeq(space), snapshotActiveMs: row.activeMs });
   for (let i = 0; i < 30 && standInHolder(space, s) === undefined; i++) await sleep(1000);

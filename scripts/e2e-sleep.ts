@@ -20,7 +20,7 @@ import { ensure, stop } from "../src/lifecycle.ts";
 import { liveSessionProcs } from "../src/named.ts";
 import { readResumeId } from "../src/session.ts";
 import { collectStatus } from "../src/status.ts";
-import { dmLastSeq, extraChannels, readActivity, sleepAgent, sleepDecision } from "../src/sleep.ts";
+import { dmLastSeq, extraChannels, liveInspector, rowActivity, sleepAgent, sleepDecision } from "../src/sleep.ts";
 import { isAsleep, readWakingRecord, standInHolder, writeSleepRecord } from "../src/sleep-state.ts";
 import { personaValue } from "../src/session.ts";
 import { pawServer } from "../src/server.ts";
@@ -97,7 +97,7 @@ try {
   const cursorSeq = await dmLastSeq(space);
   const { rows } = await collectStatus(space, ctl, { git: false });
   const row = rows.find((r) => r.name === sleeper)!;
-  const activity = readActivity(pin);
+  const activity = rowActivity(space, { name: sleeper, pin }, liveInspector());
   const d = sleepDecision(row, 0, Date.now(), activity, extraChannels(personaValue(personaFilePath(space, sleeper), "subscribe")));
   ok("sleep gate passes for an idle agent with nothing running", d.sleep, d.reason);
   const stale = await sleepAgent(space, ctl, sleeper, "e2e", { cursorSeq, snapshotActiveMs: (row.activeMs ?? 0) - 1 }).then(
