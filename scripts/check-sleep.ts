@@ -55,6 +55,12 @@ ok("monitor with timeout is open before its deadline", openBackgroundTasks([mon]
 ok("monitor with timeout is closed after its deadline", openBackgroundTasks([mon], since, at("2026-10-02T10:11:00Z")).length === 0);
 ok("persistent monitor stays open through an event", openBackgroundTasks([monForever, monEvent], since, at("2026-10-02T12:00:00Z")).join() === "mP");
 ok("TaskStop closes an async workflow", openBackgroundTasks([wf, stop], since, at("2026-10-02T10:03:00Z")).length === 0);
+const agentBg = t("2026-10-02T10:00:00Z", { type: "user", toolUseResult: { isAsync: true, status: "async_launched", agentId: "aB", description: "x" } });
+const agentDone = t("2026-10-02T10:04:00Z", { type: "queue-operation", operation: "enqueue", content: "<task-notification>\n<task-id>aB</task-id>\n<status>completed</status>\n</task-notification>" });
+const wfReal = t("2026-10-02T10:00:00Z", { type: "user", toolUseResult: { status: "async_launched", taskId: "wR", taskType: "local_workflow", workflowName: "w" } });
+ok("an async Agent (agentId, no taskId) is open — beads-y1eg", openBackgroundTasks([agentBg], since, at("2026-10-02T10:01:00Z")).join() === "aB");
+ok("its task-notification closes it", openBackgroundTasks([agentBg, agentDone], since, at("2026-10-02T10:05:00Z")).length === 0);
+ok("a Workflow is kind workflow, an async Agent kind agent", JSON.stringify(scanActivity([wfReal, agentBg], since, at("2026-10-02T10:01:00Z")).open.map((o) => o.kind).sort()) === '["agent","workflow"]');
 ok("a task from before the process started is ignored", openBackgroundTasks([bash], at("2026-10-02T11:00:00Z"), at("2026-10-02T11:01:00Z")).length === 0);
 
 // shellDescendants

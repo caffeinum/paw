@@ -17,6 +17,7 @@ import { listAgents } from "./addressing.ts";
 import { sendAsYou, sendToPeerId } from "./dm.ts";
 import { messageText, observerEndpoint } from "./feed.ts";
 import { officeClient } from "./office-api.ts";
+import { BackgroundReader } from "./office-background.ts";
 import { OFFICE_PEER, OfficeBridge, speechFor, withPresence, type PresenceLike, type TappedMessage } from "./office-bridge.ts";
 import { bridgeStatePath, officeLinkPath, readBridgeState, readOfficeLink, writeBridgeState, type OfficeLink } from "./office-link.ts";
 import { rosterRows, type RosterPresence } from "./office-roster.ts";
@@ -241,6 +242,7 @@ function wire(space: string, server: string, link: OfficeLink, log: (line: strin
   const names = new Map<string, string>();
   tapSpeech(space, ep, bridge, names, log);
 
+  const background = new BackgroundReader(space, log);
   let rowsError = "";
   let rowsBusy = false;
   let gitAt = 0;
@@ -257,7 +259,7 @@ function wire(space: string, server: string, link: OfficeLink, log: (line: strin
         for (const r of rows) gitOf.set(r.name, r.git);
       } else for (const r of rows) r.git = gitOf.get(r.name);
       for (const p of ep.getRoster()) names.set(p.card.id, p.card.name);
-      bridge.setRows(withPresence(rows, ep.getRoster() as PresenceLike[]));
+      bridge.setRows(background.annotate(withPresence(rows, ep.getRoster() as PresenceLike[])));
       if (rowsError) log("roster readable again");
       rowsError = "";
     } catch (e) {
@@ -292,7 +294,7 @@ function wire(space: string, server: string, link: OfficeLink, log: (line: strin
     try {
       const { rows } = await collectStatus(space, await sharedManagerControl(space, server), { roster: () => ep.getRoster(), git: false, only: (all) => new Set(all.filter((n) => want.has(n))) });
       for (const r of rows) r.git = gitOf.get(r.name);
-      bridge.patchRows(withPresence(rows, ep.getRoster() as PresenceLike[]));
+      bridge.patchRows(background.annotate(withPresence(rows, ep.getRoster() as PresenceLike[])));
       fastError = "";
     } catch (e) {
       for (const n of want) dirty.add(n); // the full read every 10s still covers them; logged there

@@ -99,9 +99,12 @@ export function extraChannels(subscribe: string | undefined): string[] {
 }
 
 /** What kind of background task a transcript record opened: a Bash `run_in_background` or a Monitor runs as
- *  a PROCESS (a shell under claude), so it is only believed while one is alive; an async agent/workflow
+ *  a PROCESS (a shell under claude), so it is only believed while one is alive; an async agent or a Workflow
  *  runs inside claude itself and has no process to look for. */
-export type TaskKind = "bash" | "monitor" | "agent";
+export type TaskKind = "bash" | "monitor" | "agent" | "workflow";
+
+/** Runs inside claude itself: its record alone is the evidence. */
+export const inProcess = (kind: TaskKind): boolean => kind === "agent" || kind === "workflow";
 
 /** `expires in 30m` / `timeout 600000ms` → ms. */
 const monitorTtl = (n: string, unit: string) => Number(n) * ({ ms: 1, s: 1000, m: 60_000, h: 3_600_000 } as Record<string, number>)[unit];
@@ -110,7 +113,8 @@ const monitorTtl = (n: string, unit: string) => Number(n) * ({ ms: 1, s: 1000, m
  * Background work and runtime channel joins in a claude session, from its transcript lines (pure).
  *
  * Tasks open on: a Bash `run_in_background` result (`toolUseResult.backgroundTaskId`), an async
- * agent/workflow launch (`toolUseResult.status: "async_launched"` + `taskId`), a Monitor (`Monitor started
+ * launch (`toolUseResult.status: "async_launched"`: a Workflow carries `taskId` + `taskType: "local_workflow"`,
+ * a background Agent carries `agentId` — the id its `<task-notification>` closes it with), a Monitor (`Monitor started
  * (task X, timeout Nms)` or `(task X, expires in 30m …)` — one with a timeout ends by itself at start+timeout).
  * They close on a `<task-notification>` with a terminal `<status>` or a `TaskStop` call. Channels: every
  * `cotal_join` tool call minus `cotal_leave`, #general excluded. Lines before `sinceMs` (the running process's
@@ -134,7 +138,8 @@ export function scanActivity(lines: Iterable<string>, sinceMs: number, now: numb
     if (!Number.isFinite(ts) || ts < sinceMs) continue;
     const tur = rec.toolUseResult as Record<string, unknown> | undefined;
     if (tur && typeof tur.backgroundTaskId === "string") open.set(tur.backgroundTaskId, { kind: "bash" });
-    if (tur && tur.status === "async_launched" && typeof tur.taskId === "string") open.set(tur.taskId, { kind: "agent" });
+    const asyncId = tur?.status === "async_launched" ? (typeof tur.taskId === "string" ? tur.taskId : typeof tur.agentId === "string" ? tur.agentId : undefined) : undefined;
+    if (asyncId) open.set(asyncId, { kind: tur!.taskType === "local_workflow" || typeof tur!.workflowName === "string" ? "workflow" : "agent" });
     for (const m of line.matchAll(/Monitor started \(task (\w+)(?:, timeout (\d+)ms|, expires in (\d+)(ms|s|m|h)\b)?/g)) {
       const ttl = m[2] ? Number(m[2]) : m[3] ? monitorTtl(m[3], m[4]) : undefined;
       open.set(m[1], { kind: "monitor", deadline: ttl === undefined ? undefined : ts + ttl });
@@ -218,6 +223,8 @@ export function shellDescendants(pid: number, psOutput?: string): string[] {
 export interface Activity {
   /** Open background task ids from the transcript that something live backs (or that run in-process). */
   tasks: string[];
+  /** The kind of each of `tasks`, same order. */
+  kinds?: TaskKind[];
   /** Shell processes under the agent's claude. */
   shells: string[];
   /** Processes the agent detached into its VM (children of the VM's init): they die with the container,
@@ -354,7 +361,7 @@ export function liveInspector(): ProcInspector {
 /** What is running inside `pin`'s live claude, from both the transcript and the process tree. A Bash or
  *  Monitor task the transcript still calls open is believed only while a live process backs it (a shell
  *  under claude or a process it detached); with none, it is a stale record — reported, never blocking.
- *  An async agent/workflow runs in-process, so its record alone keeps blocking. */
+ *  An async agent or Workflow runs in-process, so its record alone keeps blocking. */
 export function readActivity(pin: string, procs: SessionProcs, now = Date.now(), roots?: string[]): Activity {
   if (!procs.ok) return { tasks: [], shells: [], unknown: procs.unknown };
   const file = transcriptPath(pin, roots);
@@ -363,9 +370,9 @@ export function readActivity(pin: string, procs: SessionProcs, now = Date.now(),
   if (unknown) return { tasks: [], shells: [], unknown };
   const { open, joined } = scanActivity(lines, procs.startedAt, now);
   const live = procs.shells.length + procs.detached.length > 0;
-  const backed = open.filter((t) => t.kind === "agent" || live).map((t) => t.id);
-  const stale = open.filter((t) => t.kind !== "agent" && !live).map((t) => t.id);
-  return { tasks: backed, shells: procs.shells, detached: procs.where === "vm" ? procs.detached : [], stale, joined };
+  const backed = open.filter((t) => inProcess(t.kind) || live);
+  const stale = open.filter((t) => !inProcess(t.kind) && !live).map((t) => t.id);
+  return { tasks: backed.map((t) => t.id), kinds: backed.map((t) => t.kind), shells: procs.shells, detached: procs.where === "vm" ? procs.detached : [], stale, joined };
 }
 
 /** kit's armed schedules for `name` (kit `schedule` package: `<kit agent dir>/schedules.json`, the dir paw
