@@ -34,11 +34,12 @@
  */
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, readlinkSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, readlinkSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildShim, hubEnabled } from "./hub/paths.ts";
+import { writeManagerFingerprint } from "./manager-fingerprint.ts";
 import { resolveSpace } from "./space.ts";
 
 /** paw's checkout root, anchored at THIS file — not process.argv[1], which may be a launcher shim
@@ -69,6 +70,12 @@ export function currentPointerPath(): string {
 
 export function releasePath(id: string): string {
   return join(releasesDir(), id);
+}
+
+/** The release id a daemon's code root is, or undefined when it isn't a release (the dev checkout). Pure. */
+export function releaseIdOfRoot(root: string, dir = releasesDir()): string | undefined {
+  const rel = relative(dir, root);
+  return rel && !rel.startsWith("..") && !rel.includes("/") && !isAbsolute(rel) && !rel.startsWith(".") ? rel : undefined;
 }
 
 /** Every file under `dir` (relative paths), sorted, skipping node_modules and dot-dirs — the same
@@ -184,12 +191,24 @@ export function createRelease(opts: { root?: string; force?: boolean } = {}): Re
     for (const item of PAYLOAD) cpSync(join(root, item), join(staging, item), { recursive: true });
     cloneNodeModules(root, staging);
     buildReleaseShim(staging);
+    stampManagerFingerprint(staging);
     rmSync(dest, { recursive: true, force: true }); // only reached under --force, or a torn prior run
     renameSync(staging, dest);
   } finally {
     rmSync(staging, { recursive: true, force: true });
   }
   return { id, path: dest, createdAt: statSync(dest).mtimeMs };
+}
+
+/** Record what the manager would load from this release (src/manager-fingerprint.ts), so `paw restart`
+ *  can keep a manager whose code a new release doesn't change. Not fatal: a release without one only
+ *  costs that restart its shortcut (it bounces the manager, as before) — and it is said, never silent. */
+function stampManagerFingerprint(staging: string): void {
+  try {
+    writeManagerFingerprint(staging);
+  } catch (e) {
+    console.error(`${(e as Error).message} — no manager fingerprint in this release; \`paw restart\` onto it will restart every agent.`);
+  }
 }
 
 /** Compile the cotal hub's per-agent shim into the release (src/hub/paths.ts), so the daemons never
@@ -285,17 +304,48 @@ export function daemonRoot(): string {
 }
 
 /**
- * Drop all but the newest `keep` releases. The CURRENT one is never pruned however old it is — it is
- * what the live daemons are running, and deleting it out from under them would turn a tidy-up into
- * tonight's outage from the other direction. Returns the ids removed.
+ * The release ids some LIVE process still runs from — any process whose command line names a path
+ * under the releases dir (a manager kept across a `paw restart` whose code didn't change, the hub,
+ * `paw web`, another space's mailbox, a sandboxed agent's launcher, an agent's MCP server…). Both the
+ * releases dir as spelled and its realpath are matched (`/var` vs `/private/var` on macOS). Throws when
+ * the process table can't be read — a prune must never guess that nothing is running.
  */
-export function pruneReleases(keep: number): string[] {
+export function releasesInUse(listing?: string): Set<string> {
+  if (listing === undefined) {
+    const r = spawnSync("ps", ["-axww", "-o", "command="], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+    if (r.error || r.status !== 0) throw new Error(`paw: can't list processes to see which releases are in use (ps: ${r.error?.message ?? r.stderr?.trim() ?? r.status}) — nothing pruned`);
+    listing = r.stdout;
+  }
+  const dirs = new Set([releasesDir()]);
+  try {
+    dirs.add(realpathSync(releasesDir()));
+  } catch {
+    /* no releases dir yet */
+  }
+  const used = new Set<string>();
+  for (const dir of dirs) {
+    const re = new RegExp(`${dir.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/([^/\\s]+)/`, "g");
+    for (const m of listing.matchAll(re)) if (!m[1].startsWith(".") && m[1] !== "current") used.add(m[1]);
+  }
+  return used;
+}
+
+/**
+ * Drop all but the newest `keep` releases. The CURRENT one is never pruned however old it is — it is
+ * what the next daemon starts from — and neither is any release a live process still runs
+ * ({@link releasesInUse}): since `paw restart` keeps a manager whose code didn't change, the manager
+ * (and the hub with it) can run an OLDER release than current for weeks, and deleting its tree would
+ * pull the connector, the sandbox launcher and the hub shim out from under every agent. Returns the
+ * ids removed; `kept` lists the in-use ones spared.
+ */
+export function pruneReleases(keep: number, inUse: () => Set<string> = releasesInUse): { removed: string[]; kept: string[] } {
   if (!Number.isInteger(keep) || keep < 1) throw new Error(`paw: --prune takes a positive integer (got ${keep})`);
   const cur = currentRelease()?.id;
-  const all = listReleases();
-  const doomed = all.slice(keep).filter((r) => r.id !== cur);
+  const used = inUse();
+  const old = listReleases().slice(keep).filter((r) => r.id !== cur);
+  const doomed = old.filter((r) => !used.has(r.id));
   for (const r of doomed) rmSync(r.path, { recursive: true, force: true });
-  return doomed.map((r) => r.id);
+  return { removed: doomed.map((r) => r.id), kept: old.filter((r) => used.has(r.id)).map((r) => r.id) };
 }
 
 /** Best-effort removal of a torn staging dir left by a crashed snapshot. Never throws. */

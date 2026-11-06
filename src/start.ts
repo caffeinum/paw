@@ -109,7 +109,7 @@ const startCommand: Command = {
   name: "start",
   group: "Lifecycle",
   summary: "cold-start the fleet — spawn every registered agent (or the named ones), each resuming its session",
-  usage: "start [<name>…] [--space <s>]   (from truly cold; use `paw restart` to bounce the manager)",
+  usage: "start [<name>…] [--space <s>]   (from truly cold; use `paw restart --full` to bounce the manager)",
   run: (a) => start([...a.raw]),
 };
 

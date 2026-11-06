@@ -36,8 +36,11 @@ import {
   readRuntimePreference,
   resolveSpace,
   restartLogPath,
+  restartKeepingManager,
   restartMailbox,
   restartManager,
+  resolveRuntime,
+  reviveListPath,
   spawnDetachedRestart,
   writeRuntimePreference,
 } from "../lifecycle.ts";
@@ -45,7 +48,9 @@ import { checkKitArgs, KIT_AGENT } from "../kit.ts";
 import { claudeProjectsRoot, kitSessionsRoot, personaTranscriptRoots, readResumeId, readSandbox, transcriptExists } from "../session.ts";
 import { pawServer } from "../server.ts";
 import { applySwap, readSwapPersona, SWAP_AGENTS, type SwapRequest } from "../swap.ts";
-import { assertManagerFeature, KIT_ARGS_FEATURE, KIT_DEFAULTS_FEATURE } from "../manager-features.ts";
+import { assertManagerFeature, KIT_ARGS_FEATURE, KIT_DEFAULTS_FEATURE, runningManagerRoot } from "../manager-features.ts";
+import { planRestart, releaseManagerFingerprint, type RestartFacts } from "../manager-fingerprint.ts";
+import { daemonRoot, releaseIdOfRoot } from "../release.ts";
 import { resolveStopName } from "./stop.ts";
 import {
   clearReviveList,
@@ -65,7 +70,7 @@ const tty = process.stdout.isTTY === true;
 const wrap = (code: string) => (s: string) => (tty ? `\x1b[${code}m${s}\x1b[0m` : s);
 const c = { dim: wrap("2"), bold: wrap("1"), green: wrap("32"), yellow: wrap("33") };
 
-export type RestartArgs = { space?: string; runtime?: Runtime; agent?: string; swap?: SwapRequest; mailbox?: boolean };
+export type RestartArgs = { space?: string; runtime?: Runtime; agent?: string; swap?: SwapRequest; mailbox?: boolean; full?: boolean };
 
 /** Parse `[<runtime>] [--space s]`: at most one positional (the runtime), validated against RUNTIMES.
  *  `restart <agent>` also takes the harness swap: `--agent kit|claude`, `--model M`, and after `--`
@@ -81,13 +86,14 @@ export function parseArgs(argv: string[], verb: string): RestartArgs {
     if (v === undefined || v.startsWith("-")) throw new Error(`paw: ${flag} needs a value`);
     return v;
   };
-  const usage = verb === "restart" ? `restart [<agent> [--agent kit|claude] [--model M] [-- <kit flags>] | <${RUNTIMES.join("|")}> | --mailbox] [--space s]` : `${verb} [<${RUNTIMES.join("|")}>] [--space s]`;
+  const usage = verb === "restart" ? `restart [<agent> [--agent kit|claude] [--model M] [-- <kit flags>] | <${RUNTIMES.join("|")}> | --mailbox | --full] [--space s]` : `${verb} [<${RUNTIMES.join("|")}>] [--space s]`;
   for (let i = 0; i < mine.length; i++) {
     const a = mine[i];
     if (a === "--space") out.space = value(++i, "--space");
     else if (verb === "restart" && a === "--agent") swapAgent = value(++i, "--agent");
     else if (verb === "restart" && a === "--model") model = value(++i, "--model");
     else if (verb === "restart" && a === "--mailbox") out.mailbox = true;
+    else if (verb === "restart" && a === "--full") out.full = true;
     else if (a.startsWith("-")) throw new Error(`paw: unknown flag "${a}" — ${usage}`);
     else {
       if (out.runtime !== undefined || out.agent !== undefined)
@@ -102,6 +108,8 @@ export function parseArgs(argv: string[], verb: string): RestartArgs {
     }
   }
   const kitArgs = end === -1 ? undefined : argv.slice(end + 1);
+  if (out.full && (out.mailbox || out.agent !== undefined))
+    throw new Error(`paw: restart --full bounces the MANAGER (every agent) — it takes no ${out.mailbox ? "--mailbox" : `agent ("${out.agent}")`}`);
   if (out.mailbox && (out.runtime !== undefined || out.agent !== undefined || swapAgent !== undefined || kitArgs !== undefined))
     throw new Error(`paw: restart --mailbox restarts only the mailbox daemon — it takes no agent, runtime or swap (got "${out.runtime ?? out.agent ?? swapAgent ?? "--"}")`);
   if (swapAgent === undefined) {
@@ -142,6 +150,38 @@ async function managedRows(space: string): Promise<PsRow[]> {
  *  seats too: their process runs, and they come back like the rest. */
 function registerRunning(space: string, rows: PsRow[]): void {
   for (const row of rows) if (psRowRunning(row)) registerLivePeer(space, row);
+}
+
+/** What {@link planRestart} needs, read off the live processes and the releases on disk. A fact that
+ *  can't be read becomes its error, which the plan turns into a full restart naming it. */
+async function restartFacts(space: string, full: boolean, runtime: Runtime | undefined): Promise<RestartFacts> {
+  const managerPids = managerProcs(space);
+  const attempt = (fn: () => string | undefined, none: string): string | { error: string } => {
+    try {
+      return fn() ?? { error: none };
+    } catch (e) {
+      return { error: (e as Error).message };
+    }
+  };
+  return {
+    full,
+    runtime,
+    pendingRevive: existsSync(reviveListPath(space)),
+    managerPids,
+    managerRoot: attempt(() => runningManagerRoot(space, managerPids), "no supervise process"),
+    runningRuntime: managerPids.length ? actualManagerRuntime(space, managerPids) : undefined,
+    preferredRuntime: resolveRuntime(space),
+    targetRoot: attempt(daemonRoot, "none"),
+    releaseOf: (root) => releaseIdOfRoot(root),
+    fingerprintOf: (root) => releaseManagerFingerprint(root).fingerprint,
+    managerAnswers: async () => {
+      try {
+        return await withManagerControl(space, pawServer(space), async (ctl) => (await ctl.ps()).ok);
+      } catch {
+        return false;
+      }
+    },
+  };
 }
 
 function reportRevival(owed: string[], revived: string[], skipped: Skipped[], leftDown: Skipped[] = []): void {
@@ -186,7 +226,7 @@ async function runtime(argv: string[]): Promise<void> {
 }
 
 async function restart(argv: string[]): Promise<void> {
-  const { space: spaceArg, runtime: r, agent: target, swap, mailbox } = parseArgs(argv, "restart");
+  const { space: spaceArg, runtime: r, agent: target, swap, mailbox, full } = parseArgs(argv, "restart");
   const space = spaceArg ?? resolveSpace();
   // `paw restart --mailbox` — the "you" beacon + the sleep host, nothing else: the lever for a wedged or
   // outdated sleep host (stuck `.waking`, a stand-in that never yields) that touches no agent.
@@ -260,6 +300,19 @@ async function restart(argv: string[]): Promise<void> {
     });
     return;
   }
+  // A release that doesn't change what the manager loads (src/manager-fingerprint.ts) moves only the
+  // mailbox: the manager and every agent keep running — no turn cut, no background job killed. Decided
+  // before the self-restart hand-off: this path never touches the agent that may be running it.
+  const plan = await planRestart(await restartFacts(space, full === true, r));
+  if (plan.kind === "keep-manager") {
+    const was = await restartKeepingManager(space);
+    const since = plan.from === plan.to ? `already on release ${plan.to}` : `unchanged since release ${plan.from} (same cotal + connector)`;
+    console.log(`${c.green("✓")} manager ${since} — agents keep running; mailbox now on release ${plan.to}`);
+    console.log(c.dim(`  manager fingerprint ${plan.fingerprint}; mailbox ${was.length ? `was pid ${was.join(", ")}` : "wasn't running"}. \`paw restart --full --space ${space}\` bounces the manager anyway`));
+    return;
+  }
+  if (!full) console.log(c.dim(`  restarting the manager — ${plan.why}`));
+
   const detachedChild = process.env.PAW_WAKE_AGENT !== undefined; // set only on the detached child we spawn
   const selfAgent = detachedChild ? undefined : agentSelfName(space);
 
@@ -341,8 +394,8 @@ const restartCommand: Command = {
   kind: "command",
   name: "restart",
   group: "Lifecycle",
-  summary: "restart ONE agent (`restart <agent>`, `--agent kit|claude` swaps its harness), only the mailbox + sleep host (`--mailbox`, no agent touched), or force-restart the manager (optionally switching runtime)",
-  usage: "restart [<agent> [--agent kit|claude] [--model M] [-- <kit flags>] | <pty|tmux|cmux> | --mailbox] [--space s]",
+  summary: "restart ONE agent (`restart <agent>`, `--agent kit|claude` swaps its harness), only the mailbox + sleep host (`--mailbox`, no agent touched), or cut the daemons over to the current release — the manager (and every agent) only when its code changed (`--full` always; `<runtime>` switches)",
+  usage: "restart [<agent> [--agent kit|claude] [--model M] [-- <kit flags>] | <pty|tmux|cmux> | --mailbox | --full] [--space s]",
   run: (a) => restart([...a.raw]),
 };
 
