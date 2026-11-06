@@ -166,6 +166,9 @@ Each entry: what it is + the most load-bearing rule. Full notes behind the link.
   skills ro (src/sandbox-skills.ts): each `~/.claude/skills/<n>` realpath'd → `/paw/claude/skills/<n>`, pure enabled plugins → `/paw/plugins/<p>` +
   `--plugin-dir` (hooks/MCP/LSP/channel plugins excluded, logged), never `~/.claude` itself; `sandboxSkills: false|[…]`. No `--strict-mcp-config`
   in the VM (its own user/project MCP load; `--mcp-config` stays cotal-only; `sandboxOwnMcp: false` restores). → [sandbox.md](docs/notes/sandbox.md)
+  A wedged guest (out of memory, every `container exec`/`stop`/`delete` hangs) is caught by the launcher's watchdog:
+  the VM process is SIGKILLed (`bin/paw-sandbox-kill.mjs`), the launcher exits 75, and the spawn's `supervise` policy restarts
+  the seat in place, keeping its queued DMs. `check:sandbox-wedge`. → [sandbox.md#a-wedged-vm](docs/notes/sandbox.md#a-wedged-vm)
 - `src/session.ts` — `readResumeId`, `transcriptExists`; leaf module. → [agents.md#srcsessionts](docs/notes/agents.md#srcsessionts)
 - **Two-writer guard** — never start an agent whose pinned session a standalone claude holds. → [agents.md#two-writer-guard](docs/notes/agents.md#two-writer-guard)
 - `src/open.ts` — `paw open`/`paw attach`: runtime-aware; tmux → real window, cmux → names the tab, pty
