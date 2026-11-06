@@ -768,8 +768,25 @@ export function daemonTmpDir(): string {
   return dir;
 }
 
+/**
+ * Model-provider credentials a SHELL may carry. A daemon started from it — the manager a `paw chat` cold-starts
+ * inside a project whose `.env.local` exports them — hands them to every agent it ever launches, and claude
+ * prefers them over the machine's login. 2026-11-05: `~/Github/team2027/evals/.env.local` carried an org token
+ * that has Claude Code disabled; evals + queue-ea took DMs off the mesh but failed every turn ("Your
+ * organization has disabled Claude subscription access") and sat on unacked inboxes until the manager was
+ * restarted from a clean shell. An agent's login is the machine's, never the caller's shell: these are dropped
+ * from the INHERITED env; `extra` (a launch that sets one on purpose, e.g. the sandbox's token file) still wins.
+ */
+export const CALLER_CREDENTIALS = ["CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"] as const;
+
+export function stripCallerCredentials(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const out = { ...env };
+  for (const k of CALLER_CREDENTIALS) delete out[k];
+  return out;
+}
+
 export function daemonEnv(extra?: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = stripHarnessMarkers({ ...process.env, TMPDIR: daemonTmpDir(), ...extra });
+  const env: NodeJS.ProcessEnv = stripHarnessMarkers({ ...stripCallerCredentials(process.env), TMPDIR: daemonTmpDir(), ...extra });
   // PAW_COTAL_HUB overrides the hub mode for THIS command only. A daemon that inherited it (the
   // manager's connector reads it per spawn) would pin the mode for its whole life and outlive the
   // shell — `paw hub off` could never take effect. The sticky mode file is the daemons' answer.
