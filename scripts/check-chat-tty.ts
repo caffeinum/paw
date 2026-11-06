@@ -24,6 +24,12 @@
  *  12. a name registered only in ANOTHER local space: the chooser offers to open it there; Esc quits.
  *  13. composing (connected): trailing-`\` continuations + a paste → the draft on the rail, the paste inline, ONE DM
  *      whose wire text is unchanged.
+ *  14. the earlier block on open: `── earlier with echoer ──` … `── now ──` with both directions, and a DM
+ *      that ALSO arrives live (it sat in the inbox) is on screen exactly once;
+ *  15. the earlier block on an `@name` switch: echo2's DM (hidden + acked by a filtered chat, so never
+ *      delivered live again) shows after `@echo2`; history never marks it read (cursor unchanged), never
+ *      retargets (no `↪ replying`), and plain lines still go to the switched-to target;
+ *  16. `--history 1` + `/more 3` grows the block in place; `--history 0` shows none.
  *  (1. also covers a peer registered nowhere here that IS on the roster: found → the normal prompt.)
  */
 import { spawn as ptySpawn } from "@lydell/node-pty";
@@ -34,6 +40,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CotalEndpoint, type CotalMessage, type Delivery, type MessageMeta } from "@cotal-ai/core";
 import { controlCreds } from "../src/addressing.ts";
+import { readCursor } from "../src/cursor.ts";
 import { purgeTestSpace } from "../src/prune.ts";
 import { ensure, stop } from "../src/lifecycle.ts";
 import { pawServer } from "../src/server.ts";
@@ -71,7 +78,9 @@ echoer.on("message", (m: CotalMessage, d: Delivery, meta: MessageMeta) => {
   if (meta.kind === "dm") dms.push(text(m));
   else if (meta.kind === "channel") general.push(text(m));
 });
+let youId: string | undefined;
 echoer.on("presence", (ev: { type: string; presence: { card: { id: string; name: string } } }) => {
+  if (ev.presence.card.name === "you") youId = ev.presence.card.id;
   if (pingOnJoin && ev.type === "join" && ev.presence.card.name === "you") {
     pingOnJoin = false;
     void echoer.unicast(ev.presence.card.id, "ping-the-moment-you-joined");
@@ -338,6 +347,96 @@ try {
     ok("13. …the draft's first line reads like an echo, later ones sit on the rail", /you → echoer> m-first/.test(r.plain) && /  │ m-second/.test(r.plain), r.plain.split("\n").slice(-14).join(" | "));
     ok("13. …the paste is shown inline under its line (📋 header + its rows)", /│ 📋 \[Pasted text #1\] 3 lines[\s\S]*│ {3}q-one[\s\S]*│ {3}q-three/.test(r.plain));
     ok("13. …mid-draft the prompt is the rail, and after the send it is the normal prompt again", railPrompt && /m-last[\s\S]*you → echoer> /.test(r.plain));
+  }
+
+  // What is on screen at the end: everything after the last full redraw (a redraw reprints the whole
+  // history; erased-in-place rows only ever held a `◌` loader, never a message).
+  const lastScreen = (raw: string): string => strip(raw.slice(raw.lastIndexOf("\x1b[H\x1b[2J\x1b[3J") + 1));
+  const count = (hay: string, needle: string): number => hay.split(needle).length - 1;
+
+  // 14. history on open, deduped against a live copy.
+  {
+    const nonce = Date.now().toString(36);
+    if (!youId) throw new Error("check:chat-tty: echoer never saw \"you\" on the roster — can't DM it");
+    await echoer.unicast(youId, `hist-in-${nonce}`); // no chat is running: it waits in the inbox AND sits in the stream
+    await sleep(300);
+    const r = await chat(["echoer"], async (io) => {
+      await io.waitFor(/── now ──/, 20_000);
+      await io.waitFor(new RegExp(`hist-in-${nonce}`), 5000);
+      await sleep(1200); // a duplicate (live after history, or history after live) would land now
+      io.write("/quit\r");
+    });
+    const screen = lastScreen(r.raw);
+    ok("14. the earlier block shows on open (── earlier with echoer … ── now ──)", /── earlier with echoer · \d+ messages? in the last 24h[^\n]*──[\s\S]*── now ──/.test(screen), screen.split("\n").slice(-30).join(" | "));
+    ok("14. …both directions: your earlier lines to echoer are in it", /you → echoer[^\n]*: (one-early|two-at-prompt|m-first)/.test(screen));
+    ok("14. …a DM that also arrived live is on screen exactly once", count(screen, `hist-in-${nonce}`) === 1, `${count(screen, `hist-in-${nonce}`)}×`);
+    ok("14. …the loader was replaced, not left behind", !/◌ loading earlier messages with echoer/.test(screen));
+  }
+
+  // 15. history on an @switch; never read, never a retarget.
+  {
+    const nonce = Date.now().toString(36);
+    const echo2 = new CotalEndpoint({ space, servers: server, creds: await controlCreds(space), card: { name: "echo2", kind: "agent" }, registerPresence: true, consume: true, watchPresence: true });
+    echo2.on("error", (e: Error) => console.error("echo2:", e.message));
+    echo2.on("warning", () => {});
+    const e2dms: string[] = [];
+    echo2.on("message", (m: CotalMessage, d: Delivery, meta: MessageMeta) => {
+      d.ack();
+      if (meta.kind === "dm") e2dms.push(text(m));
+    });
+    await echo2.start();
+    try {
+      // A FILTERED chat on echoer acks echo2's DM without showing it — it is not read.
+      await chat(["@echoer"], async (io) => {
+        await io.waitFor(/● connected/, 20_000);
+        await sleep(500);
+        await echo2.unicast(youId!, `e2-hidden-${nonce}`);
+        await io.waitFor(/1 elsewhere/, 10_000);
+        io.write("/quit\r");
+      });
+      const cursorBefore = readCursor(space);
+      dms.length = 0;
+      const r = await chat(["echoer"], async (io) => {
+        await io.waitFor(/── now ──/, 20_000);
+        io.write("@echo2\r");
+        await io.waitFor(/── earlier with echo2/, 15_000);
+        await io.waitFor(new RegExp(`e2-hidden-${nonce}`), 5000);
+        await sleep(800);
+        io.write(`to-echo2-${nonce}\r`);
+        const end = Date.now() + 15_000;
+        while (Date.now() < end && !e2dms.some((d) => d.includes(`to-echo2-${nonce}`))) await sleep(50);
+        await sleep(300);
+        io.write("/quit\r");
+      });
+      const screen = lastScreen(r.raw);
+      ok("15. @echo2 loads echo2's earlier conversation (its DM a filtered chat had hidden)", /── earlier with echo2[\s\S]*e2-hidden-[\s\S]*── now ──/.test(screen) && count(screen, `e2-hidden-${nonce}`) === 1, screen.split("\n").slice(-20).join(" | "));
+      ok("15. …history never marks it read (the unread cursor did not move)", readCursor(space) === cursorBefore, `${cursorBefore} → ${readCursor(space)}`);
+      ok("15. …history never retargets (no ↪ replying)", !/↪ replying/.test(r.plain));
+      ok("15. …and a plain line after the switch goes to echo2, not echoer", e2dms.some((d) => d.includes(`to-echo2-${nonce}`)) && !dms.some((d) => d.includes(`to-echo2-${nonce}`)), JSON.stringify(e2dms));
+    } finally {
+      await echo2.stop().catch(() => {});
+    }
+  }
+
+  // 16. --history N and /more; --history 0.
+  {
+    const r = await chat(["echoer", "--history", "1"], async (io) => {
+      await io.waitFor(/── earlier with echoer · 1 message · \d+ older · \/more ──/, 20_000);
+      await sleep(300);
+      io.write("/more 3\r");
+      await io.waitFor(/── earlier with echoer · 4 messages/, 10_000);
+      await sleep(300);
+      io.write("/quit\r");
+    });
+    const screen = lastScreen(r.raw);
+    ok("16. --history 1 shows one message and says how many are older", /── earlier with echoer · 1 message · \d+ older · \/more ──/.test(r.plain), r.plain.split("\n").filter((l) => /earlier/.test(l)).join(" | "));
+    ok("16. …/more 3 grows the same block to 4 (redrawn, one divider)", count(screen, "── earlier with echoer") === 1 && /── earlier with echoer · 4 messages/.test(screen), screen.split("\n").filter((l) => /earlier|now/.test(l)).join(" | "));
+    const off = await chat(["echoer", "--history", "0"], async (io) => {
+      await io.waitFor(/● connected/, 20_000);
+      await sleep(1500);
+      io.write("/quit\r");
+    });
+    ok("16. --history 0 shows no earlier block", !/earlier messages|── earlier/.test(off.plain));
   }
 } finally {
   await echoer.stop().catch(() => {});

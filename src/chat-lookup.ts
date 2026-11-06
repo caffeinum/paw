@@ -59,7 +59,7 @@ export function localAgentFolder(home: string, space: string, name: string): str
 }
 
 /** Flags of `paw chat` that take a value — their value is never the target. */
-export const CHAT_VALUE_FLAGS = new Set(["--space", "--server", "--model", "--agent", "--provider", "--name", "--personality"]);
+export const CHAT_VALUE_FLAGS = new Set(["--space", "--server", "--model", "--agent", "--provider", "--name", "--personality", "--history"]);
 
 /** One pass over `paw chat`'s argv: the target as typed, the space, and which flags were given. */
 export function scanChatArgs(argv: string[]): { space?: string; positional?: string; flags: Set<string> } {

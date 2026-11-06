@@ -87,6 +87,7 @@ import { FRESH_SPAWN_MS, LIVE_AGENT_MS } from "./dm.ts";
 import { messageText as textOf, type Entry as FeedEntry } from "./feed.ts";
 import { forwardedFrom, isForwardOf, withoutForwardNote } from "./forward-mark.ts";
 import { readOwnConversation, startEcho, tapOwnSubject } from "./chat-own.ts";
+import { backlogSize, earlierDivider, moreCount, moreInsertAt, NOW_DIVIDER, nothingEarlier, pickBacklog } from "./chat-backlog.ts";
 import { dedupeRoster } from "./commands/who.ts";
 import { isContinueKey, joinLines, LEAKED_TAIL, leaksTail, peelContinuation } from "./multiline.ts";
 import { ensureManagerOn, ensureSpaceFor, resolveSpace } from "./lifecycle.ts";
@@ -340,7 +341,7 @@ export function completeMention(line: string, names: string[]): [string[], strin
   return [hits, `@${m[1]}`];
 }
 
-type ChatArgs = { space?: string; server?: string; target?: string; model?: string; name?: string; agent?: string; provider?: string; personality?: string; fresh: boolean; only: boolean; all: boolean; restart: boolean };
+type ChatArgs = { space?: string; server?: string; target?: string; model?: string; name?: string; agent?: string; provider?: string; personality?: string; history?: string; fresh: boolean; only: boolean; all: boolean; restart: boolean };
 export function parseArgs(argv: string[]): ChatArgs {
   const out: ChatArgs = { fresh: false, only: false, all: false, restart: false };
   const value = (flag: string, v: string | undefined): string => {
@@ -360,6 +361,7 @@ export function parseArgs(argv: string[]): ChatArgs {
     else if (a === "--only") out.only = true; // FILTER to the target agent (the `@name` view, reached by folder/`.` instead of a name)
     else if (a === "--all") out.all = true; // every conversation, no agent preselected (what a bare `paw chat` used to mean)
     else if (a === "--restart") out.restart = true; // consent in advance: the wake gate may restart a live-but-stuck agent
+    else if (a === "--history") out.history = value(a, argv[++i]); // the earlier block: last N messages with the target (0 = off) — src/chat-backlog.ts
     else if (!a.startsWith("-") && out.target === undefined) out.target = a;
   }
   return out;
@@ -429,7 +431,8 @@ export const CHAT_STARTUP_COMMANDS = ["ps", "spawn", "inspect", "despawn"] as co
 
 async function chat(argv: string[]): Promise<void> {
   timing("chat"); // modules loaded — what is before this is import cost
-  const { space: spaceArg, server: serverArg, target: givenTarget, model, name: nameFlag, agent: agentFlag, provider, personality: personalityFlag, fresh, only, all, restart } = parseArgs(argv);
+  const { space: spaceArg, server: serverArg, target: givenTarget, model, name: nameFlag, agent: agentFlag, provider, personality: personalityFlag, history: historyFlag, fresh, only, all, restart } = parseArgs(argv);
+  const historySize = backlogSize(historyFlag); // validated before anything else runs
   // A personality is given at BIRTH; an existing agent's is changed with `paw persona <name> --reroll`.
   if (personalityFlag !== undefined && !fresh) throw new Error("paw: --personality is for a new agent (`paw chat --fresh <folder> --personality …`) — for an existing one use `paw persona <name> --reroll [seed]`");
   const personalityArg = personalityFlag !== undefined ? parsePersonalityArg(personalityFlag) : undefined; // validated before anything is registered
@@ -453,6 +456,7 @@ async function chat(argv: string[]): Promise<void> {
   /** Both ends on a terminal: the instant REPL. Anything else (a pipe, a script) keeps the old order —
    *  connect and resolve first, then read lines — byte for byte. */
   const interactive = process.stdin.isTTY === true && process.stdout.isTTY === true;
+  if (historyFlag !== undefined && !interactive) throw new Error("paw: --history shows the earlier block on a terminal — a piped `paw chat` reads no history (`paw inbox --history` / `paw history` do)");
   // The pre-shell (src/chat-preshell.ts) may already have painted a skeleton frame — chat adopts it below.
   const frame = takeFrame();
 
@@ -642,6 +646,9 @@ async function chat(argv: string[]): Promise<void> {
   let curName: string | undefined;
   /** The entry last written to the screen — the banner may be repainted in place only while it is this. */
   let lastPainted: Entry | undefined;
+  /** How `lastPainted` was painted (its text, the painter's state before it, the width then) — so a
+   *  loader that is still the last thing on screen can be swapped in place for what it was loading. */
+  let lastPaint: { text: string; before: { lastSide: Painter["lastSide"]; trailingBlank: boolean }; cols: number } | undefined;
   /** The banner's history entry (its text is rewritten as fields load) and how many rows it last took. */
   let bannerEntry: (Entry & { kind: "banner" }) | undefined;
   let bannerRows = 0;
@@ -661,8 +668,10 @@ async function chat(argv: string[]): Promise<void> {
       return;
     }
     if (!entryVisible(e, view, curName, follower.readable(curName))) return;
+    const before = { lastSide: painter.lastSide, trailingBlank: painter.trailingBlank };
     const text = painter.paint(e, view);
     if (!text) return;
+    lastPaint = { text, before, cols: process.stdout.columns || 80 };
     // Once we're shutting down (EOF/SIGINT/quit) the readline is closed — touching it throws
     // ERR_USE_AFTER_CLOSE. Still write the message, just skip the prompt redraw.
     // The picker draws its rows above the prompt and erases them by COUNT; a line printed in between
@@ -702,12 +711,17 @@ async function chat(argv: string[]): Promise<void> {
     painter.reset();
     const readable = follower.readable(curName);
     let out = CLEAR_ALL;
+    const cols = process.stdout.columns || 80;
     for (const e of history.entries) {
       if (!entryVisible(e, view, curName, readable)) continue;
       if (e.kind === "chat" && e.bannerDelta && bannerEntry) continue; // the banner below says it now
+      const before = { lastSide: painter.lastSide, trailingBlank: painter.trailingBlank };
       const text = painter.paint(e, view);
       out += text;
-      if (text) lastPainted = e;
+      if (text) {
+        lastPainted = e;
+        lastPaint = { text, before, cols };
+      }
     }
     process.stdout.write(out);
     bannerRows = bannerEntry && lastPainted === bannerEntry ? paintedRows(bannerEntry.text, process.stdout.columns || 80) : bannerRows;
@@ -1273,6 +1287,14 @@ async function chat(argv: string[]): Promise<void> {
     }
     if (meta.kind === "dm") {
       const from = m.from.name;
+      // Already on screen in an earlier block (src/chat-backlog.ts): once is enough. It IS shown, so it
+      // counts as read like any DM shown here — but it is not news: no follow, no reply-timing.
+      if (m.id && shownIds.has(m.id)) {
+        advanceCursor(space, m.ts);
+        d.ack();
+        return;
+      }
+      if (m.id) shownIds.add(m.id);
       noteSaid(from, "in", { text, ts: m.ts });
       if (view === "tasks" && curName?.toLowerCase() === from.toLowerCase()) refreshBeadsSoon();
       // If this is the reply we were waiting on, clear the wait and note the round-trip time.
@@ -1367,6 +1389,7 @@ async function chat(argv: string[]): Promise<void> {
     // message "(other session)".
     const decide = (attempt: number): void => {
       if (ownIds.has(msg.id)) return; // ours after all — the send resolved while we waited
+      if (shownIds.has(msg.id)) return; // already in an earlier block
       if (attempt < 3) {
         setTimeout(() => decide(attempt + 1), 100);
         return;
@@ -1387,6 +1410,7 @@ async function chat(argv: string[]): Promise<void> {
           ? c.dim(`#${msg.channel}`)
           : toName ? agentTag(toName) : c.cyan(msg.to ? msg.to.slice(0, 8) : "?");
         noteShownSend(msg);
+        shownIds.add(msg.id);
         const fwdMark = forwardOf !== undefined ? " · forwarded from an old id" : "";
         const header = `${c.dim("↗ you →")} ${label}${c.dim(` (other session${fwdMark}):`)}`;
         // As the agent got it, readable: on the rail, blank runs folded, each paste inline at its
@@ -1402,6 +1426,135 @@ async function chat(argv: string[]): Promise<void> {
   };
   /** Stops the remote half of the echo (started once ready, src/chat-own.ts startEcho). */
   let stopOwnTap: (() => Promise<void>) | undefined;
+
+  // ── the earlier block (src/chat-backlog.ts) ──────────────────────────────────────────────────────
+  // What was said with the target BEFORE this chat, read from the DM stream behind the prompt (a `◌`
+  // loader holds its place) and put on screen between `── earlier ──` and `── now ──`, dimmed. It never
+  // passes through onMessage: history can't retarget, answer an await, or mark anything read.
+  /** Every message id this chat has put on screen — live DMs, the echo, earlier blocks. Our own sends
+   *  are in `ownIds`. An earlier block skips these; a live copy of an earlier-block message is dropped. */
+  const shownIds = new Set<string>();
+  /** Per agent (lowercased): the first earlier block this chat drew for it — `/more` reaches back past
+   *  its oldest message and grows it in place. */
+  const backlogs = new Map<string, { divider: Entry & { kind: "chat" }; agent: string; count: number; oldest: number; older: number; windowed: boolean }>();
+  /** Agents whose earlier block has been asked for this session (on open, on a switch). */
+  const backlogAsked = new Set<string>();
+  const dimAll = (s: string): string =>
+    s
+      .split("\n")
+      .map((l) => c.dim(stripVTControlCharacters(l)))
+      .join("\n");
+  /** One earlier message, drawn as its live twin would be (markdown, images, pastes on the rail) — dimmed. */
+  const historyEntry = (agent: string, e: FeedEntry): Entry => {
+    const age = agoTag(e.ts);
+    let text: string;
+    if (e.dir === "out") {
+      const sent = parseComposed(e.text);
+      const header = `you → ${agent}${age}:`;
+      const rows = railMessage(sent.body, sent.blocks, { ...viewOpts(), width: viewOpts().width - 2, rail: RAIL.trimStart() });
+      text = rows.length === 1 && !sent.blocks.length ? `${header} ${sent.body.trim()}` : [header, ...rows].join("\n");
+    } else text = said(`${agentTag(e.from)}${e.forwardedFrom !== undefined ? " · forwarded from an old id" : ""}${age}:`, e.text);
+    return { kind: "chat", text: dimAll(text), side: e.dir === "out" ? "you" : "peer", tight: false, historical: true };
+  };
+  const sysLine = (text: string, historical = true): Entry & { kind: "chat" } => ({ kind: "chat", text, side: "sys", tight: true, ...(historical ? { historical: true } : {}) });
+
+  /**
+   * Put `block` where the loader `slot` stands. While the loader is still the last thing painted (the
+   * usual case — it was shown a moment ago), it is erased and the block painted in its place; otherwise
+   * the chat view is redrawn, like a view switch. Another view shows it on the way back to chat. With
+   * the picker or chooser open the history is updated and the screen follows on the next redraw.
+   */
+  function placeOver(slot: Entry, block: Entry[]): void {
+    const cols = process.stdout.columns || 80;
+    const inPlace = slot === lastPainted && lastPaint !== undefined && lastPaint.cols === cols;
+    const was = lastPaint;
+    history.replace(slot, block);
+    if (!rl || closing || !process.stdout.isTTY || view !== "chat" || picking || chooserHooks?.open()) return;
+    if (!inPlace || !was) return redraw();
+    readline.moveCursor(process.stdout, 0, -rl.getCursorPos().rows);
+    readline.cursorTo(process.stdout, 0);
+    readline.clearScreenDown(process.stdout);
+    readline.moveCursor(process.stdout, 0, -paintedRows(was.text, cols));
+    readline.clearScreenDown(process.stdout);
+    painter.lastSide = was.before.lastSide;
+    painter.trailingBlank = was.before.trailingBlank;
+    let out = "";
+    lastPainted = undefined;
+    lastPaint = undefined;
+    for (const e of block) {
+      if (!entryVisible(e, view, curName, follower.readable(curName))) continue;
+      const before = { lastSide: painter.lastSide, trailingBlank: painter.trailingBlank };
+      const text = painter.paint(e, view);
+      out += text;
+      if (text) {
+        lastPainted = e;
+        lastPaint = { text, before, cols };
+      }
+    }
+    process.stdout.write(out);
+    rl.prompt(true);
+  }
+
+  /** Remove a loader that turned out to have nothing to say (a re-switch with everything shown). */
+  function dropLoader(slot: Entry): void {
+    placeOver(slot, []);
+  }
+
+  /**
+   * Load the earlier block for `agent` — `more` = that many OLDER messages (`/more`). Never awaited by
+   * anything: the prompt keeps taking keys, a `◌` line holds the block's place, and a failed read says
+   * so in red where the block would have been (never an empty block that looks like "no history").
+   */
+  function loadBacklog(agent: string, more?: number): void {
+    if (!interactive || !ep) return;
+    if (more === undefined && historySize.limit === 0) return;
+    const key = agent.toLowerCase();
+    backlogAsked.add(key);
+    const first = backlogs.get(key);
+    const slot = sysLine(c.dim(`${LOADER} loading ${more ? `${more} older` : "earlier"} messages with ${agent}…`));
+    show(slot);
+    const ids = new Set<string>();
+    if (curId && curName?.toLowerCase() === key) ids.add(curId);
+    readOwnConversation(ep, space, server).then(
+      (conv) => {
+        if (closing) return;
+        if (!history.entries.includes(slot)) return; // gone (a reconnect reset) — nothing to place
+        const shown = (id: string): boolean => shownIds.has(id) || ownIds.has(id);
+        let pick;
+        try {
+          pick = pickBacklog(conv, agent, { ...(more !== undefined ? { limit: more } : historySize), now: Date.now(), shown, ids, ...(more !== undefined && first ? { before: first.oldest } : {}) });
+        } catch (e) {
+          return placeOver(slot, [sysLine(c.red(`! couldn't show earlier messages with ${agent}: ${(e as Error).message}`), false)]);
+        }
+        for (const e of pick.entries) shownIds.add(e.id!);
+        const rows = pick.entries.map((e) => historyEntry(agent, e));
+        if (more !== undefined && first) {
+          if (!rows.length) return placeOver(slot, [sysLine(c.dim(`(no older messages with ${agent})`))]);
+          first.count += rows.length;
+          first.oldest = pick.entries[0]!.ts;
+          first.older = pick.older;
+          first.windowed = false;
+          first.divider.text = c.dim(earlierDivider(first.agent, first.count, first.older, false));
+          history.replace(slot, []);
+          history.insertAt(moreInsertAt(history.entries, (e) => e === first.divider)!, rows);
+          return redraw();
+        }
+        if (!rows.length) {
+          // Already on screen (a re-switch): nothing to add, nothing to say.
+          if (first) return dropLoader(slot);
+          return placeOver(slot, [sysLine(c.dim(nothingEarlier(agent, pick.older)))]);
+        }
+        const windowed = more === undefined && historySize.windowMs !== undefined;
+        const divider = sysLine(c.dim(earlierDivider(agent, rows.length, pick.older, windowed)));
+        if (!first) backlogs.set(key, { divider, agent, count: rows.length, oldest: pick.entries[0]!.ts, older: pick.older, windowed });
+        placeOver(slot, [divider, ...rows, sysLine(c.dim(NOW_DIVIDER))]);
+      },
+      (e: Error) => {
+        if (closing || !history.entries.includes(slot)) return;
+        placeOver(slot, [sysLine(c.red(`! couldn't load earlier messages with ${agent}: ${e.message} — /more retries`), false)]);
+      },
+    );
+  }
 
   // Joins/departures are held while the view can't be trusted and debounced while it can
   // (src/presence-hold.ts) — a slow broker flapped `joined` / `went offline` pairs for live peers.
@@ -2648,8 +2801,23 @@ async function chat(argv: string[]): Promise<void> {
           bootAbort = new AbortController();
           bootSettled = boot().catch((e: Error) => emit(c.red(`! ${e.message}`)));
         }
+      } else if (text === "/more" || text.startsWith("/more ")) {
+        // Older messages with the target, above the earlier block (src/chat-backlog.ts).
+        if (!curName) emit(c.dim("/more loads older messages with the agent you're talking to — pick one with ↓ or @name"));
+        else {
+          let n: number | undefined;
+          try {
+            n = moreCount(text.slice("/more".length));
+          } catch (e) {
+            emit(c.red((e as Error).message));
+          }
+          if (n !== undefined) {
+            if (view !== "chat") emit(c.dim(`(loading ${n} older messages with ${curName} — they show in the chat view)`));
+            loadBacklog(curName, n);
+          }
+        }
       } else if (text === "/help") {
-        emit(c.dim("@name [msg] switches target · #channel msg broadcasts · !cmd runs in the agent's folder · /who · /ps · /conn · /retry · /reconnect · /imgs · /noimg · /paste · /nopaste · /quit"));
+        emit(c.dim("@name [msg] switches target · #channel msg broadcasts · !cmd runs in the agent's folder · /more [N] older messages · /who · /ps · /conn · /retry · /reconnect · /imgs · /noimg · /paste · /nopaste · /quit"));
       } else if (text === "/who") {
         const fresh = await rosterReady();
         emit(c.dim(fresh ? "Roster:" : "Roster (presence still loading — this may be partial):"));
@@ -2736,12 +2904,14 @@ async function chat(argv: string[]): Promise<void> {
             }
           }
           if (stuckId) {
+            const switched = to.toLowerCase() !== curName?.toLowerCase();
             if (to !== curName) bang = false;
             curId = stuckId;
             targetLost = undefined;
             curName = to;
             if (filter?.kind === "agent") filter = { kind: "agent", name: to };
             rl!.setPrompt(promptFor());
+            if (switched) loadBacklog(curName);
             if (body) sendDm(curName, curId, flush(body, curName), false);
           } else if (!peer) {
             emit(c.red(`no peer named "${to}" present (/who to list)`));
@@ -2750,6 +2920,7 @@ async function chat(argv: string[]): Promise<void> {
             emit(c.red(`"${peer.card.name}" hasn't come up yet — a cold start can outlast the wait; try \`@${to}\` again in a moment`));
             warnStranded(to, body);
           } else {
+            const switched = peer.card.name.toLowerCase() !== curName?.toLowerCase();
             if (peer.card.name !== curName) bang = false; // a command typed for one agent's folder never runs in another's
             curId = peer.card.id;
             targetLost = undefined;
@@ -2758,9 +2929,10 @@ async function chat(argv: string[]): Promise<void> {
             // `@other` sends somewhere you cannot see, which is the misdirection this mode prevents.
             if (filter?.kind === "agent") filter = { kind: "agent", name: peer.card.name };
             rl!.setPrompt(promptFor());
-            if (body) {
-              sendDm(curName, curId, flush(body, curName));
-            } else emit(c.dim(`(now messaging ${curName})`));
+            if (!body) emit(c.dim(`(now messaging ${curName})`));
+            // A new target's earlier conversation, above what you are about to say to it.
+            if (switched) loadBacklog(curName);
+            if (body) sendDm(curName, curId, flush(body, curName));
           }
         }
       } else if (parseBang(text) !== undefined) {
@@ -3092,6 +3264,9 @@ async function chat(argv: string[]): Promise<void> {
         updateBanner();
         if (!remoteSpace) loadInfo();
       }
+      // The earlier block reads the DM stream only — it needs the endpoint, not the agent — so it loads
+      // while a cold agent is still waking. A name still being looked up waits for the roster (below).
+      if (name !== undefined && lookup !== "pending" && !backlogAsked.has(name.toLowerCase())) loadBacklog(name);
       if (name !== undefined) {
         setPhase("agent");
         try {
@@ -3151,6 +3326,7 @@ async function chat(argv: string[]): Promise<void> {
       );
       if (remoteSpace) loadInfo();
       if (view === "tasks") seedConversation();
+      if (curName && lookup !== "absent" && lookup !== "unreachable" && !backlogAsked.has(curName.toLowerCase())) loadBacklog(curName);
       // A chat that died mid-startup left its inbox in the ledger; retire it now (src/human-inbox.ts).
       sweepOrphanInboxes(space).then(
         ({ retired }) => retired.length && emit(c.dim(`retired ${retired.length} chat inbox${retired.length === 1 ? "" : "es"} a closed chat left on ${space}`)),
@@ -3313,7 +3489,7 @@ const chatCommand: Command = {
   name: "chat",
   group: "Mesh",
   summary: "chat with an EXISTING agent (by @name or folder; wakes it if offline); replies stream back live — --fresh creates a new one",
-  usage: 'chat [<folder>|<name>|@<name>|#<channel>][#<space>] [--only] [--all] [--restart] [--name <n>] [--fresh [--personality <seed|"vibe"|none>]] [--agent kit|codex|opencode|hermes|claude [--provider codex|grok|<hermes provider>] [--model m]]   (default: "." — this folder\'s agent; --all = every conversation, nothing preselected; --restart = may restart the agent if it looks stuck (else a tty asks); --name pins a 2nd+ EXTRA agent at the folder; --fresh births a NEW default agent, fails loud if one already exists; --agent creates the agent on that harness, or targets it if it already runs there)',
+  usage: 'chat [<folder>|<name>|@<name>|#<channel>][#<space>] [--only] [--all] [--restart] [--history N] [--name <n>] [--fresh [--personality <seed|"vibe"|none>]] [--agent kit|codex|opencode|hermes|claude [--provider codex|grok|<hermes provider>] [--model m]]   (default: "." — this folder\'s agent; --all = every conversation, nothing preselected; --restart = may restart the agent if it looks stuck (else a tty asks); --history N = show the last N messages with the agent from before this chat (default: up to 20 from the last 24h; 0 = off; /more [N] loads older); --name pins a 2nd+ EXTRA agent at the folder; --fresh births a NEW default agent, fails loud if one already exists; --agent creates the agent on that harness, or targets it if it already runs there)',
   run: (a) => chat([...a.raw]),
 };
 

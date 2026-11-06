@@ -190,6 +190,8 @@ export interface FollowSource {
  *   needs to know whose mail it is (see entryVisible). `onlyLogs` marks a note ABOUT the logs.
  *   `bannerDelta` marks a banner field filled in AFTER the banner scrolled (`status: …`): a redraw
  *   repaints the banner with that value, so it skips these lines rather than say each one twice.
+ *   `historical` marks the earlier block (src/chat-backlog.ts): conversation from before this chat,
+ *   shown in the chat view only — the logs view's transcript already tells that story.
  * - `echo` — a line you typed, exactly as readline echoed it. readline prints it, not emit, so without
  *   recording it here your own half of the conversation would vanish on the first redraw.
  * - `log` — a batch of the target's transcript blocks, stored RAW: which blocks show depends on the view
@@ -197,7 +199,7 @@ export interface FollowSource {
  */
 export type Entry =
   | { kind: "banner"; text: string }
-  | { kind: "chat"; text: string; side: "you" | "peer" | "sys"; tight: boolean; from?: string; onlyLogs?: boolean; bannerDelta?: boolean }
+  | { kind: "chat"; text: string; side: "you" | "peer" | "sys"; tight: boolean; from?: string; onlyLogs?: boolean; bannerDelta?: boolean; historical?: boolean }
   | { kind: "echo"; text: string }
   | { kind: "log"; agent: string; blocks: Block[]; backfill: boolean; note?: string };
 
@@ -222,6 +224,7 @@ export function entryVisible(e: Entry, view: ChatView, target: string | undefine
       return showsChat(view);
     case "chat":
       if (e.onlyLogs) return showsLogs(view); // a note about the logs themselves ("no logs for x")
+      if (e.historical) return showsChat(view); // the earlier block belongs to the conversation view
       if (showsChat(view)) return true;
       // The logs view hides ONLY what the transcript already shows: the target's own DMs (its `↩ you`
       // blocks) — and even those only while that transcript can be read. Everything else stays:
@@ -250,6 +253,17 @@ export class History {
     const i = this.entries.findIndex((x) => x.kind === "log");
     this.entries.splice(i, 1);
     this.logs--;
+  }
+  /** Put `es` where `at` stands, replacing it (the earlier block taking its loader's place). */
+  replace(at: Entry, es: Entry[]): void {
+    const i = this.entries.indexOf(at);
+    if (i < 0) throw new Error("History.replace: the entry to replace is not in the history");
+    this.entries.splice(i, 1, ...es);
+  }
+  /** Insert `es` before index `i` (a `/more` block goes above what is already shown). */
+  insertAt(i: number, es: Entry[]): void {
+    if (i < 0 || i > this.entries.length) throw new Error(`History.insertAt: index ${i} out of range`);
+    this.entries.splice(i, 0, ...es);
   }
 }
 
