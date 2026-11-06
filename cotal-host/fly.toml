@@ -8,7 +8,7 @@ swap_size_mb = 512
 
 # paw for the optional office bridge (README "Office bridge"); OFFICE_URL / OFFICE_JOIN_KEY are Fly secrets.
 [build.args]
-  PAW_REF = "6e153ea663be452a1fe1c8d2fd6ee6ec75b35956"
+  PAW_REF = "fec9610f2b530b4b9dcaac159193dac4d4e90012"
 
 [env]
   PUBLIC_HOST = "2027-cotal.fly.dev"
