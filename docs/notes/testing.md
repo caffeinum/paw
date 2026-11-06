@@ -33,6 +33,9 @@ Moved verbatim from CLAUDE.md (2026-10-02 split). Index: [CLAUDE.md](../../CLAUD
   `scripts/check-foreground.ts` (`pnpm check:foreground`) — the foreground registry (register/read/list +
   stale-pid self-reap), the `ensureAgentSpawned` reuse-guard ({spawned:false} for a live foreground name),
   and `paw claude`'s pure helpers (`peelArgs`, `deriveSessionIntent`, `stripSessionFlags`); hermetic, no daemons.
+  `scripts/check-smart-restart.ts` (`pnpm check:smart-restart`) — the manager fingerprint against a COPY
+  of this checkout (what it covers, which edits move it and which don't, fail-loud cases), `planRestart`'s
+  every full-restart reason, `releaseIdOfRoot`, prune sparing an in-use release, `restart --full` parse. Hermetic.
   `scripts/check-release.ts` (`pnpm check:release`) — the release discipline against a tiny FAKE checkout
   under a temp PAW_HOME: id determinism + lockfile sensitivity, snapshot completeness, node_modules is a
   clone (inode differs) and never a symlink, immutability under a checkout edit AND a node_modules

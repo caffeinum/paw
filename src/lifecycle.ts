@@ -485,7 +485,8 @@ export function spawnDetachedRestart(space: string, runtime: Runtime | undefined
   if (restartInFlight(space)) return false;
   const out = openSync(restartLogPath(space), "a");
   try {
-    const [cmd, args] = pawViaNode(["restart", ...(runtime ? [runtime] : []), "--space", space]);
+    // `--full`: the parent already decided this restart bounces the manager (it only detaches then).
+    const [cmd, args] = pawViaNode(["restart", ...(runtime ? [runtime] : ["--full"]), "--space", space]);
     const env = loggedDaemonEnv({ PAW_WAKE_AGENT: wakeAgent });
     for (const k of Object.keys(env)) if (k.startsWith("COTAL_")) delete env[k]; // not an agent → don't re-detach
     const child = spawn(cmd, args, { detached: true, stdio: ["ignore", out, out], env });
@@ -1717,6 +1718,21 @@ export async function restartMailbox(space: string): Promise<number[]> {
   if (mailboxProcs(space).length) throw new Error(`paw: the "${space}" mailbox (pid ${mailboxProcs(space).join(", ")}) survived SIGKILL — not starting a second one`);
   ensureMailbox(space);
   return was;
+}
+
+/**
+ * `paw restart` onto a release whose MANAGER FINGERPRINT equals the running manager's
+ * (src/manager-fingerprint.ts): the manager, the hub and every agent keep running on the release they
+ * started from; only the mailbox (the "you" beacon, the sleep host, the office bridge) moves onto the
+ * code `ensureMailbox` starts now. The mesh is proved first, and a hub that should run but doesn't is
+ * started. Returns the mailbox pids it stopped.
+ */
+export async function restartKeepingManager(space: string): Promise<number[]> {
+  await withLock(space, async () => {
+    await ensureMeshFor(space, pawServer(space));
+    await ensureHub(space);
+  });
+  return restartMailbox(space);
 }
 
 /**

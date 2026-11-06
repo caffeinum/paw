@@ -123,7 +123,7 @@ async function mesh(argv: string[]): Promise<void> {
     const { human: _old, ...rest } = existing;
     writeRemoteMesh({ ...rest, ...(args.human !== HUMAN_PEER ? { human: args.human } : {}), ts: new Date().toISOString() });
     console.log(`✓ you are "${args.human}" on "${space}" (was "${existing.human ?? HUMAN_PEER}")`);
-    console.log(`  running daemons keep the old name until restarted — \`paw restart --space ${space}\` (mailbox + manager, revives live agents with the new brief)`);
+    console.log(`  running daemons keep the old name until restarted — \`paw restart --full --space ${space}\` (mailbox + manager, revives live agents with the new brief)`);
     console.log(`  your identity (nkey, unread inbox) is unchanged: a DM inbox is keyed by id, not name`);
     return;
   }

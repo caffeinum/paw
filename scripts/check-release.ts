@@ -242,7 +242,7 @@ const first = createRelease({ root: checkout });
   assert(listReleases().length === 3, "prune: three releases on disk before pruning");
 
   activateRelease(first.id); // pin the OLDEST, then keep only the newest 1
-  const dropped = pruneReleases(1);
+  const dropped = pruneReleases(1).removed;
   assert(existsSync(releasePath(first.id)), "prune: the CURRENT release survives even as the oldest (daemons are running it)");
   assert(existsSync(releasePath(third.id)), "prune: the newest release survives");
   assert(!existsSync(releasePath(second.id)), "prune: an old, unpinned release is removed");

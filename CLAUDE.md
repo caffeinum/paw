@@ -103,7 +103,13 @@ Each entry: what it is + the most load-bearing rule. Full notes behind the link.
   default socket. Mesh boot = `cotal up --detach --no-manager` (cotal 0.84 exits 1 on cotald's degraded
   control plane — the reboot failure); lifecycle lock waits 180s for a live holder. → [lifecycle.md#srclifecyclets](docs/notes/lifecycle.md#srclifecyclets)
 - `src/release.ts` + `src/commands/release.ts` — content-hashed immutable snapshots, atomic rename flip,
-  `cp -Rc` node_modules (never symlink/hardlink), prune never deletes current, `PAW_RELEASE=dev|<id>`. → [lifecycle.md#release-discipline](docs/notes/lifecycle.md#release-discipline)
+  `cp -Rc` node_modules (never symlink/hardlink), prune never deletes current NOR a release a live process
+  runs (`releasesInUse`), `PAW_RELEASE=dev|<id>`. → [lifecycle.md#release-discipline](docs/notes/lifecycle.md#release-discipline)
+- `src/manager-fingerprint.ts` — smart restart: each release stores a MANAGER FINGERPRINT (cotald.ts import
+  graph + hub + manager-features + `startManagerDaemon`'s launch closure + every lockfile); `paw restart` with
+  an equal one (one answering manager, release roots, same runtime) restarts ONLY the mailbox — manager + agents
+  keep running on the older release. `--full` = always bounce; `<runtime>` stays full. `check:smart-restart`.
+  → [lifecycle.md#smart-restart](docs/notes/lifecycle.md#smart-restart)
 - `src/cotal-root.ts` — `pawCotalRoot(space)`: one root for a space from any cwd; every daemon spawns
   with that cwd (the team2027 foreign-auth incident). → [lifecycle.md#cotal-root](docs/notes/lifecycle.md#cotal-root)
 - `nodeBin`/`viaTsx`/`withToolPath` — node resolved absolutely; tool dirs backfilled (appended) for

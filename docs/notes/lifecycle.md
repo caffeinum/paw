@@ -208,6 +208,52 @@ Moved verbatim from CLAUDE.md (2026-10-02 split). Index: [CLAUDE.md](../../CLAUD
   operator's REAL `~/.paw/releases` or move the pointer their live daemons follow (a test must not cut
   over production), the second is about PATH/exec resolution, not which tree.
 
+## smart restart
+
+- `src/manager-fingerprint.ts` (2026-11-06) — **`paw restart` (no target) restarts the MANAGER — and so
+  every agent — only when the new release changes what the manager loads.** The operator's ask: "only
+  truly restart when we have to upgrade cotal; for paw fixes don't restart the agents". A manager bounce
+  despawns every seat (sessions resume, but in-flight turns, Monitors and background shells are cut); the
+  mailbox, hub, web and keeper never touch an agent. So each release carries a **manager fingerprint**
+  (`<release>/manager-fingerprint.json`, written in staging by `createRelease`; the JSON lists its inputs):
+  - the static import graph of `bin/cotald.ts` (connector, kit/hermes/acp, sandbox, hub paths, brief…),
+    parsed with the TypeScript AST — comments never count, a NON-LITERAL `import()` fails loud;
+  - `new URL("<rel>", import.meta.url)` targets in that graph (sandbox runner + forwarder + killer,
+    `src/sandbox/Containerfile`); an ancestor dir (hub/paths.ts' TREE_ROOT) is not walked;
+  - the hub (`src/hub/daemon.mjs` graph + `cotal-shim.c`) — a kept manager keeps its hub — and
+    `src/manager-features.json`;
+  - HOW paw launches it: the top-level declarations reachable from `startManagerDaemon` in
+    lifecycle.ts, followed ACROSS relative imports into the declarations they name (`daemonEnv`,
+    `nodeBin`, `defaultTmuxEnv`, the cmux/gui-session handling, `release.ts#daemonRoot`,
+    `cotal-root.ts#pawCotalRoot`…), by source text — so a lifecycle edit elsewhere (or `pruneReleases`)
+    doesn't count; an import naming no top-level declaration pulls its whole module;
+  - every dependency: package.json minus `scripts`/`description`, pnpm-lock.yaml, and the INSTALLED
+    `node_modules/.pnpm/lock.yaml` (patch hashes included). Any lock change ⇒ full restart.
+  NOT covered: the node binary's version and the ambient env — `paw restart --full` for those.
+- `planRestart` (pure, `check:smart-restart`) keeps the manager only when ALL hold: no `--full`, no
+  `<runtime>` arg, no pending revive list, exactly ONE manager pid, its running runtime = the resolved
+  preference, both its root and `daemonRoot()` are releases (a `PAW_RELEASE=dev` checkout is mutable —
+  what it loaded can't be known ⇒ full), equal fingerprints (a release with no stored file is computed
+  from its immutable tree), and the manager answers ps (a hung one is still replaced). Then
+  `restartKeepingManager` proves the mesh, ensures (adopts) the hub, and restarts ONLY the mailbox onto
+  the new release: `✓ manager unchanged since release A (same cotal + connector) — agents keep running;
+  mailbox now on release B`. Otherwise it prints `restarting the manager — <why>` and does today's full
+  bounce + revive. Decided BEFORE the in-agent detached hand-off (the keep path kills nobody); the
+  detached child is spawned with `--full` so it does what the parent decided. The night roll
+  (`paw release && paw restart`) gets this for free.
+- **A kept manager runs an OLDER release than `current` — for weeks, possibly.** Nothing compares the
+  manager's release id with current (status/ensure don't; `assertManagerFeature` reads the manager's OWN
+  root, which is right). **`paw release --prune` now spares every release a live process names**
+  (`releasesInUse`: `ps -axww` command lines under the releases dir, spelled and realpath'd; ps failing
+  ⇒ prune throws, never guesses) — manager, hub, `paw web`, another space's mailbox, a sandbox launcher,
+  an agent's MCP server. `paw release --list` marks them `in use`. Hints that MEANT "bounce every agent"
+  now say `paw restart --full` (`paw mesh set --as`, `paw start`'s usage).
+- E2E (isolated space, real releases in a temp PAW_HOME): release A + one claude agent (pid 69602,
+  manager 69453); a CLI-only edit (src/chat.ts) → release B → `paw restart`: manager 69453 still on A,
+  mailbox moved to B, agent still pid 69602; `--prune 1` kept A ("a running daemon still uses it"); a
+  connector edit → release C → `paw restart`: "manager code changed (release A → C)", full bounce,
+  agent revived as 71535.
+
 ## cotal root
 
 - `src/cotal-root.ts` — `pawCotalRoot(space)`: THE cotal root for a space, replacing every bare

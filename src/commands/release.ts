@@ -5,11 +5,14 @@
  *   paw release --no-activate   snapshot only (stage the new version beside the old one)
  *   paw release --force         re-copy even when the id already exists (a re-run after an install)
  *   paw release --list          what's on disk, and which one the daemons run from
- *   paw release --prune [N]     drop all but the newest N (default 3); never the current one
+ *   paw release --prune [N]     drop all but the newest N (default 3); never the current one, nor one a
+ *                               live process still runs (a kept manager, the hub, `paw web`)
  *
  * Deliberately does NOT restart anything. Standing a version up and cutting over are two acts, and
- * the second one already has a verb — `paw restart` bounces the manager and revives the fleet, and it
- * resolves the release fresh at spawn time, so it comes up from whatever `current` now points at.
+ * the second one already has a verb — `paw restart` resolves the release fresh at spawn time, so the
+ * daemons come up from whatever `current` now points at. Each release carries its MANAGER FINGERPRINT
+ * (src/manager-fingerprint.ts): when it equals the running manager's, `paw restart` moves only the
+ * mailbox and leaves the manager — and every agent — running on the older release.
  * Folding the bounce in here would make "take a snapshot" drop every agent, which is the surprise
  * this whole discipline exists to remove.
  *
@@ -26,6 +29,7 @@ import {
   listReleases,
   pruneReleases,
   releaseId,
+  releasesInUse,
   releasesDir,
 } from "../release.ts";
 
@@ -70,8 +74,9 @@ function show(): void {
   if (all.length === 0) {
     console.log("  (none) — run `paw release` to snapshot this checkout");
   } else {
+    const used = releasesInUse();
     for (const r of all) {
-      const mark = r.id === cur?.id ? c.green(" ← current (daemons run from here)") : "";
+      const mark = (r.id === cur?.id ? c.green(" ← current (new daemons start here)") : "") + (used.has(r.id) ? c.dim(" · in use by a running process") : "");
       console.log(`  ${c.bold(r.id)}  ${new Date(r.createdAt).toLocaleString()}${mark}`);
     }
   }
@@ -93,8 +98,9 @@ const release: Command = {
     cleanStaging(); // a crashed snapshot leaves a .staging-* dir; it is never a release, so drop it
 
     if (args.prune !== undefined) {
-      const dropped = pruneReleases(args.prune);
-      console.log(dropped.length ? `pruned ${dropped.length}: ${dropped.join(", ")}` : "nothing to prune");
+      const { removed, kept } = pruneReleases(args.prune);
+      console.log(removed.length ? `pruned ${removed.length}: ${removed.join(", ")}` : "nothing to prune");
+      if (kept.length) console.log(c.dim(`kept ${kept.join(", ")} — a running daemon still uses ${kept.length === 1 ? "it" : "them"} (a manager \`paw restart\` left running, the hub, \`paw web\`…)`));
       return;
     }
     if (args.list) return show();
