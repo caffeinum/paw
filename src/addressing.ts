@@ -9,6 +9,7 @@
  * plain CotalEndpoint.
  */
 import { createHash, randomUUID } from "node:crypto";
+import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
@@ -30,7 +31,7 @@ import { authDir, loadSpaceAuth } from "@cotal-ai/workspace";
 import { pawCotalRoot } from "./cotal-root.ts";
 import { confineAndTrustCwd, confineCwdOnly, isFolderTrusted, pawTrustedFolder, pretrustFolder } from "./cwd.ts";
 import { readForeground } from "./foreground.ts";
-import { clearSleep, prepareWake, sleepLog, sleepState } from "./sleep-state.ts";
+import { awaitStandInYield, clearSleep, prepareWake, sleepLog, sleepState, standInHolder } from "./sleep-state.ts";
 import { clearRestartHistory, markStuck, readRestartHistory, recordRestart, restartVerdict } from "./restart-history.ts";
 import { presenceLive, readMeshRoster } from "./roster.ts";
 import { probeRefusedLine, PRESENCE_PROBE_MS, presenceLatchRefusal, probePresenceWrites, type PresenceHealth } from "./presence-health.ts";
@@ -49,7 +50,7 @@ import { assertSandboxable, assertSandboxHostReady } from "./sandbox.ts";
 import { defaultTmuxEnv, managerLogPath, readRuntimeMarker } from "./lifecycle.ts";
 import { logOffset, seatDiagnostic, seatExit, seatRetirement } from "./manager-log.ts";
 import { pidAlive, seatPids } from "./seat-witness.ts";
-import { assertManagerFeature, describeCodeRoot, KIT_ARGS_FEATURE, KIT_DEFAULTS_FEATURE, runningManagerRoot } from "./manager-features.ts";
+import { assertManagerFeature, codeRootFeatures, describeCodeRoot, KIT_ARGS_FEATURE, KIT_DEFAULTS_FEATURE, runningManagerRoot, SLEEP_YIELD_ACK_FEATURE } from "./manager-features.ts";
 import { ensureBypassConsent, managedLaunchesBypass } from "./bypass-consent.ts";
 import { readStartupPrompt, tmuxSplit, tmuxSplitAdvice, type StartupScreen } from "./native-attach.ts";
 import { HOST_RE } from "./url.ts";
@@ -984,7 +985,7 @@ export async function ensureAgentSpawned(
     /** Test seam for the presence-plane probe; defaults to a real put on the space's presence KV. */
     probePresence?: () => Promise<PresenceHealth>;
     /** Test seam: shorter starting-grace / readiness waits (check:wake-gate). */
-    timing?: { graceMs?: number; readyMs?: number; firstSpawnMs?: number; retireMs?: number; retireStepMs?: number };
+    timing?: { graceMs?: number; readyMs?: number; firstSpawnMs?: number; retireMs?: number; retireStepMs?: number; yieldMs?: number };
     /** Test seam: the OS / manager-log / roster witnesses the readiness wait consults (src/seat-witness.ts). */
     witness?: Partial<SeatWitness>;
     /** Progress lines for an interactive caller (`paw restart <agent>`): what is being waited on, and for how long. */
@@ -1157,7 +1158,26 @@ export async function ensureAgentSpawned(
     // cotal #43), passing the canonical path so the dir claude runs in matches the trust key.
     // A HIBERNATED agent (`paw sleep`): flip it to waking; the sleep host keeps its stand-in up until this
     // seat is on the mesh, then hands it the DMs that arrived while it slept.
-    if (prepareWake(opts.space, opts.name)) say(`paw: waking "${opts.name}" from sleep`);
+    if (prepareWake(opts.space, opts.name)) {
+      say(`paw: waking "${opts.name}" from sleep`);
+      // The sleep host's stand-in holds this very name. The manager refuses a hard-pinned spawn while a LIVE
+      // presence holds it, so spawning before the host yields collides with paw's own stand-in ("already held
+      // by a live incarnation" — team2027, 2026-11-05, after its host had wedged). Wait for the ack; no ack, no spawn.
+      const yieldMs = opts.timing?.yieldMs ?? STAND_IN_YIELD_MS;
+      const holder = standInHolder(opts.space, opts.name);
+      const root = holder === undefined || holder === process.pid ? undefined : codeRootOfPid(holder);
+      if (root && !codeRootFeatures(root).includes(SLEEP_YIELD_ACK_FEATURE)) {
+        // A host from before the ack yields on its tick and says nothing; the spawn's held-name retries cover
+        // that — unless its tick has wedged, which is exactly what can't be told from here. Say so.
+        say(
+          `paw: the sleep host holding "${opts.name}"'s stand-in (mailbox pid ${holder}, ${describeCodeRoot(root)}) predates the yield handshake — ` +
+            `spawning on its tick's yield; if this fails "already held", \`paw restart --mailbox --space ${opts.space}\` (no agent is touched)`,
+        );
+      } else {
+        const y = await awaitStandInYield(opts.space, opts.name, yieldMs);
+        if (y.holder !== undefined && !y.yielded) throw new Error(standInYieldRefusal(opts.space, opts.name, y.holder, yieldMs));
+      }
+    }
     const config = ensurePersonaFile(opts.space, opts.name, { brief: opts.brief, kind: opts.kind });
     // Two-writer guard: if the agent's pinned session is open in a standalone claude (a hand-run
     // TUI, not a mesh agent), resuming it would put two writers on one transcript and can corrupt
@@ -1452,6 +1472,30 @@ async function refuseOnPresenceLatch(space: string, name: string, probe?: () => 
   if (h.kind === "latched") throw new Error(presenceLatchRefusal(name, h, pawServer(space)));
   if (h.kind === "unknown") say(`paw: couldn't probe the presence store before starting "${name}" (${h.message}) — proceeding`);
   if (h.kind === "not-permitted") say(probeRefusedLine(h.message, `starting "${name}" anyway`));
+}
+
+/** How long a waking spawn waits for the sleep host to yield the stand-in's name (its wake loop runs every second). */
+export const STAND_IN_YIELD_MS = 20_000;
+
+/** The paw tree a pid runs (`<root>/bin/paw.ts …` in its command line), or undefined when unreadable. */
+function codeRootOfPid(pid: number): string | undefined {
+  const r = spawnSync("ps", ["-o", "command=", "-p", String(pid)], { encoding: "utf8" });
+  return r.status === 0 ? /(\/\S+)\/bin\/paw\.ts\b/.exec(r.stdout)?.[1] : undefined;
+}
+
+function codeOfPid(pid: number): string | undefined {
+  const root = codeRootOfPid(pid);
+  return root ? describeCodeRoot(root) : undefined;
+}
+
+/** Why a waking spawn was refused: the stand-in's holder never yielded the name. Exported for check:sleep. */
+export function standInYieldRefusal(space: string, name: string, holder: number, waitedMs: number, code: string | undefined = codeOfPid(holder)): string {
+  return (
+    `paw: "${name}" is waking from sleep, but the sleep host holding its stand-in (mailbox pid ${holder}${code ? `, ${code}` : ""}) ` +
+    `did not yield the name within ${waitedMs < 1000 ? `${waitedMs}ms` : `${Math.round(waitedMs / 1000)}s`} — spawning now would collide with paw's own stand-in ("already held by a live incarnation"), so nothing was spawned. ` +
+    `The wake stays queued (sleep/${name}.waking) for the host to finish. A host that never yields is wedged or older than this paw: ` +
+    `\`paw restart --mailbox --space ${space}\` restarts only the mailbox (no agent is touched), and its fresh host finishes the wake.`
+  );
 }
 
 /**

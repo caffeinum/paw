@@ -104,3 +104,34 @@ Tests: check:sleep G6 (hermetic: seat attribution, shell plumbing vs work, sched
 `scripts/lean/kit/e2e-kit-sleep.ts` (real isolated manager, kit `fake:codex`: dry-run verdict, a backgrounded
 `sleep` blocks `--now`, sleep → seat gone + stand-in, DM wakes it `--resume <pin>` with its kitArgs into the same
 transcript).
+
+## Stuck `.waking` and the stand-in that never yields (2026-11-05)
+
+team2027: 2027-intern, fly and vercel read "waking" for hours, and `paw start`/`chat` failed with "still held on
+the mesh … hard-pinned name already held by a live incarnation". The holder was paw's OWN stand-in.
+
+- **Root cause: the host's tick wedged.** One await inside it (a broker call: stand-in start/setStatus, a watch,
+  a backlog read) never settled, and the `ticking` guard then turned every later tick into a no-op — logging
+  nothing. From ~17:31Z the team2027 host raised no stand-in (agents slept after that have no `.beacon`) and never
+  yielded nor finished a paw-command wake. An external wake renamed `.json` → `.waking` (rename keeps the mtime,
+  which is why the `.waking` files carry the SLEEP's timestamp), spawned against the un-yielded stand-in and
+  collided; or, with no stand-in up, spawned fine but the hand-off never ran, and the next sleep wrote a `.json`
+  beside the old `.waking` (fly/vercel; the re-sleep logged the old cursor). Not version skew: sleep-host.ts /
+  sleep-state.ts were identical in the running release 594a832b377c and main.
+- **Fix:** every host loop is a `guardedTicker` with a deadline (a wedged run is logged with the step it is stuck
+  at, and the next tick runs); stand-in/watch/ps calls and each backlog read are `bounded` (a hung read no longer
+  blocks the agent's read chain); one wake attempt is bounded (`WAKE_DEADLINE_MS`) and then counts as a failed
+  wake on the 1m→30m backoff, back to asleep with the error after `MAX_WAKE_FAILURES`. The wake loop (yield +
+  drive `.waking`) is separate from the sweep tick.
+- **Yield handshake:** after the stand-in goes `offline` the host writes `sleep/<name>.yielded` (its pid);
+  `ensureAgentSpawned` waits up to `STAND_IN_YIELD_MS` for it after `prepareWake` and REFUSES to spawn without it,
+  naming the mailbox pid/release and `paw restart --mailbox`. A host from before the handshake (no
+  `sleep-yield-ack` in its root's manager-features.json) is said out loud and the old retry path is used.
+- `.json` beside `.waking` = asleep (the `.json` wins); the host folds the stale `.waking` in (earlier cursor,
+  union of forwarded) and `sleepAgent` clears it when it records a sleep. `prepareWake` stamps `wakeRequestedAt`.
+- `paw restart --mailbox [--space s]` restarts only the mailbox (beacon + sleep host); no agent is touched.
+- `paw status <name>` threw `no agent` for EVERY single name since #96 (the roster-only filter ran the throwing
+  `selectRows` over an empty set); `wantedNames` is the non-throwing filter. `paw ps` / `paw ls` = status.
+
+Tests: check:sleep G7 (the 2027-intern state refused before any spawn, the ack, fly/vercel folding, a wedged
+tick/read cut loose, the re-sleep, status lookup, `--mailbox`).

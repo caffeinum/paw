@@ -671,6 +671,23 @@ export function statusTargets(argv: string[]): string[] {
 const isPathTarget = (t: string) => t === "." || t === ".." || /^(\.{1,2}\/|\/|~)/.test(t);
 
 /**
+ * Which of `names` the name/folder `targets` select — a FILTER, never a verdict. collectStatus asks it of
+ * partial name sets (the registry + ps, then the roster-only extras), so a target absent from one set is
+ * simply not in it. It used to be {@link selectRows}, which throws on a name it doesn't see: asked of the
+ * (usually empty) roster-only set it threw `no agent "<name>"` for every single-name `paw status <name>`
+ * — the sleeping team2027 agents included (2026-11-05). {@link selectRows} on the collected rows is what
+ * fails loud on an unknown name.
+ */
+export function wantedNames(names: string[], targets: string[], folderAgents: (target: string) => { folder: string; names: string[] }): Set<string> {
+  const want = new Set<string>();
+  for (const t of targets) {
+    if (isPathTarget(t)) for (const n of folderAgents(t).names) want.add(n);
+    else want.add(t);
+  }
+  return new Set(names.filter((n) => want.has(n)));
+}
+
+/**
  * Narrow the roster to what was asked for, keeping its order (live first, then most recent).
  *
  * A NAME must match an agent exactly; a PATH selects every agent registered to that folder (its
@@ -1173,7 +1190,7 @@ async function status(argv: string[]): Promise<void> {
   // Names and folders say WHICH rows before anything is read, so only those rows are collected. A
   // STATE word (`busy`, `live`…) is judged on collected rows, so it still reads the whole fleet.
   const byState = targets.some((t) => !isPathTarget(t) && STATE_WORDS[t]);
-  const only = targets.length && !byState ? (names: string[]) => new Set(selectRows(names.map((name) => ({ name })), targets, folderAgents).map((r) => r.name)) : undefined;
+  const only = targets.length && !byState ? (names: string[]) => wantedNames(names, targets, folderAgents) : undefined;
   const { all, hub } = await withManagerControl(space, pawServer(space), async (ctl) => {
     // ONE control rail for both ensure()'s "is the manager up?" probe and the status read: the probe
     // IS the ps this command needs. (`bin/paw.ts` used to ensure() first and status then resolved the
@@ -1229,4 +1246,10 @@ const statusCommand: Command = {
   run: (a) => status([...a.raw]),
 };
 
-registry.register(statusCommand);
+/** `paw ps` / `paw ls`: what people (and paw's own hints — dm-wait's "`paw ps` for live names") type
+ *  for the roster. They were unknown commands after ps folded into status; now they are status. */
+const aliasOfStatus = (name: string): Command => ({ ...statusCommand, name, hidden: true, summary: `same as \`paw status\` — ${statusCommand.summary}`, usage: (statusCommand.usage as string).replace(/^status/, name) });
+const psCommand = aliasOfStatus("ps");
+const lsCommand = aliasOfStatus("ls");
+
+registry.register(statusCommand, psCommand, lsCommand);

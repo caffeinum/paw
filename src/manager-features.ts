@@ -27,6 +27,10 @@ export const KIT_ARGS_FEATURE = "kit-args";
 /** A kit persona with no `provider:` and no `-m`/`-P`: kit picks its own defaults (kit fe1d8f4). */
 export const KIT_DEFAULTS_FEATURE = "kit-defaults";
 
+/** The mailbox's sleep host (same release root as the manager) acks a stand-in's yield in
+ *  `sleep/<name>.yielded`; a spawner waits for it. An older host yields on its tick but never acks. */
+export const SLEEP_YIELD_ACK_FEATURE = "sleep-yield-ack";
+
 /** The tree a manager process runs: `<root>/bin/cotald.ts supervise …` from its command line. Pure. */
 export function codeRootFromCommand(cmd: string): string | undefined {
   return /(?:^|\s)(\/\S+)\/bin\/cotald\.ts supervise\b/.exec(cmd)?.[1];

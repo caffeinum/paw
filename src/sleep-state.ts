@@ -9,6 +9,9 @@
  *  - `<name>.waking` the agent is being woken: the stand-in stays up until the new seat is on the mesh,
  *                    then the host forwards the DMs that arrived while it slept.
  *  - `<name>.beacon` the pid of the process holding the stand-in presence (present ⇔ the stand-in is up).
+ *  - `<name>.yielded` the pid of that process once its stand-in went `offline` for a wake (the manager
+ *                    refuses a hard-pinned spawn while a LIVE presence holds the name). A spawner waits for
+ *                    it — {@link awaitStandInYield} — instead of colliding with paw's own stand-in.
  *
  * WHY a stand-in is needed at all (measured on cotal 0.48.1 and 0.58.0, scripts/probe-sleep-dm.ts):
  * every spawn mints a FRESH actor nkey, so a respawned agent listens on a different DM subject than the
@@ -45,6 +48,8 @@ export interface SleepRecord {
   /** REMOTE space only: the manager instance (this machine's) that ran the seat when it was slept. The
    *  sleep host stands in only for a record whose instance is still this machine's (src/hosted.ts). */
   instanceId?: string;
+  /** When a wake was asked for (ms) — set by {@link prepareWake}; `paw status` shows how long it has waited. */
+  wakeRequestedAt?: number;
 }
 
 /** Failed wakes in a row before the agent is put back to sleep and the failure surfaced. */
@@ -60,6 +65,7 @@ export function sleepDir(space: string): string {
 const recordPath = (space: string, name: string) => join(sleepDir(space), `${name}.json`);
 const wakingPath = (space: string, name: string) => join(sleepDir(space), `${name}.waking`);
 const beaconPath = (space: string, name: string) => join(sleepDir(space), `${name}.beacon`);
+const yieldedPath = (space: string, name: string) => join(sleepDir(space), `${name}.yielded`);
 
 /** The stand-in's actor token: stable per (space, name) so a re-raised stand-in (mailbox restart) keeps
  *  the same DM subject, NATS-safe (`[A-Za-z0-9_]`, no dashes). */
@@ -138,10 +144,12 @@ export type SleepState = "asleep" | "waking" | "wake failed" | "sleep record cor
  *  so rather than reading as a plain "offline". */
 export function sleepState(space: string, name: string): SleepState | undefined {
   try {
-    const waking = readWakingRecord(space, name);
-    if (waking) return waking.lastError ? "wake failed" : "waking";
+    // A `.json` beside a `.waking` is a sleep recorded AFTER that wake was asked for: the agent is asleep,
+    // the `.waking` is a leftover the host folds in ({@link foldStaleWaking}).
     const rec = readSleepRecord(space, name);
     if (rec) return rec.lastError ? "wake failed" : "asleep";
+    const waking = readWakingRecord(space, name);
+    if (waking) return waking.lastError ? "wake failed" : "waking";
     return undefined;
   } catch {
     return "sleep record corrupt";
@@ -221,20 +229,78 @@ export function standInHolder(space: string, name: string): number | undefined {
 }
 
 export function markStandIn(space: string, name: string, up: boolean): void {
+  rmSync(yieldedPath(space, name), { force: true }); // a raised stand-in holds the name; a lowered one has none to yield
   if (up) writeFileSync(beaconPath(space, name), `${process.pid}\n`);
   else rmSync(beaconPath(space, name), { force: true });
 }
 
+/** Pure: one record owing the backlog of both — the EARLIER cursor (everything after it is still owed)
+ *  and every seq either already forwarded (never sent twice). `next` supplies the rest. */
+export function mergeBacklog(prior: SleepRecord, next: SleepRecord): SleepRecord {
+  const forwarded = [...new Set([...(prior.forwarded ?? []), ...(next.forwarded ?? [])])].sort((a, b) => a - b);
+  return { ...next, cursorSeq: Math.min(prior.cursorSeq, next.cursorSeq), ...(forwarded.length ? { forwarded } : {}) };
+}
+
 /**
- * Called by `ensureAgentSpawned` BEFORE it spawns: if `name` is asleep, flip it to waking. The stand-in
- * stays UP until the new seat reaches the mesh (the host lowers it then), so the name never goes dead
- * during the boot; DMs arriving meanwhile land on the stand-in and are forwarded. Returns whether a wake
- * is in progress.
+ * A `.waking` with a `.json` beside it: the agent was slept again after that wake was asked for (the
+ * live team2027 fly/vercel state, 2026-11-05 — a wake the host never finished, then a later sleep). The
+ * `.json` is the truth; the `.waking` is folded into it (its backlog stays owed) and removed. Returns
+ * whether there was one. A record that won't parse throws — never silently dropped.
+ */
+export function foldStaleWaking(space: string, name: string): boolean {
+  const waking = readWakingRecord(space, name);
+  const rec = readSleepRecord(space, name);
+  if (!waking || !rec) return false;
+  writeSleepRecord(space, mergeBacklog(waking, rec));
+  rmSync(wakingPath(space, name), { force: true });
+  return true;
+}
+
+/**
+ * Called by `ensureAgentSpawned` BEFORE it spawns: if `name` is asleep, flip it to waking (stamped with
+ * when). The stand-in stays UP until the new seat reaches the mesh (the host lowers it then), so the name
+ * never goes dead during the boot; DMs arriving meanwhile land on the stand-in and are forwarded. The
+ * spawner must then wait for the host to YIELD the name ({@link awaitStandInYield}). Returns whether a
+ * wake is in progress.
  */
 export function prepareWake(space: string, name: string): boolean {
-  const rec = recordPath(space, name);
-  if (existsSync(rec)) renameSync(rec, wakingPath(space, name));
+  const rec = readSleepRecord(space, name);
+  if (rec) {
+    const waking = readWakingRecord(space, name);
+    writeWakingRecord(space, { ...(waking ? mergeBacklog(waking, rec) : rec), wakeRequestedAt: Date.now() });
+    rmSync(recordPath(space, name), { force: true });
+  }
   return existsSync(wakingPath(space, name));
+}
+
+/** The host's ack that `name`'s stand-in went offline for a wake (or clears it). */
+export function markYielded(space: string, name: string, on: boolean): void {
+  if (on) writeFileSync(yieldedPath(space, name), `${process.pid}\n`);
+  else rmSync(yieldedPath(space, name), { force: true });
+}
+
+/** Who holds `name`'s stand-in and whether THAT holder has yielded it. An ack from another pid (a host
+ *  that has since restarted) means nothing. */
+export function standInYield(space: string, name: string): { holder?: number; yielded: boolean } {
+  const holder = standInHolder(space, name);
+  if (holder === undefined) return { yielded: false };
+  const file = yieldedPath(space, name);
+  const ack = existsSync(file) ? Number(readFileSync(file, "utf8").trim()) : undefined;
+  return { holder, yielded: ack === holder };
+}
+
+/**
+ * Wait until no stand-in holds `name`, or its holder has yielded it. `{ holder, yielded: false }` after
+ * `timeoutMs` means the sleep host never answered — spawning then collides with paw's OWN stand-in
+ * ("hard-pinned name already held by a live incarnation"), so the caller must fail loud, not spawn.
+ */
+export async function awaitStandInYield(space: string, name: string, timeoutMs: number, stepMs = 250): Promise<{ holder?: number; yielded: boolean }> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const y = standInYield(space, name);
+    if (y.holder === undefined || y.yielded || Date.now() >= deadline) return y;
+    await new Promise((r) => setTimeout(r, stepMs));
+  }
 }
 
 /** Append one line to the space's sleep log — every sleep and wake is recorded with its reason. */
