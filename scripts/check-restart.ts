@@ -15,6 +15,9 @@
  *   6. the revive set IS the despawned set (team2027, 2026-10-28: 11 despawned, 8 back — the 3 were
  *      running but off the mesh, some sandboxed): a fake rail lists running+offline and sandboxed seats;
  *      every running one is owed, an exited one is left down BY NAME, the summary names both.
+ *   7. 2026-11-06 (team2027): the every-boot `connector opencode unavailable … not found` warning no longer
+ *      makes a broker stall fatal or blames PATH; a live manager gets up to 60s, an exited one fails at 20s;
+ *      the keeper finishes other spaces' failed restarts where their manager runs.
  *
  * Hermetic: temp PAW_HOME, PAW_SPACE=test-restart-<pid>, PAW_RELEASE=dev. No mesh, no manager, no agent.
  */
@@ -241,6 +244,57 @@ try {
     const rt = (await import("node:fs")).readFileSync(join(import.meta.dirname, "..", "src", "commands", "runtime.ts"), "utf8");
     assert(!rt.includes("psRowAlive"), "runtime.ts no longer filters the revive set by mesh presence");
     assert(/onDespawnTargets:[\s\S]{0,200}ledger\.record\(rows\)/.test(rt), "paw restart records the despawn's own rows into the revive list");
+  }
+
+  console.log("7. 2026-11-06: a healthy slow boot is not a broken install, and gets its time");
+  {
+    const boot = [
+      "paw manager boot 2026-11-06T09:19:45Z",
+      "! manager boot: connector opencode unavailable - opencode harness needs opencode on PATH (not found)",
+      "! could not renew the liveness lease: timeout",
+    ].join("\n");
+    const c = classifyManagerFailure(boot);
+    assert(c.kind === "transient", `the opencode-unavailable boot warning no longer reads as fatal (got ${c.kind}: ${c.reason})`);
+    assert(classifyManagerFailure("paw manager boot\n! manager boot: connector opencode unavailable - … (not found)").kind === "fatal", "that warning alone is still an unrecognised (fatal) failure");
+    assert(classifyManagerFailure("Error: Cannot find module '/x/node_modules/tsx'").kind === "fatal", "a real broken install stays fatal");
+    const msg = explainManagerFailure({ space: SPACE, runtime: "pty", logTail: boot, logPath: "/x/manager.log", attempts: 1 });
+    assert(!msg.includes("isn't on PATH") && !msg.includes("opencode"), "the explanation doesn't blame PATH for a benign warning");
+
+    const { waitForManager } = await import("../src/lifecycle.ts");
+    const clock = () => {
+      let t = 0;
+      return { now: () => t, sleep: async (ms: number) => void (t += ms) };
+    };
+    let c1 = clock();
+    let calls = 0;
+    const late = await waitForManager({ answers: async () => c1.now() >= 26_000 && ++calls > 0, alive: () => true, baseMs: 20_000, capMs: 60_000, ...c1 });
+    assert(late, "a live manager that answers at 26s (the incident) is up, not failed");
+    c1 = clock();
+    const dead = await waitForManager({ answers: async () => false, alive: () => false, baseMs: 20_000, capMs: 60_000, ...c1 });
+    assert(!dead && c1.now() >= 20_000 && c1.now() < 20_500, `an exited manager fails at the 20s base (${c1.now()}ms)`);
+    c1 = clock();
+    const hung = await waitForManager({ answers: async () => false, alive: () => true, baseMs: 20_000, capMs: 60_000, ...c1 });
+    assert(!hung && c1.now() >= 60_000 && c1.now() < 60_500, `a live but silent manager fails at the 60s cap (${c1.now()}ms)`);
+
+    const revive = await import("../src/revive.ts");
+    const revived: string[] = [];
+    const done = await revive.revivePendingElsewhere("global", {
+      spaces: () => ["global", "team2027", "down"],
+      managerUp: (s) => s !== "down",
+      revive: async (s) => void revived.push(s),
+    });
+    assert(revived.join() === "team2027" && done.join() === "team2027", `the keeper revives other spaces' failed restarts only where a manager runs (${revived.join()})`);
+    const loud = await revive.revivePendingElsewhere("global", {
+      spaces: () => ["a", "b"],
+      managerUp: () => true,
+      revive: async (s) => {
+        if (s === "a") throw new Error("boom");
+        revived.push(s);
+      },
+    });
+    assert(loud.join() === "a,b" && revived.includes("b"), "one space failing doesn't stop the next");
+    const g = (await import("node:fs")).readFileSync(join(import.meta.dirname, "..", "src", "global.ts"), "utf8");
+    assert(/othersAfter[\s\S]{0,200}revivePendingElsewhere\(space\)/.test(g), "the keeper tick runs it for the other spaces");
   }
 } finally {
   rmSync(HOME, { recursive: true, force: true });

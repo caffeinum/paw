@@ -19,6 +19,7 @@ import { canonicalDir, ensureAgentSpawned, lookupFolderName, setFolderName, stuc
 import { resolveSpace, withEnsuredManager } from "./lifecycle.ts";
 import { optedIn, sleepSweep, sweepOtherSpaces } from "./sleep.ts";
 import { tidySweep } from "./commands/tidy.ts";
+import { revivePendingElsewhere } from "./revive.ts";
 import { cronSweep } from "./commands/cron.ts";
 
 /** The always-on agent's fixed mesh name. Exported so other surfaces can reference it without a literal. */
@@ -74,7 +75,10 @@ async function globalUp(argv: string[]): Promise<void> {
   // The hibernation sweep of every OTHER space with opted-in agents (team2027, a remote mesh…): each on its own
   // manager handle, only where this machine's manager already runs, failures isolated per space — and, like
   // cron, regardless of whether bringing global up worked.
-  const othersAfter = () => sweepOtherSpaces(space).catch((e: Error) => console.error(`paw keeper: sleep sweep of other spaces failed: ${e.message}`));
+  const othersAfter = async () => {
+    await revivePendingElsewhere(space).catch((e: Error) => console.error(`paw keeper: reviving other spaces failed: ${e.message}`));
+    await sweepOtherSpaces(space).catch((e: Error) => console.error(`paw keeper: sleep sweep of other spaces failed: ${e.message}`));
+  };
   const { spawned, starting, stuck } = await withEnsuredManager(space, async (ctl) => {
     const r = await ensureAgentSpawned(ctl, { space, name, cwd: folder, brief: GLOBAL_BRIEF });
     // The hibernation sweep rides this 60s keeper tick (this space here; the others after, see othersAfter). It only ever touches agents the operator OPTED IN
