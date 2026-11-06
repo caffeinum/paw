@@ -304,6 +304,20 @@ assert(wt.length === 3 && wt.every((t) => adminSub.includes(t)), `…and on a re
   // The echo dial goes to a dead port and fails; only the taps placed before it matter here.
   await own.tapOwnSends(fakeEp, "remotetest-s", "tls://127.0.0.1:9", () => {}, () => {}).then((stop) => stop(), () => {});
   assert(taps.length >= 1 && taps.every((o) => !!o?.subject && o.subject !== "cotal.remotetest-s.>"), `remote: tapOwnSends never taps the space wildcard — ${JSON.stringify(taps)}`);
+  // The earlier block (src/chat-backlog.ts) and the tasks seed read "you"'s conversation ONLY through
+  // chat-own.ts readOwnConversation: on a remote space that is the `chat-history` cred's two
+  // name+filter-pinned consumers. `dmHistory` (a stream-wide consumer chat's agent cred can't create)
+  // or an observer endpoint (the admin cred) anywhere else in chat would widen what chat reads.
+  const wide = readdirSync(srcDir)
+    .filter((f) => /^chat.*\.ts$/.test(f) && f !== "chat-own.ts")
+    .filter((f) => /\.dmHistory\(|\breadConversation\(|\bobserverEndpoint\(|\bDmWindow\b/.test(readFileSync(new URL(f, srcDir), "utf8")));
+  assert(wide.length === 0, `chat reads DM history only through chat-own.ts — ${wide.join(" ") || "none"}`);
+  // …and on a remote space that read never touches the endpoint's own dmHistory: it signs a
+  // chat-history cred and dials (here a dead port — the dial failing proves the path, nothing else ran).
+  let dmHistoryCalls = 0;
+  const histEp = { card: { id: "local.UME" }, space: "remotetest-s", dmHistory: async () => (dmHistoryCalls++, []) } as unknown as Parameters<typeof own.readOwnConversation>[0];
+  const histErr = await own.readOwnConversation(histEp, "remotetest-s", "tls://127.0.0.1:9").then(() => undefined, (e: Error) => e);
+  assert(dmHistoryCalls === 0 && histErr !== undefined, `remote: the earlier block's read goes through its own narrow dial, never the endpoint's dmHistory — ${histErr?.message ?? "resolved?!"}`);
 }
 
 console.log("hosted here (one machine of several on a remote space)");

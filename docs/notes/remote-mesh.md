@@ -98,7 +98,7 @@ untouched: a space with no record resolves exactly as before.
   - `dm-cursor` (per `paw sleep`, 5 min) — `STREAM.INFO DM_<s>` only.
   - `chat-echo` (per `paw chat`, memory only, 24h, re-signed + reconnected in place) — sub ONLY "you"'s
     own outbound DM subject `inst.*.*.<o>.<you>`; publishes nothing.
-  - `chat-history` (per tasks-view seed, 5 min) — DMs to and from "you" through two name- and
+  - `chat-history` (per tasks-view seed and per earlier-block read — chat open, `@name` switch, `/more`; 5 min) — DMs to and from "you" through two name- and
     filter-pinned consumers (`pawch_<hash>_<i>`), the `sleep-watch` read shape without the live sub.
   - the stand-in presence — cotal's own `agent` mint for a persisted stand-in nkey
     (`sleep/<name>.standin.nkey`, 0600), never the agent's seat identity.

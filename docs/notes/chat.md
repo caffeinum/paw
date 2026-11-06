@@ -377,6 +377,58 @@ decides how long the `◌` loaders stay up.
   Tests: `check:paste` (wrap, fold, inline paste, parse round-trip, the screenshot's message),
   `check:chat` (draft hint), `check:chat-tty` 13 (real pty, isolated space).
 
+## earlier block
+
+**`paw chat @agent` opens on what was already said (`src/chat-backlog.ts`, pure; wired in chat.ts
+`loadBacklog`, 2026-11-06).** Operator: "`paw chat @agent` should SHOW the messages exchanged with that
+agent BEFORE the chat started … not start from an empty screen", on open AND on a switch. Screen:
+
+    ── earlier with kit · 6 messages in the last 24h · 31 older · /more ──
+    you → kit (3h ago): can you rebase #104?
+    🐈 kit (3h ago): done — pushed, CI green
+    ── now ──
+    you → kit>
+
+- **When:** on open, once the endpoint is up (it reads the DM stream, not the agent — so it shows while a
+  cold agent is still waking; a name still being looked up waits for the roster), and on every `@name`
+  that changes the target (the ↓ picker goes through `@name`). Before `@name <msg>` sends, so the block
+  sits above what you are about to say. Never on the follow-the-conversation retarget, `--all`, or a
+  `#channel`. Interactive only: a piped chat reads no history, and `--history` there fails loud.
+- **How much:** default the last 20 within 24h (whichever is fewer); `--history N` = the last N, no time
+  window; `--history 0` = off; `/more [N]` (default 20) = N OLDER ones, put right under the agent's first
+  divider (whose count it updates) and redrawn. Nothing in the window but older exists → `(nothing with kit
+  in the last 24h — N older · /more shows them)`; nothing at all → `(no earlier messages with kit)`.
+- **Instant UI:** a `◌ loading earlier messages with kit…` line holds the block's place; keys are never
+  blocked. When it lands and the loader is still the last thing painted (same width), the loader's rows
+  are erased and the block painted in place (`lastPaint` = the text + painter state before it); otherwise
+  the chat view is redrawn like a view switch. With the picker/chooser open only the history is updated
+  (the next redraw shows it). A failed read REPLACES the loader with a red `! couldn't load earlier
+  messages with kit: <why> — /more retries` — never an empty block.
+- **Never news.** The block is read through `readOwnConversation` (src/chat-own.ts — the tasks seed's
+  reader) and placed directly; it never passes through `onMessage`, so it can't follow/retarget, answer an
+  await, or advance the unread cursor (`check:chat` greps `loadBacklog` for it; `check:chat-tty` 15 asserts
+  the cursor didn't move). Entries are `historical: true` chat entries: shown in the chat view only (the
+  logs view's transcript already says it), dimmed (ANSI stripped, then dim), rendered like their live twins
+  — inbound through markdown with the agent's glyph, outbound on the rail via `parseComposed`/`railMessage`
+  (images and `[Pasted text #N]` inline), `(Nh ago)` age tags.
+- **Dedup by id.** `readOwnConversation` now returns ids (`feed.ts` `withIds`, opt-in so other surfaces'
+  payloads keep their shape). `shownIds` holds every id chat put on screen (live DMs, the echo, earlier
+  blocks) and `ownIds` our sends; the pick skips both at the moment it is placed, and a live DM whose id
+  is already in an earlier block is acked + marked read (it IS on screen) but not printed again — a DM
+  waiting in the inbox when chat opens is in the stream AND delivered live, so this happens on every open.
+  An outbound row whose recipient the stream couldn't name matches by the target's live id. A row with no
+  id fails loud.
+- **Remote spaces:** the same `chat-history` cred as the tasks seed — two name+filter-pinned consumers on
+  "you"'s own DM subjects, a fresh 5-min cred per read, never the space wildcard or `dmHistory`
+  (`check:remote` guards that no `src/chat*.ts` but chat-own.ts reads DM history). Agent replies addressed
+  to your human name (`humanPeer(space)`) are DMs to "you"'s id, so they are in it.
+- Tests: `check:chat` (`backlog:` — sizes/flags, both directions, window, dedup, `/more`'s cutoff, dividers,
+  visibility, History.replace/insertAt, the never-news grep); `check:chat-tty` 14–16 (isolated space, real
+  pty: block on open with a live duplicate shown once, on `@echo2` with an unread DM a filtered chat had
+  hidden — cursor unchanged, no `↪ replying`, plain line goes to echo2 — `--history 1` + `/more 3`,
+  `--history 0`); `check:remote` (only chat-own reads, its remote read never calls `dmHistory`).
+  Not verified against team2027 (live space — never touched by tests).
+
 ## echo and picker
 
 - **`paw chat` cross-session echo + the ↓ agent picker** — two additions that both hang off the

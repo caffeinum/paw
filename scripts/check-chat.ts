@@ -1604,6 +1604,105 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
   assert(SHORT_FORMS.c === "chat" && /cmd === "chat" && process\.stdin\.isTTY && process\.stdout\.isTTY/.test(bin) && bin.indexOf("expandShortForm(raw[0])") < bin.indexOf("// FAST PATH"), "fast path: `paw c` reaches it too (short forms expand first)");
 }
 
+// The earlier block (src/chat-backlog.ts): what was said with the target before this chat.
+{
+  const { backlogSize, moreCount, withAgent, pickBacklog, earlierDivider, nothingEarlier, moreInsertAt, BACKLOG_DEFAULT, BACKLOG_WINDOW_MS } = await import("../src/chat-backlog.ts");
+  const { entryVisible, History } = await import("../src/chat-views.ts");
+  const { parseArgs } = await import("../src/chat.ts");
+  const { CHAT_VALUE_FLAGS } = await import("../src/chat-lookup.ts");
+  type FE = import("../src/feed.ts").Entry;
+  const NOW = 1_800_000_000_000;
+  const H = 3_600_000;
+  const msg = (id: string, dir: "in" | "out", who: string, agoH: number, text = id): FE =>
+    dir === "in" ? { id, from: who, text, ts: NOW - agoH * H, dir } : { id, from: "you", to: who, text, ts: NOW - agoH * H, dir };
+  const conv: FE[] = [
+    msg("a1", "out", "kit", 50),
+    msg("a2", "in", "kit", 49),
+    msg("b1", "in", "queue", 3),
+    msg("a3", "out", "kit", 2),
+    msg("a4", "in", "Kit", 1),
+    msg("a5", "out", "UKITID", 0.5), // a recipient the stream couldn't name: matched by the target's id
+    msg("a6", "in", "kit", 0.1),
+  ];
+  const none = (): boolean => false;
+  const ids = (p: { entries: FE[] }) => p.entries.map((e) => e.id).join(",");
+
+  assert(eq(backlogSize(undefined), { limit: BACKLOG_DEFAULT, windowMs: BACKLOG_WINDOW_MS }) && BACKLOG_DEFAULT === 20 && BACKLOG_WINDOW_MS === 24 * H, "backlog: default = last 20 within 24h");
+  assert(eq(backlogSize("50"), { limit: 50 }) && eq(backlogSize("0"), { limit: 0 }), "backlog: --history N = last N, no window; 0 = off");
+  for (const bad of ["-1", "x", "2.5", ""]) {
+    let threw = false;
+    try {
+      backlogSize(bad);
+    } catch {
+      threw = true;
+    }
+    assert(threw, `backlog: --history ${JSON.stringify(bad)} fails loud`);
+  }
+  assert(moreCount("") === 20 && moreCount(" 5") === 5, "backlog: /more = 20, /more 5 = 5");
+  {
+    let threw = false;
+    try {
+      moreCount(" 0");
+    } catch {
+      threw = true;
+    }
+    assert(threw, "backlog: /more 0 fails loud");
+  }
+  assert(parseArgs(["@kit", "--history", "5"]).history === "5" && parseArgs(["@kit", "--history", "5"]).target === "@kit", "backlog: --history takes a value (never the target)");
+  assert(CHAT_VALUE_FLAGS.has("--history"), "backlog: the pre-shell lexes --history N as a flag + value (its N is not the target)");
+
+  assert(withAgent(msg("x", "in", "KIT", 1), "kit") && withAgent(msg("x", "out", "kit", 1), "Kit") && !withAgent(msg("x", "in", "queue", 1), "kit"), "backlog: both directions, case-insensitive, other agents out");
+  assert(!withAgent(msg("x", "out", "UKITID", 1), "kit") && withAgent(msg("x", "out", "UKITID", 1), "kit", new Set(["UKITID"])), "backlog: an unnamed recipient counts only by the target's own id");
+
+  const def = pickBacklog(conv, "kit", { ...backlogSize(undefined), now: NOW, shown: none, ids: new Set(["UKITID"]) });
+  assert(ids(def) === "a3,a4,a5,a6" && def.older === 2, `backlog: default keeps the last 24h only, oldest first, and counts what is older (${ids(def)} · older ${def.older})`);
+  const two = pickBacklog(conv, "kit", { limit: 2, now: NOW, shown: none });
+  assert(ids(two) === "a4,a6" && two.older === 3, `backlog: --history 2 = the last two, no window (${ids(two)} · older ${two.older})`);
+  const dedup = pickBacklog(conv, "kit", { limit: 10, now: NOW, shown: (id) => id === "a6" || id === "a3" });
+  assert(ids(dedup) === "a1,a2,a4", `backlog: anything already on screen (live, sent, an earlier block) is skipped (${ids(dedup)})`);
+  const more = pickBacklog(conv, "kit", { limit: 1, now: NOW, shown: none, before: conv[3]!.ts });
+  assert(ids(more) === "a2" && more.older === 1, `backlog: /more reaches back past the oldest shown (${ids(more)})`);
+  assert(pickBacklog(conv, "kit", { limit: 0, now: NOW, shown: () => { throw new Error("read"); } }).entries.length === 0, "backlog: --history 0 picks nothing (reads nothing)");
+  {
+    let threw = false;
+    try {
+      pickBacklog([{ from: "kit", text: "no id", ts: NOW, dir: "in" }], "kit", { limit: 5, now: NOW, shown: none });
+    } catch (e) {
+      threw = /no id/.test((e as Error).message);
+    }
+    assert(threw, "backlog: a row without an id fails loud (can't be deduped against live)");
+  }
+  assert(earlierDivider("kit", 3, 5, true) === "── earlier with kit · 3 messages in the last 24h · 5 older · /more ──", "backlog: the divider says count, span and how to reach further");
+  assert(earlierDivider("kit", 1, 0, false) === "── earlier with kit · 1 message ──", "backlog: …singular, no window, nothing older");
+  assert(/2 older · \/more/.test(nothingEarlier("kit", 2)) && nothingEarlier("kit", 0) === "(no earlier messages with kit)", "backlog: an empty block says so (never a silent blank)");
+
+  type E = import("../src/chat-views.ts").Entry;
+  const hist: E = { kind: "chat", text: "old", side: "peer", tight: false, historical: true };
+  assert(entryVisible(hist, "chat", "kit", true) && !entryVisible(hist, "logs", "kit", true) && !entryVisible(hist, "logs", "kit", false) && !entryVisible(hist, "tasks", "kit", true), "backlog: earlier entries show in the chat view only");
+  const h = new History();
+  const a: E = { kind: "banner", text: "b\n" };
+  const loader: E = { kind: "chat", text: "◌", side: "sys", tight: true, historical: true };
+  const live: E = { kind: "chat", text: "live", side: "peer", tight: false };
+  h.push(a);
+  h.push(loader);
+  h.push(live);
+  const div: E = { kind: "chat", text: "── earlier ──", side: "sys", tight: true, historical: true };
+  h.replace(loader, [div, hist]);
+  assert(eq(h.entries.map((e) => ("text" in e ? e.text : e.kind)), ["b\n", "── earlier ──", "old", "live"]), "backlog: the block takes its loader's place — above anything that arrived live meanwhile");
+  const older: E = { kind: "chat", text: "older", side: "you", tight: false, historical: true };
+  h.insertAt(moreInsertAt(h.entries, (e) => e === div)!, [older]);
+  assert(eq(h.entries.map((e) => ("text" in e ? e.text : e.kind)), ["b\n", "── earlier ──", "older", "old", "live"]), "backlog: /more puts older messages right under the agent's divider");
+  assert(moreInsertAt(h.entries, () => false) === undefined, "backlog: no divider yet → /more starts a block of its own");
+
+  // History is never news: the earlier block is read from the DM stream through chat-own.ts and placed
+  // directly — it never goes through onMessage, so it can't follow, time a reply, or mark anything read.
+  const { readFileSync } = await import("node:fs");
+  const src = readFileSync(new URL("../src/chat.ts", import.meta.url), "utf8");
+  const body = src.slice(src.indexOf("function loadBacklog("), src.indexOf("\n  }\n", src.indexOf("function loadBacklog(")));
+  assert(body.length > 200 && /readOwnConversation\(ep, space, server\)/.test(body), "backlog: chat reads it through chat-own.ts readOwnConversation (narrow creds on a remote space)");
+  assert(!/advanceCursor|shouldFollowDm|awaiting\.|curName =|curId =|filter =/.test(body), "backlog: loading it never marks read, follows, answers an await or moves the target");
+}
+
 rmSync(process.env.PAW_HOME as string, { recursive: true, force: true });
 
 if (failures > 0) {

@@ -87,6 +87,9 @@ export interface Entry {
    *  repeats is not in the same read — the dead id it was first addressed to. `text` is what the sender
    *  wrote, without the forwarder's note. A forward whose original IS in the read is dropped instead. */
   forwardedFrom?: string;
+  /** The message id — only when asked for (`withIds`), so the payloads other surfaces print keep their
+   *  shape. `paw chat`'s earlier-history block dedups against what it showed live by this. */
+  id?: string;
 }
 
 /**
@@ -98,7 +101,7 @@ export interface Entry {
  * the stream itself (any agent you have talked to has almost certainly replied at some point, and its
  * reply carries `from.name`). An id that never appears as a sender stays an id — see {@link Entry.to}.
  */
-export async function readConversation(ep: CotalEndpoint, opts: { withSent?: boolean } = {}): Promise<Entry[]> {
+export async function readConversation(ep: CotalEndpoint, opts: { withSent?: boolean; withIds?: boolean } = {}): Promise<Entry[]> {
   const me = ep.card.id;
   const all = (await ep.dmHistory({ limit: FETCH_CAP })).map((m) => dmRow(m, me));
   return conversationEntries(all, me, ep.space, opts);
@@ -145,13 +148,14 @@ function forwardMark(m: DmRow): Pick<Entry, "forwardedFrom"> {
 
 /** The human's conversation from DM rows — THE mapping {@link readConversation} and {@link DmWindow}
  *  share, so an incremental read cannot drift from a full one. */
-export function conversationEntries(rows: DmRow[], me: string, space: string, opts: { withSent?: boolean } = {}): Entry[] {
+export function conversationEntries(rows: DmRow[], me: string, space: string, opts: { withSent?: boolean; withIds?: boolean } = {}): Entry[] {
   const all = dropPairedForwards(rows);
+  const idOf = (m: DmRow): Pick<Entry, "id"> => (opts.withIds ? { id: m.id } : {});
   if (!opts.withSent) {
     return all
       .filter((m) => m.to === me)
       .sort((a, b) => a.ts - b.ts)
-      .map((m): Entry => ({ from: m.from.name, text: m.text, ts: m.ts, ...forwardMark(m) }));
+      .map((m): Entry => ({ from: m.from.name, text: m.text, ts: m.ts, ...forwardMark(m), ...idOf(m) }));
   }
   // The stream's own senders first, then paw's peer ledger (src/peer-ledger.ts), which also knows ids
   // that only ever RECEIVED — a restarted agent's previous incarnation, say. The plain name, no
@@ -165,8 +169,8 @@ export function conversationEntries(rows: DmRow[], me: string, space: string, op
     .sort((a, b) => a.ts - b.ts)
     .map((m): Entry =>
       m.from.id === me
-        ? { from: HUMAN_PEER, text: m.text, ts: m.ts, dir: "out", to: (m.to && nameById.get(m.to)) ?? m.to, ...forwardMark(m) }
-        : { from: m.from.name, text: m.text, ts: m.ts, dir: "in", ...forwardMark(m) },
+        ? { from: HUMAN_PEER, text: m.text, ts: m.ts, dir: "out", to: (m.to && nameById.get(m.to)) ?? m.to, ...forwardMark(m), ...idOf(m) }
+        : { from: m.from.name, text: m.text, ts: m.ts, dir: "in", ...forwardMark(m), ...idOf(m) },
     );
 }
 

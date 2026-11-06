@@ -117,10 +117,11 @@ export async function startEcho(ep: CotalEndpoint, space: string, server: string
   };
 }
 
-/** "you"'s conversation, both directions — the whole DM stream on an open mesh, only "you"'s own
- *  mail on a remote space. */
+/** "you"'s conversation, both directions, with message ids — the whole DM stream on an open mesh,
+ *  only "you"'s own mail on a remote space. The tasks-view seed and chat's earlier-history block
+ *  (src/chat-backlog.ts) both read through here; nothing else in chat reads the DM stream. */
 export async function readOwnConversation(ep: CotalEndpoint, space: string, server: string): Promise<Entry[]> {
-  if (!isRemoteSpace(space)) return readConversation(ep, { withSent: true });
+  if (!isRemoteSpace(space)) return readConversation(ep, { withSent: true, withIds: true });
   const me = ep.card.id;
   const principal = principalOfId(me);
   const filters = ownConversationFilters(space, principal);
@@ -142,7 +143,7 @@ export async function readOwnConversation(ep: CotalEndpoint, space: string, serv
         if (d && typeof d === "object" && d.from && d.id) rows.push(dmRow(d, me));
       }
     }
-    return conversationEntries(rows, me, space, { withSent: true });
+    return conversationEntries(rows, me, space, { withSent: true, withIds: true });
   } finally {
     await nc.close().catch(() => {});
   }
