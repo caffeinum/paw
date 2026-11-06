@@ -325,8 +325,11 @@ decides how long the `◌` loaders stay up.
   **Unlike an image the text RIDES IN the message** (there's no file to Read): the body keeps
   `[Pasted text #N]` where you pasted it and each payload follows in a fence naming the same
   placeholder, so several pastes stay individually addressable. Same plain-text carrier rationale as
-  images — the connector flattens every inbound message to ONE string. Surface: `📋 [Pasted text #1]
-  4 lines, 49 B` + a 3-line preview, a `[N pasted]` prompt badge, `/paste` to list, `/nopaste` to clear;
+  images — the connector flattens every inbound message to ONE string. Surface (since 2026-11-06, see [multiline](#multiline) "readable"): NOTHING is printed into the
+  conversation when a paste is staged — the hint row says `📋 1 pasted … /nopaste drops it`, the prompt
+  keeps its `[N pasted]` badge — and the paste is shown INLINE under the line that mentions it once that
+  line is held or sent (`📋 [Pasted text #1] 25 lines, 2 KB` + up to 10 wrapped rows + `… +N more
+  lines`). `/paste` lists in the same form, `/nopaste` clears;
   `\e[?2004l` on shutdown so the operator's shell doesn't inherit the mode. Test: `check:paste` (38
   assertions incl. reassembly at EVERY split point); verified live under node-pty — a 4-line paste that
   used to be 4 messages now sends as ONE.
@@ -344,9 +347,35 @@ decides how long the `◌` loaders stay up.
   the universal fallback — a key only works if your terminal sends it and there's no way to know but to
   try. **ODD** trailing backslashes continue: `C:\path\\` ends in an ESCAPED backslash and is a
   finished line, and miscounting would swallow the Enter on any path, regex or LaTeX macro. Held lines
-  are REPRINTED (`↵ ALPHA`) because the buffer rewrite that clears the line also erases what you typed —
+  are REPRINTED because the buffer rewrite that clears the line also erases what you typed —
   otherwise you compose a message you can no longer see. Never fires inside a paste. Verified live under
   a real pty: five typed lines → TWO messages, both with real newlines. Test: `check:paste`.
+
+- **Readable drafts and sends (2026-11-06, `src/compose-view.ts`, pure).** The operator: "I cannot read
+  what I send … I cannot read what I am inputting for multiline messages", with a screenshot of a sent
+  message full of blank `│` rows, a 3-line `…`-clipped paste preview printed ABOVE its own
+  `[Pasted text #1]` line, and that placeholder dangling below it. Still a plain line REPL (no full-screen
+  TUI, no alternate screen, no cursor math over earlier rows) — the fix is only in what gets printed:
+  - **one rail** (`  │ `): the first held line prints as readline's own echo would (`you → x> line`),
+    every later one on the rail, and **the continuation prompt IS the rail** (`promptFor` returns it while
+    `held` is non-empty) — so the draft, the line being typed and readline's echo of the final line read as
+    one block. Held lines wrap on the rail; each held line's rows are one `heldEntries` group, so
+    ⌫-on-empty / Ctrl+U still take exactly that line's rows back (and reset the prompt).
+  - **a paste shows inline at its placeholder** (`railLine`/`railPastes`): a line that is ONLY the
+    placeholder becomes the `📋` block; a line mentioning it keeps its text with the block underneath; up
+    to 10 rows, long lines WRAPPED (indentation kept — pastes are often code), blank runs folded, `… +N
+    more lines` counting the rest. Nothing prints at stage time any more (that is what put the preview
+    above its own line); the hint row names the staged paste instead.
+  - **the hint row turns into the draft's keys** while lines are held or a paste is staged
+    (`draft · 3 lines · 📋 1 pasted │ enter sends  alt+enter or \ new line  ⌫ … ctrl+u …`).
+  - **the cross-session echo** (`↗ you → x (other session):`) reads the wire text back with
+    `parseComposed` (the inverse of `composePastes`' fences) and draws it on the same rail: blank runs
+    folded, each paste inline at its placeholder, never the raw `--- [Pasted text #1] ---` fences. It is
+    no longer markdown-rendered — it is your own text, shown as typed.
+  - **The wire text is unchanged** — `check:chat-tty` 13 asserts the exact DM (incl. the trailing space
+    the placeholder rewrite has always left: `[Pasted text #1] \n`), and passes on the old code too.
+  Tests: `check:paste` (wrap, fold, inline paste, parse round-trip, the screenshot's message),
+  `check:chat` (draft hint), `check:chat-tty` 13 (real pty, isolated space).
 
 ## echo and picker
 

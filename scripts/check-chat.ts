@@ -179,6 +179,13 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
   assert(hintFor({ view: "tasks", picking: false, hasTarget: false, bang: false }) === "tasks  │  ← chat   ↓ mention an agent   ctrl+o click to fold", "hint: tasks with no target goes back to chat, and offers click mode");
   assert(hintFor({ view: "tasks", picking: false, hasTarget: true, bang: false, clickMode: true }).endsWith("ctrl+o select") && !hintFor({ view: "chat", picking: false, hasTarget: true, bang: false }).includes("ctrl+o"), "hint: in click mode ctrl+o gives selection back; other views don't offer it");
   assert(hintFor({ view: "chat", picking: true, hasTarget: true, bang: false }).startsWith("↑↓ select"), "hint: the picker's own keys while it is open");
+  {
+    const base = { view: "chat" as const, picking: false, hasTarget: true, bang: false };
+    const drafting = hintFor({ ...base, draft: { held: 2, pastes: 1 } });
+    assert(drafting.startsWith("draft · 3 lines · 📋 1 pasted") && drafting.includes("enter sends") && drafting.includes("ctrl+u drops the draft"), "hint: mid-draft it counts the lines (held + the one being typed) and names the draft's keys");
+    assert(hintFor({ ...base, draft: { held: 0, pastes: 1 } }).startsWith("📋 1 pasted") && hintFor({ ...base, draft: { held: 0, pastes: 1 } }).includes("/nopaste"), "hint: a staged paste is named on the hint row (it no longer prints a preview into the conversation)");
+    assert(hintFor({ ...base, draft: { held: 0, pastes: 0 } }) === hintFor(base), "hint: no draft, the usual view hint");
+  }
 
   // The hint row's right side: which mesh, and which machine runs the target.
   const { whereTag, hintWithTag } = await import("../src/chat-views.ts");

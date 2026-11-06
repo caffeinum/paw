@@ -104,9 +104,15 @@ export function scrollKey(raw: string): "up" | "down" | undefined {
  * No target (broadcast, or a channel) has no transcript to follow, so `logs` is not offered — only
  * chat ⇄ tasks (the operator's own beads) and the picker.
  */
-export function hintFor(s: { view: ChatView; picking: boolean; hasTarget: boolean; bang: boolean; clickMode?: boolean }): string {
+export function hintFor(s: { view: ChatView; picking: boolean; hasTarget: boolean; bang: boolean; clickMode?: boolean; draft?: { held: number; pastes: number } }): string {
   if (s.picking) return "↑↓ select · enter picks · esc closes · type to filter";
   if (s.bang) return "$ command mode · esc or backspace leaves";
+  // Mid-draft (lines held, or a paste staged), the keys that shape the message matter more than the views.
+  const d = s.draft;
+  if (d && (d.held || d.pastes)) {
+    const what = [d.held ? `draft · ${d.held + 1} lines` : "", d.pastes ? `📋 ${d.pastes} pasted` : ""].filter(Boolean).join(" · ");
+    return `${what}  │  enter sends   alt+enter or \\ new line${d.held ? "   ⌫ on empty line edits previous   ctrl+u drops the draft" : "   /nopaste drops it"}`;
+  }
   const prev = stepView(s.view, -1);
   const next = stepView(s.view, 1);
   const parts: string[] = [];

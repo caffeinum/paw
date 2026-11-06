@@ -131,18 +131,7 @@ export function makeBlock(n: number, text: string): PasteBlock {
 /** The one-line summary shown where the text used to be: `📋 [Pasted text #1] 42 lines, 3.1 KB`. */
 export const PASTE_ICON = "📋";
 
-/** First few lines, each clipped to the terminal width, as the "is this what I meant to paste?"
- *  preview — the text equivalent of the image path echo. */
-export function pastePreview(block: PasteBlock, maxLines = 3, width = 72): string[] {
-  const all = block.text.split("\n");
-  const shown = all.slice(0, maxLines).map((l) => {
-    const flat = l.replace(/\t/g, "  ").replace(/[\x00-\x08\x0b-\x1f\x7f]/g, "");
-    return flat.length > width ? `${flat.slice(0, width - 1)}…` : flat;
-  });
-  const rest = all.length - shown.length;
-  if (rest > 0) shown.push(`… +${rest} more line${rest === 1 ? "" : "s"}`);
-  return shown;
-}
+/** How a paste is SHOWN (inline at its placeholder, wrapped, capped) lives in src/compose-view.ts. */
 
 /**
  * The outgoing message: the body keeps `[Pasted text #N]` exactly where you pasted it, and each
