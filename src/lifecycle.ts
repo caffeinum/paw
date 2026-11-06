@@ -1647,6 +1647,22 @@ async function stopMailbox(space: string): Promise<void> {
 }
 
 /**
+ * Restart ONLY `space`'s mailbox daemon — the "you" beacon and the sleep host inside it — onto the code
+ * `ensureMailbox` starts now, leaving the manager and every agent alone. Sleeping agents' stand-ins drop
+ * for the second the beacon is down and come back with the fresh host, which also picks up any `.waking`
+ * record a wedged or older host left behind. A mailbox from another PAW_HOME is refused, never killed.
+ * Returns the pids it stopped.
+ */
+export async function restartMailbox(space: string): Promise<number[]> {
+  adoptRunningMailbox(space); // throws on a foreign-home beacon BEFORE anything is signalled
+  const was = mailboxProcs(space);
+  await stopMailbox(space);
+  if (mailboxProcs(space).length) throw new Error(`paw: the "${space}" mailbox (pid ${mailboxProcs(space).join(", ")}) survived SIGKILL — not starting a second one`);
+  ensureMailbox(space);
+  return was;
+}
+
+/**
  * Bring the control-plane manager up under the resolved runtime (env > space preference > pty), or
  * adopt a running one.
  *

@@ -67,6 +67,8 @@ export const COMMAND_LOADERS: Readonly<Record<string, Loader>> = {
   rm,
   persona,
   status,
+  ps: status,
+  ls: status,
   sessions,
   log,
   inbox,

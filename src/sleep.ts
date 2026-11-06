@@ -37,7 +37,7 @@ import { managerProcs, pawHomeDir, resolveSpace, withEnsuredManager } from "./li
 import { liveSessionProcs } from "./named.ts";
 import { personaTranscriptRoots, personaValue, readAgentType, readResumeId, readSandbox, transcriptMtime, transcriptPath } from "./session.ts";
 import { dmsSince } from "./sleep-host.ts";
-import { listSleeping, readSleepRecord, readWakingRecord, scanRecords, sleepLog, sleepState, writeSleepRecord, type SleepRecord } from "./sleep-state.ts";
+import { clearWaking, listSleeping, mergeBacklog, readSleepRecord, readWakingRecord, scanRecords, sleepLog, sleepState, writeSleepRecord, type SleepRecord } from "./sleep-state.ts";
 import { collectStatus, readManagerPs, type AgentStatus } from "./status.ts";
 import { tailRead } from "./transcript.ts";
 import { isRemoteSpace, pawServer } from "./server.ts";
@@ -481,7 +481,7 @@ export function preDespawnCheck(o: { snapshotActiveMs?: number; activeMsNow?: nu
  *  still owed) and the forwarded set; the old seat id is dropped since the new one supersedes it. */
 export function mergeSleepRecord(prior: SleepRecord | undefined, next: SleepRecord): SleepRecord {
   if (!prior) return next;
-  return { ...next, cursorSeq: Math.min(prior.cursorSeq, next.cursorSeq), forwarded: prior.forwarded };
+  return { ...next, cursorSeq: Math.min(prior.cursorSeq, next.cursorSeq), ...(prior.forwarded ? { forwarded: prior.forwarded } : {}) };
 }
 
 /** The DM stream's last sequence — the backlog cursor. */
@@ -570,14 +570,22 @@ export async function sleepAgent(space: string, ctl: ManagerControl, name: strin
   }
   // A record already here (a seat that came up beside it and was never reconciled) still owes its backlog:
   // keep the EARLIER cursor and what was already forwarded, never overwrite them with this sleep's.
+  // A `.waking` left by a wake the host never finished owes its backlog too — and must not outlive this
+  // sleep: a `.waking` beside the new `.json` read as "waking" forever (team2027 fly/vercel, 2026-11-05).
   const prior = (() => {
-    try {
-      return readSleepRecord(space, name) ?? readWakingRecord(space, name);
-    } catch {
-      return undefined;
-    }
+    const read = (f: () => SleepRecord | undefined) => {
+      try {
+        return f();
+      } catch {
+        return undefined;
+      }
+    };
+    const asleep = read(() => readSleepRecord(space, name));
+    const waking = read(() => readWakingRecord(space, name));
+    return asleep && waking ? mergeBacklog(waking, asleep) : (asleep ?? waking);
   })();
   writeSleepRecord(space, mergeSleepRecord(prior, { name, folder: rec.folder, since: Date.now(), cursorSeq: snap.cursorSeq, lastId, reason, ...(remote ? { instanceId: row.instanceId } : {}) }));
+  clearWaking(space, name);
   sleepLog(space, `slept ${name} — ${reason} (cursor ${Math.min(prior?.cursorSeq ?? snap.cursorSeq, snap.cursorSeq)})`);
   // A sandboxed seat's VM goes down a beat after the despawn (the launcher's detached `container stop`), exactly
   // as on `paw stop`: wait for it, force-delete a leftover. AFTER the record — the seat is gone either way, and

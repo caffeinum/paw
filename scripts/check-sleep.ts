@@ -509,6 +509,123 @@ setPersonaKeys("kt", "k1", { provider: "fake" });
 ok("G6 kitWakeBlocker: kitArgs kit's own parse rejects → refuses", /does not accept/.test(S.kitWakeBlocker(personaFilePath("kt", "k1"), "PIN-k1", kRoots, { preflight: () => { throw new Error("paw: x: `kit run` does not accept the kit args [\"--nope\"]"); } }) ?? ""));
 ok("G6 kitWakeBlocker: a resumable kit agent has no blocker", S.kitWakeBlocker(personaFilePath("kt", "k1"), "PIN-k1", kRoots) === undefined);
 
+
+// G7 — the stuck `.waking` (team2027 2027-intern/fly/vercel, 2026-11-05): a wedged host tick never yielded
+// nor finished the wake; `paw start` then collided with paw's own stand-in, and a re-sleep left a `.waking`
+// beside the new `.json`. Hermetic: no mesh, no manager.
+{
+  const SS = await import("../src/sleep-state.ts");
+  const H = await import("../src/sleep-host.ts");
+  const A = await import("../src/addressing.ts");
+  const sp = "g7";
+  // (a) the exact 2027-intern state: asleep + its stand-in held by a live process that never yields.
+  SS.writeSleepRecord(sp, { name: "intern", folder: "/x", since: 1, cursorSeq: 5435, reason: "idle" });
+  SS.markStandIn(sp, "intern", true);
+  let spawned = 0;
+  const g7Ctl = { space: sp, ps: async () => ({ ok: true, data: [] }), spawn: async () => { spawned++; return { ok: false, error: "hard-pinned name already held by a live incarnation" }; }, despawn: async () => ({ ok: true }) } as unknown as Parameters<typeof A.ensureAgentSpawned>[0];
+  const t0 = Date.now();
+  let err = "";
+  try {
+    await A.ensureAgentSpawned(g7Ctl, { space: sp, name: "intern", cwd: "/x", reuseUnmanaged: false, probePresence: async () => ({ kind: "ok" }), timing: { yieldMs: 300 }, say: () => {} });
+  } catch (e) {
+    err = (e as Error).message;
+  }
+  ok("G7a a waking spawn whose stand-in never yields is REFUSED before any spawn (no self-collision)", spawned === 0 && /did not yield the name within/.test(err) && /paw restart --mailbox --space g7/.test(err) && /no agent is touched/.test(err), err);
+  ok("G7a …after waiting the yield window, not instantly", Date.now() - t0 >= 300);
+  const w = SS.readWakingRecord(sp, "intern");
+  ok("G7a the wake stays queued for the host, stamped with when it was asked", !!w && w.cursorSeq === 5435 && typeof w.wakeRequestedAt === "number" && !SS.isAsleep(sp, "intern"));
+  ok("G7a the refusal names the holder and its code", /mailbox pid 4242, release abc/.test(A.standInYieldRefusal(sp, "intern", 4242, 20_000, "release abc")));
+
+  // (b) the yield handshake
+  ok("G7b no ack → not yielded", SS.standInYield(sp, "intern").holder === process.pid && !SS.standInYield(sp, "intern").yielded);
+  writeFileSync(join(SS.sleepDir(sp), "intern.yielded"), "1\n");
+  ok("G7b an ack from ANOTHER pid (a restarted host) means nothing", !SS.standInYield(sp, "intern").yielded);
+  setTimeout(() => SS.markYielded(sp, "intern", true), 100);
+  const y = await SS.awaitStandInYield(sp, "intern", 2000, 20);
+  ok("G7b an ack that arrives while waiting is seen", y.yielded && y.holder === process.pid);
+  SS.markStandIn(sp, "intern", false);
+  ok("G7b lowering the stand-in clears the ack; no holder → nothing to wait for", !SS.standInYield(sp, "intern").yielded && (await SS.awaitStandInYield(sp, "intern", 10)).holder === undefined);
+  SS.markStandIn(sp, "intern", true);
+  SS.markYielded(sp, "intern", true);
+  SS.markStandIn(sp, "intern", true);
+  ok("G7b a re-raised stand-in is not yielded until it acks again", !SS.standInYield(sp, "intern").yielded);
+  SS.markStandIn(sp, "intern", false);
+  SS.clearSleep(sp, "intern");
+
+  // (c) fly/vercel: a `.waking` left beside a later `.json`
+  SS.writeWakingRecord(sp, { name: "fly", folder: "/f", since: 1, cursorSeq: 5633, reason: "idle", forwarded: [5640] });
+  SS.writeSleepRecord(sp, { name: "fly", folder: "/f", since: 2, cursorSeq: 5700, reason: "idle again", forwarded: [5701] });
+  ok("G7c a .json beside a stale .waking reads asleep, not waking", SS.sleepState(sp, "fly") === "asleep");
+  ok("G7c foldStaleWaking folds it", SS.foldStaleWaking(sp, "fly"));
+  const fly = SS.readSleepRecord(sp, "fly");
+  ok("G7c …keeping the earlier cursor and every forwarded seq, dropping the .waking", fly?.cursorSeq === 5633 && fly?.forwarded?.join() === "5640,5701" && fly?.reason === "idle again" && !SS.readWakingRecord(sp, "fly"), JSON.stringify(fly));
+  ok("G7c nothing to fold → false", !SS.foldStaleWaking(sp, "fly"));
+  SS.writeWakingRecord(sp, { name: "fly", folder: "/f", since: 1, cursorSeq: 5600, reason: "x" });
+  ok("G7c prepareWake over a .json + stale .waking merges both backlogs", SS.prepareWake(sp, "fly") && SS.readWakingRecord(sp, "fly")?.cursorSeq === 5600 && !SS.isAsleep(sp, "fly"));
+  SS.clearSleep(sp, "fly");
+
+  // (d) the host's loops can't wedge: a body that never settles is reported and the guard released
+  ok("G7d bounded rejects a promise that never settles, naming it", await H.bounded(new Promise(() => {}), 30, "a hung read").then(() => "", (e: Error) => e.message).then((m) => /a hung read did not settle within/.test(m)));
+  ok("G7d bounded passes a settled value through", (await H.bounded(Promise.resolve(7), 1000, "x")) === 7);
+  const reports: string[] = [];
+  let runs = 0;
+  const ticker = H.guardedTicker("test tick", 50, async (step) => {
+    runs++;
+    step(`raising agent${runs}`);
+    if (runs === 1) await new Promise(() => {}); // the 2026-11-05 wedge
+  }, (l) => reports.push(l));
+  await ticker();
+  ok("G7d a wedged tick is reported with the step it is stuck at", reports.length === 1 && /stuck at: raising agent1/.test(reports[0]), reports.join());
+  await ticker();
+  ok("G7d …and the NEXT tick runs anyway (the old guard held it forever)", runs === 2 && reports.length === 1);
+  const overlapping = H.guardedTicker("t2", 1000, async () => { runs++; await new Promise((r) => setTimeout(r, 30)); }, () => {});
+  const before = runs;
+  await Promise.all([overlapping(), overlapping()]);
+  ok("G7d a tick still within its deadline is not doubled", runs === before + 1);
+  const failing = H.guardedTicker("t3", 1000, async (step) => { step("reading ps"); throw new Error("timeout"); }, (l) => reports.push(l));
+  await failing();
+  ok("G7d a failing tick says where it failed", /t3 failed at reading ps: timeout/.test(reports.at(-1) ?? ""), reports.at(-1));
+  const serial = H.boundedSerial(40);
+  const order: string[] = [];
+  const hung = serial("intern", "first read", () => new Promise<void>(() => {})).catch((e: Error) => order.push(`first: ${e.message}`));
+  const second = serial("intern", "second read", async () => { order.push("second ran"); });
+  await Promise.all([hung, second]);
+  ok("G7d a hung backlog read is cut loose; the agent's next read still runs", order[0]?.startsWith("first: first read did not settle") && order[1] === "second ran", order.join(" | "));
+
+  // (e) sleepAgent clears a stale .waking when it records the new sleep
+  const SL = await import("../src/sleep.ts");
+  const { personaFilePath: pfp } = await import("../src/addressing.ts");
+  mkdirSync(join(pfp(sp, "vercel"), ".."), { recursive: true });
+  writeFileSync(pfp(sp, "vercel"), "---\ncwd: /v\n---\n");
+  SS.writeWakingRecord(sp, { name: "vercel", folder: "/v", since: 1, cursorSeq: 5601, reason: "idle", forwarded: [5610] });
+  let psCalls = 0;
+  const vCtl = {
+    space: sp,
+    ps: async () => ({ ok: true, data: psCalls++ === 0 ? [{ name: "vercel", id: "local.OLD", status: "running", mesh: "idle" }] : [] }),
+    despawn: async () => ({ ok: true }),
+  } as unknown as Parameters<typeof SL.sleepAgent>[1];
+  await SL.sleepAgent(sp, vCtl, "vercel", "idle 61m", { cursorSeq: 5990, force: true });
+  const v = SS.readSleepRecord(sp, "vercel");
+  ok("G7e a re-sleep over a never-finished wake leaves ONE record: asleep, the old backlog still owed", !SS.readWakingRecord(sp, "vercel") && v?.cursorSeq === 5601 && v?.forwarded?.join() === "5610" && SS.sleepState(sp, "vercel") === "asleep", JSON.stringify(v));
+  SS.clearSleep(sp, "vercel");
+
+  // (f) `paw status <name>` — the name filter is a filter, not a verdict
+  const ST = await import("../src/status.ts");
+  const fa = () => ({ folder: "/f", names: ["a1", "a2"] });
+  ok("G7f wantedNames on a set without the target is empty, never a throw (it threw `no agent` for every name)", ST.wantedNames([], ["2027-intern"], fa).size === 0);
+  ok("G7f wantedNames keeps the asked names", [...ST.wantedNames(["2027-intern", "fly"], ["2027-intern"], fa)].join() === "2027-intern");
+  ok("G7f wantedNames resolves a folder target", [...ST.wantedNames(["a1", "a2", "z"], ["."], fa)].join() === "a1,a2");
+  ok("G7f a sleeping row is selected by name", ST.selectRows([{ name: "2027-intern", mesh: "waking" }] as never[], ["2027-intern"], fa).length === 1);
+  ok("G7f an unknown name still fails loud on the collected rows", throws(() => ST.selectRows([{ name: "fly" }] as never[], ["nope"], fa)));
+
+  // (g) `paw restart --mailbox`
+  const R = await import("../src/commands/runtime.ts");
+  ok("G7g restart --mailbox parses", R.parseArgs(["--mailbox", "--space", "team2027"], "restart").mailbox === true);
+  ok("G7g restart --mailbox refuses an agent beside it", throws(() => R.parseArgs(["--mailbox", "fly"], "restart")));
+  const MF = await import("../src/manager-features.ts");
+  ok("G7g this checkout's host acks yields (the feature a CLI checks before waiting on it)", MF.codeRootFeatures(join(import.meta.dirname, "..")).includes(MF.SLEEP_YIELD_ACK_FEATURE));
+}
+
 process.env.HOME = realHome;
 console.log(fails ? `\n${fails} FAILED` : "\nall passed");
 process.exit(fails ? 1 : 0);

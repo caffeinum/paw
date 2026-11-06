@@ -36,6 +36,7 @@ import {
   readRuntimePreference,
   resolveSpace,
   restartLogPath,
+  restartMailbox,
   restartManager,
   spawnDetachedRestart,
   writeRuntimePreference,
@@ -64,7 +65,7 @@ const tty = process.stdout.isTTY === true;
 const wrap = (code: string) => (s: string) => (tty ? `\x1b[${code}m${s}\x1b[0m` : s);
 const c = { dim: wrap("2"), bold: wrap("1"), green: wrap("32"), yellow: wrap("33") };
 
-export type RestartArgs = { space?: string; runtime?: Runtime; agent?: string; swap?: SwapRequest };
+export type RestartArgs = { space?: string; runtime?: Runtime; agent?: string; swap?: SwapRequest; mailbox?: boolean };
 
 /** Parse `[<runtime>] [--space s]`: at most one positional (the runtime), validated against RUNTIMES.
  *  `restart <agent>` also takes the harness swap: `--agent kit|claude`, `--model M`, and after `--`
@@ -80,12 +81,13 @@ export function parseArgs(argv: string[], verb: string): RestartArgs {
     if (v === undefined || v.startsWith("-")) throw new Error(`paw: ${flag} needs a value`);
     return v;
   };
-  const usage = verb === "restart" ? `restart [<agent> [--agent kit|claude] [--model M] [-- <kit flags>] | <${RUNTIMES.join("|")}>] [--space s]` : `${verb} [<${RUNTIMES.join("|")}>] [--space s]`;
+  const usage = verb === "restart" ? `restart [<agent> [--agent kit|claude] [--model M] [-- <kit flags>] | <${RUNTIMES.join("|")}> | --mailbox] [--space s]` : `${verb} [<${RUNTIMES.join("|")}>] [--space s]`;
   for (let i = 0; i < mine.length; i++) {
     const a = mine[i];
     if (a === "--space") out.space = value(++i, "--space");
     else if (verb === "restart" && a === "--agent") swapAgent = value(++i, "--agent");
     else if (verb === "restart" && a === "--model") model = value(++i, "--model");
+    else if (verb === "restart" && a === "--mailbox") out.mailbox = true;
     else if (a.startsWith("-")) throw new Error(`paw: unknown flag "${a}" — ${usage}`);
     else {
       if (out.runtime !== undefined || out.agent !== undefined)
@@ -100,6 +102,8 @@ export function parseArgs(argv: string[], verb: string): RestartArgs {
     }
   }
   const kitArgs = end === -1 ? undefined : argv.slice(end + 1);
+  if (out.mailbox && (out.runtime !== undefined || out.agent !== undefined || swapAgent !== undefined || kitArgs !== undefined))
+    throw new Error(`paw: restart --mailbox restarts only the mailbox daemon — it takes no agent, runtime or swap (got "${out.runtime ?? out.agent ?? swapAgent ?? "--"}")`);
   if (swapAgent === undefined) {
     if (model !== undefined) throw new Error("paw: restart --model needs --agent kit|claude — it is saved in the persona as part of the swap");
     if (kitArgs !== undefined) throw new Error("paw: `--` passes flags to kit — it needs --agent kit");
@@ -182,8 +186,15 @@ async function runtime(argv: string[]): Promise<void> {
 }
 
 async function restart(argv: string[]): Promise<void> {
-  const { space: spaceArg, runtime: r, agent: target, swap } = parseArgs(argv, "restart");
+  const { space: spaceArg, runtime: r, agent: target, swap, mailbox } = parseArgs(argv, "restart");
   const space = spaceArg ?? resolveSpace();
+  // `paw restart --mailbox` — the "you" beacon + the sleep host, nothing else: the lever for a wedged or
+  // outdated sleep host (stuck `.waking`, a stand-in that never yields) that touches no agent.
+  if (mailbox) {
+    const was = await restartMailbox(space);
+    console.log(`${c.green("✓")} restarted the ${space} mailbox ${c.dim(was.length ? `(was pid ${was.join(", ")}) — no agent was touched` : "(none was running) — no agent was touched")}`);
+    return;
+  }
   // `.` or a folder path names that folder's agent, as on stop/attach/log. A bare name stays a name (an
   // unregistered one goes to the manager as-is: a live `cotal_spawn` peer is restartable too).
   let agent: string | undefined;
@@ -330,8 +341,8 @@ const restartCommand: Command = {
   kind: "command",
   name: "restart",
   group: "Lifecycle",
-  summary: "restart ONE agent (`restart <agent>`, `--agent kit|claude` swaps its harness), or force-restart the manager (optionally switching runtime)",
-  usage: "restart [<agent> [--agent kit|claude] [--model M] [-- <kit flags>] | <pty|tmux|cmux>] [--space s]",
+  summary: "restart ONE agent (`restart <agent>`, `--agent kit|claude` swaps its harness), only the mailbox + sleep host (`--mailbox`, no agent touched), or force-restart the manager (optionally switching runtime)",
+  usage: "restart [<agent> [--agent kit|claude] [--model M] [-- <kit flags>] | <pty|tmux|cmux> | --mailbox] [--space s]",
   run: (a) => restart([...a.raw]),
 };
 

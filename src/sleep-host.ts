@@ -39,7 +39,9 @@ import {
   clearSleep,
   clearWaking,
   failWake,
+  foldStaleWaking,
   markStandIn,
+  markYielded,
   prepareWake,
   readSleepRecord,
   readWakingRecord,
@@ -54,6 +56,64 @@ import { isRemoteSpace, pawServer } from "./server.ts";
 const TICK_MS = 1000;
 /** How often the tick also reconciles against ps and re-checks undelivered backlog. */
 const SWEEP_MS = 15_000;
+/** A tick still running after this is wedged on a broker call that never settled. Before this bound ONE
+ *  hung await held the tick's guard forever: from ~17:31Z on 2026-11-05 the team2027 host raised no
+ *  stand-in and finished no paw-command wake for the rest of the day, logging nothing (sleep.md). */
+export const TICK_DEADLINE_MS = 5 * 60_000;
+/** The wake loop (yield the name, drive `.waking` records) is its own, short-bounded loop, so a slow
+ *  sweep can never keep a `paw start`/`chat`/`dm` waiting on the yield. */
+export const WAKE_TICK_DEADLINE_MS = 60_000;
+/** One wake attempt (spawn lock + retirement wait + held-name retries + first-spawn readiness) can take
+ *  minutes; past this it is a hung attempt — counted as a failed wake and retried on the backoff. */
+export const WAKE_DEADLINE_MS = 10 * 60_000;
+/** One backlog read (a JetStream consumer + fetch). A hung one used to block that agent's read chain —
+ *  and every forward behind it — forever. */
+export const BACKLOG_READ_MS = 60_000;
+/** One stand-in presence call (start / setStatus / stop). */
+const PRESENCE_CALL_MS = 20_000;
+
+/** `p`, or a rejection naming `what` once `ms` pass. The underlying work is not cancelled — the caller
+ *  only stops WAITING on it, loudly. */
+export function bounded<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${what} did not settle within ${ms < 1000 ? `${ms}ms` : `${Math.round(ms / 1000)}s`}`)), ms);
+  });
+  return Promise.race([p, timeout]).finally(() => clearTimeout(timer));
+}
+
+/**
+ * A guarded periodic body: one run at a time, but a run still going after `deadlineMs` is reported (with
+ * the step it is stuck at) and NO LONGER holds the guard, so the next tick runs. Never throws.
+ */
+export function guardedTicker(label: string, deadlineMs: number, body: (step: (s: string) => void) => Promise<void>, report: (line: string) => void): () => Promise<void> {
+  let running = false;
+  return async () => {
+    if (running) return;
+    running = true;
+    let at = "start";
+    try {
+      await bounded(body((s) => (at = s)), deadlineMs, label);
+    } catch (e) {
+      const msg = (e as Error).message;
+      report(/did not settle within/.test(msg) ? `${msg} — stuck at: ${at}; the next tick runs anyway` : `${label} failed at ${at}: ${msg}`);
+    } finally {
+      running = false;
+    }
+  };
+}
+
+/** Per-key serialization where a link that never settles is cut loose after `ms` instead of blocking
+ *  every later link for that key. */
+export function boundedSerial(ms: number): <T>(key: string, what: string, fn: () => Promise<T>) => Promise<T> {
+  const chains = new Map<string, Promise<unknown>>();
+  return <T>(key: string, what: string, fn: () => Promise<T>): Promise<T> => {
+    const run = () => bounded(fn(), ms, what);
+    const next = (chains.get(key) ?? Promise.resolve()).then(run, run);
+    chains.set(key, next.catch(() => {}));
+    return next;
+  };
+}
 
 /** Pure: back-off before retrying a failed wake — 1m, 2m, 4m … capped at 30m. */
 export function retryDelayMs(failures: number): number {
@@ -149,13 +209,11 @@ export async function startSleepHost(space: string, server = pawServer(space)): 
   const inflight = new Set<string>();
   const failedAt = new Map<string, number>();
   const reportedBad = new Set<string>();
-  /** Per-agent serialization of backlog reads (their consumer names are fixed per agent). */
-  const chains = new Map<string, Promise<unknown>>();
-  const serial = <T>(name: string, fn: () => Promise<T>): Promise<T> => {
-    const next = (chains.get(name) ?? Promise.resolve()).then(fn, fn);
-    chains.set(name, next.catch(() => {}));
-    return next;
-  };
+  /** Names whose stand-in is being raised (a raise left hanging by a cut-loose tick is never doubled). */
+  const raising = new Set<string>();
+  /** Per-agent serialization of backlog reads (their consumer names are fixed per agent), each bounded. */
+  const serialRead = boundedSerial(BACKLOG_READ_MS);
+  const serial = <T>(name: string, fn: () => Promise<T>): Promise<T> => serialRead(name, `backlog read for ${name}`, fn);
 
   const filtersOf = (rec: SleepRecord) => backlogFilters(space, rec, standInPrincipal(space, rec.name));
 
@@ -198,9 +256,9 @@ export async function startSleepHost(space: string, server = pawServer(space)): 
     if (!s) return;
     standIns.delete(name);
     yielded.delete(name);
-    await unwatch(name);
-    await s.ep.stop().catch(() => {});
     markStandIn(space, name, false);
+    await bounded(unwatch(name), PRESENCE_CALL_MS, `closing ${name}'s watch`).catch((e) => console.error(`[sleep] ${(e as Error).message}`));
+    await bounded(s.ep.stop(), PRESENCE_CALL_MS, `stopping ${name}'s stand-in`).catch((e) => console.error(`[sleep] ${(e as Error).message}`));
   };
 
   const raise = async (rec: SleepRecord) => {
@@ -224,11 +282,12 @@ export async function startSleepHost(space: string, server = pawServer(space)): 
     ep.on("error", (e: Error) => console.error(`[sleep] stand-in ${rec.name}: ${e.message}`));
     // The watch first: a stand-in nobody listens behind would swallow the wake DM (the next tick
     // skips a name whose stand-in is up). If the presence then fails, the watch goes with it.
-    const nc = await watch(rec);
+    const nc = await bounded(watch(rec), PRESENCE_CALL_MS, `opening ${rec.name}'s watch`);
     try {
-      await ep.start();
+      await bounded(ep.start(), PRESENCE_CALL_MS, `raising ${rec.name}'s stand-in`);
     } catch (e) {
       await unwatch(rec.name);
+      void ep.stop().catch(() => {});
       throw e;
     }
     standIns.set(rec.name, { ep });
@@ -252,9 +311,10 @@ export async function startSleepHost(space: string, server = pawServer(space)): 
   const yieldName = async (name: string) => {
     const s = standIns.get(name);
     if (!s || yielded.has(name)) return;
+    await bounded(s.ep.setStatus("offline"), PRESENCE_CALL_MS, `yielding ${name}'s stand-in`);
     yielded.add(name);
-    await s.ep.setStatus("offline");
     await new Promise((r) => setTimeout(r, 1500)); // let the manager's roster see it
+    markYielded(space, name, true); // the spawner (`paw start`/`chat`/`dm`) waits for exactly this
   };
 
   /** Re-publish the not-yet-forwarded backlog to the woken agent, each DM under its original sender. */
@@ -302,6 +362,29 @@ export async function startSleepHost(space: string, server = pawServer(space)): 
     if (last && Date.now() - last < retryDelayMs(failures)) return; // backed off, not every tick
     inflight.add(name);
     try {
+      await bounded(attempt(name, why), WAKE_DEADLINE_MS, `wake of ${name}`);
+    } catch (e) {
+      booting.delete(name);
+      failedAt.set(name, Date.now());
+      const msg = (e as Error).message;
+      const { failures, backToSleep } = failWake(space, name, msg);
+      if (backToSleep && yielded.delete(name)) {
+        markYielded(space, name, false);
+        await standIns.get(name)?.ep.setStatus("idle").catch(() => {});
+      }
+      sleepLog(
+        space,
+        backToSleep
+          ? `wake of ${name} FAILED ${failures}× — back to sleep, stand-in kept; retrying in ${Math.round(retryDelayMs(failures) / 60_000)}m or on the next DM (last error: ${msg})`
+          : `wake of ${name} FAILED (${failures}/${MAX_WAKE_FAILURES}) — ${msg}`,
+      );
+    } finally {
+      inflight.delete(name);
+    }
+  };
+
+  /** One wake attempt; throws on failure (counted by {@link finish}). */
+  const attempt = async (name: string, why: string): Promise<void> => {
       prepareWake(space, name); // asleep -> waking, so failures are counted on the waking record
       const rec = readWakingRecord(space, name);
       if (!rec) return;
@@ -344,84 +427,102 @@ export async function startSleepHost(space: string, server = pawServer(space)): 
         failedAt.delete(name);
         sleepLog(space, `woke ${name} — ${why}; re-delivered ${n} DM(s)`);
       });
-    } catch (e) {
-      booting.delete(name);
-      failedAt.set(name, Date.now());
-      const msg = (e as Error).message;
-      const { failures, backToSleep } = failWake(space, name, msg);
-      if (backToSleep && yielded.delete(name)) await standIns.get(name)?.ep.setStatus("idle").catch(() => {});
-      sleepLog(
-        space,
-        backToSleep
-          ? `wake of ${name} FAILED ${failures}× — back to sleep, stand-in kept; retrying in ${Math.round(retryDelayMs(failures) / 60_000)}m or on the next DM (last error: ${msg})`
-          : `wake of ${name} FAILED (${failures}/${MAX_WAKE_FAILURES}) — ${msg}`,
-      );
-    } finally {
-      inflight.delete(name);
+  };
+
+  let lastSweep = 0;
+  /** A failure said once per (name, message) — these loops run every second. */
+  const said = new Set<string>();
+  const sayOnce = (key: string, line: string) => {
+    if (said.has(key)) return;
+    said.add(key);
+    sleepLog(space, line);
+  };
+  const reportBad = (bad: string[]) => {
+    for (const b of bad) {
+      if (reportedBad.has(b)) continue;
+      reportedBad.add(b);
+      sleepLog(space, `skipping unreadable sleep record ${b}`);
     }
   };
 
-  let ticking = false;
-  let lastSweep = 0;
-  const tick = async () => {
-    if (ticking) return;
-    ticking = true;
-    try {
-      const sleeping = scanRecords(space, ".json");
-      const waking = scanRecords(space, ".waking");
-      for (const b of [...sleeping.bad, ...waking.bad]) {
-        if (reportedBad.has(b)) continue;
-        reportedBad.add(b);
-        sleepLog(space, `skipping unreadable sleep record ${b}`);
+  /**
+   * The WAKE loop: every `.waking` record — an external wake (`paw dm`/`chat`/`start`, spawning in another
+   * process and waiting for the yield ack) or one this host started. Yield the name, then drive the
+   * hand-off. Its own guard and a short deadline, so nothing the sweep waits on can hold a spawner up.
+   */
+  const wakeTick = guardedTicker("sleep host wake loop", WAKE_TICK_DEADLINE_MS, async (step) => {
+    const waking = scanRecords(space, ".waking");
+    reportBad(waking.bad);
+    for (const rec of waking.records) {
+      step(`folding a stale wake of ${rec.name}`);
+      if (foldStaleWaking(space, rec.name)) {
+        sleepLog(space, `${rec.name} was slept again after a wake that never finished — dropped the stale .waking (its backlog cursor is kept on the sleep record)`);
+        continue;
       }
-      // A waking agent KEEPS its stand-in until it is live; only a record that is gone entirely lowers it.
-      const held = new Set([...sleeping.records, ...waking.records].map((r) => r.name));
-      for (const name of [...standIns.keys()]) if (!held.has(name) && !inflight.has(name)) await lower(name);
-      for (const rec of sleeping.records) {
-        if (standIns.has(rec.name) || inflight.has(rec.name)) continue;
-        await raise(rec).catch((e) => console.error(`[sleep] raise ${rec.name}: ${(e as Error).message}`));
-      }
-      // A held watch whose cred nears expiry is renewed in place (remote spaces; open-mesh ones never expire).
-      for (const rec of [...sleeping.records, ...waking.records]) {
-        if (watches.has(rec.name)) await watch(rec).catch((e) => console.error(`[sleep] renew watch ${rec.name}: ${(e as Error).message}`));
-      }
-      // An external wake (`paw dm`, `paw chat`, `paw start`) is already spawning in another process and
-      // retries a held name for 30s: yield the name now, then take over the hand-off.
-      for (const rec of waking.records) {
-        await yieldName(rec.name).catch(() => {});
-        void finish(rec.name, "woken by a paw command");
-      }
-      if (sleeping.records.length && Date.now() - lastSweep >= SWEEP_MS) {
-        lastSweep = Date.now();
-        // A seat that came up for a sleeping name OUTSIDE the wake path (a late boot, `paw claude`,
-        // `paw cotal spawn`): the stand-in beside it would make the name ambiguous forever. Treat it as woken.
-        const ctl = await sharedManagerControl(space, server);
-        const ps = await ctl.ps();
-        if (ps.ok) {
-          for (const name of reconcileTargets(sleeping.records.map((r) => r.name), (ps.data as PsRow[]) ?? [], inflight)) {
-            sleepLog(space, `${name} has a live seat while recorded asleep — treating it as woken`);
-            void finish(name, "a seat came up outside the wake path");
-          }
-        }
-        // A wake that failed leaves its triggering DM unforwarded; retry it without waiting for a new DM.
-        for (const rec of sleeping.records) {
-          const w = watches.get(rec.name);
-          if (inflight.has(rec.name) || !w) continue;
-          const pending = toForward(await serial(rec.name, () => readBacklog(w.nc, space, rec.name, filtersOf(rec), rec.cursorSeq)), rec.forwarded);
-          if (pending.length) void finish(rec.name, `${pending.length} DM(s) still waiting`);
-        }
-      }
-    } catch (e) {
-      console.error(`[sleep] tick failed: ${(e as Error).message}`);
-    } finally {
-      ticking = false;
+      step(`yielding ${rec.name}`);
+      await yieldName(rec.name).catch((e) => sayOnce(`yield ${rec.name} ${(e as Error).message}`, `could not yield ${rec.name}'s stand-in for its wake — ${(e as Error).message}`));
+      void finish(rec.name, "woken by a paw command");
     }
-  };
+  }, (line) => sleepLog(space, line));
+
+  const tick = guardedTicker("sleep host tick", TICK_DEADLINE_MS, async (step) => {
+    const sleeping = scanRecords(space, ".json");
+    const waking = scanRecords(space, ".waking");
+    reportBad(sleeping.bad);
+    // A waking agent KEEPS its stand-in until it is live; only a record that is gone entirely lowers it.
+    const held = new Set([...sleeping.records, ...waking.records].map((r) => r.name));
+    for (const name of [...standIns.keys()]) {
+      step(`lowering ${name}`);
+      if (!held.has(name) && !inflight.has(name)) await lower(name);
+    }
+    for (const rec of sleeping.records) {
+      if (standIns.has(rec.name) || inflight.has(rec.name) || raising.has(rec.name)) continue;
+      step(`raising ${rec.name}`);
+      raising.add(rec.name);
+      try {
+        await raise(rec);
+      } catch (e) {
+        console.error(`[sleep] raise ${rec.name}: ${(e as Error).message}`);
+      } finally {
+        raising.delete(rec.name);
+      }
+    }
+    // A held watch whose cred nears expiry is renewed in place (remote spaces; open-mesh ones never expire).
+    for (const rec of [...sleeping.records, ...waking.records]) {
+      step(`renewing ${rec.name}'s watch`);
+      if (watches.has(rec.name)) await bounded(watch(rec), PRESENCE_CALL_MS, `renewing ${rec.name}'s watch`).catch((e) => console.error(`[sleep] renew watch ${rec.name}: ${(e as Error).message}`));
+    }
+    if (sleeping.records.length && Date.now() - lastSweep >= SWEEP_MS) {
+      lastSweep = Date.now();
+      // A seat that came up for a sleeping name OUTSIDE the wake path (a late boot, `paw claude`,
+      // `paw cotal spawn`): the stand-in beside it would make the name ambiguous forever. Treat it as woken.
+      step("reading the manager's ps");
+      const ctl = await bounded(sharedManagerControl(space, server), PRESENCE_CALL_MS, "opening the manager rail");
+      const ps = await bounded(ctl.ps(), PRESENCE_CALL_MS, "the manager's ps");
+      if (ps.ok) {
+        for (const name of reconcileTargets(sleeping.records.map((r) => r.name), (ps.data as PsRow[]) ?? [], inflight)) {
+          sleepLog(space, `${name} has a live seat while recorded asleep — treating it as woken`);
+          void finish(name, "a seat came up outside the wake path");
+        }
+      }
+      // A wake that failed leaves its triggering DM unforwarded; retry it without waiting for a new DM.
+      for (const rec of sleeping.records) {
+        const w = watches.get(rec.name);
+        if (inflight.has(rec.name) || !w) continue;
+        step(`reading ${rec.name}'s backlog`);
+        const pending = toForward(await serial(rec.name, () => readBacklog(w.nc, space, rec.name, filtersOf(rec), rec.cursorSeq)), rec.forwarded);
+        if (pending.length) void finish(rec.name, `${pending.length} DM(s) still waiting`);
+      }
+    }
+  }, (line) => (/did not settle/.test(line) ? sleepLog(space, line) : console.error(`[sleep] ${line}`))); // a wedge goes to sleep.log
   const timer = setInterval(() => void tick(), TICK_MS);
+  const wakeTimer = setInterval(() => void wakeTick(), TICK_MS);
   await tick();
+  await wakeTick();
   console.error(`[sleep] host up for space "${space}"${remote ? " (remote: narrow per-agent creds, hosted-here agents only)" : ""}`);
   return async () => {
     clearInterval(timer);
+    clearInterval(wakeTimer);
     for (const name of [...standIns.keys()]) await lower(name);
     for (const name of [...watches.keys()]) await unwatch(name);
   };
