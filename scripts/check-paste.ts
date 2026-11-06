@@ -12,7 +12,6 @@ import {
   PASTE_END,
   PASTE_START,
   PasteScanner,
-  pastePreview,
   shouldCollapse,
   submittedLineCount,
 } from "../src/paste.ts";
@@ -105,13 +104,58 @@ assert(!shouldCollapse("x".repeat(799)), "shouldCollapse: just under the char th
 const block = makeBlock(2, "alpha\nbeta\ngamma\ndelta\nepsilon");
 assert(block.placeholder === "[Pasted text #2]", "makeBlock: placeholder carries the index");
 assert(block.lines === 5 && block.chars === "alpha\nbeta\ngamma\ndelta\nepsilon".length, "makeBlock: line + char counts");
-const preview = pastePreview(block);
-assert(preview.length === 4 && preview[0] === "alpha" && preview[2] === "gamma", "pastePreview: shows the first 3 lines");
-assert(preview[3] === "… +2 more lines", "pastePreview: names how many were withheld (never silently truncates)");
-assert(pastePreview(makeBlock(1, "one\ntwo")).length === 2, "pastePreview: a short paste has no '+more' line");
-const wide = pastePreview(makeBlock(1, "y".repeat(200) + "\nnext"), 3, 20);
-assert(wide[0].length === 20 && wide[0].endsWith("…"), "pastePreview: clips to the width with an ellipsis");
-assert(pastePreview(makeBlock(1, "a\tb\nc"))[0] === "a  b", "pastePreview: tabs expand, control chars are stripped (a preview must not move the cursor)");
+
+// --- compose-view: how a draft / sent message is SHOWN (src/compose-view.ts) ------------------------
+{
+  const { foldBlanks, parseComposed, pasteRows, RAIL, railLine, railMessage, railPastes, wrapLine } = await import("../src/compose-view.ts");
+  const opts = { width: 40 };
+  assert(JSON.stringify(foldBlanks(["", "a", "", "", " ", "b", "", ""])) === '["a","","b"]', "foldBlanks: leading/trailing blanks dropped, a run of blanks becomes one");
+  const w = wrapLine("the quick brown fox jumps over the lazy dog", 16);
+  assert(w.every((r) => r.length <= 16) && w.join(" ") === "the quick brown fox jumps over the lazy dog", "wrapLine: wraps at spaces, loses nothing");
+  assert(wrapLine("x".repeat(30), 10).join("") === "x".repeat(30), "wrapLine: a word longer than the row is split, not clipped");
+  const code = wrapLine("    return someFunction(argumentOne, argumentTwo)", 24);
+  assert(code.length > 1 && code.every((r) => r.startsWith("    ")), "wrapLine: a wrapped code line keeps its indentation on every row");
+  assert(wrapLine("a\tb", 20)[0] === "a  b" && !/[\x00-\x1f]/.test(wrapLine("a\x1b[2Jb", 20)[0]), "wrapLine: tabs expand, control chars are stripped (a row must not move the cursor)");
+
+  const big = makeBlock(1, Array.from({ length: 25 }, (_, i) => `row ${i + 1}`).join("\n"));
+  const rows = pasteRows(big, opts);
+  assert(rows[0] === "📋 [Pasted text #1] 25 lines, 165 B", "pasteRows: a 📋 header naming the placeholder, its lines and size");
+  assert(rows.length === 12 && rows[1] === "  row 1" && rows[10] === "  row 10", "pasteRows: up to 10 rows shown (not 3)");
+  assert(rows[11] === "  … +15 more lines", "pasteRows: the rest is counted, never silently dropped");
+  const long = pasteRows(makeBlock(1, `${"word ".repeat(30).trim()}\nnext`), opts);
+  assert(!long.some((r) => r.includes("…")) && long.slice(1).every((r) => r.length <= 40 - RAIL.length), "pasteRows: a long line WRAPS to the width instead of ending in …");
+  assert(pasteRows(makeBlock(1, "a\n\n\n\nb"), opts).length === 4, "pasteRows: blank runs inside a paste fold to one row");
+
+  const p1 = makeBlock(1, "err\ntrace");
+  const only = railLine("[Pasted text #1]", [p1], opts);
+  assert(only.length === 3 && only[0] === `${RAIL}📋 [Pasted text #1] 2 lines, 9 B` && only[1] === `${RAIL}  err`, "railLine: a line that is only a placeholder BECOMES the paste — no dangling placeholder line");
+  const mixed = railLine("look at [Pasted text #1] please", [p1], opts);
+  assert(mixed[0] === `${RAIL}look at [Pasted text #1] please` && mixed[1].includes("📋"), "railLine: a line mentioning a paste is kept, the paste shown right under it");
+  assert(railLine("plain", [p1], opts).length === 1, "railLine: a line that mentions no paste shows no paste");
+  assert(railPastes("hello", [p1], opts).length === 0 && railPastes("[Pasted text #1] fix", [p1], opts).length === 3, "railPastes: only the pastes the line mentions");
+
+  // The screenshot (2026-11-06): blank runs and a placeholder on its own line, around a paste.
+  const body = "/now\nresearch and test and open a PR:\n\n\n[Pasted text #1]\n\n\n\ncolaborate with @harbor";
+  const msg = railMessage(body, [big], opts);
+  assert(msg[0] === `${RAIL}/now` && msg[2] === RAIL.trimEnd() && msg[3].includes("📋 [Pasted text #1]"), "railMessage: on the rail, blank run folded, the paste INLINE at its placeholder");
+  assert(msg.filter((r) => r.trim() === "│").length === 2, "railMessage: each blank run is one rail row");
+  assert(msg[msg.length - 1] === `${RAIL}colaborate with @harbor` && !msg.some((r) => r.endsWith("[Pasted text #1]")), "railMessage: the text after the paste follows it; the placeholder never dangles on its own");
+  const unmentioned = railMessage("fix it", [p1], opts);
+  assert(unmentioned[0] === `${RAIL}fix it` && unmentioned[1].includes("📋"), "railMessage: a paste the text never mentions goes at the end, as it does on the wire");
+  assert(railMessage("a\nb", [], { width: 40, rail: "│ " })[0] === "│ a", "railMessage: the rail is the caller's (the echo's painter indents for it)");
+
+  // An echo of a SENT message reads the wire text back: the fences become pastes again.
+  const wire = composeMessageLike(composePastes(body, [big]));
+  const back = parseComposed(wire);
+  assert(back.body === `${body}\n📷 [Image #1] /tmp/x.png`, "parseComposed: the typed body comes back exactly, image lines kept in order");
+  assert(back.blocks.length === 1 && back.blocks[0].text === big.text && back.blocks[0].lines === 25 && back.blocks[0].placeholder === "[Pasted text #1]", "parseComposed: the paste comes back whole");
+  const two = parseComposed(composePastes("a [Pasted text #1] b [Pasted text #2]", [p1, makeBlock(2, "x\n--- not a fence ---\ny")]));
+  assert(two.body === "a [Pasted text #1] b [Pasted text #2]" && two.blocks[1].text === "x\n--- not a fence ---\ny", "parseComposed: several pastes, each payload intact");
+  assert(parseComposed("just text\n--- x ---").body === "just text\n--- x ---" && parseComposed("just text").blocks.length === 0, "parseComposed: text without fences passes through untouched");
+}
+function composeMessageLike(s: string): string {
+  return `${s}\n📷 [Image #1] /tmp/x.png`; // what composeMessage appends after the pastes
+}
 
 // --- compose --------------------------------------------------------------------------------------
 assert(composePastes("hi", []) === "hi", "composePastes: no pastes → body untouched");

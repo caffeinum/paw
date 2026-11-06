@@ -22,6 +22,8 @@
  *      offers @echoer; a line typed meanwhile is NOT sent — it is back in the input, and goes to echoer
  *      only once the operator picks it and presses Enter;
  *  12. a name registered only in ANOTHER local space: the chooser offers to open it there; Esc quits.
+ *  13. composing (connected): trailing-`\` continuations + a paste → the draft on the rail, the paste inline, ONE DM
+ *      whose wire text is unchanged.
  *  (1. also covers a peer registered nowhere here that IS on the roster: found → the normal prompt.)
  */
 import { spawn as ptySpawn } from "@lydell/node-pty";
@@ -305,6 +307,37 @@ try {
     }, 15_000);
     ok("12. Esc quits", r.code !== undefined, `exit ${r.code}`);
     rmSync(join(home, "spaces", otherSpace), { recursive: true, force: true });
+  }
+
+  // 13. composing a multi-line message with a paste, once connected: the draft is drawn on the rail and
+  //     the continuation prompt IS the rail; the paste shows inline under its line; the wire text is
+  //     exactly what it always was (held lines joined by \n, the payload in its fence after the body).
+  {
+    dms.length = 0;
+    let railPrompt = false;
+    const r = await chat(["echoer"], async (io) => {
+      await io.waitFor(/you → echoer> /, 20_000);
+      await sleep(1500); // connected, not queued: this is the live composing path
+      io.write("m-first\\\r");
+      railPrompt = await io.waitFor(/  │ /, 5000); // the continuation prompt is the rail (no held row is on it yet)
+      io.write("m-second\\\r");
+      await sleep(200);
+      io.write("\x1b[200~q-one\rq-two\rq-three\x1b[201~");
+      await sleep(300);
+      io.write("\\\r");
+      await sleep(200);
+      io.write("m-last\r");
+      const end = Date.now() + 20_000;
+      while (Date.now() < end && !dms.some((d) => /m-last/.test(d))) await sleep(50);
+      await sleep(300);
+      io.write("/quit\r");
+    });
+    const hits = dms.filter((d) => /m-first|m-last/.test(d));
+    const want = "m-first\nm-second\n[Pasted text #1] \nm-last\n\n--- [Pasted text #1] (3 lines) ---\nq-one\nq-two\nq-three\n--- end [Pasted text #1] ---";
+    ok("13. a composed multi-line message with a paste arrives as ONE DM, wire text unchanged", hits.length === 1 && hits[0] === want, JSON.stringify(hits));
+    ok("13. …the draft's first line reads like an echo, later ones sit on the rail", /you → echoer> m-first/.test(r.plain) && /  │ m-second/.test(r.plain), r.plain.split("\n").slice(-14).join(" | "));
+    ok("13. …the paste is shown inline under its line (📋 header + its rows)", /│ 📋 \[Pasted text #1\] 3 lines[\s\S]*│ {3}q-one[\s\S]*│ {3}q-three/.test(r.plain));
+    ok("13. …mid-draft the prompt is the rail, and after the send it is the normal prompt again", railPrompt && /m-last[\s\S]*you → echoer> /.test(r.plain));
   }
 } finally {
   await echoer.stop().catch(() => {});

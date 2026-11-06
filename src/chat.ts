@@ -112,14 +112,13 @@ import {
   ENABLE_BRACKETED_PASTE,
   makeBlock,
   PASTE_END,
-  PASTE_ICON,
   PasteScanner,
-  pastePreview,
   shouldCollapse,
   submittedLineCount,
   type PasteBlock,
 } from "./paste.ts";
 import { isRemoteSpace, pawServer } from "./server.ts";
+import { parseComposed, RAIL, railMessage, railLine, railPastes, type ViewOpts } from "./compose-view.ts";
 
 /** Tiny ANSI helpers — kept local so chat doesn't reach into cotal's CLI internals. */
 const tty = process.stdout.isTTY === true;
@@ -746,6 +745,13 @@ async function chat(argv: string[]): Promise<void> {
   /** Whether the agent picker is open. Declared up here, not with the rest of the picker, because
    *  drawHint reads it and readline can prompt before the picker's section of this function runs. */
   let picking = false;
+  /** Lines held by a continuation (Alt/Shift/Ctrl+Enter, or a trailing `\\`), waiting for the Enter that
+   *  finishes the message. Typing multi-line had no answer at all before: you got one line, or you sent
+   *  three messages. See src/multiline.ts. Declared up here because the prompt and the hint read it.
+   *  The draft is drawn on the rail (src/compose-view.ts) and the continuation prompt IS that rail. */
+  let held: string[] = [];
+  /** The on-screen rows of each held line, so taking a line back also takes it off screen. */
+  let heldEntries: Entry[][] = [];
   /** The picker's erase/draw, registered once its section of this function has run. */
   let pickerHooks: { erase(): void; draw(): void } | undefined;
   /** The not-found chooser's, likewise (src/chat-chooser.ts). */
@@ -812,7 +818,7 @@ async function chat(argv: string[]): Promise<void> {
    */
   function drawHint(): void {
     if (!rl || closing || !process.stdout.isTTY) return;
-    const hint = hintFor({ view, picking, hasTarget: !!curName, bang, clickMode });
+    const hint = hintFor({ view, picking, hasTarget: !!curName, bang, clickMode, draft: { held: held.length, pastes: stage().pastes.length } });
     const cols = process.stdout.columns || 80;
     // The RIGHT side — the picker and `$` mode keep the row.
     const foot = footerTag();
@@ -995,6 +1001,7 @@ async function chat(argv: string[]): Promise<void> {
     // DM's badge) must keep asking it, or the next line answers a question nobody can see.
     if (consent.prompt) return c.yellow(consent.prompt);
     if (bang && curName) return bangPrompt();
+    if (held.length) return c.dim(RAIL); // mid-draft: the line being typed sits on the draft's rail
     const st = stage();
     const badges = [deferred.count ? `${deferred.count} queued` : "", st.pending.length ? `${st.pending.length} img` : "", st.pastes.length ? `${st.pastes.length} pasted` : "", elsewhereBadge(hiddenCount)].filter(Boolean);
     const narrow = (process.stdout.columns || 80) < 40;
@@ -1381,7 +1388,12 @@ async function chat(argv: string[]): Promise<void> {
           : toName ? agentTag(toName) : c.cyan(msg.to ? msg.to.slice(0, 8) : "?");
         noteShownSend(msg);
         const fwdMark = forwardOf !== undefined ? " · forwarded from an old id" : "";
-        emit(said(`${c.dim("↗ you →")} ${label}${c.dim(` (other session${fwdMark}):`)}`, body), "you");
+        const header = `${c.dim("↗ you →")} ${label}${c.dim(` (other session${fwdMark}):`)}`;
+        // As the agent got it, readable: on the rail, blank runs folded, each paste inline at its
+        // placeholder (not as raw `--- [Pasted text #1] ---` fences). The painter indents rows 2+.
+        const sent = parseComposed(body);
+        const rows = railMessage(sent.body, sent.blocks, { ...viewOpts(), width: viewOpts().width - 2, rail: RAIL.trimStart() });
+        emit(rows.length === 1 && !sent.blocks.length ? `${header} ${sent.body.trim()}` : [header, ...rows].join("\n"), "you");
       } catch {
         /* a render failure must never abort the tap iterator */
       }
@@ -1618,49 +1630,56 @@ async function chat(argv: string[]): Promise<void> {
    *  typed>` + `<the payload's first line>` fused, and the two can only be separated once the payload
    *  is known — which is why it is kept raw rather than split on the spot. */
   let pasteFirstRaw: string | undefined;
-  /** Lines held by a continuation (Alt/Shift/Ctrl+Enter, or a trailing `\\`), waiting for the Enter that
-   *  finishes the message. Typing multi-line had no answer at all before: you got one line, or you sent
-   *  three messages. See src/multiline.ts. */
-  let held: string[] = [];
-  /** The on-screen preview entry of each held line, so taking a line back also takes it off screen. */
-  let heldEntries: Entry[] = [];
+
+  /** Width + paint for the rail renderer (src/compose-view.ts). */
+  const viewOpts = (): ViewOpts => ({ width: process.stdout.columns || 80, dim: c.dim });
+  /** Print rows that belong to the draft as ONE logical unit: one tight entry per row (the painter would
+   *  indent the rows of a multi-row entry, pushing them off the rail), returned so they can be taken back. */
+  const emitRows = (rows: string[]): Entry[] =>
+    rows.map((r) => {
+      emit(r, "you", true);
+      return history.entries[history.entries.length - 1];
+    });
 
   /** Take what's typed onto the held stack and clear the line, so the next one starts fresh. */
   const holdLine = (line: string): void => {
     if (!rl || closing) return;
+    // The FIRST line of a draft reads as readline's own echo would (prompt + text); every later one sits
+    // on the rail the continuation prompt draws — so the draft, the line being typed and, once sent, the
+    // whole message read as ONE block instead of a column of `│` fragments under an unchanged prompt.
+    const rows = held.length ? railLine(line, stage().pastes, viewOpts()) : [rl.getPrompt() + line, ...railPastes(line, stage().pastes, viewOpts())];
     held.push(line);
     rl.write(null, { ctrl: true, name: "u" }); // same buffer rewrite the paste staging uses
     rl.write(null, { ctrl: true, name: "k" });
+    rl.setPrompt(promptFor()); // the continuation prompt: the rail
     // Clearing the buffer also erases what you just typed, so REPRINT it. Without this the line you
     // continued from simply vanishes and you are composing a message you can no longer see — the
-    // opposite of what a multi-line editor is for.
-    //
-    // TIGHT, and on the same rail the paste preview uses: these lines are one message taking shape, so
-    // they should read as a block. Spacing each one as its own event turned three typed lines into
-    // eight lines of screen.
-    emit(`${c.dim("│")} ${line}`, "you", true);
-    heldEntries.push(history.entries[history.entries.length - 1]);
+    // opposite of what a multi-line editor is for. TIGHT: these lines are one message taking shape.
+    heldEntries.push(emitRows(rows));
   };
 
-  /** Drop the last `n` held lines (and their previews) and reprint the screen without them. */
+  /** Drop the last `n` held lines (and their rows) and reprint the screen without them. */
   const unholdLines = (n: number): string[] => {
     const taken = held.splice(held.length - n, n);
-    const gone = new Set(heldEntries.splice(heldEntries.length - n, n));
+    const gone = new Set(heldEntries.splice(heldEntries.length - n, n).flat());
     for (let i = history.entries.length - 1; i >= 0; i--) if (gone.has(history.entries[i])) history.entries.splice(i, 1);
+    rl?.setPrompt(promptFor());
     redraw();
     return taken;
   };
 
-  /** Park a captured paste: placeholder into the line you're editing, preview onto the screen. */
+  /** Park a captured paste: placeholder into the line you're editing. Nothing is printed into the
+   *  conversation here — the hint row names it while it is staged, and it is shown INLINE, under the
+   *  line that mentions it, once that line is held or sent (a preview printed now landed ABOVE its own
+   *  placeholder line, which then printed below it: the order the operator could not read). */
   const stagePaste = (block: PasteBlock, prefix: string): void => {
     if (!rl || closing) return;
     stage().pastes.push(block);
     rl.write(null, { ctrl: true, name: "u" }); // drop the paste's trailing segment…
     rl.write(null, { ctrl: true, name: "k" }); // …from both sides of the cursor
     rl.setPrompt(promptFor());
-    emit(`${PASTE_ICON} ${block.placeholder} ${c.dim(`${block.lines} line${block.lines === 1 ? "" : "s"}, ${formatBytes(block.chars)}`)}`, "you");
-    for (const line of pastePreview(block)) emit(c.dim(`  │ ${line}`), "you");
     rl.write(`${prefix}${block.placeholder} `);
+    drawHint();
   };
 
   /** Down-arrow. readline maps it to history-next, which on an empty line with nothing ahead does
@@ -2192,7 +2211,7 @@ async function chat(argv: string[]): Promise<void> {
       }
       if (!bang && held.length && rl.line === "" && raw === "\x15") {
         const n = held.length;
-        unholdLines(n);
+        unholdLines(n); // resets the prompt too
         emit(c.dim(`✕ cleared the draft (${n} line${n === 1 ? "" : "s"})`));
         return;
       }
@@ -2456,6 +2475,7 @@ async function chat(argv: string[]): Promise<void> {
       held = [];
       heldEntries = [];
       raw = joinLines(all, raw);
+      rl!.setPrompt(promptFor());
     }
 
     // Submitting ends the picker. Don't ERASE — readline has already echoed the line and moved on, so
@@ -2473,6 +2493,8 @@ async function chat(argv: string[]): Promise<void> {
       const echo: Entry = { kind: "echo", text: echoed };
       history.push(echo);
       lastPainted = echo;
+      // A paste this line mentions shows right under it — where it sits in the message the agent gets.
+      if (!bang) emitRows(railPastes(rawLine, stage().pastes, viewOpts()));
     }
     painter.lastSide = "you";
     // And a blank line the previous round ended on is no longer adjacent once a prompt and your typed
@@ -2558,10 +2580,7 @@ async function chat(argv: string[]): Promise<void> {
       }
       if (cmd === "/paste" || cmd === "/pastes") {
         if (!pastes.length) emit(c.dim("(nothing pasted — paste multiple lines to stage them)"));
-        for (const b of pastes) {
-          emit(`  ${b.placeholder} ${c.dim(`${b.lines} line${b.lines === 1 ? "" : "s"}, ${formatBytes(b.chars)}`)}`);
-          for (const line of pastePreview(b)) emit(c.dim(`    │ ${line}`));
-        }
+        for (const b of pastes) emitRows(railMessage(b.placeholder, [b], viewOpts()));
         if (!closing) rl!.prompt();
         return;
       }
