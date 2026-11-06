@@ -587,3 +587,28 @@ hub.log was already stamped by the hub itself. Readers that match line STARTS go
   Ours declines esbuild's build (`allowBuilds.esbuild: false` — same as the global ignore-scripts
   policy; esbuild runs from its prebuilt platform binary) and disables the pre-run deps check
   (`verifyDepsBeforeRun: false`) so scripts don't choke on the intentionally-skipped build.
+
+## gui-session
+`src/gui-session.ts`. A process started from an ssh shell lives in macOS's "Background" security session
+(`launchctl managername`): no login keychain and no XPC services from the user's GUI launchd domain. A
+manager started there passes that to every agent it spawns, for its whole life. On 2026-11-06 a
+`paw restart` over ssh left every mini agent saying "Not logged in · Please run /login" on its next turn,
+and the two sandboxed agents failed `container system status` ("apiserver is not running and not
+registered with launchd") even though the apiserver was running.
+
+The fix: when `outsideGuiSession()` is true, `startManagerDaemon` does not spawn the manager directly. It
+bootstraps the manager as a one-shot launchd job (`dev.cotal.paw.manager.<space>`) in `gui/<uid>`, which
+ssh can reach as the same user. The job runs in the "Aqua" session, with the keychain and the GUI services.
+- The plist is built as JSON and converted with `plutil`. It carries the daemon env, so it is written
+  0600 and deleted once launchd has spawned the job.
+- `AbandonProcessGroup` lets the agents outlive the manager.
+- `KeepAlive: false`: launchd never respawns the manager.
+- A still-running job under the same label fails loud. A finished one is replaced.
+- If nobody is logged in at the Mac's screen, the `gui/<uid>` domain does not exist. paw then fails loud
+  instead of starting a logged-out fleet.
+- Over ssh, the CLI-side `container` probes in `assertSandboxHostReady` give false negatives (they can't
+  reach the apiserver), so they are skipped there. The launcher, which runs under the login-session
+  manager, still fails loud.
+
+Verified live on the mini from ssh: a test agent in an isolated space answered, which means it was logged
+in. After `paw restart` it answered again.

@@ -178,4 +178,20 @@ console.log("\nall spawn-env checks passed 🐾");
   if (savedTmp === undefined) delete process.env.TMPDIR; else process.env.TMPDIR = savedTmp;
   console.log("✓ durable TMPDIR at the daemon boundary");
 }
+{
+  // Over ssh (macOS "Background" session) the manager is a launchd job in the login session, so its
+  // agents can read the keychain (the 2026-11-06 "Not logged in" restart). Its plist must let the
+  // agents outlive the manager and must not carry unset env values.
+  const { guiJobPlist, outsideGuiSession } = await import("../src/gui-session.ts");
+  const p = guiJobPlist({ label: "dev.cotal.paw.manager.t", program: "/n", args: ["a", "b"], env: { A: "1", B: undefined }, cwd: "/c", log: "/l", plistDir: "/d" });
+  assert(JSON.stringify(p.ProgramArguments) === '["/n","a","b"]', "gui job runs program + args");
+  assert(p.AbandonProcessGroup === true, "gui job abandons its process group (agents survive the manager)");
+  assert(p.KeepAlive === false && p.RunAtLoad === true, "gui job runs once, at load, never respawned by launchd");
+  assert(JSON.stringify(p.EnvironmentVariables) === '{"A":"1"}', "gui job env drops unset values");
+  assert(p.StandardOutPath === "/l" && p.StandardErrorPath === "/l" && p.WorkingDirectory === "/c", "gui job logs + cwd");
+  if (process.platform === "darwin") {
+    if (!process.env.SSH_CONNECTION) assert(!outsideGuiSession(), "a login-session shell is not mistaken for ssh");
+  }
+  console.log("✓ manager in the login session over ssh");
+}
 if (failures > 0) process.exit(1);
