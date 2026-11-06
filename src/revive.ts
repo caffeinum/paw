@@ -15,7 +15,8 @@
  * predates whatever the operator has done since. Only the listed agents, through the usual wake gate
  * (ensureAgentSpawned: a live agent is reused, a live-but-stuck seat is never restarted without consent).
  */
-import { existsSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { ensureAgentSpawned, folderForName, psRowRunning } from "./addressing.ts";
 import { withManagerControl } from "./control.ts";
@@ -24,7 +25,7 @@ import { pawServer } from "./server.ts";
 import { withFileLockAsync } from "./lock.ts";
 import { codeRootFromCommand, describeCodeRoot } from "./manager-features.ts";
 import { daemonRoot } from "./release.ts";
-import { mailboxProcs, managerProcs, reviveListPath, type DespawnTarget } from "./lifecycle.ts";
+import { mailboxProcs, managerProcs, pawHomeDir, reviveListPath, type DespawnTarget } from "./lifecycle.ts";
 
 export const REVIVE_FRESH_MS = 24 * 60 * 60 * 1000;
 
@@ -196,6 +197,34 @@ export function revivalFailure(space: string, total: number, skipped: Skipped[])
     skipped.map((s) => `  ${s.name}: ${s.why}`).join("\n") +
     `\n  start them by hand once fixed: paw start ${skipped.map((s) => s.name).join(" ")} --space ${space}`
   );
+}
+
+/** The keeper tick's half, for every space but its own (whose ensure() already runs revivePending): a
+ *  failed `paw restart` whose manager came up anyway — team2027, 2026-11-06: the manager answered 6s past
+ *  the readiness window, the restart exited 1, and its 8 agents stayed down until a hand re-run. Only a
+ *  space whose manager runs on this machine; the keeper never starts one to do this. */
+export async function revivePendingElsewhere(
+  primary: string,
+  deps: { spaces?: () => string[]; managerUp?: (s: string) => boolean; revive?: (s: string) => Promise<void> } = {},
+): Promise<string[]> {
+  const spaces = (deps.spaces ?? spacesWithReviveList)();
+  const managerUp = deps.managerUp ?? ((s: string) => managerProcs(s).length > 0);
+  const revive = deps.revive ?? ((s: string) => revivePending(s));
+  const done: string[] = [];
+  for (const space of spaces) {
+    if (space === primary || !managerUp(space)) continue;
+    await revive(space).catch((e: Error) => console.error(`paw keeper: reviving ${space}'s failed restart failed: ${e.message}`));
+    done.push(space);
+  }
+  return done;
+}
+
+function spacesWithReviveList(): string[] {
+  const dir = join(pawHomeDir(), "spaces");
+  if (!existsSync(dir)) return [];
+  return readdirSync(dir, { withFileTypes: true })
+    .filter((d) => d.isDirectory() && existsSync(reviveListPath(d.name)))
+    .map((d) => d.name);
 }
 
 /** ensure()'s half: a manager is up and a failed restart's list is waiting — revive it, then delete it.

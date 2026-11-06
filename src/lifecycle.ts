@@ -256,7 +256,7 @@ function tail(path: string, tailN = 25): string {
  *  machine: `cotal up` (spawnSync timeout {@link MESH_UP_TIMEOUT_MS}) + the adopt wait
  *  ({@link MESH_ADOPT_WAIT_MS}) + the hub ({@link HUB_READY_MS}) + the manager's readiness window
  *  ({@link MANAGER_READY_MS}), twice on a rollback. The lock is held across all of it. */
-export const LIFECYCLE_LOCK_HOLD_MS = 300_000; // 180s + a fresh manager start's transient-broker retries (MANAGER_RETRY_BACKOFF_MS)
+export const LIFECYCLE_LOCK_HOLD_MS = 480_000; // 180s + a fresh start's retries: 4 × MANAGER_BOOT_CAP_MS + MANAGER_RETRY_BACKOFF_MS
 /**
  * Wait opts for the lifecycle lock. WHY not lock.ts's defaults (30s wait, 60s age-out): at LOGIN three
  * launchd jobs (fleet `paw start`, `paw global`, `paw web`) all call ensure() at once on a cold, loaded
@@ -1074,6 +1074,32 @@ export async function ensureSpaceStreams(space: string, server: string): Promise
  *  that was in fact healthy failed the gate. */
 const MANAGER_READY_MS = 20_000;
 
+/** How long a FRESHLY started manager whose process is still alive gets past {@link MANAGER_READY_MS}.
+ *  On a slow broker its service registration lands late: team2027 (remote fly broker) took 10–18s per
+ *  boot in October and 24s on 2026-11-06, when the 20s gate gave up on a manager that answered 6s
+ *  later. Past 20s only a LIVE process keeps the wait going; a process that exited ends it at once. */
+const MANAGER_BOOT_CAP_MS = 60_000;
+
+/** The readiness wait, pure for check:restart: answer → true; past `baseMs` stop unless the process is
+ *  alive, never past `capMs`; a process that has exited stops the wait as soon as `baseMs` is up. */
+export async function waitForManager(o: {
+  answers: () => Promise<boolean>;
+  alive: () => boolean;
+  baseMs: number;
+  capMs: number;
+  now?: () => number;
+  sleep?: (ms: number) => Promise<void>;
+}): Promise<boolean> {
+  const now = o.now ?? Date.now;
+  const nap = o.sleep ?? sleep;
+  const start = now();
+  for (;;) {
+    if (await o.answers()) return true;
+    const spent = now() - start;
+    if (spent >= o.capMs || (spent >= o.baseMs && !o.alive())) return false;
+    await nap(150);
+  }
+}
 /** The resolve deadline for ONE readiness probe. Deliberately short, and this is the load-bearing half
  *  of the fix above: the probe runs in a RETRY LOOP, so an attempt made before the manager registers
  *  must FAIL FAST and let the next attempt run. With the default 10s resolve deadline a single early
@@ -1418,11 +1444,11 @@ function signalProcs(pids: number[], sig: NodeJS.Signals): void {
  * until it matters.
  */
 export function explainManagerFailure(o: { logTail: string; runtime: string; space: string; logPath: string; attempts?: number }): string {
-  const lines = o.logTail.split("\n").filter((l) => l.trim());
+  const lines = withoutBenignWarnings(o.logTail).split("\n").filter((l) => l.trim());
   const last = lines.slice(-3).join("\n");
   const leaseLosses = lines.filter((l) => l.includes("lost its singleton lease")).length;
   const retried = o.attempts !== undefined && o.attempts > 1;
-  const head = `paw: the manager didn't answer within ${Math.round(MANAGER_READY_MS / 1000)}s${retried ? ` on any of ${o.attempts} attempts` : ""} (space "${o.space}", runtime ${o.runtime}).`;
+  const head = `paw: the manager didn't answer within ${Math.round(MANAGER_READY_MS / 1000)}s (${Math.round(MANAGER_BOOT_CAP_MS / 1000)}s while its process stayed up)${retried ? ` on any of ${o.attempts} attempts` : ""} (space "${o.space}", runtime ${o.runtime}).`;
 
   // A SECOND manager is a different fault with a different fix, and it says so itself in the log.
   //
@@ -1479,7 +1505,20 @@ const TRANSIENT_MANAGER_MARKERS: Array<[RegExp, string]> = [
   [/\b(ETIMEDOUT|ECONNRESET|ECONNREFUSED|EHOSTUNREACH|ENETUNREACH|EPIPE|CONNECTION_REFUSED)\b|connection (timed out|timeout|closed|refused|reset)|\bdisconnected\b/i, "broker connection dropped"],
   [/\b(timeout|timed out)\b/i, "broker timeout"],
 ];
-export function classifyManagerFailure(logTail: string): ManagerFailure {
+/** Warnings a HEALTHY manager prints at every boot. `connector opencode unavailable … not found` is
+ *  logged on each start of a machine without opencode (team2027, every boot since 2026-10-28) and
+ *  matched the broken-install marker: on 2026-11-06 a manager that came up 6s past the readiness window
+ *  was called fatal ("isn't on PATH"), not retried, and its 8 despawned agents were left down. */
+const BENIGN_BOOT_WARNINGS = [/manager boot: connector \S+ unavailable\b/];
+export function withoutBenignWarnings(logTail: string): string {
+  return logTail
+    .split("\n")
+    .filter((l) => !BENIGN_BOOT_WARNINGS.some((re) => re.test(l)))
+    .join("\n");
+}
+
+export function classifyManagerFailure(rawTail: string): ManagerFailure {
+  const logTail = withoutBenignWarnings(rawTail);
   for (const [re, reason] of FATAL_MANAGER_MARKERS) if (re.test(logTail)) return { kind: "fatal", reason };
   for (const [re, reason] of TRANSIENT_MANAGER_MARKERS) if (re.test(logTail)) return { kind: "transient", reason };
   return { kind: "fatal", reason: logTail.trim() ? "an unrecognised failure" : "nothing in the log" };
@@ -1776,7 +1815,13 @@ async function ensureManagerUp(space: string, server: string, switchRuntime = fa
       attempt: async () => {
         const from = logOffset(logPath);
         startManagerDaemon(space, server, runtime);
-        return (await managerReady(space, server)) ? { ok: true } : { ok: false, logTail: logSince(logPath, from) };
+        const up = await waitForManager({
+          answers: () => managerAnswers(space, server),
+          alive: () => managerProcs(space).length > 0,
+          baseMs: MANAGER_READY_MS,
+          capMs: MANAGER_BOOT_CAP_MS,
+        });
+        return up ? { ok: true } : { ok: false, logTail: logSince(logPath, from) };
       },
       cleanup: () => stopOwnedManager(space),
     });
