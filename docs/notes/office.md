@@ -121,6 +121,23 @@ every 2s (only while `office.json` exists):
   per agent (office: 30). A 429 pauses the whole link for its `retryAfter`. Other errors back off per agent
   (5s doubling to 5 min), logged on the first failure and every 10th, "recovered" when they clear.
 
+### Background work shows as working (beads-y1eg, 2026-11-05)
+An agent that launched a Workflow, async subagents (`Agent` with `run_in_background`), a background Bash or a
+Monitor and then ended its turn reads `idle` on the mesh (and `waiting` a minute later, from claude's idle notice)
+while that work runs — its character walked to the sofa. `src/office-background.ts` (`BackgroundReader`) reads the
+sleep sweep's own evidence (`rowActivity`: transcript task records + the process tree) for every live row that is
+NOT running a turn, and `desiredFor` maps idle/waiting + background to `working`, activity `background: <kinds> ·
+<repo>` (`workflow + 2 subagents` — kinds only, never a task's description or command: office chat is public).
+stuck/failed still win; `starting` stays starting. Cost: a row's read is cached while its transcript mtime is
+unchanged (a task's end lands there as a `<task-notification>`) and for at most 60s (a shell can exit silently);
+one `ps` per refresh at most, only on a cache miss. An unreadable activity is no background (one log line per
+distinct error). Agents hosted on another machine read as unknown → shown as the mesh says.
+
+Found on the way: Claude Code records an async Agent launch as `toolUseResult.agentId` (no `taskId`, which only a
+Workflow carries, with `taskType: "local_workflow"`), so `scanActivity` never saw background subagents — `paw sleep`
+could put an agent to sleep under its running subagents. It now reads `taskId ?? agentId`; kinds are `workflow` and
+`agent`, both in-process (`inProcess`).
+
 ### Limits and caveats
 
 - Key rotation means reconnect: `paw office connect --space <s> --url <url> --join-key <new> [--owner-key <k>]`.

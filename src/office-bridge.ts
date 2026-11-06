@@ -31,6 +31,9 @@ export type Row = Pick<AgentStatus, "name" | "mesh" | "live" | "busy" | "tool" |
   activeAt?: number;
   /** Roster mode only (src/office-roster.ts): the presence's free-text activity, shown while working when no tool is known. */
   activity?: string;
+  /** Background work still running after the turn ended (Workflow, async subagents, background shells) —
+   *  {@link backgroundLabel} of src/office-background.ts's read; absent = none known. */
+  background?: string;
 };
 
 // Control and bidi-override characters: the office refuses them (SPOOF_CHARS_RE there).
@@ -73,13 +76,31 @@ export function running(row: Row): boolean {
   return Math.max(row.turnAt ?? 0, row.activeAt ?? 0) > row.statusSince + PROGRESS_SLACK_MS;
 }
 
-/** What the office should show for a paw row: running a turn → working; waiting on input → waiting; else idle. */
+/** `["workflow", "agent", "agent"]` → `workflow + 2 subagents`. Kinds only: a task's description or command can hold
+ *  paths or secrets, and office chat is public. */
+export function backgroundLabel(kinds: readonly string[]): string | undefined {
+  const names: Record<string, [string, string]> = { workflow: ["workflow", "workflows"], agent: ["subagent", "subagents"], bash: ["shell", "shells"], monitor: ["monitor", "monitors"] };
+  const parts = Object.entries(names).flatMap(([k, [one, many]]) => {
+    const n = kinds.filter((x) => x === k).length;
+    return n === 0 ? [] : [n === 1 ? one : `${n} ${many}`];
+  });
+  return parts.length ? parts.join(" + ") : undefined;
+}
+
+/** What the office should show for a paw row: running a turn, or background work the ended turn left running →
+ *  working; waiting on input → waiting; else idle. */
 export function desiredFor(row: Row): Desired {
   if (!row.live || row.mesh === "offline") return { present: false, status: "idle" };
   const repo = repoOf(row);
   if (row.stuck || (row.failure && !row.busy)) return { present: true, status: "waiting", activity: clip(row.stuck ? "stuck: needs a look" : "last turn failed: needs a look", ACTIVITY_MAX) };
   if (running(row)) {
     const what = row.tool ? toolName(row.tool.name) : (row.activity ?? "working");
+    return { present: true, status: "working", activity: clip(repo ? `${what} · ${repo}` : what, ACTIVITY_MAX) };
+  }
+  // The turn ended but a Workflow/subagent/background shell it launched still runs: claude's idle "waiting for
+  // your input" notice (mesh `waiting`) lands a minute after such a turn too, so it doesn't override this.
+  if (row.background && (row.mesh === "idle" || row.mesh === "waiting")) {
+    const what = `background: ${row.background}`;
     return { present: true, status: "working", activity: clip(repo ? `${what} · ${repo}` : what, ACTIVITY_MAX) };
   }
   if (row.mesh === "waiting") return { present: true, status: "waiting", ...(repo ? { activity: clip(`waiting · ${repo}`, ACTIVITY_MAX) } : {}) };

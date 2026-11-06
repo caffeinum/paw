@@ -74,6 +74,11 @@ console.log("1. mapping");
     ["waiting, no statusSince known → trust the claim", { mesh: "waiting", busy: true, turnAt: T + 5_000 }, "waiting"],
     ["waiting after the turn closed (idle notice), nothing in flight", { mesh: "waiting", busy: true, statusSince: T }, "waiting"],
     ["starting", { mesh: "starting" }, "idle", "starting up"],
+    // beads-y1eg: the turn ended, but work it launched in the background still runs
+    ["idle + a workflow still running", { mesh: "idle", background: "workflow" }, "working", "background: workflow · paw"],
+    ["claude's idle notice + subagents still running", { mesh: "waiting", busy: true, statusSince: T, background: "2 subagents" }, "working", "background: 2 subagents · paw"],
+    ["background never hides a stuck agent", { mesh: "idle", stuck: { since: T, restarts: 1 }, background: "workflow" }, "waiting", "stuck: needs a look"],
+    ["starting with background is still starting", { mesh: "starting", background: "workflow" }, "idle", "starting up"],
   ];
   for (const [label, over, status, activity] of table) {
     const d = desiredFor(row("a", over));
@@ -553,6 +558,50 @@ if (!url || !admin) {
   const gone = (await officeClient(link2)("look", {})) as { agents: unknown[] };
   assert(gone.agents.length === 0 && Object.keys(state.agents).length === 0, "offline → both walked out");
   assert(!logs.some((l) => l.includes(link.joinKey) || l.includes(link2.joinKey) || l.includes(link.ownerKey!)), "no key in any log line");
+}
+
+console.log("6. background work (beads-y1eg)");
+{
+  const { backgroundLabel } = await import("../src/office-bridge.ts");
+  const { BackgroundReader, MAX_AGE_MS } = await import("../src/office-background.ts");
+  assert(backgroundLabel([]) === undefined, "no tasks → no label");
+  assert(backgroundLabel(["agent", "workflow", "agent", "bash"]) === "workflow + 2 subagents + shell", `kinds only, counted (${backgroundLabel(["agent", "workflow", "agent", "bash"])})`);
+  let now = 1_000_000;
+  let stamp = "pin|1";
+  let reads = 0;
+  let inspectors = 0;
+  let kinds: string[] = ["workflow"];
+  let boom: string | undefined;
+  const logs: string[] = [];
+  const reader = new BackgroundReader("s", (l) => logs.push(l), {
+    stamp: () => stamp,
+    activity: () => {
+      reads++;
+      if (boom) throw new Error(boom);
+      return { tasks: kinds.map((_, i) => `t${i}`), kinds: kinds as never, shells: [] };
+    },
+    inspector: () => (inspectors++, () => ({ ok: false, unknown: "unused" })),
+    now: () => now,
+  });
+  const idle = { ...row("a"), pin: "pin" };
+  const out = reader.annotate([idle, { ...row("b", { mesh: "working" }), pin: "p2" }, { ...row("c"), pin: undefined }]);
+  assert(out[0].background === "workflow" && out[1].background === undefined && out[2].background === undefined, "only an idle row with a pin is read");
+  assert(reads === 1 && inspectors === 1, `one read, one inspector per pass (${reads}, ${inspectors})`);
+  reader.annotate([idle]);
+  assert(reads === 1, "unchanged transcript within MAX_AGE → cached, no re-read");
+  kinds = [];
+  stamp = "pin|2";
+  assert(reader.annotate([idle])[0].background === undefined && reads === 2, "transcript changed → re-read (the task's notification closed it)");
+  kinds = ["bash"];
+  now += MAX_AGE_MS;
+  assert(reader.annotate([idle])[0].background === "shell" && reads === 3, "cache expires after MAX_AGE even with no transcript write");
+  assert(reader.annotate([{ ...idle, background: "stale" }])[0].background === "shell", "a stale incoming label is replaced");
+  boom = "ps exploded";
+  now += MAX_AGE_MS;
+  const failed = reader.annotate([idle]);
+  now += MAX_AGE_MS;
+  reader.annotate([idle]);
+  assert(failed[0].background === undefined && logs.length === 1 && logs[0].includes("ps exploded"), `a failed read is no background and ONE log line (${logs.length})`);
 }
 
 if (failures) {
