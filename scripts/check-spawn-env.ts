@@ -150,6 +150,18 @@ console.log("\nall spawn-env checks passed 🐾");
   console.log("✓ harness session markers stripped at the daemon boundary");
 }
 
+// ── a caller shell's model credentials never reach the daemons (the .env.local org token, 2026-11-05) ──
+{
+  const { daemonEnv, CALLER_CREDENTIALS } = await import("../src/lifecycle.ts");
+  const saved: Record<string, string | undefined> = {};
+  for (const k of CALLER_CREDENTIALS) { saved[k] = process.env[k]; process.env[k] = "from-the-shell"; }
+  const env = daemonEnv();
+  for (const k of CALLER_CREDENTIALS) assert(!(k in env), `daemonEnv drops the inherited ${k}`);
+  assert(daemonEnv({ CLAUDE_CODE_OAUTH_TOKEN: "explicit" }).CLAUDE_CODE_OAUTH_TOKEN === "explicit", "an explicit extra credential still wins");
+  for (const [k, v] of Object.entries(saved)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+  console.log("✓ caller-shell model credentials stripped at the daemon boundary");
+}
+
 // ── daemons get a TMPDIR macOS never purges (the launch-material wipe, 2026-10-13) ──
 {
   const { daemonEnv, daemonTmpDir } = await import("../src/lifecycle.ts");

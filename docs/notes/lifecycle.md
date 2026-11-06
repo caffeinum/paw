@@ -375,6 +375,18 @@ Moved verbatim from CLAUDE.md (2026-10-02 split). Index: [CLAUDE.md](../../CLAUD
   RUNNING. Fix: delete the (ephemeral) presence KV, `paw restart`, `paw start`. Neither cotal nor paw
   detected a failed stream — follow-up in beads-eic (store hygiene, keeper probe, disk headroom).
 
+## stripCallerCredentials
+
+- **A shell's model credentials never reach the daemons (2026-11-05).** `CLAUDE_CODE_OAUTH_TOKEN`,
+  `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` are dropped from the INHERITED env in `daemonEnv`
+  (`CALLER_CREDENTIALS`); an explicit `extra` still sets one. The incident: after a reboot, `paw chat @evals`
+  run inside `~/Github/team2027/evals` cold-started the team2027 manager, and that folder's `.env.local`
+  (loaded into the shell) exported an org token with Claude Code disabled. The manager handed it to evals and
+  queue-ea, which pulled their DMs off the mesh but failed every turn ("Your organization has disabled Claude
+  subscription access for Claude Code") — `paw status` read `⚠ inbox stuck … unread` and the screen looked
+  idle. The `paw` space's agents (started by launchd, clean env) were fine. An agent's login is the machine's,
+  never whichever shell happened to start its manager. `check:spawn-env` covers it.
+
 ## sanitizeNodeOptions and daemonEnv
 
 - **`sanitizeNodeOptions` / `daemonEnv` (src/lifecycle.ts)** — the env every paw-spawned child gets:
