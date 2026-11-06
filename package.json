@@ -13,6 +13,7 @@
     "check:sandbox": "node scripts/check-sandbox.ts",
     "check:sandbox-bang": "node scripts/check-sandbox-bang.ts",
     "check:sandbox-forward": "node scripts/check-sandbox-forward.ts",
+    "check:sandbox-wedge": "node scripts/check-sandbox-wedge.ts",
     "check:addressing": "node scripts/check-addressing.ts",
     "check:dm": "node scripts/check-dm.ts",
     "check:web": "node scripts/check-web.ts",

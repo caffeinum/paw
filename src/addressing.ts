@@ -46,7 +46,7 @@ import { HERMES_AGENT } from "./hermes-profile.ts";
 import { ACP_AGENT } from "./acp-agent.ts";
 import { resolveAcpHost } from "./acp-host.ts";
 import { isClaudeHarness, personaTranscriptRoots, personaValue, readAgentType, readClaudeArgs, readCwd, readKitArgs, readResumeId, readSandbox, readShareTools, transcriptMtime } from "./session.ts";
-import { assertSandboxable, assertSandboxHostReady } from "./sandbox.ts";
+import { assertSandboxable, assertSandboxHostReady, sandboxSpawnFields } from "./sandbox.ts";
 import { defaultTmuxEnv, managerLogPath, readRuntimeMarker } from "./lifecycle.ts";
 import { logOffset, seatDiagnostic, seatExit, seatRetirement } from "./manager-log.ts";
 import { pidAlive, seatPids } from "./seat-witness.ts";
@@ -1233,6 +1233,9 @@ export async function ensureAgentSpawned(
     // Without it a restart whose old presence hadn't expired yet came back as `queue-ea_2` — alive,
     // resumed, and unreachable under its own name (2026-09-16: eight restarts, eight `_2` agents).
     const args: Record<string, unknown> = { name: opts.name, config, cwd, identity: opts.name };
+    // A sandboxed seat is restarted in place when its launcher exits on its own (a wedged VM, killed by the
+    // launcher's watchdog) — docs/notes/sandbox.md#a-wedged-vm.
+    Object.assign(args, sandboxSpawnFields(config));
     const kit = agentType === KIT_AGENT;
     const hermes = agentType === HERMES_AGENT;
     const acp = agentType === ACP_AGENT;

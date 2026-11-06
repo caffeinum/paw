@@ -30,6 +30,7 @@ import { fileURLToPath } from "node:url";
 import type { LaunchSpec } from "@cotal-ai/core";
 import { isClaudeHarness, readAgentType, readCwd, readHeadless, readSandbox, sandboxClaudeDir, sandboxStateDir } from "./session.ts";
 import { isRemoteSpace } from "./server.ts";
+import { forceRemoveContainers } from "../bin/paw-sandbox-kill.mjs";
 import { collectSandboxSkills, readSandboxSkills, SANDBOX_SKILLS_MOUNT, type SandboxSkillSet, type SkillSelection } from "./sandbox-skills.ts";
 
 /** Where the agent's claude config dir is mounted inside the VM (the image's CLAUDE_CONFIG_DIR). */
@@ -498,6 +499,20 @@ function mountSandboxSkills(claudeDir: string, stateDir: string, select: SkillSe
 }
 
 /**
+ * The manager's restart policy for a sandboxed seat (cotal spawn `supervise`): a seat whose process exits on
+ * its own is relaunched IN PLACE — same principal, lifecycle and DM durable, so DMs queued while it was down
+ * are delivered — at most `restarts` times per `windowMs`, then retired loud. The launcher exits on purpose
+ * when its VM is wedged (bin/paw-sandbox-run.mjs watchdog); without this the seat would just be gone.
+ * A despawn (`paw stop`/`sleep`/`restart`) is never restarted (cotal: terminalizing).
+ */
+export const SANDBOX_SUPERVISE = { restarts: 3, windowMs: 30 * 60_000 } as const;
+
+/** The spawn-op fields a persona's sandbox adds (`supervise` for a sandboxed one, nothing for a host seat). */
+export function sandboxSpawnFields(configPath: string): { supervise?: { restarts: number; windowMs: number } } {
+  return readSandbox(configPath) ? { supervise: { ...SANDBOX_SUPERVISE } } : {};
+}
+
+/**
  * After a stop: wait (bounded) for the agent's VM to be gone — the launcher's detached `container stop` takes a
  * second or two after the seat's SIGTERM — then force-delete whatever remains, so `paw stop` returning means no
  * container is left. Returns the ids it had to force-delete.
@@ -508,8 +523,12 @@ export async function reapSandbox(space: string, name: string, ms = 15_000): Pro
   for (const end = Date.now() + ms; Date.now() < end; await new Promise((r) => setTimeout(r, 500))) if (!mine().length) return [];
   const left = mine();
   if (left.length) {
-    const r = spawnSync(bin, ["delete", "--force", ...left], { encoding: "utf8", timeout: 60_000 });
-    if (r.status !== 0) throw new Error(`paw: "${name}"'s container(s) ${left.join(" ")} outlived the stop and \`container delete --force\` failed (${(r.stderr || r.error?.message || "").trim()})`);
+    // A wedged guest answers neither stop nor delete: escalate to a SIGKILL of the VM process, bounded.
+    try {
+      forceRemoveContainers(bin, left, { note: (m: string) => console.error(`paw: ${m}`) });
+    } catch (e) {
+      throw new Error(`paw: "${name}"'s container(s) ${left.join(" ")} outlived the stop and could not be removed: ${(e as Error).message}`);
+    }
   }
   return left;
 }

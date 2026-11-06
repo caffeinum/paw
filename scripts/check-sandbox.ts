@@ -44,6 +44,7 @@ case "$1" in
   ls) cat "${lsJson}" ;;
   run) echo $$ > "${fakeLog}.pid"; echo "token-in-env: \${CLAUDE_CODE_OAUTH_TOKEN:-<unset>}" >> "${fakeLog}"; trap 'exit 0' TERM; sleep 30 & wait ;;
   stop) kill "$(cat "${fakeLog}.pid")" ;;
+  delete) echo "[]" > "${lsJson}" ;;
   *) : ;;
 esac
 `,

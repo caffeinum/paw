@@ -296,6 +296,39 @@ the patched transport and asserts the bundled copy is patched. Re-key the connec
 bump; drop both once nats.js ships a bounded close. Cutover = `pnpm install` (a changed patch needs a fresh
 `node_modules`), `paw release`, then each agent picks it up on its next (operator-approved) restart.
 
+## A wedged VM
+
+**Incident (2026-11-06, team2027).** `vercel` (`sandboxMemory: 1G`) flapped "seat offline on the mesh … process
+running" / "seat back" every 10–40s from 07:28Z, then stayed offline from 07:33:47Z with DMs queued. The other VMs
+were fine. Same principal throughout, so this was not two incarnations or a sleep stand-in fighting over the name. The seat ran the
+manager's release (594a832b377c), whose connector bundle carries the nats reconnect patch, so it was not the stale-link bug either.
+
+**Root cause: the guest ran out of memory and livelocked.** `container logs --boot` showed `claude: page allocation
+failure: order:1 GFP_ATOMIC` from 07:32:09Z, `inactive_anon` ≈ 1002908kB of the 1G, no swap, page-cache thrash
+(`filemap_fault`), and **no OOM kill**. Processes got CPU only in slivers, so the cotal MCP server's heartbeats
+came late and then stopped. Everything that talks to the guest hung: `container exec` (the sleep host's
+"ps did not settle within 20s", the port forwarder), `container stop`, `container delete --force`. paw could not see it, because the
+launcher and `container run` on the host were alive. When the operator restarted the seat, the launcher's detached
+`stop` hung and the VM outlived its launcher. Each relaunch then blocked on `delete --force` of that leftover
+(60s) past the manager's 15s startup confirmation, logged as "WARNING: Loading development channels did not appear".
+
+**Fix.**
+- `bin/paw-sandbox-kill.mjs` `forceRemoveContainers`: a bounded `delete --force`, then SIGKILL of the VM's HOST
+  process (`container-runtime-linux start … --uuid <id>`, which always dies), a short settle, then delete again. It throws while
+  the container is still listed and never reports one gone that isn't. The launcher's SIGTERM reaper (now this module as a detached
+  CLI), the leftover removal at launch (a leftover that won't go fails the launch loud, ≤ ~9s), the run CLI's
+  exit cleanup and `reapSandbox` (`paw stop`/`sleep`) all use it.
+- The launcher's guest watchdog runs `container exec <id> true` every 30s (20s timeout). After the VM has answered once,
+  4 failures in a row mean wedged: it logs `WEDGED … out of memory? raise its sandboxMemory`, kills the VM, and exits **75**.
+  Knobs for tests: `PAW_SANDBOX_PROBE_MS`, `PAW_SANDBOX_PROBE_TIMEOUT_MS`, `PAW_SANDBOX_PROBE_FAILS`.
+- A sandboxed spawn carries cotal's `supervise` policy (`SANDBOX_SUPERVISE`: 3 restarts per 30 min). When a seat exits on its
+  own, the manager relaunches it in place: same principal, lifecycle and DM durable, so the queued DMs are delivered, and
+  the persona's pin makes it `--resume`. A despawn (`stop`/`sleep`/`restart`) is never restarted. When the budget runs out, the seat is
+  retired loud.
+
+The memory itself is the persona's call: a wedge says so in `launcher.log`. `check:sandbox-wedge` uses a fake
+`container` whose guest wedges on cue.
+
 ## Why remote spaces only (v1) — and the local plan
 
 The local open `paw` broker listens on 127.0.0.1, which a VM can't reach. The VM reaches the host at the
