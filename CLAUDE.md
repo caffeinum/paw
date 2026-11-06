@@ -112,6 +112,7 @@ Each entry: what it is + the most load-bearing rule. Full notes behind the link.
   manager's own "already serves space" line, never a process count. → [lifecycle.md#explainmanagerfailure](docs/notes/lifecycle.md#explainmanagerfailure)
 - `stripHarnessMarkers` — drop Claude Code session markers from daemon env (else every agent boots with
   transcripts OFF). → [lifecycle.md#stripharnessmarkers](docs/notes/lifecycle.md#stripharnessmarkers)
+- `src/gui-session.ts` — over ssh (macOS "Background" session, no keychain/GUI services) the manager starts as a one-shot launchd job in `gui/<uid>`, so its agents stay logged in (2026-11-06); no console login → fail loud. → [lifecycle.md#gui-session](docs/notes/lifecycle.md#gui-session)
 - `sanitizeNodeOptions`/`daemonEnv` — drop NODE_OPTIONS preloads that no longer exist on disk. → [lifecycle.md#sanitizenodeoptions-and-daemonenv](docs/notes/lifecycle.md#sanitizenodeoptions-and-daemonenv)
 - `src/prune.ts` + `src/commands/spaces.ts` — `paw spaces [prune [--yes]]`: dead-space stream pruning (dry
   run by default); `purgeTestSpace` is the test teardown (removeMesh alone leaked ~20 streams per run). → [lifecycle.md#broker-store-hygiene](docs/notes/lifecycle.md#broker-store-hygiene)
