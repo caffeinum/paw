@@ -53,6 +53,7 @@ import { connect } from "@nats-io/transport-node";
 import { authDir, loadSpaceAuth, saveSpaceAuth } from "@cotal-ai/workspace";
 import { daemonRoot } from "./release.ts";
 import { pawCotalRoot } from "./cotal-root.ts";
+import { outsideGuiSession, spawnInGuiSession } from "./gui-session.ts";
 import { withManagerControl, type ManagerControl } from "./control.ts";
 import { withFileLock, withFileLockAsync, type LockOpts } from "./lock.ts";
 import { customServer, isRemoteSpace, pawServer } from "./server.ts";
@@ -1150,6 +1151,23 @@ function startManagerDaemon(space: string, server: string, runtime: Runtime): vo
     // then breaks the moment it detaches. See cmuxSocketPassword + CLAUDE.md.
     const pw = cmuxSocketPassword();
     if (pw) env.CMUX_SOCKET_PASSWORD = pw;
+  }
+  if (outsideGuiSession()) {
+    // Over ssh: a manager spawned here would hand every agent a session with no keychain ("Not logged
+    // in") and no GUI-domain services (Apple container). Start it as a launchd job in the login session.
+    closeSync(mgrFd);
+    const pid = spawnInGuiSession({
+      label: `dev.cotal.paw.manager.${space.replace(/[^A-Za-z0-9_.-]/g, "_")}`,
+      program: mgrExec,
+      args: supArgs,
+      env,
+      cwd: pawCotalRoot(space),
+      log: managerLogPath(space),
+      plistDir: join(daemonTmpDir(), "launchd"),
+    });
+    writePid(managerPidPath(space), pid);
+    writeFileSync(managerRuntimePath(space), runtime);
+    return;
   }
   const child = spawn(mgrExec, supArgs, { detached: true, stdio: ["ignore", mgrFd, mgrFd], env, cwd: pawCotalRoot(space) });
   child.unref();

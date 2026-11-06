@@ -30,6 +30,7 @@ import { fileURLToPath } from "node:url";
 import type { LaunchSpec } from "@cotal-ai/core";
 import { isClaudeHarness, readAgentType, readCwd, readHeadless, readSandbox, sandboxClaudeDir, sandboxStateDir } from "./session.ts";
 import { isRemoteSpace } from "./server.ts";
+import { outsideGuiSession } from "./gui-session.ts";
 import { forceRemoveContainers } from "../bin/paw-sandbox-kill.mjs";
 import { collectSandboxSkills, readSandboxSkills, SANDBOX_SKILLS_MOUNT, type SandboxSkillSet, type SkillSelection } from "./sandbox-skills.ts";
 
@@ -266,6 +267,12 @@ export function assertSandboxable(space: string, name: string, configPath: strin
 
 /** The host side is ready: the CLI, its services, the image, the token file. Fails loud on each. */
 export function assertSandboxHostReady(configPath: string | undefined, env: NodeJS.ProcessEnv = process.env): void {
+  // Over ssh `container` can't see its apiserver (a GUI-domain XPC service), so both probes below are false
+  // negatives there. The manager runs in the login session (src/gui-session.ts) and its launcher fails loud.
+  if (outsideGuiSession()) {
+    claudeTokenFile(env);
+    return;
+  }
   const bin = containerBin(env);
   const status = spawnSync(bin, ["system", "status"], { encoding: "utf8", timeout: 20_000 });
   if (status.status !== 0) throw new Error(`paw: \`container system status\` failed — start it with \`container system start\` (${(status.stderr || status.stdout || status.error?.message || "").trim()})`);
