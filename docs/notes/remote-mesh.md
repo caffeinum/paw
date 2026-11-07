@@ -100,6 +100,12 @@ untouched: a space with no record resolves exactly as before.
     own outbound DM subject `inst.*.*.<o>.<you>`; publishes nothing.
   - `chat-history` (per tasks-view seed and per earlier-block read — chat open, `@name` switch, `/more`; 5 min) — DMs to and from "you" through two name- and
     filter-pinned consumers (`pawch_<hash>_<i>`), the `sleep-watch` read shape without the live sub.
+  - `chat-peers` (the messages view, operator-only, 5 min) — the SELECTED agent's own traffic, for each of
+    its ids `<o>.<a>` (live + stale from the ledger, ≤16, newest first): `cotal.<s>.inst.<o>.<a>.>` (to it),
+    `cotal.<s>.inst.*.*.<o>.<a>` (from it), `cotal.<s>.chat.<o>.<a>.>` (its own channel posts). Read cred,
+    signed per read (open/switch, `/reconnect`/gap read-back): one name+filter-pinned consumer per filter
+    (`pawcp_<hash>_<i>`, DM or CHAT stream), no subscribe. Tap cred: subscribe to those subjects only,
+    publishes nothing, re-signed 90s before expiry onto a new connection opened before the old closes.
   - the stand-in presence — cotal's own `agent` mint for a persisted stand-in nkey
     (`sleep/<name>.standin.nkey`, 0600), never the agent's seat identity.
 - **INBOX lag**: per hosted seat, `consumers.info(DM_<s>, dm_<owner>-<actor>-<lifecycleUid>)` (all three
@@ -151,7 +157,7 @@ be attached from here (no grant-based attach for those runtimes).
 space (src/chat-own.ts): the channel half taps `chat.<o>.<you>.>` on chat's own connection (inside the
 agent cred's `chat.*.*.>`), the DM half `inst.*.*.<o>.<you>` with the `chat-echo` cred; the tasks
 view's last-exchange seed (`dmHistory`, a DM consumer the agent cred may not create) reads "you"'s
-own conversation with `chat-history`. Never another agent's mail. `paw web` holds cotal's `admin`
+own conversation with `chat-history`. Another agent's mail only in the messages view, with `chat-peers` (below). `paw web` holds cotal's `admin`
 observer cred (its village/dialog views read every DM by design), whose `sub.allow` enumerates
 `chat.>`/`inst.>`/`svc.>` and excludes the space wildcard, so on a remote space it taps those three
 (`webTapSubjects`). Local spaces keep the space-wide tap. e2e-remote drives two chat sessions (DM +
@@ -163,6 +169,35 @@ A CLI checkout from before that fix still prints it: chat's CLI runs from the ch
 `paw chat @evals --space team2027` on 2026-10-19 hit it from a checkout at ae8e088 (chat.ts:1017
 `ep.tap(handler)`, no subject = `cotal.<s>.>`). `check:remote` now fails if any `src/chat*.ts` calls
 `ep.tap` outside chat-own.ts or if `tapOwnSends` places a tap without a subject on a remote space.
+
+**The messages view's other-peer rows on a remote space (2026-11-06, operator's go).** Another agent's
+mail, so none of chat's own creds (`agent`, `chat-echo`, `chat-history`) read it, and the `admin` observer
+behind `paw history`/`paw web` is space-wide. chat-own signs the narrow `chat-peers` cred above instead,
+from the space signer the operator already holds (the `chat-history` path) — in the chat process only; no
+agent holds or can mint it (`check:remote` fails if any other src module names it). Grants, per agent id
+`<o>.<a>` — never `cotal.<s>.>`, never a plane wildcard, never admin:
+
+    sub   cotal.<s>.inst.<o>.<a>.>          DMs to the agent        (tap cred only)
+          cotal.<s>.inst.*.*.<o>.<a>        DMs from the agent
+          cotal.<s>.chat.<o>.<a>.>          the agent's channel posts
+    pub   $JS.API.INFO, $JS.API.STREAM.INFO.{DM,CHAT}_<s>
+          $JS.API.CONSUMER.{CREATE.<stream>.<name>.<filter>, INFO|MSG.NEXT|DELETE.<stream>.<name>}
+                                            one pinned consumer per filter above (read cred only)
+
+- **Earlier rows** (`readPeerTraffic`): a fresh read cred per read — chat open/switch into the messages
+  view, the read-back after a gap — 5 minutes, consumers named per read.
+- **Live** (`tapAgentTraffic`): ONE tap, on the current target, over its own TLS-required connection. A
+  switch retires it (cred + connection); switching back reads the time it was off back. Renewal re-reads the
+  agent's ids, so a restarted agent's new id is tapped within ≤4 min (the read-back covers the rest). A
+  drop/reconnect of the tap's connection is read back like an endpoint gap.
+- **Channels:** sender-scoped (`chat.<o>.<a>.>` puts the sender before the channel), so the agent's posts
+  on ANY channel are covered without a space wildcard. Anycasts (`svc.<role>.<o>.<a>`, a work-queue stream)
+  are not read on a remote space.
+- A failed sign/dial/read is a red line in the view (`! couldn't load kit's messages with other peers: …`,
+  `! messages view: couldn't tap …`), never a silent empty view. An agent with >16 ids gets a yellow note
+  naming how many of its oldest aren't read. Live team2027 is untested (hermetic `check:remote`/`check:chat`
+  with the real signer code and a faked dial). cotal feature request filed for a first-class scoped observer
+  (`paw cotal feedback`). [chat.md#views](chat.md#views)
 
 **`!cmd` for another machine's agent:** `!cmd` (chat and web) runs in the agent's registered folder on
 THIS machine; an agent hosted elsewhere has none, and the old `no registered folder for "evals" —

@@ -88,7 +88,8 @@ export async function dmLastSeqOn(nc: NatsConnection, space: string): Promise<nu
 /**
  * Every message stored on ONE `filter` after `afterSeq`, oldest first, read through a NAMED consumer
  * (`cname`) so the remote grant can pin both name and filter. The consumer is recreated per read and
- * deleted after; `countOnly` returns just its pending count. Shared by both modes.
+ * deleted after; `countOnly` returns just its pending count. Shared by both modes. `stream` defaults to
+ * the DM stream (the chat-peers read also reads the agent's posts off the chat stream).
  */
 export async function readFiltered(
   nc: NatsConnection,
@@ -97,8 +98,9 @@ export async function readFiltered(
   afterSeq: number,
   cname: string,
   countOnly = false,
+  stream = dmStream(space),
 ): Promise<{ pending: number; msgs: Array<{ subject: string; seq: number; data: Record<string, unknown> }> }> {
-  const DM = dmStream(space);
+  const DM = stream;
   const jsm = await jetstreamManager(nc);
   await jsm.consumers.delete(DM, cname).catch(() => {}); // a leftover from a crashed read
   await jsm.consumers.add(DM, {

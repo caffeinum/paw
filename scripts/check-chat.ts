@@ -147,37 +147,39 @@ assert(!passesFilter(agentF, { kind: "channel", channel: "general" }), "echo: a 
 assert(passesFilter(chanF, { kind: "channel", channel: "team2027" }), "echo: your own post to the filtered channel shows");
 assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltered sessions still show everything");
 
-// ── views: logs · chat · tasks, the keys, the hint and the picker window (2026-09-23, tasks 2026-10-07) ─
+// ── views: logs · chat · messages · beads, the keys, the hint and the picker window (2026-09-23, tasks 2026-10-07) ─
 {
-  const { stepView, navKey, hintFor, pickerWindow, logBlockVisible, showsLogs, showsChat, arrowRun, VIEWS, VIEW_LABEL, viewNeedsTarget, displayWidth: displayWidthOf } = await import("../src/chat-views.ts");
+  const { stepView, navKey, hintFor, pickerWindow, logBlockVisible, showsLogs, showsChat, showsPeers, arrowRun, VIEWS, VIEW_LABEL, viewNeedsTarget, displayWidth: displayWidthOf } = await import("../src/chat-views.ts");
   assert(arrowRun("\x1b[B") === 1 && arrowRun("\x1b[A") === -1, "arrows: a single ↓/↑ is one step");
   assert(arrowRun("\x1b[B".repeat(20)) === 20, "arrows: a held ↓ read as ONE chunk is 20 steps, not typing (the collapse-to-1/1 bug)");
   assert(arrowRun("\x1b[B\x1b[A\x1b[B") === 1 && arrowRun("\x1bOB\x1bOB") === 2, "arrows: mixed runs net out; SS3 encodings count");
   assert(arrowRun("\x1b[Ba") === undefined && arrowRun("ab") === undefined && arrowRun("\x1b[D") === undefined, "arrows: anything else in the chunk is typing, not a run");
-  assert(eq(VIEWS, ["logs", "chat", "tasks"]), "view: exactly three views, logs · chat · tasks");
-  assert(!Object.values(VIEW_LABEL).some((l) => l.includes("+")) && Object.keys(VIEW_LABEL).length === 3, "view: no `logs + chat` label survives");
-  assert(stepView("chat", -1) === "logs" && stepView("chat", 1) === "tasks", "view: ← from chat is logs, → is tasks");
-  assert(stepView("tasks", -1) === "chat" && stepView("logs", 1) === "chat", "view: tasks ← chat, logs → chat");
-  assert(stepView("logs", -1) === "logs" && stepView("tasks", 1) === "tasks", "view: the ends CLAMP — a wrap would read as the key misfiring");
-  const cycled = new Set<string>();
+  assert(eq(VIEWS, ["logs", "chat", "messages", "beads"]), "view: exactly four views, logs · chat · messages · beads (operator order, 2026-11-06)");
+  assert(!Object.values(VIEW_LABEL).some((l) => l.includes("+")) && Object.keys(VIEW_LABEL).length === 4 && VIEW_LABEL.beads === "beads" && !Object.values(VIEW_LABEL).includes("tasks"), "view: the tasks view is labelled beads; no `logs + chat` label survives");
+  assert(stepView("chat", -1) === "logs" && stepView("chat", 1) === "messages" && stepView("messages", 1) === "beads", "view: → walks logs → chat → messages → beads");
+  assert(stepView("beads", -1) === "messages" && stepView("messages", -1) === "chat" && stepView("logs", 1) === "chat", "view: ← walks back the same way");
+  assert(stepView("logs", -1) === "logs" && stepView("beads", 1) === "beads", "view: the ends CLAMP — a wrap would read as the key misfiring");
+  const cycled: string[] = [];
   let v: import("../src/chat-views.ts").ChatView = "logs";
-  for (let i = 0; i < 6; i++) { cycled.add(v); v = stepView(v, 1); }
-  assert(cycled.size === 3, "view: stepping → from the left end visits exactly 3 views");
-  assert(showsLogs("logs") && !showsLogs("chat") && !showsLogs("tasks"), "view: only logs follows the transcript");
-  assert(showsChat("chat") && !showsChat("logs") && !showsChat("tasks"), "view: only chat prints the conversation (tasks is its own dashboard)");
-  assert(viewNeedsTarget("logs") && !viewNeedsTarget("chat") && !viewNeedsTarget("tasks"), "view: only logs needs a target — tasks shows your own beads without one");
+  for (let i = 0; i < 6; i++) { if (!cycled.includes(v)) cycled.push(v); v = stepView(v, 1); }
+  assert(eq(cycled, ["logs", "chat", "messages", "beads"]), "view: stepping → from the left end visits the four views in order");
+  assert(showsLogs("logs") && !showsLogs("chat") && !showsLogs("messages") && !showsLogs("beads"), "view: only logs follows the transcript");
+  assert(showsChat("chat") && showsChat("messages") && !showsChat("logs") && !showsChat("beads"), "view: chat and messages print the conversation (beads is its own dashboard)");
+  assert(showsPeers("messages") && !showsPeers("chat") && !showsPeers("logs") && !showsPeers("beads"), "view: only messages shows other-peer rows");
+  assert(viewNeedsTarget("logs") && !viewNeedsTarget("chat") && !viewNeedsTarget("messages") && !viewNeedsTarget("beads"), "view: only logs needs a target — beads shows your own without one");
 
   for (const k of ["\x1b[D", "\x1bOD", "\x1b[1;3D", "\x1b[1;9D", "\x1bb"]) assert(navKey(k) === "left", `keys: ${JSON.stringify(k)} is ← (plain, Option as CSI, Cmd/super, Option as Meta)`);
   for (const k of ["\x1b[C", "\x1b[1;3C", "\x1b[1;9C", "\x1bf"]) assert(navKey(k) === "right", `keys: ${JSON.stringify(k)} is →`);
   assert(navKey("\x1b[1;3B") === "down" && navKey("\x1b[B") === "down", "keys: plain and Option+↓ both open the picker");
   assert(navKey("a") === undefined && navKey("\x1b[A") === undefined, "keys: letters and ↑ are not navigation");
 
-  assert(hintFor({ view: "chat", picking: false, hasTarget: true, bang: false }) === "chat  │  ← logs   ↓ mention   tasks →", "hint: the middle view offers both ways and names where you are");
+  assert(hintFor({ view: "chat", picking: false, hasTarget: true, bang: false }) === "chat  │  ← logs   ↓ mention   messages →", "hint: the middle view offers both ways and names where you are");
   assert(!hintFor({ view: "logs", picking: false, hasTarget: true, bang: false }).includes("←"), "hint: at the left end there is no ←");
-  assert(!hintFor({ view: "tasks", picking: false, hasTarget: true, bang: false }).includes("→"), "hint: at the right end there is no →");
-  assert(hintFor({ view: "chat", picking: false, hasTarget: false, bang: false }) === "chat  │  ↓ mention an agent   tasks →", "hint: with no target, logs isn't offered — tasks (your own beads) is");
-  assert(hintFor({ view: "tasks", picking: false, hasTarget: false, bang: false }) === "tasks  │  ← chat   ↓ mention an agent   ctrl+o click to fold", "hint: tasks with no target goes back to chat, and offers click mode");
-  assert(hintFor({ view: "tasks", picking: false, hasTarget: true, bang: false, clickMode: true }).endsWith("ctrl+o select") && !hintFor({ view: "chat", picking: false, hasTarget: true, bang: false }).includes("ctrl+o"), "hint: in click mode ctrl+o gives selection back; other views don't offer it");
+  assert(!hintFor({ view: "beads", picking: false, hasTarget: true, bang: false }).includes("→"), "hint: at the right end there is no →");
+  assert(hintFor({ view: "chat", picking: false, hasTarget: false, bang: false }) === "chat  │  ↓ mention an agent   messages →", "hint: with no target, logs isn't offered — messages is");
+  assert(hintFor({ view: "messages", picking: false, hasTarget: true, bang: false }) === "messages  │  ← chat   ↓ mention   beads →", "hint: messages sits between chat and beads");
+  assert(hintFor({ view: "beads", picking: false, hasTarget: false, bang: false }) === "beads  │  ← messages   ↓ mention an agent   wheel scrolls · ctrl+o select text", "hint: beads goes back to messages, says the wheel scrolls and how to select text");
+  assert(hintFor({ view: "beads", picking: false, hasTarget: true, bang: false, selectMode: true }).endsWith("ctrl+o mouse back (wheel scrolls)") && !hintFor({ view: "chat", picking: false, hasTarget: true, bang: false }).includes("ctrl+o") && !hintFor({ view: "messages", picking: false, hasTarget: true, bang: false }).includes("ctrl+o"), "hint: in select mode ctrl+o gives the wheel back; other views don't offer it");
   assert(hintFor({ view: "chat", picking: true, hasTarget: true, bang: false }).startsWith("↑↓ select"), "hint: the picker's own keys while it is open");
   {
     const base = { view: "chat" as const, picking: false, hasTarget: true, bang: false };
@@ -214,7 +216,7 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
   const wakeYou = { kind: "wake", from: "you", via: "dm" } as const;
   const tool = { kind: "tool", name: "Bash", display: "Bash", arg: "ls" } as const;
   assert([reply, wakeYou, tool].every((b) => logBlockVisible("logs", b)), "blocks: the logs view is the raw trace — everything prints");
-  assert(!logBlockVisible("chat", tool) && !logBlockVisible("tasks", tool), "blocks: chat and tasks print no transcript at all");
+  assert(!logBlockVisible("chat", tool) && !logBlockVisible("messages", tool) && !logBlockVisible("beads", tool), "blocks: chat, messages and beads print no transcript at all");
 }
 
 // ── history / painter / follower: the redraw model behind the views (2026-09-23) ────────────────
@@ -233,9 +235,16 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
   const logA: E = { kind: "log", agent: "a", blocks: [tool("x")], backfill: false };
   const logB: E = { kind: "log", agent: "b", blocks: [tool("y")], backfill: false };
   const note: E = { kind: "chat", text: "(no logs for a)", side: "sys", tight: true, onlyLogs: true };
-  const vis = (e: E, v: "logs" | "chat" | "tasks", readable = true) => entryVisible(e, v, "a", readable);
+  const vis = (e: E, v: import("../src/chat-views.ts").ChatView, readable = true) => entryVisible(e, v, "a", readable);
   assert([dmT, dmO, sys, echo].every((e) => vis(e, "chat")) && !vis(logA, "chat"), "visible: chat = the conversation, no transcript");
-  assert(![dmT, dmO, sys, echo, logA, { kind: "banner", text: "B" } as E].some((e) => vis(e, "tasks")), "visible: tasks paints from its own model — nothing from the history");
+  assert(![dmT, dmO, sys, echo, logA, { kind: "banner", text: "B" } as E].some((e) => vis(e, "beads")), "visible: beads paints from its own model — nothing from the history");
+  assert([dmT, dmO, sys, echo].every((e) => vis(e, "messages")) && !vis(logA, "messages"), "visible: messages = everything chat shows…");
+  const peerA: E = { kind: "peer", agent: "A", msg: { id: "p1", ts: 1, from: "a", to: "bob", text: "hi" } };
+  const peerB: E = { kind: "peer", agent: "b", msg: { id: "p2", ts: 1, from: "b", to: "bob", text: "hi" } };
+  const peerNote: E = { kind: "chat", text: "! not readable", side: "sys", tight: true, onlyMessages: true };
+  assert(vis(peerA, "messages") && !vis(peerB, "messages"), "visible: …plus the CURRENT target's other-peer rows (case-insensitive), never another agent's");
+  assert(!["logs", "chat", "beads"].some((v) => vis(peerA, v as never) || vis(peerNote, v as never)) && vis(peerNote, "messages"), "visible: other-peer rows and notes about them are the messages view's alone");
+  assert(!entryVisible(peerA, "messages", undefined, true), "visible: no target, no other-peer rows");
   assert(vis(logA, "logs") && !vis(logB, "logs"), "visible: transcript blocks only for the CURRENT target");
   assert(!vis(echo, "logs"), "visible: logs hides your typed lines (the `wake from you` blocks stand for them)");
   const err: E = { kind: "chat", text: 'no peer named "nobody"', side: "sys", tight: false };
@@ -491,9 +500,9 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
   assert(eq(t.presence("d", "working").map((p) => p.id), ["w1"]), "offline→working (a restart) also starts a turn");
 }
 
-// ── the tasks view model (src/chat-tasks.ts, 2026-10-07) ─────────────────────────────────────────
+// ── the beads view model (src/chat-tasks.ts, 2026-10-07; fullscreen 2026-11-06) ─────────────────────────────────────────
 {
-  const { agentBeads, beadTree, agentInfo, lastExchange, renderTasksView, renderTasksPanel, hitAt, CLICK_MODE_HINT, wrapAnsi, age, CLOSED_MAX } = await import("../src/chat-tasks.ts");
+  const { agentBeads, beadTree, agentInfo, renderTasksView, renderTasksPanel, hitAt, SELECT_MODE_HINT, wrapAnsi, age, CLOSED_MAX } = await import("../src/chat-tasks.ts");
   const { displayWidth } = await import("../src/width.ts");
   type T = import("../src/tasks.ts").Task;
   const now = Date.parse("2026-10-07T12:00:00Z");
@@ -518,48 +527,27 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
   assert(eq(order.slice(5), ["c3", "c1", "c4"]) && CLOSED_MAX === 3, "beads: closed within 24h only, newest first, at most 3");
   assert(!order.includes("c2"), "beads: a bead closed 30h ago is gone");
 
-  const conv = [
-    { from: "kit", text: "first reply", ts: 1, dir: "in" as const },
-    { from: "you", text: "to kit", ts: 2, dir: "out" as const, to: "kit" },
-    { from: "you", text: "to evals", ts: 3, dir: "out" as const, to: "evals" },
-    { from: "Kit", text: "last reply", ts: 4, dir: "in" as const },
-    { from: "evals", text: "evals reply", ts: 5, dir: "in" as const },
-    { from: "you", text: "to an id", ts: 6, dir: "out" as const, to: "abc123" },
-  ];
-  const ex = lastExchange(conv, "kit");
-  assert(ex.lastIn?.text === "last reply" && ex.lastOut?.text === "to kit", "messages: the agent's LAST message in, and your last message TO it (case-insensitive names)");
-  assert(lastExchange(conv, "nobody").lastIn === undefined && lastExchange(conv, "nobody").lastOut === undefined, "messages: none for an agent you never talked to");
   assert(age(now - 90_000, now) === "1m" && age(now - 5_000, now) === "now" && age(NaN, now) === "—", "age: compact, minute resolution (a seconds counter would repaint every refresh), — (not 0) when unknown");
 
   const red = "\x1b[31m" + "x".repeat(25) + "\x1b[39m";
   const w = wrapAnsi(red, 10);
   assert(w.length === 3 && w.every((l) => displayWidth(l) <= 10) && w[1].startsWith("\x1b[31m") && w[0].endsWith("\x1b[0m"), "wrap: by columns, styles reset at the break and reopened");
 
-  const long = Array.from({ length: 40 }, (_, i) => `reply line ${i}`).join("\n");
-  const model = {
-    agent: "kit",
-    operator: "op",
-    beads: agentBeads(tasks, "kit", now),
-    lastIn: { text: long, ts: now - 60_000 },
-    lastOut: { text: "please fix it", ts: now - 120_000 },
-  };
-  for (const height of [8, 12, 20, 60]) {
+  const model = { agent: "kit", operator: "op", beads: agentBeads(tasks, "kit", now) };
+  for (const height of [4, 8, 12, 20, 60]) {
     const rows = renderTasksView(model, { width: 60, height, now });
-    assert(rows.length <= height && rows.every((r) => displayWidth(r) <= 60), `render: fits ${height} rows × 60 cols (${rows.length} rows)`);
-    assert(rows.some((r) => r.includes("reply line 39")), `render: at ${height} rows the agent's message keeps its LAST line`);
+    assert(rows.length === height && rows.every((r) => displayWidth(r) <= 60), `render: fills exactly ${height} rows × 60 cols (${rows.length} rows)`);
   }
   const tall = renderTasksView(model, { width: 60, height: 60, now });
-  assert(tall.filter((r) => /^[◐⊘○◌✓]/.test(r)).length === 8 && !tall.some((r) => r.includes("⋮")), "render: with room, every bead and the whole message show");
-  assert(tall.findIndex((r) => r.startsWith("you → kit")) < tall.findIndex((r) => r.startsWith("kit ·")), "render: messages oldest first — the newer one sits by the prompt");
-  const short = renderTasksView(model, { width: 60, height: 14, now });
-  assert(short.some((r) => r.includes("… +")) && short.some((r) => r.includes("⋮")), "render: when short, beads clip (… +N more) and the long message drops its OLDEST lines (⋮)");
-  assert(short.filter((r) => /^[◐⊘○◌✓]/.test(r)).length === 2, "render: beads clip to 3 rows first (2 beads + the +N line)");
-  assert(short.some((r) => r.includes("please fix it")), "render: your last message survives the squeeze");
-  const glued = renderTasksView({ ...model, lastIn: { text: "short reply", ts: now - 60_000 }, notice: "✓ kit picked it up — working…", status: "● working" }, { width: 60, height: 30, now });
+  assert(tall.filter((r) => /^[◐⊘○◌✓]/.test(r)).length === 8 && !tall.some((r) => /you →|last message|no messages between/.test(r)), "render: FULLSCREEN — every bead, and no conversation pane under them");
+  assert(tall[0].startsWith("beads · kit"), "render: the title says beads");
+  const short = renderTasksView(model, { width: 60, height: 6, now });
+  assert(short.some((r) => r.includes("… +") && r.includes("wheel/PgDn")) && short.filter((r) => /^[◐⊘○◌✓]/.test(r)).length === 4, `render: when short the beads take every row but the title and scroll (… +N more · wheel/PgDn) (${short.join(" | ")})`);
+  const glued = renderTasksView({ ...model, notice: "✓ kit picked it up — working…", status: "● working" }, { width: 60, height: 30, now });
   assert(glued.length === 30, "render: fills the height, so the bottom sits by the prompt");
   assert(glued[0].includes("● working") && /^[◐⊘○◌✓]/.test(glued[1]), "render: the title carries the live status, beads hug the top");
-  assert(glued[29].includes("picked it up") && glued[28].includes("short reply"), "render: the receipt is the last row, the newest message right above it");
-  assert(glued.slice(9, 20).every((r) => r === ""), "render: blank filler between the beads and the conversation");
+  assert(glued[29].includes("picked it up"), "render: the receipt is the last row, by the prompt");
+  assert(glued.slice(9, 29).every((r) => r === ""), "render: blank filler between the beads and the receipt — nothing else");
   const linked = [
     bead("p1", "in_progress", { externalRef: "https://github.com/a/b/pull/7/files" }),
     bead("p2", "open", { description: "see https://github.com/a/b/pull/9 and https://github.com/a/b/issues/3" }),
@@ -600,8 +588,8 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
   const open7 = renderTasksPanel({ agent: "kit", operator: "op", beads: eb }, { width: 60, height: 20, now });
   const r7 = open7.rows.findIndex((r) => r.startsWith("  ▾ ○ .7"));
   assert(r7 > 0 && hitAt(open7.hits, r7, 2) === "e.7" && hitAt(open7.hits, r7, 0) === undefined, "hits: a nested parent's icon sits after its indent");
-  const cm = renderTasksView({ agent: "kit", operator: "op", beads: eb, clickMode: true }, { width: 200, height: 20, now });
-  assert(cm[1] === CLICK_MODE_HINT && CLICK_MODE_HINT.includes("ctrl+o to leave") && CLICK_MODE_HINT.includes("select is off"), "click mode: the view says so, and how to leave");
+  const cm = renderTasksView({ agent: "kit", operator: "op", beads: eb, selectMode: true }, { width: 200, height: 20, now });
+  assert(cm[1] === SELECT_MODE_HINT && SELECT_MODE_HINT.includes("ctrl+o gives it back") && SELECT_MODE_HINT.includes("wheel doesn't scroll"), "select mode: the view says so, and how to get the wheel back");
   // scroll with folds: 10 parents × 4 children; every other folded. The pager counts PAINTED rows only.
   const fam = Array.from({ length: 10 }, (_, i) => [bead(`f${i}`, "open", { updatedAt: iso(i) }), ...Array.from({ length: 4 }, (_, k) => bead(`f${i}.${k + 1}`, "open", { parent: `f${i}` }))]).flat();
   const shut = new Set(["f0", "f2", "f4", "f6", "f8"]);
@@ -615,8 +603,8 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
     let used = -1;
     const rows = renderTasksView({ agent: "kit", operator: "op", beads: famBeads }, { width: 60, height: 12, now, scroll, folded: shut, onScroll: (x) => (used = x) });
     const shown = rows.filter((r) => /^\s*[▾▸]? ?○ (f\d|\.\d)/.test(r));
-    const more = rows.find((r) => r.includes("more · PgDn"));
-    const above = rows.find((r) => r.includes("above · PgUp"));
+    const more = rows.find((r) => r.includes("more · wheel/PgDn"));
+    const above = rows.find((r) => r.includes("above · wheel/PgUp"));
     if (above) assert(above.includes(`↑ ${used} above`), `fold scroll: "N above" is the rows above (${above.trim()} at ${used})`);
     if (more) assert(more.includes(`+${total - used - shown.length} more`), `fold scroll: "+N more" counts exactly the painted rows left (${more.trim()})`);
     for (let i = 0; i < shown.length; i++) seen.add(`${used + i}`);
@@ -636,25 +624,25 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
     return { rows, used, ids: rows.filter((r) => /^○ m\d\d/.test(r)).map((r) => r.slice(2, 5)) };
   };
   const p0 = page(0);
-  assert(p0.used === 0 && p0.ids[0] === "m00" && !p0.rows.some((r) => r.includes("above")) && p0.rows.some((r) => r.includes("more · PgDn")), "scroll: at the top no ↑ row, a PgDn hint below");
+  assert(p0.used === 0 && p0.ids[0] === "m00" && !p0.rows.some((r) => r.includes("above")) && p0.rows.some((r) => r.includes("more · wheel/PgDn")), "scroll: at the top no ↑ row, a PgDn hint below");
   const p5 = page(5);
-  assert(p5.ids[0] === "m05" && p5.rows.some((r) => r.includes("↑ 5 above · PgUp")), "scroll: scrolled, the list starts at that bead under an ↑ N above row");
+  assert(p5.ids[0] === "m05" && p5.rows.some((r) => r.includes("↑ 5 above · wheel/PgUp")), "scroll: scrolled, the list starts at that bead under an ↑ N above row");
   const pEnd = page(999);
   assert(pEnd.ids.at(-1) === "m29" && !pEnd.rows.some((r) => r.includes("more ·")) && pEnd.used < 29 && pEnd.rows.length === 14, `scroll: past the end it clamps to a FULL last page (start ${pEnd.used})`);
   assert(page(pEnd.used + 5).used === pEnd.used, "scroll: overscroll reports the clamped start, so PgUp moves at once");
   const { scrollKey } = await import("../src/chat-views.ts");
   assert(scrollKey("\x1b[5~") === "up" && scrollKey("\x1b[6~") === "down" && scrollKey("\x1b[1;2A") === undefined, "scroll keys: PgUp/PgDn only (shift+↑ is readline history)");
   // mouse reports (src/mouse.ts): decoded and cut out, so readline never types them
-  const { stripMouse, MOUSE_ON, MOUSE_OFF, CLICK_MODE_KEY } = await import("../src/mouse.ts");
+  const { stripMouse, MOUSE_ON, MOUSE_OFF, SELECT_MODE_KEY } = await import("../src/mouse.ts");
   const sm = stripMouse("ab\x1b[<0;3;5M\x1b[<0;3;5mcd\x1b[<64;1;1M\x1b[<65;1;1M\x1b[<35;4;4M");
   assert(sm.rest === "abcd", `mouse: every report cut out, the typing kept (${JSON.stringify(sm.rest)})`);
   assert(eq(sm.events.map((e) => `${e.kind}${e.press ? "↓" : "↑"}@${e.col},${e.row}`), ["left↓@3,5", "left↑@3,5", "wheelUp↓@1,1", "wheelDown↓@1,1", "other↓@4,4"]), `mouse: press/release, wheel, motion decoded (${sm.events.map((e) => e.kind).join(",")})`);
   assert(stripMouse("plain \x1b[A").rest === "plain \x1b[A" && stripMouse("plain").events.length === 0, "mouse: other input passes untouched");
-  assert(MOUSE_ON === "\x1b[?1000h\x1b[?1006h" && MOUSE_OFF === "\x1b[?1000l\x1b[?1006l" && CLICK_MODE_KEY === "\x0f", "mouse: SGR clicks on/off; ctrl+o toggles");
+  assert(MOUSE_ON === "\x1b[?1000h\x1b[?1006h" && MOUSE_OFF === "\x1b[?1000l\x1b[?1006l" && SELECT_MODE_KEY === "\x0f", "mouse: SGR clicks + wheel on/off; ctrl+o toggles select mode");
   const err = renderTasksView({ agent: "kit", operator: "op", beadsError: "bd list: boom" }, { width: 60, height: 20, now });
   assert(err.some((r) => r.includes("! beads: bd list: boom")) && !err.some((r) => r.includes("no beads")), "render: a failed read is shown, never as 'no beads'");
   const mine = renderTasksView({ operator: "op", beads: [] }, { width: 60, height: 20, now });
-  assert(mine[0].includes("yours") && mine.some((r) => r.includes("no beads assigned to op")) && mine.some((r) => r.includes("pick an agent with ↓")), "render: no target → the operator's own beads + how to pick an agent");
+  assert(mine[0].includes("yours") && mine.some((r) => r.includes("no beads assigned to op")) && mine.some((r) => r.includes("pick an agent with ↓ to see its beads")), "render: no target → the operator's own beads + how to pick an agent");
   assert(renderTasksView({ agent: "kit", operator: "op" }, { width: 60, height: 20, now }).some((r) => r.includes("reading beads")), "render: before the first read it says so");
 }
 
@@ -1678,7 +1666,7 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
 
   type E = import("../src/chat-views.ts").Entry;
   const hist: E = { kind: "chat", text: "old", side: "peer", tight: false, historical: true };
-  assert(entryVisible(hist, "chat", "kit", true) && !entryVisible(hist, "logs", "kit", true) && !entryVisible(hist, "logs", "kit", false) && !entryVisible(hist, "tasks", "kit", true), "backlog: earlier entries show in the chat view only");
+  assert(entryVisible(hist, "chat", "kit", true) && !entryVisible(hist, "logs", "kit", true) && !entryVisible(hist, "logs", "kit", false) && !entryVisible(hist, "beads", "kit", true) && entryVisible(hist, "messages", "kit", true), "backlog: earlier entries show in the chat and messages views only");
   const h = new History();
   const a: E = { kind: "banner", text: "b\n" };
   const loader: E = { kind: "chat", text: "◌", side: "sys", tight: true, historical: true };
@@ -1701,6 +1689,117 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
   const body = src.slice(src.indexOf("function loadBacklog("), src.indexOf("\n  }\n", src.indexOf("function loadBacklog(")));
   assert(body.length > 200 && /readOwnConversation\(ep, space, server\)/.test(body), "backlog: chat reads it through chat-own.ts readOwnConversation (narrow creds on a remote space)");
   assert(!/advanceCursor|shouldFollowDm|awaiting\.|curName =|curId =|filter =/.test(body), "backlog: loading it never marks read, follows, answers an await or moves the target");
+}
+
+// ── the messages view's other-peer rows (src/chat-peers.ts, 2026-11-06) ──────────────────────────
+{
+  const { classifyPeer, peerIndent, peerRows, pickPeers, peerSummary, mergeByTs } = await import("../src/chat-peers.ts");
+  const { displayWidth } = await import("../src/width.ts");
+  const names = new Map([["K1", "kit"], ["K0", "kit"], ["B1", "bob"], ["ME", "you"]]);
+  const o = { agent: "kit", agentIds: new Set(["K1", "K0"]), me: "ME", nameOf: (id: string) => names.get(id) };
+  const m = (x: object) => ({ id: "m", ts: 1, ...x });
+  assert(eq(classifyPeer(m({ from: { id: "K1", name: "kit" }, to: "B1" }), o), { from: "kit", to: "bob" }), "peers: kit → bob is other-peer traffic, recipient named from its id");
+  assert(eq(classifyPeer(m({ from: { id: "B1", name: "bob" }, to: "K0" }), o), { from: "bob", to: "kit" }), "peers: bob → kit's OLD id still counts (every id it had)");
+  assert(eq(classifyPeer(m({ from: { id: "C1", name: "cron" }, to: "K1" }), o), { from: "cron", to: "kit" }) && eq(classifyPeer(m({ from: { id: "O1", name: "office" }, to: "K1" }), o), { from: "office", to: "kit" }), "peers: cron and office DMs to kit count");
+  assert(eq(classifyPeer(m({ from: { id: "K1", name: "kit" }, channel: "general" }), o), { from: "kit", to: "#general" }), "peers: kit's channel post counts, labelled #channel");
+  assert(classifyPeer(m({ from: { id: "B1", name: "bob" }, channel: "general" }), o) === undefined, "peers: someone else's channel post is not kit's traffic");
+  assert(classifyPeer(m({ from: { id: "K1", name: "kit" }, to: "ME" }), o) === undefined && classifyPeer(m({ from: { id: "ME", name: "you" }, to: "K1" }), o) === undefined, "peers: anything with you in it is the chat view's, not this");
+  assert(classifyPeer(m({ from: { id: "B1", name: "bob" }, to: "X9" }), o) === undefined, "peers: bob → someone else is none of kit's business");
+  assert(eq(classifyPeer(m({ from: { id: "K1", name: "kit" }, to: "ZZZZZZZZZZZZ" }), o), { from: "kit", to: "ZZZZZZZZ" }), "peers: an unnamed recipient stays its id (short) — never a guessed name");
+  assert(classifyPeer({ from: { id: "K1", name: "kit" }, to: "B1" }, o) === undefined, "peers: a frame without an id is not placed");
+
+  assert(peerIndent(80) === 20 && peerIndent(200) === 24 && peerIndent(10) === 4, "peers: indent = a quarter of the width, 4..24 cols");
+  const plain = { dim: (x: string) => `<${x}>`, md: (t: string) => t.split("\n"), strip: (x: string) => x };
+  const one = peerRows({ id: "1", ts: 1, from: "kit", to: "bob", text: "lgtm" }, { cols: 80, age: " (2m ago)", ...plain });
+  assert(eq(one, [`<${" ".repeat(20)}kit → bob (2m ago): lgtm>`]), `peers: a short message is one row, indented right, dimmed (${JSON.stringify(one)})`);
+  const multi = peerRows({ id: "2", ts: 1, from: "bob", to: "kit", text: "line one\nline two" }, { cols: 80, age: "", ...plain });
+  assert(eq(multi, [`<${" ".repeat(20)}bob → kit:>`, `<${" ".repeat(22)}line one>`, `<${" ".repeat(22)}line two>`]), "peers: a multi-line body goes under the label, indented further");
+  const wrapped = peerRows({ id: "3", ts: 1, from: "kit", to: "bob", text: "x".repeat(300) }, { cols: 60, age: "", ...plain, dim: (x: string) => x });
+  assert(wrapped.length > 3 && wrapped.every((r) => displayWidth(r) <= 59 && r.startsWith(" ".repeat(15))), "peers: long rows wrap inside the right column and never reach the last column");
+
+  const msgs = [10, 20, 30, 40].map((ts) => ({ id: `p${ts}`, ts, from: "kit", to: "bob", text: `t${ts}` }));
+  const pk = pickPeers(msgs, { limit: 2, now: 45, windowMs: 30, shown: (id) => id === "p40" });
+  assert(eq(pk.entries.map((e) => e.id), ["p20", "p30"]) && pk.older === 1, "peers: sized like the earlier block — last N within the window, minus what is on screen");
+  assert(pickPeers(msgs, { limit: 0, now: 45, shown: () => false }).entries.length === 0, "peers: --history 0 loads none");
+  assert(peerSummary("kit", 2, 1, true) === "── 2 messages between kit and other peers in the last 24h, indented right · 1 older not shown ──" && peerSummary("kit", 0, 0, true) === "(no messages between kit and other peers in the last 24h)", "peers: the summary says how many, and says so when there are none");
+
+  type R = { t: string; ts?: number };
+  const rows: R[] = [{ t: "banner" }, { t: "div" }, { t: "a", ts: 10 }, { t: "b", ts: 30 }, { t: "now" }, { t: "live" }];
+  const merged = mergeByTs(rows, 2, 4, [{ t: "P25", ts: 25 }, { t: "P5", ts: 5 }, { t: "P99", ts: 99 }], (e) => e.ts);
+  assert(eq(merged.map((e) => e.t), ["banner", "div", "P5", "a", "P25", "b", "P99", "now", "live"]), "peers: other-peer history merges by time between the earlier block's rows, before ── now ──");
+
+  // Remote space (2026-11-06, operator's go): READ, through the operator-only `chat-peers` cred scoped
+  // to the target's own subjects (check:remote asserts its grants) — no refusal, no `admin`, no dmHistory.
+  const { readFileSync } = await import("node:fs");
+  const own = readFileSync(new URL("../src/chat-own.ts", import.meta.url), "utf8");
+  assert(!/aren't readable with this chat's credentials/.test(own), "peers: the remote refusal is gone");
+  {
+    const { createSpaceAuth, stripSpaceAuth, newIdentity } = await import("@cotal-ai/core");
+    const { mkdtempSync, mkdirSync, writeFileSync } = await import("node:fs");
+    const { writeRemoteMesh } = await import("../src/remote-mesh.ts");
+    const rsp = "chattest-remote";
+    const sroot = mkdtempSync(join(tmpdir(), "paw-chat-signer-"));
+    mkdirSync(join(sroot, ".cotal", "auth"), { recursive: true });
+    writeFileSync(join(sroot, ".cotal", "auth", "auth.json"), JSON.stringify(stripSpaceAuth(await createSpaceAuth(rsp))), { mode: 0o600 });
+    writeRemoteMesh({ space: rsp, server: "tls://127.0.0.1:9", root: sroot, ts: new Date().toISOString() });
+    const ownMod = await import("../src/chat-own.ts");
+    const { signScopedCreds } = await import("../src/remote-creds.ts");
+    const labels: string[] = [];
+    let dmHistoryCalls = 0;
+    const deps = {
+      sign: (async (...a: Parameters<typeof signScopedCreds>) => (labels.push(a[1]), signScopedCreds(...a))) as typeof signScopedCreds,
+      connect: (async () => {
+        throw new Error("fake dial");
+      }) as unknown as import("../src/chat-own.ts").PeerDeps["connect"],
+    };
+    const rEp = { card: { id: "local.UME" }, dmHistory: async () => (dmHistoryCalls++, []) } as unknown as Parameters<typeof ownMod.readPeerTraffic>[0];
+    const kitId = `local.${newIdentity().id}`;
+    const res = await ownMod.readPeerTraffic(rEp, rsp, "tls://127.0.0.1:9", "kit", new Set([kitId]), () => undefined, { deps }).then(() => "resolved", (e: Error) => e.message);
+    assert(res === "fake dial" && eq(labels, ["chat-peers"]) && dmHistoryCalls === 0, `peers: a remote read signs a chat-peers cred and dials — never refuses, never the endpoint's dmHistory (${res}, ${labels.join(",")})`);
+    const none = await ownMod.readPeerTraffic(rEp, rsp, "tls://127.0.0.1:9", "ghost", new Set(), () => undefined, { deps }).then(() => "resolved", (e: Error) => e.message);
+    assert(/no mesh id is known for ghost/.test(none), `peers: a remote agent with no known id fails loud — ${none}`);
+    rmSync(sroot, { recursive: true, force: true });
+  }
+  const tap = own.slice(own.indexOf("export function tapPeerTraffic("));
+  assert(/if \(isRemoteSpace\(space\)\) return false;/.test(tap.slice(0, tap.indexOf("\n}\n"))), "peers: no space-wide tap on a remote space (the narrow tapAgentTraffic does it)");
+  const chatSrc = readFileSync(new URL("../src/chat.ts", import.meta.url), "utf8");
+  const ens = chatSrc.slice(chatSrc.indexOf("function ensurePeers("), chatSrc.indexOf("\n  }\n", chatSrc.indexOf("function ensurePeers(")));
+  assert(!/remoteSpace/.test(ens) && /ensurePeerTap\(\)/.test(ens) && !/advanceCursor|shouldFollowDm|awaiting\.|curName =|curId =/.test(ens), "peers: remote reads too (keeping the live tap on the target); never marks read, follows, answers an await or moves the target");
+  const ept = chatSrc.slice(chatSrc.indexOf("function ensurePeerTap("), chatSrc.indexOf("function retirePeerTap("));
+  assert(/if \(peerTap\) retirePeerTap\(\)/.test(ept) && /catchUpPeers\(offAt - PEER_GAP_SLACK_MS, \[agent\]\)/.test(ept), "peers: a remote switch retires the old agent's tap, and coming back reads the time it was off back");
+  assert(/retirePeerTap\(\);\n\s+await ep\?\.stop\(\)/.test(chatSrc), "peers: quitting retires the remote tap");
+  assert(!/remotePeersNote/.test(chatSrc), "peers: no 'not readable' note on a remote chat any more");
+
+  // Review fixes (2026-11-06).
+  // Stale-id forwards: paw's forwarder re-sends a DM to an agent's dead id as a second copy (same
+  // sender, id = forwardId(orig, live id)). Both copies are the agent's traffic — show one.
+  const { forwardId } = await import("../src/forward-mark.ts");
+  const { dropPairedPeerForwards, isPeerForwardOf } = await import("../src/chat-peers.ts");
+  const orig = { id: "o1", ts: 5, from: "bob", to: "kit", text: "hi", fromId: "B1", toId: "K0" };
+  const fwd = { id: forwardId("o1", "K1"), ts: 5, from: "bob", to: "kit", text: "hi", fromId: "B1", toId: "K1", forwardOf: "K0" };
+  assert(isPeerForwardOf(fwd, orig) && !isPeerForwardOf({ ...fwd, id: "x" }, orig) && !isPeerForwardOf(fwd, { ...orig, toId: "K9" }), "peers: a forward pairs with its original exactly by id, never by text");
+  assert(eq(dropPairedPeerForwards([orig, fwd]).map((m) => m.id), ["o1"]) && dropPairedPeerForwards([fwd]).length === 1, "peers: history drops a paired forward, keeps an unpaired one");
+  const { peerMsg } = await import("../src/chat-own.ts");
+  const fwdWire = { id: fwd.id, ts: 5, from: { id: "B1", name: "bob" }, to: "K1", parts: [{ kind: "text", text: `[paw: forwarded — this DM was sent to your previous instance (K0); reply to the sender as usual]` }, { kind: "text", text: "hi" }] };
+  const pm = peerMsg(fwdWire as never, { from: "bob", to: "kit" });
+  assert(pm.text === "hi" && pm.forwardOf === "K0" && pm.toId === "K1" && pm.fromId === "B1", "peers: a forward's row shows what the sender wrote, the note dropped, with the ids it pairs by");
+  // Laid out at PAINT time: the same entry re-lays out at a new width (a resize redraws it).
+  let width = 120;
+  const lay = (p: import("../src/chat-peers.ts").PeerMsg) => peerRows(p, { cols: width, age: "", dim: (x: string) => x, md: (t: string) => [t], strip: (x: string) => x }).join("\n");
+  const { Painter: PeerPainter } = await import("../src/chat-views.ts");
+  const pp = new PeerPainter(() => "", (x) => x, "  ", () => false, lay);
+  const longPeer: import("../src/chat-views.ts").Entry = { kind: "peer", agent: "kit", msg: { id: "w", ts: 1, from: "kit", to: "bob", text: "y".repeat(150) } };
+  const wide = pp.paint(longPeer, "messages");
+  width = 60;
+  const narrow = pp.paint(longPeer, "messages");
+  assert(narrow.split("\n").filter(Boolean).every((l: string) => l.length <= 59 && l.startsWith(" ".repeat(peerIndent(60)))) && wide !== narrow, "peers: a peer row is laid out at the width when painted — narrowing never overflows the indent");
+  // Exact dedup: a channel post the tap placed is swapped for onMessage's line, never shown twice.
+  assert(/if \(!swapPeerRowFor\(m\.id, line\)\) show\(line\)/.test(chatSrc), "peers: onMessage's channel line replaces a tapped row of the same id");
+  // Tracked agents keep capturing; a tap gap is read back.
+  assert(/for \(const agent of agents\.values\(\)\)/.test(chatSrc) && /catchUpPeers\(since\)/.test(chatSrc), "peers: every tracked agent is captured, target or not, and a tap gap is read back");
+  // ctrl+z gives the terminal back before stopping.
+  const tstp = chatSrc.slice(chatSrc.indexOf('r.on("SIGTSTP"'));
+  assert(tstp.indexOf("MOUSE_OFF") < tstp.indexOf('process.kill(process.pid, "SIGSTOP")') && tstp.indexOf("MOUSE_OFF") > 0, "views: ctrl+z turns mouse reporting off before the process stops");
 }
 
 rmSync(process.env.PAW_HOME as string, { recursive: true, force: true });

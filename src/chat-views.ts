@@ -1,13 +1,16 @@
 /**
  * `paw chat` views: what the conversation shows, and the keys that move between them (2026-09-23).
  *
- * Three views, arranged left to right the way the operator described them:
- *   logs   — the targeted agent's transcript only (its turns, tool calls, results, replies)
- *   chat   — the conversation only (the default: what `paw chat` always was)
- *   tasks  — the targeted agent's beads plus the last word each way (src/chat-tasks.ts), a
- *            dashboard repainted in place rather than a filter over the history
+ * Four views, arranged left to right the way the operator described them (order 2026-11-06):
+ *   logs     — the targeted agent's transcript only (its turns, tool calls, results, replies)
+ *   chat     — the conversation only (the default: what `paw chat` always was)
+ *   messages — chat PLUS what the target said to and heard from OTHER peers (agents, channels, cron,
+ *              office), indented to the right and dimmed so your own conversation stays the left column
+ *              (src/chat-peers.ts)
+ *   beads    — the targeted agent's beads, FULLSCREEN (src/chat-tasks.ts), a dashboard repainted in
+ *              place rather than a filter over the history; the wheel scrolls it (src/mouse.ts)
  * ←/→ move between them, ↓ opens the agent picker. The interleaved `logs + chat` view that sat in
- * the middle was dropped for `tasks` (operator, 2026-10-07).
+ * the middle was dropped for the beads view (then called `tasks`, operator, 2026-10-07).
  *
  * REDRAW ON SWITCH, APPEND IN BETWEEN (2026-09-23). Appending a divider and a backfill on a switch was
  * built first and rejected in use — the operator: "switching between views looks bad, it just appends
@@ -23,30 +26,33 @@
  *
  * Pure: no tty, no readline, no mesh — chat.ts wires these in; check:chat asserts them.
  */
+import type { PeerMsg } from "./chat-peers.ts";
 import type { Block } from "./transcript.ts";
 import type { Machine } from "./hosted.ts";
 import { displayWidth, fitWidth } from "./width.ts";
 
-export type ChatView = "logs" | "chat" | "tasks";
+export type ChatView = "logs" | "chat" | "messages" | "beads";
 
-/** Left-to-right order. The arrows STEP along it and stop at the ends — in a three-position strip a
- *  wrap from chat back to logs would read as the key misfiring, not as a feature. */
-export const VIEWS: readonly ChatView[] = ["logs", "chat", "tasks"];
+/** Left-to-right order. The arrows STEP along it and stop at the ends — in a short strip a wrap from
+ *  beads back to logs would read as the key misfiring, not as a feature. */
+export const VIEWS: readonly ChatView[] = ["logs", "chat", "messages", "beads"];
 
-export const VIEW_LABEL: Record<ChatView, string> = { logs: "logs", chat: "chat", tasks: "tasks" };
+export const VIEW_LABEL: Record<ChatView, string> = { logs: "logs", chat: "chat", messages: "messages", beads: "beads" };
 
 export function stepView(v: ChatView, dir: -1 | 1): ChatView {
   const i = VIEWS.indexOf(v) + dir;
   return VIEWS[Math.max(0, Math.min(VIEWS.length - 1, i))];
 }
 
-/** Does this view print the transcript / the conversation? `tasks` prints neither — it is painted
- *  from its own model, not from the history. */
+/** Does this view print the transcript / the conversation / the target's other-peer traffic? `beads`
+ *  prints none — it is painted from its own model, not from the history. `messages` is the chat view
+ *  plus the other-peer rows, so everything that behaves "like chat" asks {@link showsChat}. */
 export const showsLogs = (v: ChatView): boolean => v === "logs";
-export const showsChat = (v: ChatView): boolean => v === "chat";
+export const showsChat = (v: ChatView): boolean => v === "chat" || v === "messages";
+export const showsPeers = (v: ChatView): boolean => v === "messages";
 
-/** Which views need a target: the logs follow one agent. chat and tasks (which then shows the
- *  operator's own beads) work without one. */
+/** Which views need a target: the logs follow one agent. chat, messages (which then is just chat) and
+ *  beads (which then shows the operator's own) work without one. */
 export const viewNeedsTarget = (v: ChatView): boolean => v === "logs";
 
 /**
@@ -88,7 +94,7 @@ export function navKey(raw: string): "left" | "right" | "down" | undefined {
   }
 }
 
-/** The tasks view's bead-list scroll keys: PgUp/PgDn (fn+↑/↓ on a Mac). readline ignores them, so they
+/** The beads view's bead-list scroll keys: PgUp/PgDn (fn+↑/↓ on a Mac). readline ignores them, so they
  *  work mid-line too. Not shift+↑/↓ — readline reads those as ↑/↓ and would walk the input history. */
 export function scrollKey(raw: string): "up" | "down" | undefined {
   if (raw === "\x1b[5~") return "up";
@@ -102,9 +108,10 @@ export function scrollKey(raw: string): "up" | "down" | undefined {
  * first, since "which view am I in?" is the question a view switch leaves you with.
  *
  * No target (broadcast, or a channel) has no transcript to follow, so `logs` is not offered — only
- * chat ⇄ tasks (the operator's own beads) and the picker.
+ * chat ⇄ messages ⇄ beads (the operator's own) and the picker. In beads the mouse is ON by default (the
+ * wheel scrolls); ctrl+o hands it back to the terminal for selecting text (`selectMode`).
  */
-export function hintFor(s: { view: ChatView; picking: boolean; hasTarget: boolean; bang: boolean; clickMode?: boolean; draft?: { held: number; pastes: number } }): string {
+export function hintFor(s: { view: ChatView; picking: boolean; hasTarget: boolean; bang: boolean; selectMode?: boolean; draft?: { held: number; pastes: number } }): string {
   if (s.picking) return "↑↓ select · enter picks · esc closes · type to filter";
   if (s.bang) return "$ command mode · esc or backspace leaves";
   // Mid-draft (lines held, or a paste staged), the keys that shape the message matter more than the views.
@@ -119,7 +126,7 @@ export function hintFor(s: { view: ChatView; picking: boolean; hasTarget: boolea
   if (prev !== s.view && (s.hasTarget || !viewNeedsTarget(prev))) parts.push(`← ${VIEW_LABEL[prev]}`);
   parts.push(s.hasTarget ? "↓ mention" : "↓ mention an agent");
   if (next !== s.view) parts.push(`${VIEW_LABEL[next]} →`);
-  if (s.view === "tasks") parts.push(s.clickMode ? "ctrl+o select" : "ctrl+o click to fold");
+  if (s.view === "beads") parts.push(s.selectMode ? "ctrl+o mouse back (wheel scrolls)" : "wheel scrolls · ctrl+o select text");
   return `${VIEW_LABEL[s.view]}  │  ${parts.join("   ")}`;
 }
 
@@ -191,7 +198,14 @@ export interface FollowSource {
  *   `bannerDelta` marks a banner field filled in AFTER the banner scrolled (`status: …`): a redraw
  *   repaints the banner with that value, so it skips these lines rather than say each one twice.
  *   `historical` marks the earlier block (src/chat-backlog.ts): conversation from before this chat,
- *   shown in the chat view only — the logs view's transcript already tells that story.
+ *   shown in the chat and messages views only — the logs view's transcript already tells that story.
+ *   `ts` is the message's own time, set on earlier-block rows so other-peer history can be merged
+ *   between them in time order. `onlyMessages` marks a note ABOUT the messages view (the remote-space
+ *   warning, the other-peer loader and summary).
+ * - `peer` — one message between the target (`agent`) and SOMEONE ELSE (src/chat-peers.ts), stored as
+ *   the message and laid out (indented right, dimmed) at PAINT time, at the width then — a resize
+ *   re-lays it out instead of overflowing the indent. Shown in the messages view only, and only while `agent` is the
+ *   target — another agent's traffic, captured before a switch, is not this conversation.
  * - `echo` — a line you typed, exactly as readline echoed it. readline prints it, not emit, so without
  *   recording it here your own half of the conversation would vanish on the first redraw.
  * - `log` — a batch of the target's transcript blocks, stored RAW: which blocks show depends on the view
@@ -199,7 +213,8 @@ export interface FollowSource {
  */
 export type Entry =
   | { kind: "banner"; text: string }
-  | { kind: "chat"; text: string; side: "you" | "peer" | "sys"; tight: boolean; from?: string; onlyLogs?: boolean; bannerDelta?: boolean; historical?: boolean }
+  | { kind: "chat"; text: string; side: "you" | "peer" | "sys"; tight: boolean; from?: string; onlyLogs?: boolean; onlyMessages?: boolean; bannerDelta?: boolean; historical?: boolean; ts?: number }
+  | { kind: "peer"; agent: string; msg: PeerMsg; historical?: boolean }
   | { kind: "echo"; text: string }
   | { kind: "log"; agent: string; blocks: Block[]; backfill: boolean; note?: string };
 
@@ -209,22 +224,26 @@ export type Entry =
  * `logs` is the target's transcript plus every conversation line EXCEPT what that transcript already
  * says: the target's own DMs (the `↩ you` blocks — shown as DMs only if the transcript can't be read,
  * or they'd be shown nowhere) and your typed lines (the `wake from you` blocks). `chat` is everything
- * but the transcript. `tasks` shows nothing from the history — it is painted from its own model.
+ * but the transcript and the other-peer rows; `messages` is chat plus those rows. `beads` shows nothing
+ * from the history — it is painted from its own model.
  * Transcript blocks only ever show for the CURRENT target — another agent's, captured before a
  * switch, would be a trace of the wrong agent.
  */
 export function entryVisible(e: Entry, view: ChatView, target: string | undefined, logsReadable: boolean): boolean {
-  if (view === "tasks") return false;
+  if (view === "beads") return false;
   switch (e.kind) {
     case "banner":
       return true;
+    case "peer":
+      return showsPeers(view) && !!target && e.agent.toLowerCase() === target.toLowerCase();
     case "log":
       return showsLogs(view) && e.agent === target;
     case "echo":
       return showsChat(view);
     case "chat":
       if (e.onlyLogs) return showsLogs(view); // a note about the logs themselves ("no logs for x")
-      if (e.historical) return showsChat(view); // the earlier block belongs to the conversation view
+      if (e.onlyMessages) return showsPeers(view); // a note about the other-peer rows
+      if (e.historical) return showsChat(view); // the earlier block belongs to the conversation views
       if (showsChat(view)) return true;
       // The logs view hides ONLY what the transcript already shows: the target's own DMs (its `↩ you`
       // blocks) — and even those only while that transcript can be read. Everything else stays:
@@ -275,7 +294,7 @@ export class History {
  * redraw ends up spaced differently from the live screen it replaces.
  */
 export class Painter {
-  lastSide: "you" | "peer" | "sys" | "log" | undefined;
+  lastSide: "you" | "peer" | "sys" | "log" | "other" | undefined;
   trailingBlank = false;
 
   private readonly render: (b: Block) => string;
@@ -283,17 +302,21 @@ export class Painter {
   private readonly pad: string;
   /** `paw log`'s spacing predicate (src/log.ts attachesAbove): true for a `⎿` result rail. */
   private readonly attachesAbove: (rendered: string) => boolean;
+  /** An other-peer message as screen rows, at the width of the moment (chat.ts: peerRows). */
+  private readonly peer: (p: PeerMsg) => string;
 
   constructor(
     render: (b: Block) => string,
     dim: (s: string) => string = (s) => s,
     pad = "  ",
     attachesAbove: (rendered: string) => boolean = () => false,
+    peer: (p: PeerMsg) => string = (p) => `${p.from} → ${p.to}: ${p.text}`,
   ) {
     this.render = render;
     this.dim = dim;
     this.pad = pad;
     this.attachesAbove = attachesAbove;
+    this.peer = peer;
   }
 
   reset(): void {
@@ -316,6 +339,10 @@ export class Painter {
         return e.text + "\n";
       case "chat":
         return this.put(e.side, e.text.split("\n").join(`\n${this.pad}`), e.side === "sys" || e.tight);
+      case "peer":
+        // Laid out now (indented right, dimmed) — a side of its own, so a run of other-peer rows sits
+        // together with air above and below it, apart from your conversation.
+        return this.put("other", this.peer(e.msg), true);
       case "log": {
         const lines = e.blocks
           .map((b) => logBlockFor(view, b))
@@ -337,7 +364,7 @@ export class Painter {
     }
   }
 
-  private put(side: "you" | "peer" | "sys" | "log", body: string, tight: boolean): string {
+  private put(side: "you" | "peer" | "sys" | "log" | "other", body: string, tight: boolean): string {
     const gap = !this.trailingBlank && this.lastSide !== undefined && side !== this.lastSide ? "\n" : "";
     const tail = tight ? "" : "\n";
     this.trailingBlank = tail !== "";

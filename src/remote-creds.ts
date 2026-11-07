@@ -19,6 +19,12 @@
  *    one chat session mirrors what another sent. Nobody else's mail. 24h, re-signed in place.
  *  - `chat-history` (`paw chat` tasks view): one-shot, 5 minutes. Read "you"'s own conversation (DMs
  *    to and from "you") through named, filter-pinned consumers — the same shape as `sleep-watch`.
+ *  - `chat-peers` (`paw chat` messages view, operator-only): the SELECTED agent's own traffic — DMs to
+ *    and from each of its ids (`inst.<o>.<a>.>`, `inst.*.*.<o>.<a>`) and its own channel posts
+ *    (`chat.<o>.<a>.>`), never the space wildcard. A read cred (name+filter-pinned consumers, no
+ *    subscribe) is signed per read; the live tap's (subscribe only, publishes nothing) is renewed before
+ *    its 5 minutes run out. Signed in the chat process from the signer the operator holds — no agent
+ *    holds or can mint it.
  *  - `presence-probe` (wake gate, `paw status`): one per probe, 60s, in memory only. Publish to exactly
  *    ONE throwaway presence key (`$KV.cotal_presence_<space>.paw-probe-<hex>`) — the put and the KV
  *    purge marker that clears it share that subject. No `$JS.API`, no other key, no subscribe. Signed
@@ -41,6 +47,9 @@ export const WATCH_TTL_SEC = 24 * 3600;
 export const FORWARD_TTL_SEC = 5 * 60;
 export const ECHO_TTL_SEC = 24 * 3600;
 export const PROBE_TTL_SEC = 60;
+export const PEERS_TTL_SEC = 5 * 60;
+/** The chat-peers tap re-signs once less than this is left of its {@link PEERS_TTL_SEC}. */
+export const PEERS_RENEW_BEFORE_SEC = 90;
 /** Re-sign a cached / held cred once less than this is left of it. */
 export const RENEW_BEFORE_SEC = 3600;
 
@@ -124,13 +133,30 @@ export function watchGrants(space: string, filters: string[], names: string[]): 
 /** Pure: pinned named-consumer reads on exactly `filters` of the DM stream, no live subscribe. */
 export function filteredReadGrants(space: string, filters: string[], names: string[]): Grants {
   if (filters.length !== names.length) throw new Error("paw: a filtered read needs one consumer name per filter");
-  const DM = dmStream(space);
-  const pub = [`$JS.API.INFO`, `$JS.API.STREAM.INFO.${DM}`];
-  filters.forEach((f, i) => {
-    const n = names[i]!;
-    pub.push(`$JS.API.CONSUMER.CREATE.${DM}.${n}.${f}`, `$JS.API.CONSUMER.INFO.${DM}.${n}`, `$JS.API.CONSUMER.MSG.NEXT.${DM}.${n}`, `$JS.API.CONSUMER.DELETE.${DM}.${n}`);
-  });
+  return pinnedReadGrants(filters.map((filter, i) => ({ stream: dmStream(space), filter, name: names[i]! })));
+}
+
+/** One named consumer on one filter of one stream. */
+export interface PinnedRead {
+  stream: string;
+  filter: string;
+  name: string;
+}
+
+/** Pure: pinned named-consumer reads — each consumer's NAME and FILTER fixed in the grant — on any
+ *  stream, no live subscribe. */
+export function pinnedReadGrants(reads: PinnedRead[]): Grants {
+  const pub = [`$JS.API.INFO`, ...new Set(reads.map((r) => `$JS.API.STREAM.INFO.${r.stream}`))];
+  for (const { stream, filter, name } of reads) {
+    if (!name || /[.*>\s]/.test(name)) throw new Error(`paw: "${name}" is not a pinnable consumer name`);
+    pub.push(`$JS.API.CONSUMER.CREATE.${stream}.${name}.${filter}`, `$JS.API.CONSUMER.INFO.${stream}.${name}`, `$JS.API.CONSUMER.MSG.NEXT.${stream}.${name}`, `$JS.API.CONSUMER.DELETE.${stream}.${name}`);
+  }
   return { pub, sub: [] };
+}
+
+/** Pure: a live tap's grants — subscribe to exactly `subjects`, publish nothing. */
+export function tapGrants(subjects: string[]): Grants {
+  return { pub: [], sub: [...new Set(subjects)] };
 }
 
 /** Pure: the chat echo's grants — subscribe to `subject` ("you"'s own outbound DMs), publish nothing. */

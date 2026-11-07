@@ -1,32 +1,25 @@
 /**
- * `paw chat`'s `tasks` view (2026-10-07): what the targeted agent is ON, and the last word each way.
+ * `paw chat`'s `beads` view (2026-10-07 as `tasks`; fullscreen 2026-11-06): what the targeted agent is ON.
  *
- *   top    — glued to the top: a title row (with the agent's live status) and the agent's beads
- *            (assignee = the agent): in_progress, then blocked, then open, then the last day's closed
- *            ones dimmed (at most a few). One line each: glyph, id, title, age — plus a `↳ <url>` row
- *            under it for each linked PR (external_ref or a PR URL in the description).
- *   bottom — glued to the prompt: the agent's LAST message to you and YOUR last message to it, oldest
- *            first (so the newer one sits by the prompt), markdown-rendered like chat entries, each
- *            with how long ago; then the newest receipt (⏳ queued, ✓ picked it up…) right above the
- *            prompt, where chat prints it. Blank rows fill the gap between the two (operator, 2026-10-07).
+ * A title row (with the agent's live status), the `paw status` facts, then the agent's beads (assignee
+ * = the agent): in_progress, then blocked, then open, then the last day's closed ones dimmed (at most a
+ * few). One line each: glyph, id, title, age — plus a `↳ <url>` row under it for each linked PR. The
+ * newest receipt (⏳ queued, ✓ picked it up, ! …) sits at the bottom, by the prompt.
+ *
+ * FULLSCREEN (operator, 2026-11-06: "not a split view anymore"): the last message each way that used to
+ * be glued to the bottom is gone — the conversation is the chat/messages views' job — so the bead list
+ * gets every row between the title and the prompt. The mouse wheel scrolls it (chat.ts turns SGR mouse
+ * reporting on while this view is on screen, src/mouse.ts).
  *
  * It is a DASHBOARD, not a filter over the chat history: chat.ts repaints it in place (cursor home,
  * overwrite, clear below) and only when the painted text changed, so a background refresh that found
- * nothing new costs zero bytes and never flickers. It always fits the terminal: the bead list clips
- * first, then the message bodies — each keeping its LAST lines, where the point of a reply usually is.
+ * nothing new costs zero bytes and never flickers. It always fits the terminal: the bead list clips.
  *
  * Pure: no tty, no bd, no mesh — chat.ts wires these in; check:chat asserts them.
  */
 import type { Task } from "./tasks.ts";
-import type { Entry as FeedEntry } from "./feed.ts";
 import { displayWidth, fitWidth } from "./width.ts";
 import { prUrls } from "../web/app/company-model.js";
-
-/** One message as the view shows it. */
-export interface Said {
-  text: string;
-  ts: number;
-}
 
 /** How long a closed bead stays in the list, and how many of them at most. */
 export const CLOSED_RECENT_MS = 24 * 3_600_000;
@@ -57,29 +50,6 @@ export function agentBeads(tasks: Task[], assignee: string, now: number): Task[]
     .sort((a, b) => time(b.closedAt) - time(a.closedAt))
     .slice(0, CLOSED_MAX);
   return [...open, ...closed];
-}
-
-/** The newer of two messages (either may be missing). */
-export function newer(a: Said | undefined, b: Said | undefined): Said | undefined {
-  if (!a) return b;
-  if (!b) return a;
-  return b.ts > a.ts ? b : a;
-}
-
-/**
- * From a both-directions conversation (feed.ts readConversation `withSent`), the last message the
- * agent sent you (`lastIn`) and the last one you sent it (`lastOut`). Names compare case-insensitively,
- * like `@name` does; a message to an unresolved id never matches a name.
- */
-export function lastExchange(conv: FeedEntry[], agent: string): { lastIn?: Said; lastOut?: Said } {
-  const key = agent.toLowerCase();
-  let lastIn: Said | undefined;
-  let lastOut: Said | undefined;
-  for (const e of conv) {
-    if (e.dir === "out" && e.to?.toLowerCase() === key) lastOut = newer(lastOut, { text: e.text, ts: e.ts });
-    else if (e.dir !== "out" && e.from.toLowerCase() === key) lastIn = newer(lastIn, { text: e.text, ts: e.ts });
-  }
-  return { ...(lastIn ? { lastIn } : {}), ...(lastOut ? { lastOut } : {}) };
 }
 
 /** Compact "how long ago" (m/h/d); `—` when the time is unknown rather than a made-up 0. Minute
@@ -148,21 +118,20 @@ export interface TasksModel {
   beads?: Task[];
   /** The last bead read failed — shown as is, never as "no beads". */
   beadsError?: string;
-  lastIn?: Said;
-  lastOut?: Said;
-  /** The newest receipt / error line (⏳ waiting…, ✓ picked it up, ! …) — the tasks view has no
+  /** The newest receipt / error line (⏳ waiting…, ✓ picked it up, ! …) — the beads view has no
    *  scrolling conversation to put them in, and a send that failed silently is the worst outcome. */
   notice?: string;
   /** The agent's live presence, pre-styled (● working — activity); undefined when it isn't on the mesh. */
   status?: string;
   /** What `paw status` says about it, pre-styled (see {@link agentInfo}) — a row under the title. */
   info?: string;
-  /** Click mode is on (chat.ts, ctrl+o): mouse capture took text selection, so the view says so. */
-  clickMode?: boolean;
+  /** Select mode is on (chat.ts, ctrl+o): the mouse is handed back to the terminal for selecting text,
+   *  so the wheel doesn't scroll the list meanwhile — the view says so. */
+  selectMode?: boolean;
 }
 
-/** The hint row shown while click mode is on. */
-export const CLICK_MODE_HINT = "click mode · ctrl+o to leave · select is off · click ▾/▸ to fold, wheel scrolls";
+/** The row shown while select mode is on. */
+export const SELECT_MODE_HINT = "select mode · mouse is the terminal's (select text) · wheel doesn't scroll · ctrl+o gives it back";
 
 export interface TasksStyle {
   dim(s: string): string;
@@ -330,19 +299,11 @@ export function hitAt(hits: readonly (TasksHit | undefined)[], row: number, col:
   return h && col >= h.col && col < h.col + h.span ? h.id : undefined;
 }
 
-interface MsgBlock {
-  ts: number;
-  head: string;
-  body: string[];
-}
-
 /**
  * The view as rows — exactly `height` of them, none wider than `width`. Layout, top to bottom: a title
- * row, the bead rows, blank filler, then the messages and an optional notice — so the beads hug the top
- * and the conversation hugs the prompt. When it doesn't fit, the beads
- * shrink first (down to 3 rows, the last saying how many more), then the longer message body loses its
- * OLDEST lines (a `⋮` in the indent marks the cut), then the beads go down to one row; a terminal too small even for
- * that gets the top `height` rows.
+ * row (+ the info row, + the select-mode row), the bead rows, blank filler, then the tail (the no-target
+ * hint, the newest notice) by the prompt. When the beads don't fit they scroll (`↑ N above` / `… +N
+ * more`, whole beads only); a terminal too small even for the head gets the top `height` rows.
  */
 export function renderTasksView(m: TasksModel, opts: TasksViewOpts): string[] {
   return renderTasksPanel(m, opts).rows;
@@ -357,7 +318,7 @@ export interface TasksViewOpts {
   scroll?: number;
   /** told the scroll actually used */
   onScroll?: (start: number) => void;
-  /** parents the operator folded (click mode) */
+  /** parents the operator folded (a click on a parent's icon) */
   folded?: ReadonlySet<string>;
 }
 
@@ -372,9 +333,9 @@ export function renderTasksPanel(m: TasksModel, opts: TasksViewOpts): { rows: st
   const head: string[] = [];
   const count = m.beads ? ` ${st.dim(`· ${m.beads.filter((t) => t.status !== "closed").length} open`)}` : "";
   const status = m.status ? ` ${st.dim("·")} ${m.status}` : "";
-  head.push(fitWidth(`${st.bold("tasks")} ${st.dim("·")} ${m.agent ? st.tag(m.agent) : `yours ${st.dim(`(${m.operator})`)}`}${count}${status}`, width));
+  head.push(fitWidth(`${st.bold("beads")} ${st.dim("·")} ${m.agent ? st.tag(m.agent) : `yours ${st.dim(`(${m.operator})`)}`}${count}${status}`, width));
   if (m.info) head.push(fitWidth(m.info, width));
-  if (m.clickMode) head.push(st.yellow(fitWidth(CLICK_MODE_HINT, width)));
+  if (m.selectMode) head.push(st.yellow(fitWidth(SELECT_MODE_HINT, width)));
 
   const note = (row: string): Group[] => [{ rows: [row], hits: [undefined] }];
   let groups: Group[];
@@ -384,39 +345,11 @@ export function renderTasksPanel(m: TasksModel, opts: TasksViewOpts): { rows: st
   else groups = beadTree(m.beads, opts.folded).map((r) => beadGroup(r, now, width, st));
   const beadRows = groups.flatMap((g) => g.rows);
 
-  const msgs: MsgBlock[] = [];
-  if (m.agent) {
-    const body = (s: Said): string[] => st.md(s.text, width - 2).flatMap((l) => wrapAnsi(l, width - 2)).map((l) => `  ${l}`);
-    if (m.lastIn) msgs.push({ ts: m.lastIn.ts, head: `${st.tag(m.agent)} ${st.dim(`· ${ago(m.lastIn.ts, now)}`)}`, body: body(m.lastIn) });
-    if (m.lastOut) msgs.push({ ts: m.lastOut.ts, head: `${st.bold("you")} ${st.dim(`→ ${m.agent} · ${ago(m.lastOut.ts, now)}`)}`, body: body(m.lastOut) });
-    msgs.sort((a, b) => a.ts - b.ts);
-  }
-  const tail: string[] = m.agent ? [] : [st.dim("pick an agent with ↓ to see its beads and its last messages")];
-  if (m.agent && !msgs.length) tail.push(st.dim(`no messages between you and ${m.agent} yet`));
+  const tail: string[] = m.agent ? [] : [st.dim("pick an agent with ↓ to see its beads")];
   if (m.notice) tail.push(st.dim(fitWidth(m.notice.split("\n")[0], width)));
 
-  // Rows that are always there: the title, the blank before the lower section, each message's
-  // header, one blank between messages, and the tail lines.
-  const fixed = head.length + 1 + msgs.length + Math.max(0, msgs.length - 1) + tail.length;
-  const bodies = msgs.map((b) => b.body.length);
-  const bodyTotal = (): number => bodies.reduce((a, b) => a + b, 0);
-  let beadBudget = Math.max(0, height - fixed - bodyTotal());
-  const minBeads = Math.min(beadRows.length, 3);
-  if (beadBudget < minBeads) {
-    beadBudget = minBeads;
-    let room = Math.max(0, height - fixed - beadBudget);
-    if (room < msgs.length) {
-      beadBudget = Math.min(beadRows.length, 1);
-      room = Math.max(0, height - fixed - beadBudget);
-    }
-    // Take lines from the longest body until the bodies fit the room.
-    while (bodyTotal() > room) {
-      let k = 0;
-      for (let j = 1; j < bodies.length; j++) if (bodies[j] > bodies[k]) k = j;
-      if (bodies[k] === 0) break;
-      bodies[k]--;
-    }
-  }
+  // Everything between the head and the tail is the bead list's — fullscreen, no conversation pane.
+  const beadBudget = Math.max(0, height - head.length - tail.length);
 
   const out = [...head];
   // The clickable icon on each row of `out`, kept in step with every push.
@@ -445,29 +378,17 @@ export function renderTasksPanel(m: TasksModel, opts: TasksViewOpts): { rows: st
     let used = 0;
     let n = start;
     while (n < groups.length && used + groups[n].rows.length <= cap) used += groups[n++].rows.length;
-    if (above) plain(st.dim(`  ↑ ${start} above · PgUp`));
+    if (above) plain(st.dim(`  ↑ ${start} above · wheel/PgUp`));
     if (n === start && cap > 0) {
       put([{ rows: [groups[start].rows[0]], hits: [groups[start].hits[0]] }]);
       n = start + 1;
     } else put(groups.slice(start, n));
-    if (n < groups.length) plain(st.dim(`  … +${groups.length - n} more · PgDn`));
+    if (n < groups.length) plain(st.dim(`  … +${groups.length - n} more · wheel/PgDn`));
   }
-  const lower: string[] = [];
-  msgs.forEach((b, j) => {
-    if (j) lower.push("");
-    lower.push(fitWidth(b.head, width));
-    const keep = bodies[j];
-    if (keep >= b.body.length) lower.push(...b.body);
-    else if (keep > 0) {
-      // The cut is marked in the indent of the first kept row, so even a 1-row budget keeps a line.
-      const kept = b.body.slice(b.body.length - keep);
-      lower.push(st.dim("⋮ ") + kept[0].slice(2), ...kept.slice(1));
-    }
-  });
-  lower.push(...tail);
-  const gap = Math.max(1, height - out.length - lower.length);
+  const lower = tail;
+  const gap = Math.max(0, height - out.length - lower.length);
   out.push(...Array<string>(gap).fill(""), ...lower);
   const rows = out.slice(0, height);
-  // Filler and conversation rows carry no icon.
+  // Filler and tail rows carry no icon.
   return { rows, hits: rows.map((_, i) => hits[i]) };
 }

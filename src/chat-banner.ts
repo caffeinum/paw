@@ -73,7 +73,7 @@ export function renderBanner(st: BannerState, c: BannerStyle): string {
       `     ${mesh}\n\n` +
       `     ${c.dim(`type to broadcast to #${st.room} · @name starts a sticky DM · !cmd runs in its folder · #channel · /who · /ps · /quit`)}\n` +
       HINTS.map((h) => `     ${c.dim(h)}\n`).join("") +
-      `     ${c.dim("on an empty line: → your tasks   ↓ picks an agent")}\n` +
+      `     ${c.dim("on an empty line: → messages · your beads   ↓ picks an agent")}\n` +
       `     ${c.dim("/imgs · /noimg · /paste · /nopaste")}\n\n`
     );
   }
@@ -97,7 +97,7 @@ export function renderBanner(st: BannerState, c: BannerStyle): string {
     (st.only ? `     showing: ${c.dim("this agent only — other DMs stay in `paw inbox`")}\n\n` : "") +
     `     ${c.dim(`type to message it · ${st.bang ? "!cmd runs in its folder · " : ""}@name switches target · #channel broadcasts · /who · /ps · /quit`)}\n` +
     HINTS.map((h) => `     ${c.dim(h)}\n`).join("") +
-    `     ${c.dim("on an empty line: ← → switch logs · chat · tasks   ↓ picks an agent")}\n` +
+    `     ${c.dim("on an empty line: ← → switch logs · chat · messages · beads   ↓ picks an agent")}\n` +
     `     ${c.dim("/imgs · /noimg · /paste · /nopaste")}\n\n`
   );
 }

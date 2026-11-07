@@ -64,9 +64,10 @@ import { Outbox, type OutEvent } from "./outbox.ts";
 import { LinkProbe, PROBE_MS, isAckTimeout } from "./link-probe.ts";
 import { PresenceHold, type PresenceLine } from "./presence-hold.ts";
 import { AwaitTracker } from "./chat-awaiting.ts";
-import { arrowRun, CLEAR_ALL, displayWidth, fitWidth, entryVisible, hintFor, hintWithTag, whereTag, History, LogFollower, navKey, scrollKey, Painter, type Entry, pickerWindow, showsChat, showsLogs, stepView, VIEW_LABEL, viewNeedsTarget, type ChatView } from "./chat-views.ts";
-import { agentBeads, agentInfo, CLOSED_RECENT_MS, hitAt, lastExchange, newer, renderTasksPanel, type InfoFacts, type Said, type TasksHit } from "./chat-tasks.ts";
-import { CLICK_MODE_KEY, MOUSE_OFF, MOUSE_ON, stripMouse, type MouseEvent } from "./mouse.ts";
+import { arrowRun, CLEAR_ALL, displayWidth, fitWidth, entryVisible, hintFor, hintWithTag, whereTag, History, LogFollower, navKey, scrollKey, Painter, type Entry, pickerWindow, showsChat, showsLogs, showsPeers, stepView, VIEW_LABEL, viewNeedsTarget, type ChatView } from "./chat-views.ts";
+import { classifyPeer, isPeerForwardOf, mergeByTs, peerRows, peerSummary, pickPeers, type PeerMsg, type RawMsg } from "./chat-peers.ts";
+import { agentBeads, agentInfo, CLOSED_RECENT_MS, hitAt, renderTasksPanel, type InfoFacts, type TasksHit } from "./chat-tasks.ts";
+import { MOUSE_OFF, MOUSE_ON, SELECT_MODE_KEY, stripMouse, type MouseEvent } from "./mouse.ts";
 import { collectStatus, contextShare, contextText, inboxText, toolLabel } from "./status.ts";
 import { listAssigned, type Task } from "./tasks.ts";
 import { operatorName } from "./company.ts";
@@ -86,7 +87,7 @@ import {
 import { FRESH_SPAWN_MS, LIVE_AGENT_MS } from "./dm.ts";
 import { messageText as textOf, type Entry as FeedEntry } from "./feed.ts";
 import { forwardedFrom, isForwardOf, withoutForwardNote } from "./forward-mark.ts";
-import { readOwnConversation, startEcho, tapOwnSubject } from "./chat-own.ts";
+import { MAX_PEER_IDS, peerMsg, readOwnConversation, readPeerTraffic, startEcho, tapAgentTraffic, tapOwnSubject, tapPeerTraffic } from "./chat-own.ts";
 import { backlogSize, earlierDivider, moreCount, moreInsertAt, NOW_DIVIDER, nothingEarlier, pickBacklog } from "./chat-backlog.ts";
 import { dedupeRoster } from "./commands/who.ts";
 import { isContinueKey, joinLines, LEAKED_TAIL, leaksTail, peelContinuation } from "./multiline.ts";
@@ -203,6 +204,8 @@ export function shouldFollowDm(s: {
 /** How fresh a DM must be to move the sticky target — the same line `agoTag` draws between a live
  *  reply and one stamped with an age. */
 const FOLLOW_FRESH_MS = 60_000;
+/** The messages view reads a tap gap back from this long before it was noticed (a frame in flight). */
+const PEER_GAP_SLACK_MS = 5_000;
 
 /**
  * What the positional MEANS, by its sigil. Three modes, because "who am I talking to" and "what am I
@@ -626,7 +629,16 @@ async function chat(argv: string[]): Promise<void> {
   // is spaced exactly like the screen it replaces.
   type Side = "you" | "peer" | "sys";
   const history = new History();
-  const painter = new Painter(renderBlock, c.dim, "  ", attachesAbove);
+  // Other-peer rows are laid out at paint time — the width now, the age now (src/chat-peers.ts).
+  const layPeer = (p: PeerMsg): string =>
+    peerRows(p, {
+      cols: process.stdout.columns || 80,
+      age: stripVTControlCharacters(agoTag(p.ts)),
+      dim: c.dim,
+      md: (t, w) => renderMarkdown(t, { width: w }),
+      strip: stripVTControlCharacters,
+    }).join("\n");
+  const painter = new Painter(renderBlock, c.dim, "  ", attachesAbove, layPeer);
   const follower = new LogFollower(
     (name) => {
       const away = awayOf(name);
@@ -657,7 +669,7 @@ async function chat(argv: string[]): Promise<void> {
    *  through here — anything that bypassed it would be on screen once and gone after the next redraw. */
   function show(e: Entry): void {
     history.push(e);
-    if (view === "tasks") {
+    if (view === "beads") {
       // The dashboard has no scrolling conversation, so a receipt or an error (anything that isn't a
       // message) becomes its notice line — a send that failed must not fail silently here.
       if (e.kind === "chat" && !e.onlyLogs) {
@@ -707,7 +719,7 @@ async function chat(argv: string[]): Promise<void> {
    *  view shows, through the same Painter the live path uses. */
   function redraw(): void {
     if (!rl || closing || !process.stdout.isTTY) return;
-    if (view === "tasks") return paintTasks(true);
+    if (view === "beads") return paintTasks(true);
     painter.reset();
     const readable = follower.readable(curName);
     let out = CLEAR_ALL;
@@ -731,7 +743,7 @@ async function chat(argv: string[]): Promise<void> {
   /** Which view the conversation is in (see src/chat-views.ts). `chat` is what `paw chat` always was,
    *  so nobody's session changes until they press ←. */
   let view: ChatView = "chat";
-  /** The tasks view's state (src/chat-tasks.ts): beads for `tasksFor` (agent name, or the operator
+  /** The beads view's state (src/chat-tasks.ts): beads for `tasksFor` (agent name, or the operator
    *  when there is no target), the last message each way PER AGENT this session knows of, the notice
    *  line, and what was last painted so an unchanged repaint writes nothing. */
   let tasksBeads: { for: string; tasks: Task[] } | undefined;
@@ -742,20 +754,15 @@ async function chat(argv: string[]): Promise<void> {
   let tasksInfo: { for: string; facts?: InfoFacts; error?: string; note?: string } | undefined;
   let tasksError: { for: string; message: string } | undefined;
   let tasksNotice: string | undefined;
-  /** Click mode (src/mouse.ts, ctrl+o in the tasks view): mouse reporting on, so a click on a parent's
-   *  icon folds it and the wheel scrolls — and the terminal's own text selection is off meanwhile.
-   *  `folded` is view state: it outlives click mode. `tasksHits` = the icon on each painted row. */
-  let clickMode = false;
+  /** Mouse reporting (src/mouse.ts): ON exactly while the beads view is on screen and select mode is
+   *  off — the wheel scrolls the list, a click on a parent's icon folds it. `selectMode` (ctrl+o in the
+   *  beads view) hands the mouse back to the terminal for selecting text; every entry starts without it.
+   *  `mouseOn` = what the terminal was last told. `folded` is view state. `tasksHits` = the icon per row. */
+  let selectMode = false;
+  let mouseOn = false;
   const folded = new Set<string>();
   let tasksHits: (TasksHit | undefined)[] = [];
   let tasksPainted = "";
-  const lastSaid = new Map<string, { in?: Said; out?: Said }>();
-  const noteSaid = (agent: string, dir: "in" | "out", said: Said): void => {
-    const k = agent.toLowerCase();
-    const cur = lastSaid.get(k) ?? {};
-    cur[dir] = newer(cur[dir], said);
-    lastSaid.set(k, cur);
-  };
   /** Whether the agent picker is open. Declared up here, not with the rest of the picker, because
    *  drawHint reads it and readline can prompt before the picker's section of this function runs. */
   let picking = false;
@@ -832,7 +839,7 @@ async function chat(argv: string[]): Promise<void> {
    */
   function drawHint(): void {
     if (!rl || closing || !process.stdout.isTTY) return;
-    const hint = hintFor({ view, picking, hasTarget: !!curName, bang, clickMode, draft: { held: held.length, pastes: stage().pastes.length } });
+    const hint = hintFor({ view, picking, hasTarget: !!curName, bang, selectMode, draft: { held: held.length, pastes: stage().pastes.length } });
     const cols = process.stdout.columns || 80;
     // The RIGHT side — the picker and `$` mode keep the row.
     const foot = footerTag();
@@ -1110,7 +1117,6 @@ async function chat(argv: string[]): Promise<void> {
   const awaiting = new AwaitTracker();
   const markWaiting = (to: string, m: CotalMessage, lead = ""): void => {
     if (!m?.id) throw new Error(`send to ${to} returned no message id — cannot track the reply`);
-    noteSaid(to, "out", { text: textOf(m), ts: m.ts });
     const { queued } = awaiting.sent(to, m.id, Date.now(), findPeer(to)?.status);
     if (queued) emit(c.dim(`${lead}⏳ queued — ${to} is mid-turn`), "you");
     else emit(c.dim(`${lead}⏳ waiting for ${to}…`), "you");
@@ -1198,7 +1204,7 @@ async function chat(argv: string[]): Promise<void> {
       bannerIsLast: lastPainted === bannerEntry,
       resizedSince: resizedSinceBanner,
       tty: process.stdout.isTTY === true,
-      chatView: view === "chat",
+      chatView: showsChat(view),
       picking: picking || chooserHooks?.open() === true, // an in-place repaint would wipe the chooser drawn under it
       pasting: false,
       bannerRows,
@@ -1295,8 +1301,7 @@ async function chat(argv: string[]): Promise<void> {
         return;
       }
       if (m.id) shownIds.add(m.id);
-      noteSaid(from, "in", { text, ts: m.ts });
-      if (view === "tasks" && curName?.toLowerCase() === from.toLowerCase()) refreshBeadsSoon();
+      if (view === "beads" && curName?.toLowerCase() === from.toLowerCase()) refreshBeadsSoon();
       // If this is the reply we were waiting on, clear the wait and note the round-trip time.
       let took = "";
       let stillPending = 0;
@@ -1326,7 +1331,7 @@ async function chat(argv: string[]): Promise<void> {
       // Never while lines typed before the connect are waiting to replay: they were typed for the target
       // on screen THEN, and a backlog DM must not retarget them.
       const holding = !ready || replaying || deferred.count > 0;
-      if (!filter && view === "chat" && shouldFollowDm({ from, curName, typed: rl?.line ?? "", held: held.length, staged: pending.length + pastes.length, historical: !!meta.historical, ageMs: Date.now() - m.ts, holding })) {
+      if (!filter && showsChat(view) && shouldFollowDm({ from, curName, typed: rl?.line ?? "", held: held.length, staged: pending.length + pastes.length, historical: !!meta.historical, ageMs: Date.now() - m.ts, holding })) {
         const peer = findPeer(from);
         curId = peer?.card.id ?? m.from.id;
         curName = peer?.card.name ?? from;
@@ -1341,7 +1346,10 @@ async function chat(argv: string[]): Promise<void> {
     } else if (meta.kind === "anycast") {
       emit(said(`${tag}${c.yellow("(@" + ((m as { toService?: string }).toService ?? "?") + ")")} ${m.from.name}${age}${c.dim(":")}`, text), "peer");
     } else {
-      emit(said(`${tag}${c.dim("#" + ((m as { channel?: string }).channel ?? "?"))} ${m.from.name}${age}${c.dim(":")}`, text), "peer");
+      if (m.id) shownIds.add(m.id); // the messages view's tap won't print it a second time
+      const line: Entry = { kind: "chat", text: said(`${tag}${c.dim("#" + ((m as { channel?: string }).channel ?? "?"))} ${m.from.name}${age}${c.dim(":")}`, text), side: "peer", tight: false };
+      // The tap beat this delivery and placed it as a peer row: the line takes the row's place, once.
+      if (!swapPeerRowFor(m.id, line)) show(line);
     }
     d.ack(); // surfaced = recorded
   };
@@ -1404,8 +1412,6 @@ async function chat(argv: string[]): Promise<void> {
         // only" (reported 2026-08-20). That is not merely untidy: those lines can carry anything you
         // sent elsewhere, including secrets meant for one agent, into a view you opened for another.
         if (!passesFilter(filter, { kind: msg.channel ? "channel" : "dm", from: toName, channel: msg.channel })) return;
-        if (toName) noteSaid(toName, "out", { text: body, ts: msg.ts });
-        if (view === "tasks") paintTasks();
         const label = msg.channel
           ? c.dim(`#${msg.channel}`)
           : toName ? agentTag(toName) : c.cyan(msg.to ? msg.to.slice(0, 8) : "?");
@@ -1454,7 +1460,7 @@ async function chat(argv: string[]): Promise<void> {
       const rows = railMessage(sent.body, sent.blocks, { ...viewOpts(), width: viewOpts().width - 2, rail: RAIL.trimStart() });
       text = rows.length === 1 && !sent.blocks.length ? `${header} ${sent.body.trim()}` : [header, ...rows].join("\n");
     } else text = said(`${agentTag(e.from)}${e.forwardedFrom !== undefined ? " · forwarded from an old id" : ""}${age}:`, e.text);
-    return { kind: "chat", text: dimAll(text), side: e.dir === "out" ? "you" : "peer", tight: false, historical: true };
+    return { kind: "chat", text: dimAll(text), side: e.dir === "out" ? "you" : "peer", tight: false, historical: true, ts: e.ts };
   };
   const sysLine = (text: string, historical = true): Entry & { kind: "chat" } => ({ kind: "chat", text, side: "sys", tight: true, ...(historical ? { historical: true } : {}) });
 
@@ -1469,7 +1475,7 @@ async function chat(argv: string[]): Promise<void> {
     const inPlace = slot === lastPainted && lastPaint !== undefined && lastPaint.cols === cols;
     const was = lastPaint;
     history.replace(slot, block);
-    if (!rl || closing || !process.stdout.isTTY || view !== "chat" || picking || chooserHooks?.open()) return;
+    if (!rl || closing || !process.stdout.isTTY || !showsChat(view) || picking || chooserHooks?.open()) return;
     if (!inPlace || !was) return redraw();
     readline.moveCursor(process.stdout, 0, -rl.getCursorPos().rows);
     readline.cursorTo(process.stdout, 0);
@@ -1556,6 +1562,209 @@ async function chat(argv: string[]): Promise<void> {
     );
   }
 
+  // ── the messages view's other-peer rows (src/chat-peers.ts) ──────────────────────────────────────
+  // What the target said to and heard from everyone but "you", indented right and dimmed. Open mesh:
+  // live off a space-wide tap, earlier rows from the DM + channel streams. Remote: the operator-only
+  // `chat-peers` cred on the target's own subjects — signed per read, plus one live tap for the current
+  // target (src/chat-own.ts tapAgentTraffic), retired on a switch and read back when it comes back.
+  /** Every id → name the tap has seen a sender use (a DM's `to` is a bare id). */
+  const peerIdNames = new Map<string, string>();
+  /** Agents whose other-peer history has been read (or is being read) this session, key → name. From
+   *  then on the tap captures their traffic whether or not they are the target, so @kit → @bob → @kit
+   *  shows what kit said in between; a gap in the tap (a disconnect) is read back ({@link catchUpPeers}). */
+  const peerAgents = new Map<string, string>();
+  /** `<agent key>\0<id>` of every other-peer row placed — per agent: kit → bob is a row under both. */
+  const peerShown = new Set<string>();
+  const peerKey = (agent: string, id: string): string => `${agent.toLowerCase()}\0${id}`;
+  /** Every DM placed as a peer row, by id — what a later stale-id forward of it pairs against. Bounded. */
+  const peerOriginals = new Map<string, PeerMsg>();
+  /** When the tap stopped seeing frames (a transport drop, an endpoint gone) — read back on the way up. */
+  let peerDownAt: number | undefined;
+  const peerNameOf = (id: string): string | undefined => rosterName(id) ?? peerIdNames.get(id);
+  /** Every id `agent` is known by: its live id, roster cards, what the tap saw, paw's ledger. */
+  const agentIdsFor = (agent: string): Set<string> => {
+    const key = agent.toLowerCase();
+    const ids = new Set<string>();
+    if (curId && curName?.toLowerCase() === key) ids.add(curId);
+    for (const p of roster() ?? []) if (p.card.name.toLowerCase() === key) ids.add(p.card.id);
+    for (const [id, n] of peerIdNames) if (n.toLowerCase() === key) ids.add(id);
+    for (const [id, e] of Object.entries(cachedLedger(space))) if (e.name.toLowerCase() === key) ids.add(id);
+    return ids;
+  };
+  /** Already on screen: as a chat line ("you"'s own mail, a channel post "you" receive), as this
+   *  agent's row, or as the forward of a DM already shown. */
+  const peerPlaced = (agent: string, p: PeerMsg): boolean =>
+    shownIds.has(p.id) || ownIds.has(p.id) || peerShown.has(peerKey(agent, p.id)) || (p.forwardOf !== undefined && [...peerOriginals.values()].some((o) => isPeerForwardOf(p, o)));
+  const markPeer = (agent: string, p: PeerMsg): void => {
+    peerShown.add(peerKey(agent, p.id));
+    if (p.toId === undefined || p.forwardOf !== undefined) return;
+    peerOriginals.set(p.id, p);
+    if (peerOriginals.size > 2000) peerOriginals.delete(peerOriginals.keys().next().value!);
+  };
+  const peerEntry = (agent: string, p: PeerMsg, historical: boolean): Entry => ({ kind: "peer", agent, msg: p, ...(historical ? { historical: true } : {}) });
+  const peerNote = (text: string): Entry & { kind: "chat" } => ({ kind: "chat", text, side: "sys", tight: true, onlyMessages: true });
+  /** Agents already told that their oldest ids are past the chat-peers cap — said once each. */
+  const peerOmittedSaid = new Set<string>();
+  const onPeerOmitted = (agent: string) => (n: number): void => {
+    if (peerOmittedSaid.has(agent.toLowerCase())) return;
+    peerOmittedSaid.add(agent.toLowerCase());
+    show(peerNote(c.yellow(`! ${agent} has had more than ${MAX_PEER_IDS} mesh ids — messages on its ${n} oldest aren't read`)));
+  };
+  const readPeers = (e: CotalEndpoint, agent: string): Promise<PeerMsg[]> =>
+    readPeerTraffic(e, space, server, agent, agentIdsFor(agent), peerNameOf, { onOmitted: onPeerOmitted(agent) });
+
+  // Remote: ONE live chat-peers tap, on the current target. A switch retires it (when, per agent, so
+  // coming back reads the time it was off back); a failed start or renewal is a red line.
+  let peerTap: { key: string; stop?: () => Promise<void> } | undefined;
+  const peerTapOffAt = new Map<string, number>();
+  function ensurePeerTap(): void {
+    if (!remoteSpace || !curName || closing) return;
+    const key = curName.toLowerCase();
+    if (peerTap?.key === key) return;
+    if (peerTap) retirePeerTap();
+    const agent = curName;
+    const tap: { key: string; stop?: () => Promise<void> } = { key };
+    peerTap = tap;
+    const offAt = peerTapOffAt.get(key);
+    tapAgentTraffic(space, server, agent, () => agentIdsFor(agent), onPeerTraffic, (e) => emit(c.red(`! messages view: ${e.message}`)), onPeerTransport, { onOmitted: onPeerOmitted(agent) }).then(
+      (stop) => {
+        if (peerTap !== tap || closing) return void stop();
+        tap.stop = stop;
+        if (offAt !== undefined) {
+          peerTapOffAt.delete(key);
+          catchUpPeers(offAt - PEER_GAP_SLACK_MS, [agent]);
+        }
+      },
+      (e: Error) => {
+        if (peerTap === tap) peerTap = undefined;
+        emit(c.red(`! messages view: couldn't tap ${agent}'s messages with other peers: ${e.message}`));
+      },
+    );
+  }
+  function retirePeerTap(): void {
+    const t = peerTap;
+    if (!t) return;
+    peerTap = undefined;
+    if (peerAgents.has(t.key)) peerTapOffAt.set(t.key, Date.now());
+    void t.stop?.().catch(() => {});
+  }
+
+  /** A frame off the space-wide tap: other-peer traffic of the target or any tracked agent becomes a row
+   *  (shown in the messages view only). Never news: no follow, no await, no cursor. */
+  const onPeerTraffic = (_subject: string, raw: unknown): void => {
+    const msg = raw as (CotalMessage & RawMsg) | undefined;
+    if (!msg || typeof msg !== "object" || !msg.from || !msg.id || !Array.isArray(msg.parts)) return;
+    if (msg.from.id && msg.from.name) peerIdNames.set(msg.from.id, msg.from.name);
+    if (!me) return;
+    const agents = new Map(peerAgents);
+    if (curName) agents.set(curName.toLowerCase(), curName);
+    for (const agent of agents.values()) {
+      try {
+        const who = classifyPeer(msg, { agent, agentIds: agentIdsFor(agent), me, nameOf: peerNameOf });
+        if (!who) continue;
+        const p = peerMsg(msg, who);
+        // A channel post "you" also receive comes through onMessage as a chat line. Give that a beat;
+        // if it lands after this row anyway, onMessage swaps the row for the line (exact, by id).
+        setTimeout(() => {
+          if (closing || peerPlaced(agent, p)) return;
+          markPeer(agent, p);
+          show(peerEntry(agent, p, false));
+        }, msg.channel ? 300 : 0).unref();
+      } catch (e) {
+        emit(c.red(`! messages view: couldn't show a message between ${agent} and another peer: ${(e as Error).message}`));
+      }
+    }
+  };
+
+  /**
+   * A channel post onMessage is about to print as a chat line that the tap already placed as a peer row
+   * (delivery slower than the tap's beat): put the line where the row stood, drop any other copy, and
+   * report that it did. The caller prints nothing more.
+   */
+  function swapPeerRowFor(id: string | undefined, line: Entry): boolean {
+    if (!id) return false;
+    const rows = history.entries.filter((e) => e.kind === "peer" && e.msg.id === id);
+    if (!rows.length) return false;
+    history.replace(rows[0]!, [line]);
+    for (const r of rows.slice(1)) history.replace(r, []);
+    if (view !== "beads") redraw(); // the beads view paints no conversation
+    return true;
+  }
+
+  /**
+   * The messages view's earlier other-peer rows for the target — once per agent per session, sized like
+   * the earlier block (`--history`), behind a `◌` loader, never blocking keys. They are merged by time
+   * into that agent's earlier block when there is one; a summary line takes the loader's place. A
+   * failed read says so in red. On a remote space it also keeps the live tap on the target.
+   */
+  function ensurePeers(): void {
+    if (!showsPeers(view) || !curName || !interactive || !ep) return;
+    ensurePeerTap();
+    if (historySize.limit === 0) return;
+    const key = curName.toLowerCase();
+    if (peerAgents.has(key)) return;
+    const agent = curName;
+    peerAgents.set(key, agent); // the tap captures it from here on, target or not
+    const slot = peerNote(c.dim(`${LOADER} loading ${agent}'s messages with other peers…`));
+    show(slot);
+    readPeers(ep, agent).then(
+      (msgs) => {
+        if (closing || !history.entries.includes(slot)) return;
+        const placed = new Set(msgs.filter((m) => peerPlaced(agent, m)).map((m) => m.id));
+        const pick = pickPeers(msgs, { ...historySize, now: Date.now(), shown: (id) => placed.has(id) });
+        for (const p of pick.entries) markPeer(agent, p);
+        const rows = pick.entries.map((p) => peerEntry(agent, p, true));
+        const summary = peerNote(c.dim(peerSummary(agent, rows.length, pick.older, historySize.windowMs !== undefined)));
+        const block = backlogs.get(key);
+        const from = block ? history.entries.indexOf(block.divider) + 1 : 0;
+        const nowAt = from > 0 ? history.entries.findIndex((e, i) => i >= from && e.kind === "chat" && e.historical === true && stripVTControlCharacters(e.text) === NOW_DIVIDER) : -1;
+        if (!rows.length || nowAt < 0) return placeOver(slot, [...rows, summary]);
+        const merged = mergeByTs(history.entries, from, nowAt, rows, (e) => (e.kind === "peer" ? e.msg.ts : e.kind === "chat" ? e.ts : undefined));
+        history.entries.splice(0, history.entries.length, ...merged);
+        history.replace(slot, [summary]);
+        redraw();
+      },
+      (e: Error) => {
+        if (closing || !history.entries.includes(slot)) return;
+        placeOver(slot, [peerNote(c.red(`! couldn't load ${agent}'s messages with other peers: ${e.message}`))]);
+      },
+    );
+  }
+
+  /**
+   * The tap was down (`since` = when): read back every tracked agent's (or just `only`'s) other-peer
+   * traffic from then and place what isn't on screen yet, oldest first, under a line saying where it
+   * came from. A failed read says so in red — a silent gap is the failure this exists to close.
+   */
+  function catchUpPeers(since: number, only?: string[]): void {
+    if (!ep || closing || !peerAgents.size) return;
+    const e = ep;
+    for (const agent of only ?? [...peerAgents.values()]) {
+      readPeers(e, agent).then(
+        (msgs) => {
+          if (closing) return;
+          const fresh = msgs.filter((p) => p.ts >= since && !peerPlaced(agent, p));
+          if (!fresh.length) return;
+          show(peerNote(c.dim(`── ${fresh.length} message${fresh.length === 1 ? "" : "s"} between ${agent} and other peers while the connection was down ──`)));
+          for (const p of fresh) {
+            markPeer(agent, p);
+            show(peerEntry(agent, p, false));
+          }
+        },
+        (err: Error) => emit(c.red(`! messages view: couldn't read back ${agent}'s messages with other peers after the connection came back: ${err.message}`)),
+      );
+    }
+  }
+  /** The endpoint's transport went down / came back: note the gap, read it back once it closes. */
+  const onPeerTransport = (connected: boolean): void => {
+    if (!connected) peerDownAt ??= Date.now();
+    else if (peerDownAt !== undefined) {
+      const since = peerDownAt - PEER_GAP_SLACK_MS;
+      peerDownAt = undefined;
+      catchUpPeers(since);
+    }
+  };
+
   // Joins/departures are held while the view can't be trusted and debounced while it can
   // (src/presence-hold.ts) — a slow broker flapped `joined` / `went offline` pairs for live peers.
   type Card = Presence["card"];
@@ -1604,7 +1813,7 @@ async function chat(argv: string[]): Promise<void> {
       rl?.setPrompt(promptFor());
       updateBanner();
     }
-    if (view === "tasks" && card.name === curName) {
+    if (view === "beads" && card.name === curName) {
       refreshBeadsSoon();
       paintTasks(); // the title row carries its live status
     }
@@ -1644,6 +1853,32 @@ async function chat(argv: string[]): Promise<void> {
       completer,
     });
     rl = r;
+    // Ctrl-Z. readline's own suspend stops the process with the terminal still in mouse reporting and
+    // bracketed paste — every wheel in the parent shell then typed `\e[<64;…M` into it. Listening takes
+    // the suspend over (readline then does none of it): give the terminal back, stop, and on `fg` take
+    // the modes back and repaint whatever the shell drew over.
+    r.on("SIGTSTP", () => {
+      if (process.stdin.isTTY) {
+        process.stdout.write((mouseOn ? MOUSE_OFF : "") + DISABLE_BRACKETED_PASTE);
+        process.stdin.setRawMode(false);
+      }
+      mouseOn = false;
+      process.once("SIGCONT", () => {
+        if (closing) return;
+        if (process.stdin.isTTY) {
+          process.stdin.setRawMode(true);
+          process.stdout.write(ENABLE_BRACKETED_PASTE);
+        }
+        r.resume();
+        syncMouse();
+        tasksPainted = ""; // the beads view repaints from a clear screen
+        redraw();
+      });
+      // SIGSTOP, not SIGTSTP: the kernel discards SIGTSTP in an orphaned process group (a chat that is
+      // its session's leader — a pty spawned straight into it), and the stop never happened. The shell's
+      // job control reports a SIGSTOP the same way.
+      process.kill(process.pid, "SIGSTOP");
+    });
     // Every redraw of the prompt redraws the hint beneath it. Wrapping the one method all ~20 call
     // sites go through beats threading drawHint() through each of them, where the next new call site
     // would be the one that forgets.
@@ -1671,9 +1906,9 @@ async function chat(argv: string[]): Promise<void> {
       writeToOutput(str);
     };
     r.on("line", (line) => void onLine(line));
-    // readline echoed the submitted line below the tasks panel; repaint over it whatever the send does.
+    // readline echoed the submitted line below the beads panel; repaint over it whatever the send does.
     r.on("line", () => {
-      if (view === "tasks") setImmediate(() => paintTasks(true));
+      if (view === "beads") setImmediate(() => paintTasks(true));
     });
     r.on("close", () => void shutdown());
     // Raw mode turns Ctrl-C into a keystroke readline reports as SIGINT; with no listener it closes.
@@ -2027,7 +2262,7 @@ async function chat(argv: string[]): Promise<void> {
     return true;
   };
 
-  // ── views: logs · chat · tasks (src/chat-views.ts, src/chat-tasks.ts) ───────────────────────────
+  // ── views: logs · chat · messages · beads (src/chat-views.ts, src/chat-peers.ts, src/chat-tasks.ts) ───────────────────────────
   /** Capture the target's new transcript blocks into the history (printing them if the view shows
    *  logs). Runs every second whenever there is a target, in EVERY view — the history needs the blocks
    *  in arrival order for a later switch into `logs` to reprint them truthfully. */
@@ -2036,6 +2271,7 @@ async function chat(argv: string[]): Promise<void> {
     // A re-point (the target changed) swaps which agent's logs are visible, so what's on screen in a
     // logs view is now the wrong agent's trace — redraw rather than append the new one below it.
     if (follower.pump(curName) && showsLogs(view)) redraw();
+    if (showsPeers(view)) ensurePeers(); // the target moves down many paths — catch them all here
   };
 
   // Follow the target's transcript from the start, in every view (pumpLogs says why). unref: a poll must
@@ -2065,15 +2301,16 @@ async function chat(argv: string[]): Promise<void> {
     if (next === view) return;
     const leaving = view;
     view = next;
-    if (leaving === "tasks") {
-      setClickMode(false); // selection comes back with every other view
+    if (leaving === "beads") {
+      syncMouse(); // off: selection comes back with every other view
       clearInterval(tasksTimer);
       tasksTimer = undefined;
       tasksPainted = "";
     }
     if (rl && !closing) follower.pump(curName); // capture anything pending first — and ONE redraw, not two
-    if (next === "tasks") enterTasks();
+    if (next === "beads") enterTasks();
     redraw();
+    if (showsPeers(next)) ensurePeers();
   }
 
   /** ←/→ on an empty line. At an end of the strip it does nothing — the hint already shows no arrow
@@ -2087,20 +2324,18 @@ async function chat(argv: string[]): Promise<void> {
     setView(next);
   }
 
-  // ── the tasks view ──────────────────────────────────────────────────────────────────────────────
+  // ── the beads view ──────────────────────────────────────────────────────────────────────────────
   /** Whose beads the view lists: the target, or — with none — the operator. */
   const tasksFor = (): string => curName ?? operatorName();
   const BEADS_EVERY_MS = 12_000;
   let tasksTimer: NodeJS.Timeout | undefined;
   let beadsInFlight = false;
   let beadsReadAt = 0;
-  /** Conversations already read from the DM stream this session (once — live traffic keeps it fresh). */
-  let convRead: Promise<FeedEntry[]> | undefined;
 
   /** Read the beads for whoever the view is on. One read at a time; the result is dropped if the view
    *  moved to someone else meanwhile. A failure is SHOWN — never rendered as "no beads". */
   async function refreshBeads(): Promise<void> {
-    if (view !== "tasks" || beadsInFlight || closing) return;
+    if (view !== "beads" || beadsInFlight || closing) return;
     const who = tasksFor();
     beadsInFlight = true;
     beadsReadAt = Date.now();
@@ -2147,43 +2382,15 @@ async function chat(argv: string[]): Promise<void> {
 
   /** Mesh activity from the agent: re-read soon, but never more than once per few seconds. */
   function refreshBeadsSoon(): void {
-    if (view !== "tasks") return;
+    if (view !== "beads") return;
     const wait = Math.max(0, beadsReadAt + 3000 - Date.now());
     setTimeout(() => void refreshBeads(), wait).unref();
   }
 
-  /** Seed the last message each way from the DM stream (once per session), then paint. */
-  function seedConversation(): void {
-    if (convRead) return;
-    if (!ready || !ep) {
-      // Seeded by boot() once connected (it calls this again while the view is open).
-      tasksNotice = `${LOADER} connecting — the last exchange loads once the mesh is up`;
-      return;
-    }
-    tasksNotice = undefined;
-    convRead = readOwnConversation(ep, space, server);
-    convRead.then(
-      (conv) => {
-        const names = new Set<string>();
-        for (const e of conv) names.add((e.dir === "out" ? e.to : e.from) ?? "");
-        for (const n of names) {
-          if (!n || n === HUMAN_PEER) continue;
-          const { lastIn, lastOut } = lastExchange(conv, n);
-          if (lastIn) noteSaid(n, "in", lastIn);
-          if (lastOut) noteSaid(n, "out", lastOut);
-        }
-        paintTasks();
-      },
-      (e: Error) => {
-        tasksNotice = `! couldn't read the conversation history: ${e.message}`;
-        paintTasks();
-      },
-    );
-  }
-
   function enterTasks(): void {
     tasksPainted = "";
-    seedConversation();
+    selectMode = false; // every entry starts with the wheel working
+    syncMouse();
     void refreshBeads();
     tasksTimer = setInterval(() => {
       void refreshBeads();
@@ -2193,7 +2400,7 @@ async function chat(argv: string[]): Promise<void> {
   }
 
   /**
-   * Paint the tasks view in place: cursor home, each row over the old one (clear to its end), clear
+   * Paint the beads view in place: cursor home, each row over the old one (clear to its end), clear
    * whatever is below, then the prompt. Skipped when the text is what's already on screen (`force`
    * after anything else wrote to the terminal — a submitted line, a resize, a view switch). The first
    * paint after a switch clears the scrollback too, like every other view switch.
@@ -2206,21 +2413,28 @@ async function chat(argv: string[]): Promise<void> {
     return { status: statusBadge(p.status) + (p.activity ? c.dim(" — " + activityLine(p.activity, 60)) : "") };
   }
 
-  /** Turn mouse reporting on/off. Off is written on EVERY way out (leaving tasks, shutdown, exit) —
-   *  a terminal left in mouse mode is the worst failure here. */
-  function setClickMode(on: boolean): void {
-    if (on === clickMode) return;
-    clickMode = on;
-    if (process.stdin.isTTY) process.stdout.write(on ? MOUSE_ON : MOUSE_OFF);
-    if (view !== "tasks") return; // leaving the view: its own redraw follows
+  /** Tell the terminal whether to report the mouse: on exactly while the beads view is up and select
+   *  mode is off. Off is also written on EVERY way out (shutdown, exit) — a terminal left reporting is
+   *  the worst failure here. */
+  function syncMouse(): void {
+    const want = view === "beads" && !selectMode && !closing && process.stdin.isTTY === true;
+    if (want === mouseOn) return;
+    mouseOn = want;
+    process.stdout.write(want ? MOUSE_ON : MOUSE_OFF);
+  }
+
+  /** ctrl+o in the beads view: hand the mouse to the terminal (select text) or take it back (wheel). */
+  function toggleSelectMode(): void {
+    selectMode = !selectMode;
+    syncMouse();
     paintTasks(true);
     drawHint();
   }
 
-  /** A click or wheel in click mode. The panel is painted from the top-left, so screen row N is
-   *  painted row N-1. Clicks off a parent's icon do nothing. */
+  /** A click or wheel while the beads view has the mouse. The panel is painted from the top-left, so
+   *  screen row N is painted row N-1. Clicks off a parent's icon do nothing. */
   function onMouse(e: MouseEvent): void {
-    if (!clickMode || view !== "tasks" || !rl || closing || picking || !e.press) return;
+    if (!mouseOn || view !== "beads" || !rl || closing || picking || !e.press) return;
     if (e.kind === "wheelUp" || e.kind === "wheelDown") {
       tasksScroll = Math.max(0, tasksScroll + (e.kind === "wheelUp" ? -3 : 3));
       return paintTasks(true);
@@ -2233,10 +2447,9 @@ async function chat(argv: string[]): Promise<void> {
   }
 
   function paintTasks(force = false): void {
-    if (view !== "tasks" || !rl || closing || !process.stdout.isTTY || picking) return;
+    if (view !== "beads" || !rl || closing || !process.stdout.isTTY || picking) return;
     const who = tasksFor();
     if (tasksBeads?.for !== who && tasksError?.for !== who) void refreshBeads(); // the target moved
-    const said = curName ? lastSaid.get(curName.toLowerCase()) : undefined;
     const now = Date.now();
     if (tasksScrollFor !== who) {
       tasksScroll = 0; // a new agent's list starts at the top
@@ -2248,18 +2461,17 @@ async function chat(argv: string[]): Promise<void> {
         operator: operatorName(),
         ...(tasksBeads?.for === who ? { beads: agentBeads(tasksBeads.tasks, who, now) } : {}),
         ...(tasksError?.for === who ? { beadsError: tasksError.message } : {}),
-        ...(said?.in ? { lastIn: said.in } : {}),
-        ...(said?.out ? { lastOut: said.out } : {}),
         ...(tasksNotice ? { notice: tasksNotice } : {}),
         ...(curName ? liveStatus(curName) : {}),
         ...(tasksInfo && tasksInfo.for === curName
           ? { info: tasksInfo.facts ? agentInfo(tasksInfo.facts, now, c) : tasksInfo.note ? c.dim(tasksInfo.note) : c.red(`! status: ${tasksInfo.error}`) }
           : {}),
-        clickMode,
+        selectMode,
       },
       {
         width: (process.stdout.columns || 80) - 1,
-        // Leave the prompt row and the hint row below the panel (and one spare for a wrapped input).
+        // Fullscreen: every row but the prompt row and the hint row below the panel (and one spare for a
+        // wrapped input) is the panel's.
         height: Math.max(3, (process.stdout.rows || 24) - 3),
         now,
         scroll: tasksScroll,
@@ -2276,8 +2488,15 @@ async function chat(argv: string[]): Promise<void> {
     process.stdout.write((first ? CLEAR_ALL : "\x1b[H") + text + "\n\x1b[J");
     rl.prompt(true);
   }
+  // Other-peer rows are laid out at paint time; a resize re-lays them out (one redraw per burst of
+  // resize events — a window drag fires dozens).
+  let peerResize: NodeJS.Timeout | undefined;
   process.stdout.on("resize", () => {
-    if (view === "tasks") paintTasks(true);
+    if (view === "beads") paintTasks(true);
+    if (!showsPeers(view)) return;
+    clearTimeout(peerResize);
+    peerResize = setTimeout(() => showsPeers(view) && redraw(), 150);
+    peerResize.unref();
   });
 
   if (process.stdin.isTTY) {
@@ -2327,15 +2546,15 @@ async function chat(argv: string[]): Promise<void> {
       if (!rest) return true;
       return stdinEmit(event, typeof chunk === "string" ? rest : Buffer.from(rest, "utf8"));
     }) as typeof process.stdin.emit;
-    // ctrl+o in the tasks view toggles click mode (readline binds nothing to it, so it needs no eating).
+    // ctrl+o in the beads view toggles select mode (readline binds nothing to it, so it needs no eating).
     process.stdin.prependListener("data", (chunk: Buffer | string) => {
-      if (view !== "tasks" || !rl || closing || picking || scanner.pasting) return;
-      if ((typeof chunk === "string" ? chunk : chunk.toString("utf8")) !== CLICK_MODE_KEY) return;
-      setImmediate(() => view === "tasks" && setClickMode(!clickMode));
+      if (view !== "beads" || !rl || closing || picking || scanner.pasting) return;
+      if ((typeof chunk === "string" ? chunk : chunk.toString("utf8")) !== SELECT_MODE_KEY) return;
+      setImmediate(() => view === "beads" && toggleSelectMode());
     });
-    // The tasks view's bead list scrolls by a third of the screen per PgUp/PgDn.
+    // The beads view's bead list scrolls by a third of the screen per PgUp/PgDn.
     process.stdin.prependListener("data", (chunk: Buffer | string) => {
-      if (view !== "tasks" || !rl || closing || picking) return;
+      if (view !== "beads" || !rl || closing || picking) return;
       const k = scrollKey(typeof chunk === "string" ? chunk : chunk.toString("utf8"));
       if (!k) return;
       const step = Math.max(3, Math.floor((process.stdout.rows || 24) / 3));
@@ -3049,6 +3268,7 @@ async function chat(argv: string[]): Promise<void> {
    * endpoint's roster as already read — live agents showed `offline` and `@name` said "no peer".
    */
   const dropEndpoint = (): void => {
+    peerDownAt ??= Date.now(); // the messages view's tap goes with it — read the gap back once one is up
     ep = undefined;
     conn = undefined;
     me = undefined;
@@ -3088,9 +3308,14 @@ async function chat(argv: string[]): Promise<void> {
     // A fresh socket: a send in flight on the old one (or waiting out its backoff) goes now. The 1s conn
     // tick misses a forced reconnect — its down and up land in the same millisecond.
     e.on("transport", (st: { connected: boolean }) => st.connected && outboxRef?.kick());
+    let started = false; // a read-back needs a started endpoint; the first "up" before that is startup itself
+    e.on("transport", (st: { connected: boolean }) => (!st.connected || started) && onPeerTransport(st.connected));
     tapOwnSubject(e, space, onOwnSend);
+    tapPeerTraffic(e, space, onPeerTraffic);
     try {
       await startResilient(e);
+      started = true;
+      onPeerTransport(true); // up: read back what the tap missed while there was none
     } catch (err) {
       dropEndpoint();
       await e.stop().catch(() => {});
@@ -3103,6 +3328,7 @@ async function chat(argv: string[]): Promise<void> {
   /** Stop the endpoint and retire the inbox — what a quit (or a pipe-mode failure) owes the broker. */
   async function teardown(): Promise<void> {
     await stopOwnTap?.().catch(() => {});
+    retirePeerTap();
     await ep?.stop().catch(() => {});
     dropEndpoint();
     await inboxRelease?.().catch((e: Error) => consoleOrig.error(c.red(e.message)));
@@ -3325,7 +3551,6 @@ async function chat(argv: string[]): Promise<void> {
         (e: Error) => conn && emitConn(conn.feed({ kind: "warning", error: e }, Date.now())),
       );
       if (remoteSpace) loadInfo();
-      if (view === "tasks") seedConversation();
       if (curName && lookup !== "absent" && lookup !== "unreachable" && !backlogAsked.has(curName.toLowerCase())) loadBacklog(curName);
       // A chat that died mid-startup left its inbox in the ledger; retire it now (src/human-inbox.ts).
       sweepOrphanInboxes(space).then(
@@ -3400,7 +3625,7 @@ async function chat(argv: string[]): Promise<void> {
     // Leave the terminal as we found it — bracketed paste is a MODE, and a shell that inherits it
     // set without knowing would see raw \e[200~ markers in its own input.
     if (process.stdin.isTTY) process.stdout.write(DISABLE_BRACKETED_PASTE + MOUSE_OFF);
-    clickMode = false;
+    mouseOn = false;
     restoreConsole();
     // The hint row under the prompt goes with us; anything said from here starts on a fresh line.
     if (rl && process.stdout.isTTY) {
@@ -3438,7 +3663,7 @@ async function chat(argv: string[]): Promise<void> {
     restoreConsole();
     if (!process.stdin.isTTY) return;
     try {
-      writeSync(1, (clickMode ? MOUSE_OFF : "") + DISABLE_BRACKETED_PASTE);
+      writeSync(1, (mouseOn ? MOUSE_OFF : "") + DISABLE_BRACKETED_PASTE);
     } catch {} // the terminal is already gone — nothing left to restore
   });
   process.stdout.on("resize", () => {

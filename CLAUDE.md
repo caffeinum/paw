@@ -266,8 +266,13 @@ Each entry: what it is + the most load-bearing rule. Full notes behind the link.
   registered nowhere here paints `◌ looking for @x on <space>…` (files-only check, <1ms), the roster settles it —
   not there → a chooser (suggestions · open in another space · show all · quit), never a dead prompt, never a
   guessed "not found" from an unread roster. → [chat.md#instant-ui](docs/notes/chat.md#instant-ui)
-- `src/chat-own.ts` — chat's echo tap + tasks seed + earlier block's read; remote: only "you"'s own send subjects (narrow
-  `chat-echo`/`chat-history` creds), never the space wildcard.
+- `src/chat-own.ts` — chat's echo tap + earlier block's read + the messages view's other-peer reads; remote: narrow creds
+  only, never the space wildcard — `chat-echo`/`chat-history` for "you"'s own subjects, operator-only `chat-peers` (5 min,
+  per read + one renewed live tap) for the TARGET's own DM subjects (every id) + its channel posts.
+- `src/chat-views.ts` + `chat-peers.ts` + `chat-tasks.ts` + `mouse.ts` — views logs · chat · messages · beads (←/→ on an empty
+  line): messages = chat + the target's traffic with OTHER peers indented right (live tap + earlier rows merged into the
+  earlier block; a remote space reads them with `chat-peers`, a switch retires the tap); beads = fullscreen bead
+  list, SGR mouse reporting ON only while it is up (wheel scrolls, ctrl+o = select text), off on every way out. → [chat.md#views](docs/notes/chat.md#views)
 - `src/chat-backlog.ts` — the earlier block: `paw chat @x` (and every `@name` switch) opens on the last 20 messages
   with x from 24h (`--history N`, 0 = off, `/more [N]` older), between `── earlier ──`/`── now ──`, dimmed, behind a
   `◌` loader; never news (no follow/await/cursor), deduped by id against live. → [chat.md#earlier-block](docs/notes/chat.md#earlier-block) → [remote-mesh.md#paw-chat--paw-web-taps](docs/notes/remote-mesh.md#paw-chat--paw-web-taps)

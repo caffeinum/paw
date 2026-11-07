@@ -265,6 +265,7 @@ assert(fwd.pub.length === 1 && fwd.sub.length === 0, "sleep-forward publishes to
 
 console.log("paw chat / paw web on a remote space: no space-wide tap");
 const own = await import("../src/chat-own.ts");
+type PeerConnect = import("../src/chat-own.ts").PeerDeps["connect"];
 const ME = own.principalOfId("local.UME");
 assert(ME.owner === "local" && ME.actor === "UME", "\"you\"'s principal comes from the endpoint's dot-form id (owner.actor)");
 throws(() => own.principalOfId("UME"), /not an <owner>\.<actor> principal/, "a bare id fails loud rather than guessing an owner");
@@ -318,6 +319,113 @@ assert(wt.length === 3 && wt.every((t) => adminSub.includes(t)), `…and on a re
   const histEp = { card: { id: "local.UME" }, space: "remotetest-s", dmHistory: async () => (dmHistoryCalls++, []) } as unknown as Parameters<typeof own.readOwnConversation>[0];
   const histErr = await own.readOwnConversation(histEp, "remotetest-s", "tls://127.0.0.1:9").then(() => undefined, (e: Error) => e);
   assert(dmHistoryCalls === 0 && histErr !== undefined, `remote: the earlier block's read goes through its own narrow dial, never the endpoint's dmHistory — ${histErr?.message ?? "resolved?!"}`);
+}
+
+console.log("paw chat messages view on a remote space: the chat-peers cred");
+{
+  const { readFileSync, readdirSync } = await import("node:fs");
+  const SP = "remotetest-s";
+  const KIT = { owner: DEV_OWNER, actor: "UKIT" };
+  const KIT_OLD = { owner: DEV_OWNER, actor: "UKITOLD" };
+  const kitId = `${KIT.owner}.${KIT.actor}`;
+  const kitOldId = `${KIT_OLD.owner}.${KIT_OLD.actor}`;
+  const agentSubjects = (p: { owner: string; actor: string }) => [
+    `cotal.${SP}.inst.${p.owner}.${p.actor}.>`,
+    `cotal.${SP}.inst.*.*.${p.owner}.${p.actor}`,
+    `cotal.${SP}.chat.${p.owner}.${p.actor}.>`,
+  ];
+  const reads = own.agentTrafficReads(SP, [KIT, KIT_OLD]);
+  assert(
+    JSON.stringify(reads.map((r) => r.filter)) === JSON.stringify([...agentSubjects(KIT), ...agentSubjects(KIT_OLD)]) &&
+      reads.every((r) => r.stream === (r.filter.includes(".chat.") ? `CHAT_${SP}` : `DM_${SP}`)),
+    `chat-peers covers exactly the agent's DM subjects (to it, from it) + its own channel posts, per id — ${reads.map((r) => r.filter).join(" ")}`,
+  );
+  const ledger = { [kitOldId]: { name: "kit", first: 1, last: 5 }, [`${DEV_OWNER}.UKITOLDER`]: { name: "kit", first: 1, last: 2 } };
+  const pp = own.peerPrincipals([`${DEV_OWNER}.UKITOLDER`, kitOldId, kitId], ledger);
+  assert(JSON.stringify(pp.principals.map((p) => p.actor)) === JSON.stringify(["UKIT", "UKITOLD", "UKITOLDER"]) && pp.omitted === 0, "…live id first, then stale ledger ids by last seen");
+  const many = Array.from({ length: own.MAX_PEER_IDS + 3 }, (_, i) => `${DEV_OWNER}.UK${i}`);
+  const capped = own.peerPrincipals(many, {});
+  assert(capped.principals.length === own.MAX_PEER_IDS && capped.omitted === 3, `…bounded at ${own.MAX_PEER_IDS} ids, the rest counted (said in the view), never silently`);
+  throws(() => own.peerPrincipals(["UKIT"], {}), /not an <owner>\.<actor> principal/, "…a non-principal id fails loud instead of widening the filter");
+
+  // The read: a fresh cred per read, signed from the space signer, holding ONLY pinned consumers on
+  // the agent's subjects. The dial is faked (no broker) — the cred is what matters.
+  const signed: Array<{ label: string; creds: string; ttl: number }> = [];
+  const sign: typeof rc.signScopedCreds = async (space, label, id, grants, ttl) => {
+    const creds = await rc.signScopedCreds(space, label, id, grants, ttl);
+    signed.push({ label, creds, ttl });
+    return creds;
+  };
+  const failDial = (async () => {
+    throw new Error("fake dial");
+  }) as unknown as PeerConnect;
+  const kitEp = { card: { id: "local.UME" }, dmHistory: async () => assert(false, "remote peer read never calls dmHistory") } as unknown as Parameters<typeof own.readPeerTraffic>[0];
+  const r1 = await own.readPeerTraffic(kitEp, SP, "tls://127.0.0.1:9", "kit", new Set([kitId, kitOldId]), () => undefined, { deps: { sign, connect: failDial } }).then(() => "resolved", (e: Error) => e.message);
+  const r2 = await own.readPeerTraffic(kitEp, SP, "tls://127.0.0.1:9", "kit", new Set([kitId, kitOldId]), () => undefined, { deps: { sign, connect: failDial } }).then(() => "resolved", (e: Error) => e.message);
+  assert(r1 === "fake dial" && r2 === "fake dial", `the remote read signs and dials (no refusal) — ${r1}`);
+  assert(signed.length === 2 && signed.every((s) => s.label === "chat-peers" && s.ttl === rc.PEERS_TTL_SEC && rc.PEERS_TTL_SEC === 300), "…a chat-peers cred, 5 minutes");
+  assert(idFromCreds(signed[0]!.creds) !== idFromCreds(signed[1]!.creds), "…re-signed per read (a fresh identity each time, nothing cached)");
+  const rcl = credsClaims(signed[0]!.creds);
+  const rPub = rcl.nats?.pub?.allow ?? [];
+  const rSub = rcl.nats?.sub?.allow ?? [];
+  assert(JSON.stringify(rSub) === JSON.stringify([`_INBOX_${idFromCreds(signed[0]!.creds)}.>`]), "…the read cred subscribes nothing but its own reply inbox");
+  const creates = rPub.filter((p) => p.startsWith("$JS.API.CONSUMER.CREATE."));
+  const filtersOf = creates.map((p) => p.split(".").slice(6).join("."));
+  assert(
+    JSON.stringify([...filtersOf].sort()) === JSON.stringify([...agentSubjects(KIT), ...agentSubjects(KIT_OLD)].sort()),
+    `…its consumer CREATE rows pin EXACTLY the agent's subjects — ${filtersOf.join(" ")}`,
+  );
+  const allowedPub = (p: string) =>
+    p === "$JS.API.INFO" || p === `$JS.API.STREAM.INFO.DM_${SP}` || p === `$JS.API.STREAM.INFO.CHAT_${SP}` || /^\$JS\.API\.CONSUMER\.(CREATE|INFO|MSG\.NEXT|DELETE)\.(DM|CHAT)_remotetest-s\.pawcp_[0-9a-f]{16}_\d+(\..+)?$/.test(p);
+  assert(rPub.every(allowedPub), `…and nothing else: stream info + name-pinned consumer rows — ${rPub.filter((p) => !allowedPub(p)).join(",") || "ok"}`);
+  const names0 = new Set(creates.map((p) => p.split(".")[5]));
+  const names1 = new Set(credsClaims(signed[1]!.creds).nats?.pub?.allow?.filter((p) => p.startsWith("$JS.API.CONSUMER.CREATE.")).map((p) => p.split(".")[5]));
+  assert(![...names0].some((n) => names1.has(n)), "…consumer names are per read (two reads never share one)");
+  const wide = (s: string) => s === ">" || s === "cotal.>" || s === `cotal.${SP}.>` || /^cotal\.remotetest-s\.(inst|chat|svc)\.>$/.test(s) || s.startsWith("$SYS") || s.includes("$KV") || s.startsWith("ctl.") || s.includes(".ctl.");
+  assert(![...rPub, ...rSub].some(wide), "…no space wildcard, no plane wildcard, no $SYS/KV/control rows (nothing admin)");
+
+  // The live tap: subscribe ONLY to the agent's subjects, renewed before its 5 minutes run out (here:
+  // signed with 60s so it is due at once), re-reading the ids, new connection up BEFORE the old closes.
+  const events: string[] = [];
+  let ncN = 0;
+  const fakeConnect = (async () => {
+    const n = ++ncN;
+    events.push(`open${n}`);
+    let done!: () => void;
+    const closedP = new Promise<void>((r) => (done = r));
+    const iter = { [Symbol.asyncIterator]: () => ({ next: () => closedP.then(() => ({ done: true as const, value: undefined })) }) };
+    return { subscribe: () => iter, status: () => iter, closed: () => closedP.then(() => undefined), close: async () => (events.push(`close${n}`), done()) };
+  }) as unknown as PeerConnect;
+  const tapSigned: string[] = [];
+  const tapLabels = new Set<string>();
+  const shortSign: typeof rc.signScopedCreds = async (space, label, id, grants) => {
+    tapLabels.add(label);
+    const creds = await rc.signScopedCreds(space, label, id, grants, 60);
+    tapSigned.push(creds);
+    return creds;
+  };
+  let ids = [kitId];
+  const errs: string[] = [];
+  const stopTap = await own.tapAgentTraffic(SP, "tls://127.0.0.1:9", "kit", () => ids, () => {}, (e) => errs.push(e.message), () => {}, { deps: { sign: shortSign, connect: fakeConnect }, tickMs: 20 });
+  const t0 = credsClaims(tapSigned[0]!);
+  assert(
+    JSON.stringify(t0.nats?.sub?.allow) === JSON.stringify([`_INBOX_${idFromCreds(tapSigned[0]!)}.>`, ...agentSubjects(KIT)]) && (t0.nats?.pub?.allow ?? []).length === 0,
+    "the tap cred subscribes EXACTLY the agent's subjects (+ its reply inbox) and publishes nothing",
+  );
+  ids = [kitId, kitOldId];
+  await new Promise((r) => setTimeout(r, 120));
+  await stopTap();
+  assert(tapSigned.length >= 2 && JSON.stringify([...tapLabels]) === '["chat-peers"]', `…a chat-peers cred too, re-signed before it expires (${tapSigned.length} signs)`);
+  const t1 = credsClaims(tapSigned[1]!).nats?.sub?.allow ?? [];
+  assert(agentSubjects(KIT_OLD).every((s) => t1.includes(s)), "…each renewal re-reads the agent's ids (a restarted agent's new id is tapped)");
+  assert(events.indexOf("open2") >= 0 && events.indexOf("open2") < events.indexOf("close1"), `…the new connection is up before the old one closes (no gap) — ${events.join(" ")}`);
+  assert(events.filter((e) => e.startsWith("open")).length === events.filter((e) => e.startsWith("close")).length && errs.length === 0, `…stop closes every connection it opened — ${events.join(" ")} ${errs.join(";")}`);
+
+  // Operator-only: only chat's own process mints it — no agent-facing module (MCP tools, briefs,
+  // manager, connectors) names the cred.
+  const srcDir = new URL("../src/", import.meta.url);
+  const minters = readdirSync(srcDir, { recursive: true }).map(String).filter((f) => f.endsWith(".ts")).filter((f) => /"chat-peers"/.test(readFileSync(new URL(f, srcDir), "utf8")));
+  assert(JSON.stringify(minters) === JSON.stringify(["chat-own.ts"]), `chat-peers is minted only in chat-own.ts (chat's process) — ${minters.join(" ")}`);
 }
 
 console.log("hosted here (one machine of several on a remote space)");
