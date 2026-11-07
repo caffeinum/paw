@@ -138,6 +138,26 @@ Workflow carries, with `taskType: "local_workflow"`), so `scanActivity` never sa
 could put an agent to sleep under its running subagents. It now reads `taskId ?? agentId`; kinds are `workflow` and
 `agent`, both in-process (`inProcess`).
 
+### The agent's own Stop hook says it, and the office shows `running` (beads-y1eg / beads-0riq, 2026-11-06)
+The first fix above only works where the bridge can read the agents' transcripts and processes. The Firegoat office
+is bridged from fly in ROSTER mode (presence only), so the agent itself now says it: paw's patch to cotal's claude
+connector (`patches/@cotal-ai__connector-claude-code@0.100.0.patch`, `idleOrBackground` in dist/mcp.cjs) runs on
+Stop/StopFailure, loads `PAW_BACKGROUND_PROBE` (= `src/background-scan.ts` of the release, set by src/connector.ts)
+with `require()` and calls `stopBackground(transcript, process.ppid)`. Open work → presence `working` + activity
+`background: workflow + 2 subagents`, rechecked every 5 min (a backing shell can die silently); nothing → `idle` as
+before; the probe throwing (no ps, parent not claude — a hosted MCP serving several sessions) → `idle` + one stderr
+line. Each completion delivers a `<task-notification>` turn that ends in another Stop, so the state follows the work.
+Launches older than the seat's claude (`ps` etime, −1s for its whole-second precision) belong to a previous
+incarnation and are ignored. Sandboxed seats get no probe (the VM gets COTAL_* + PASS_ENV only) → plain idle.
+
+Bridge: `presenceBackground` reads that activity in `withPresence` (local) and `rosterRows` (roster) into
+`row.background`; `desiredFor` maps background (no pending tool; mesh working/idle/waiting) to agent-office's
+`running` status (seated still, screen shows the job; office.bykhun.com accepts it since 2026-11-06 — an older office
+answers 400). The host-side `BackgroundReader` still covers agents without the patched hook, and keeps a presence label.
+Tests: `check:sleep` H1–H7 (probe, CJS require, patch wiring), `check:office` 6, and
+`PAW_HOME=$(mktemp -d) PAW_SPACE=test-$$ PAW_RELEASE=dev node scripts/e2e-stop-background.ts` (the real patched
+mcp.cjs under a fake `claude` parent, Stop events over its control socket, presence watched on an isolated mesh).
+
 ### Limits and caveats
 
 - Key rotation means reconnect: `paw office connect --space <s> --url <url> --join-key <new> [--owner-key <k>]`.

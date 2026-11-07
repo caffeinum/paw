@@ -25,3 +25,59 @@ diff --git a/dist/mcp.cjs b/dist/mcp.cjs
            }
          }
          try {
+@@ -77442,6 +77452,34 @@
+   let pendingTool;
+   let turnOpen = false;
+   let promptOpen = false;
++  // paw patch: a turn that ends with work it launched still running (Workflow, async Agent, background Bash,
++  // Monitor) reports `working` + activity "background: <kinds>" instead of idle, re-checked until it is done.
++  // The probe is paw's src/background-scan.ts (PAW_BACKGROUND_PROBE, set by paw's connector); without it, plain
++  // idle. Each completion delivers a <task-notification> turn that ends in another Stop. → paw docs/notes/office.md
++  let backgroundTimer;
++  const clearBackground = () => {
++    if (backgroundTimer) clearTimeout(backgroundTimer);
++    backgroundTimer = void 0;
++  };
++  const idleOrBackground = async (agent, transcriptPath) => {
++    clearBackground();
++    const probe = (deps.env ?? process.env).PAW_BACKGROUND_PROBE;
++    let found = {};
++    if (probe && typeof transcriptPath === "string") {
++      try {
++        found = require(probe).stopBackground(transcriptPath, process.ppid);
++      } catch (e) {
++        process.stderr.write(`[cotal-connector] paw background probe failed, reporting idle: ${String(e?.message ?? e).split("\n")[0]}\n`);
++      }
++    }
++    if (!found.label) return safeStatus(agent, "idle");
++    await safeStatus(agent, "working", `background: ${found.label}`);
++    backgroundTimer = setTimeout(() => {
++      backgroundTimer = void 0;
++      if (!turnOpen) void idleOrBackground(agent, transcriptPath);
++    }, found.recheckMs);
++    backgroundTimer.unref?.();
++  };
+   const inFlight = /* @__PURE__ */ new WeakMap();
+   const unconfirmed = /* @__PURE__ */ new Set();
+   const markUnconfirmed = (ids) => {
+@@ -77509,6 +77547,7 @@
+           return withContext(parts.length ? parts.join("\n\n") : void 0);
+         }
+         case "UserPromptSubmit": {
++          clearBackground();
+           turnOpen = true;
+           pendingTool = void 0;
+           promptOpen = false;
+@@ -77550,10 +77589,11 @@
+           flushEvents(ev.transcript_path);
+           await closeEvents(Date.now(), stopFailure(ev));
+           if (event === "StopFailure") await safeCondition(agent, failureCondition(ev) ?? null);
+-          await safeStatus(agent, "idle");
++          await idleOrBackground(agent, ev.transcript_path);
+           if (agent.pendingWake() > 0) agent.requestWake();
+           return {};
+         case "SessionEnd":
++          clearBackground();
+           turnOpen = false;
+           promptOpen = false;
+           flushEvents(ev.transcript_path);

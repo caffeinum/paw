@@ -37,6 +37,9 @@ allowBuilds:
 #   VM). Bounded to 1s. The connector's dist/mcp.cjs (the per-agent cotal MCP server) BUNDLES its own copy
 #   of the transport, hence two patches; re-key the connector one on every cotal bump. Drop when nats.js
 #   ships the fix. → docs/notes/sandbox.md#mesh-reconnect
+#   The connector patch ALSO carries paw's Stop hook change (beads-y1eg): a turn ending with background work open
+#   reports `working` + "background: …" via PAW_BACKGROUND_PROBE (src/background-scan.ts) instead of idle.
+#   → docs/notes/office.md ("The agent's own Stop hook says it"); propose upstream, then drop the hunk.
 verifyDepsBeforeRun: false
 # minimumReleaseAgeExclude — the operator explicitly approved cotal 0.100.0 on 2026-10-23, inside
 #   the global 7-day minimum-release-age window. Exempted by EXACT version only (every other package

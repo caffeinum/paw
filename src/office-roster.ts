@@ -13,7 +13,7 @@
  * the old record's last heartbeats) are the same agent: the newest record wins, no suffix.
  */
 import { createHash } from "node:crypto";
-import { clip, type Row } from "./office-bridge.ts";
+import { clip, presenceBackground, type Row } from "./office-bridge.ts";
 import { presenceLive } from "./roster.ts";
 
 /** The presence fields roster mode reads (a cotal `Presence`, structurally). */
@@ -73,7 +73,8 @@ export function rosterRows(roster: readonly RosterPresence[], now: number): Rost
     for (const p of machines.values()) {
       const emoji = metaString(p.card.meta, "emoji");
       const hue = metaHue(p.card.meta);
-      const activity = p.activity ? clip(p.activity, 120) : "";
+      const background = presenceBackground(p.activity);
+      const activity = p.activity && !background ? clip(p.activity, 120) : "";
       rows.push({
         name: collides ? collisionName(name, p.card.id) : name,
         meshName: name,
@@ -85,6 +86,7 @@ export function rosterRows(roster: readonly RosterPresence[], now: number): Rost
         ...(typeof p.statusSince === "number" ? { statusSince: p.statusSince } : {}),
         ...(typeof p.activeAt === "number" ? { activeAt: p.activeAt } : {}),
         ...(activity ? { activity } : {}),
+        ...(background ? { background } : {}),
         ...(emoji ? { emoji } : {}),
         ...(hue !== undefined ? { hue } : {}),
       });

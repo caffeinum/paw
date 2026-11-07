@@ -11,13 +11,16 @@
 import type { AgentStatus } from "./status.ts";
 import type { BridgeState } from "./office-link.ts";
 import { OfficeError, type OfficeCall } from "./office-api.ts";
+import { backgroundLabel } from "./background-scan.ts";
+export { backgroundLabel };
 
 export const ACTIVITY_MAX = 120;
 /** Office text limit is 280; a mirrored line is clipped well under it. */
 export const SPEECH_MAX = 200;
 export const INBOUND_MAX = 2000;
 
-export type OfficeStatus = "working" | "waiting" | "idle";
+/** `running` (agent-office, 2026-11-06): seated still, its screen showing background work the ended turn left going. */
+export type OfficeStatus = "working" | "running" | "waiting" | "idle";
 export interface Desired {
   present: boolean;
   status: OfficeStatus;
@@ -31,8 +34,9 @@ export type Row = Pick<AgentStatus, "name" | "mesh" | "live" | "busy" | "tool" |
   activeAt?: number;
   /** Roster mode only (src/office-roster.ts): the presence's free-text activity, shown while working when no tool is known. */
   activity?: string;
-  /** Background work still running after the turn ended (Workflow, async subagents, background shells) —
-   *  {@link backgroundLabel} of src/office-background.ts's read; absent = none known. */
+  /** Background work still running after the turn ended (Workflow, async subagents, background shells): the
+   *  agent's own Stop hook says so in its presence (activity "background: …", {@link presenceBackground}), or
+   *  src/office-background.ts reads it on this host; absent = none known. */
   background?: string;
 };
 
@@ -76,31 +80,20 @@ export function running(row: Row): boolean {
   return Math.max(row.turnAt ?? 0, row.activeAt ?? 0) > row.statusSince + PROGRESS_SLACK_MS;
 }
 
-/** `["workflow", "agent", "agent"]` → `workflow + 2 subagents`. Kinds only: a task's description or command can hold
- *  paths or secrets, and office chat is public. */
-export function backgroundLabel(kinds: readonly string[]): string | undefined {
-  const names: Record<string, [string, string]> = { workflow: ["workflow", "workflows"], agent: ["subagent", "subagents"], bash: ["shell", "shells"], monitor: ["monitor", "monitors"] };
-  const parts = Object.entries(names).flatMap(([k, [one, many]]) => {
-    const n = kinds.filter((x) => x === k).length;
-    return n === 0 ? [] : [n === 1 ? one : `${n} ${many}`];
-  });
-  return parts.length ? parts.join(" + ") : undefined;
-}
-
-/** What the office should show for a paw row: running a turn, or background work the ended turn left running →
- *  working; waiting on input → waiting; else idle. */
+/** What the office should show for a paw row: running a turn → working; background work the ended turn left
+ *  running → running; waiting on input → waiting; else idle. */
 export function desiredFor(row: Row): Desired {
   if (!row.live || row.mesh === "offline") return { present: false, status: "idle" };
   const repo = repoOf(row);
   if (row.stuck || (row.failure && !row.busy)) return { present: true, status: "waiting", activity: clip(row.stuck ? "stuck: needs a look" : "last turn failed: needs a look", ACTIVITY_MAX) };
+  // The turn ended but work it launched still runs (Workflow, subagents, background shell): seated, screen on. The
+  // patched Stop hook reports it as mesh `working` + activity "background: …"; a pending tool means a new turn.
+  if (row.background && !row.tool && (row.mesh === "working" || row.mesh === "idle" || row.mesh === "waiting")) {
+    const what = `background: ${row.background}`;
+    return { present: true, status: "running", activity: clip(repo ? `${what} · ${repo}` : what, ACTIVITY_MAX) };
+  }
   if (running(row)) {
     const what = row.tool ? toolName(row.tool.name) : (row.activity ?? "working");
-    return { present: true, status: "working", activity: clip(repo ? `${what} · ${repo}` : what, ACTIVITY_MAX) };
-  }
-  // The turn ended but a Workflow/subagent/background shell it launched still runs: claude's idle "waiting for
-  // your input" notice (mesh `waiting`) lands a minute after such a turn too, so it doesn't override this.
-  if (row.background && (row.mesh === "idle" || row.mesh === "waiting")) {
-    const what = `background: ${row.background}`;
     return { present: true, status: "working", activity: clip(repo ? `${what} · ${repo}` : what, ACTIVITY_MAX) };
   }
   if (row.mesh === "waiting") return { present: true, status: "waiting", ...(repo ? { activity: clip(`waiting · ${repo}`, ACTIVITY_MAX) } : {}) };
@@ -115,10 +108,18 @@ export interface PresenceLike {
   ts: number;
   statusSince?: number;
   activeAt?: number;
+  activity?: string;
 }
 
-/** Each row with `statusSince`/`activeAt` from its newest presence record IN THE SAME STATUS as the row's
- *  `mesh` — a stamp from another status (or another record) would date the wrong thing. */
+const BACKGROUND_PREFIX = "background:";
+/** The patched Stop hook's presence activity "background: workflow + 2 subagents" → "workflow + 2 subagents". */
+export function presenceBackground(activity: string | undefined): string | undefined {
+  if (!activity?.startsWith(BACKGROUND_PREFIX)) return undefined;
+  return activity.slice(BACKGROUND_PREFIX.length).trim() || undefined;
+}
+
+/** Each row with `statusSince`/`activeAt` (and the Stop hook's `background`) from its newest presence record IN THE
+ *  SAME STATUS as the row's `mesh` — a stamp from another status (or another record) would date the wrong thing. */
 export function withPresence<R extends Row>(rows: readonly R[], roster: readonly PresenceLike[]): R[] {
   const newest = new Map<string, PresenceLike>();
   for (const p of roster) {
@@ -127,9 +128,10 @@ export function withPresence<R extends Row>(rows: readonly R[], roster: readonly
   }
   return rows.map((r) => {
     const p = newest.get(r.name);
-    const { statusSince: _s, activeAt: _a, ...rest } = r;
+    const { statusSince: _s, activeAt: _a, background: _b, ...rest } = r;
     if (!p || p.status !== r.mesh) return rest as R;
-    return { ...rest, ...(typeof p.statusSince === "number" ? { statusSince: p.statusSince } : {}), ...(typeof p.activeAt === "number" ? { activeAt: p.activeAt } : {}) } as R;
+    const background = presenceBackground(p.activity);
+    return { ...rest, ...(typeof p.statusSince === "number" ? { statusSince: p.statusSince } : {}), ...(typeof p.activeAt === "number" ? { activeAt: p.activeAt } : {}), ...(background ? { background } : {}) } as R;
   });
 }
 

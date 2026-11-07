@@ -75,8 +75,10 @@ console.log("1. mapping");
     ["waiting after the turn closed (idle notice), nothing in flight", { mesh: "waiting", busy: true, statusSince: T }, "waiting"],
     ["starting", { mesh: "starting" }, "idle", "starting up"],
     // beads-y1eg: the turn ended, but work it launched in the background still runs
-    ["idle + a workflow still running", { mesh: "idle", background: "workflow" }, "working", "background: workflow · paw"],
-    ["claude's idle notice + subagents still running", { mesh: "waiting", busy: true, statusSince: T, background: "2 subagents" }, "working", "background: 2 subagents · paw"],
+    ["idle + a workflow still running (host read)", { mesh: "idle", background: "workflow" }, "running", "background: workflow · paw"],
+    ["claude's idle notice + subagents still running", { mesh: "waiting", busy: true, statusSince: T, background: "2 subagents" }, "running", "background: 2 subagents · paw"],
+    ["the Stop hook's working + background", { mesh: "working", background: "workflow" }, "running", "background: workflow · paw"],
+    ["a new turn (pending tool) beats background", { mesh: "working", busy: true, tool: bash, background: "workflow" }, "working", "Bash · paw"],
     ["background never hides a stuck agent", { mesh: "idle", stuck: { since: T, restarts: 1 }, background: "workflow" }, "waiting", "stuck: needs a look"],
     ["starting with background is still starting", { mesh: "starting", background: "workflow" }, "idle", "starting up"],
   ];
@@ -562,6 +564,17 @@ if (!url || !admin) {
 
 console.log("6. background work (beads-y1eg)");
 {
+  const { presenceBackground } = await import("../src/office-bridge.ts");
+  assert(presenceBackground("background: workflow + 2 subagents") === "workflow + 2 subagents" && presenceBackground("Bash: ls") === undefined && presenceBackground("background:") === undefined && presenceBackground(undefined) === undefined, "presenceBackground reads only a 'background: …' activity");
+  const now0 = 1_000_000;
+  const pres = (status: string, activity?: string) => ({ card: { name: "a" }, status, ts: now0, statusSince: now0 - 5, ...(activity ? { activity } : {}) });
+  const wp = withPresence([row("a", { mesh: "working" })], [pres("working", "background: workflow")]);
+  assert(wp[0].background === "workflow" && desiredFor(wp[0]).status === "running", `local mode: the Stop hook's presence → running (${JSON.stringify(wp[0])})`);
+  assert(withPresence([row("a", { mesh: "idle" })], [pres("working", "background: workflow")])[0].background === undefined, "a presence in another status says nothing about this row");
+  const rr = rosterRows([{ card: { id: "local.X", name: "a", kind: "agent" }, status: "working", ts: Date.now(), activity: "background: 2 subagents" } as never], Date.now());
+  assert(rr.length === 1 && rr[0].background === "2 subagents" && rr[0].activity === undefined && desiredFor(rr[0]).status === "running" && desiredFor(rr[0]).activity === "background: 2 subagents", `roster mode (the fly bridge): → running "background: 2 subagents" (${JSON.stringify(rr[0])} → ${JSON.stringify(rr.length ? desiredFor(rr[0]) : null)})`);
+}
+{
   const { backgroundLabel } = await import("../src/office-bridge.ts");
   const { BackgroundReader, MAX_AGE_MS } = await import("../src/office-background.ts");
   assert(backgroundLabel([]) === undefined, "no tasks → no label");
@@ -595,7 +608,8 @@ console.log("6. background work (beads-y1eg)");
   kinds = ["bash"];
   now += MAX_AGE_MS;
   assert(reader.annotate([idle])[0].background === "shell" && reads === 3, "cache expires after MAX_AGE even with no transcript write");
-  assert(reader.annotate([{ ...idle, background: "stale" }])[0].background === "shell", "a stale incoming label is replaced");
+  const before = reads;
+  assert(reader.annotate([{ ...row("a", { mesh: "working" }), pin: "pin", background: "workflow" }])[0].background === "workflow" && reads === before, "a label from the agent's own presence is kept, not re-read");
   boom = "ps exploded";
   now += MAX_AGE_MS;
   const failed = reader.annotate([idle]);

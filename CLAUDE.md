@@ -308,7 +308,9 @@ Each entry: what it is + the most load-bearing rule. Full notes behind the link.
   (labelled by agent-office's `sender`; non-owner = "not from the operator"; no sender = guest; `lastHuman` only from
   owner); a waiting agent shows working only on turn progress after its `statusSince` (busy alone can't tell); an
   idle/waiting agent with a Workflow/subagents/background shell still running shows working (`src/office-background.ts`,
-  sleep's `rowActivity`, cached by transcript mtime; async Agents are `agentId`, not `taskId`). One
+  sleep's `rowActivity`, cached by transcript mtime; async Agents are `agentId`, not `taskId`); the agent's own Stop hook
+  (connector patch → `src/background-scan.ts` via `PAW_BACKGROUND_PROBE`) publishes `working` + `background: …`, which the
+  bridge (local and roster) maps to the office's `running` status. One
   sequential worker, local budgets, 429 pauses for `retryAfter`; a refused JOIN KEY pauses the link and keeps the tokens
   (only an unknown agentToken rejoins); the link file gone ⇒ the bridge walks everyone out and never saves tokens
   again (disconnect deletes the link first); errors are `[office]` log lines, never a crash.
