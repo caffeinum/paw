@@ -14,10 +14,9 @@
  * Where the rows come from (chat.ts wires it; src/chat-own.ts reads):
  *  - LOCAL space: the DM stream holds every DM, so the earlier rows are the target's DMs with anyone but
  *    "you" (plus its channel posts), and live ones come off chat-own's space-wide tap.
- *  - REMOTE space: chat holds only narrow creds for "you"'s own subjects (docs/notes/remote-mesh.md);
- *    another agent's DMs are NOT readable with them, and paw has no narrow observer cred for that (paw
- *    history / paw web use the space-wide `admin` cred). The view says so loudly
- *    ({@link remotePeersNote}) instead of silently showing only your chat.
+ *  - REMOTE space: the operator-only `chat-peers` cred, scoped to the target's own DM subjects (every id
+ *    it had, both directions) and its own channel posts — signed per read for the earlier rows, and one
+ *    live tap on the current target renewed before it expires (docs/notes/remote-mesh.md).
  *
  * Pure: no tty, no mesh. check:chat asserts it.
  */
@@ -164,11 +163,6 @@ export function peerSummary(agent: string, count: number, older: number, windowe
   const more = older > 0 ? ` · ${older} older not shown` : "";
   if (!count) return `(no messages between ${agent} and other peers${span}${more})`;
   return `── ${count} message${count === 1 ? "" : "s"} between ${agent} and other peers${span}, indented right${more} ──`;
-}
-
-/** The loud line the messages view shows on a remote space, where chat's creds can't read them. */
-export function remotePeersNote(space: string): string {
-  return `! other-peer messages aren't readable with this chat's credentials on a remote space (${space}) — this view shows only your conversation with the agent and channel posts you receive`;
 }
 
 /**

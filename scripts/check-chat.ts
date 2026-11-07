@@ -1693,7 +1693,7 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
 
 // ── the messages view's other-peer rows (src/chat-peers.ts, 2026-11-06) ──────────────────────────
 {
-  const { classifyPeer, peerIndent, peerRows, pickPeers, peerSummary, remotePeersNote, mergeByTs } = await import("../src/chat-peers.ts");
+  const { classifyPeer, peerIndent, peerRows, pickPeers, peerSummary, mergeByTs } = await import("../src/chat-peers.ts");
   const { displayWidth } = await import("../src/width.ts");
   const names = new Map([["K1", "kit"], ["K0", "kit"], ["B1", "bob"], ["ME", "you"]]);
   const o = { agent: "kit", agentIds: new Set(["K1", "K0"]), me: "ME", nameOf: (id: string) => names.get(id) };
@@ -1722,24 +1722,53 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
   assert(eq(pk.entries.map((e) => e.id), ["p20", "p30"]) && pk.older === 1, "peers: sized like the earlier block — last N within the window, minus what is on screen");
   assert(pickPeers(msgs, { limit: 0, now: 45, shown: () => false }).entries.length === 0, "peers: --history 0 loads none");
   assert(peerSummary("kit", 2, 1, true) === "── 2 messages between kit and other peers in the last 24h, indented right · 1 older not shown ──" && peerSummary("kit", 0, 0, true) === "(no messages between kit and other peers in the last 24h)", "peers: the summary says how many, and says so when there are none");
-  assert(remotePeersNote("team2027").includes("other-peer messages aren't readable with this chat's credentials on a remote space"), "peers: the remote note is loud and exact");
 
   type R = { t: string; ts?: number };
   const rows: R[] = [{ t: "banner" }, { t: "div" }, { t: "a", ts: 10 }, { t: "b", ts: 30 }, { t: "now" }, { t: "live" }];
   const merged = mergeByTs(rows, 2, 4, [{ t: "P25", ts: 25 }, { t: "P5", ts: 5 }, { t: "P99", ts: 99 }], (e) => e.ts);
   assert(eq(merged.map((e) => e.t), ["banner", "div", "P5", "a", "P25", "b", "P99", "now", "live"]), "peers: other-peer history merges by time between the earlier block's rows, before ── now ──");
 
-  // On a remote space chat never reads another agent's mail with a widened cred: chat-own refuses.
+  // Remote space (2026-11-06, operator's go): READ, through the operator-only `chat-peers` cred scoped
+  // to the target's own subjects (check:remote asserts its grants) — no refusal, no `admin`, no dmHistory.
   const { readFileSync } = await import("node:fs");
   const own = readFileSync(new URL("../src/chat-own.ts", import.meta.url), "utf8");
-  const reader = own.slice(own.indexOf("export async function readPeerTraffic("));
-  assert(/if \(isRemoteSpace\(space\)\) throw/.test(reader) && !/signScopedCreds|humanEndpointAuth/.test(reader.slice(0, reader.indexOf("\n}\n"))), "peers: the remote read throws — no cred is signed or widened for it");
+  assert(!/aren't readable with this chat's credentials/.test(own), "peers: the remote refusal is gone");
+  {
+    const { createSpaceAuth, stripSpaceAuth, newIdentity } = await import("@cotal-ai/core");
+    const { mkdtempSync, mkdirSync, writeFileSync } = await import("node:fs");
+    const { writeRemoteMesh } = await import("../src/remote-mesh.ts");
+    const rsp = "chattest-remote";
+    const sroot = mkdtempSync(join(tmpdir(), "paw-chat-signer-"));
+    mkdirSync(join(sroot, ".cotal", "auth"), { recursive: true });
+    writeFileSync(join(sroot, ".cotal", "auth", "auth.json"), JSON.stringify(stripSpaceAuth(await createSpaceAuth(rsp))), { mode: 0o600 });
+    writeRemoteMesh({ space: rsp, server: "tls://127.0.0.1:9", root: sroot, ts: new Date().toISOString() });
+    const ownMod = await import("../src/chat-own.ts");
+    const { signScopedCreds } = await import("../src/remote-creds.ts");
+    const labels: string[] = [];
+    let dmHistoryCalls = 0;
+    const deps = {
+      sign: (async (...a: Parameters<typeof signScopedCreds>) => (labels.push(a[1]), signScopedCreds(...a))) as typeof signScopedCreds,
+      connect: (async () => {
+        throw new Error("fake dial");
+      }) as unknown as import("../src/chat-own.ts").PeerDeps["connect"],
+    };
+    const rEp = { card: { id: "local.UME" }, dmHistory: async () => (dmHistoryCalls++, []) } as unknown as Parameters<typeof ownMod.readPeerTraffic>[0];
+    const kitId = `local.${newIdentity().id}`;
+    const res = await ownMod.readPeerTraffic(rEp, rsp, "tls://127.0.0.1:9", "kit", new Set([kitId]), () => undefined, { deps }).then(() => "resolved", (e: Error) => e.message);
+    assert(res === "fake dial" && eq(labels, ["chat-peers"]) && dmHistoryCalls === 0, `peers: a remote read signs a chat-peers cred and dials — never refuses, never the endpoint's dmHistory (${res}, ${labels.join(",")})`);
+    const none = await ownMod.readPeerTraffic(rEp, rsp, "tls://127.0.0.1:9", "ghost", new Set(), () => undefined, { deps }).then(() => "resolved", (e: Error) => e.message);
+    assert(/no mesh id is known for ghost/.test(none), `peers: a remote agent with no known id fails loud — ${none}`);
+    rmSync(sroot, { recursive: true, force: true });
+  }
   const tap = own.slice(own.indexOf("export function tapPeerTraffic("));
-  assert(/if \(isRemoteSpace\(space\)\) return false;/.test(tap.slice(0, tap.indexOf("\n}\n"))), "peers: no live tap on a remote space");
+  assert(/if \(isRemoteSpace\(space\)\) return false;/.test(tap.slice(0, tap.indexOf("\n}\n"))), "peers: no space-wide tap on a remote space (the narrow tapAgentTraffic does it)");
   const chatSrc = readFileSync(new URL("../src/chat.ts", import.meta.url), "utf8");
   const ens = chatSrc.slice(chatSrc.indexOf("function ensurePeers("), chatSrc.indexOf("\n  }\n", chatSrc.indexOf("function ensurePeers(")));
-  assert(/remoteSpace/.test(ens) && !/advanceCursor|shouldFollowDm|awaiting\.|curName =|curId =/.test(ens), "peers: never on a remote space; never marks read, follows, answers an await or moves the target");
-  assert(/if \(remoteSpace\) show\(peerNote\(c\.yellow\(remotePeersNote\(space\)\)\)\)/.test(chatSrc), "peers: a remote chat puts the loud note in the messages view");
+  assert(!/remoteSpace/.test(ens) && /ensurePeerTap\(\)/.test(ens) && !/advanceCursor|shouldFollowDm|awaiting\.|curName =|curId =/.test(ens), "peers: remote reads too (keeping the live tap on the target); never marks read, follows, answers an await or moves the target");
+  const ept = chatSrc.slice(chatSrc.indexOf("function ensurePeerTap("), chatSrc.indexOf("function retirePeerTap("));
+  assert(/if \(peerTap\) retirePeerTap\(\)/.test(ept) && /catchUpPeers\(offAt - PEER_GAP_SLACK_MS, \[agent\]\)/.test(ept), "peers: a remote switch retires the old agent's tap, and coming back reads the time it was off back");
+  assert(/retirePeerTap\(\);\n\s+await ep\?\.stop\(\)/.test(chatSrc), "peers: quitting retires the remote tap");
+  assert(!/remotePeersNote/.test(chatSrc), "peers: no 'not readable' note on a remote chat any more");
 
   // Review fixes (2026-11-06).
   // Stale-id forwards: paw's forwarder re-sends a DM to an agent's dead id as a second copy (same

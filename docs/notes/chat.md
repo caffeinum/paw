@@ -611,7 +611,7 @@ agent BEFORE the chat started … not start from an empty screen", on open AND o
     `peer` constructor arg = chat.ts `layPeer`) at the width and age of that moment, and a resize in the
     messages view redraws (debounced 150ms) — a row frozen at the old width used to overflow its indent
     and wrap into the left column after a narrowing (review, 2026-11-06).
-  - **Live** (open mesh): `tapPeerTraffic` — a second space-wide `ep.tap` in chat-own.ts, attached before
+  - **Live** (open mesh; remote below): `tapPeerTraffic` — a second space-wide `ep.tap` in chat-own.ts, attached before
     the endpoint starts. Rows are captured for the current target AND every agent whose earlier rows were
     read this session (`peerAgents`), and shown only while that agent is the target — so @kit → @bob →
     @kit shows what kit said in between. Dedup is per agent (`peerShown`, `<agent>\0<id>`: kit → bob is a
@@ -625,7 +625,7 @@ agent BEFORE the chat started … not start from an empty screen", on open AND o
     forward whose original it holds (`dropPairedPeerForwards`), live drops one whose original was placed
     (`peerOriginals`), and an unpaired forward shows what the sender wrote, the note removed. Never news:
     no follow, no await, no cursor.
-  - **Earlier** (open mesh, `ensurePeers`): once per agent per session, on entering the view and on every
+  - **Earlier** (`ensurePeers`): once per agent per session, on entering the view and on every
     retarget while in it (`pumpLogs` checks each second — the target moves down many paths). Sized like
     the earlier block (`--history`: last 20 within 24h; N = last N; 0 = off), deduped by id against
     `shownIds`/`ownIds`. A `◌ loading kit's messages with other peers…` loader holds the place (keys never
@@ -634,22 +634,27 @@ agent BEFORE the chat started … not start from an empty screen", on open AND o
     `── N messages between kit and other peers in the last 24h, indented right · M older not shown ──`
     replaces the loader; with no earlier block they go where the loader was. A failed read replaces the
     loader with a red `! couldn't load kit's messages with other peers: <why>`. Read by `readPeerTraffic`
-    (chat-own.ts): `dmHistory` (the whole DM stream) + `listChannels`/`multiChannelHistory`, recipients
-    named from stream senders → ledger → live roster. No `/more` for these rows yet.
-  - **Remote spaces: not readable, said loudly.** chat holds only narrow creds for "you"'s own subjects
-    (`chat-echo`, `chat-history`), and the only creds paw has that read another agent's DMs are the
-    space-wide `admin` observer (`paw history`, `paw web`) — not narrow, so not used. `tapPeerTraffic`
-    taps nothing and `readPeerTraffic` throws on a remote space; the messages view carries a yellow
-    `! other-peer messages aren't readable with this chat's credentials on a remote space (<s>) — this
-    view shows only your conversation with the agent and channel posts you receive` (an `onlyMessages`
-    entry pushed at the first paint). Follow-up if wanted: a paw-signed `chat-peers` cred with two
-    name+filter-pinned consumers on the TARGET's DM subjects (the `chat-history` shape, `filteredReadGrants`)
-    — an operator decision, since it reads another agent's mail.
+    (chat-own.ts): open mesh — `dmHistory` (the whole DM stream) + `listChannels`/`multiChannelHistory`;
+    remote — the `chat-peers` read (below). Recipients named from stream senders → ledger → live roster.
+    No `/more` for these rows yet.
+  - **Remote spaces: read with the operator-only `chat-peers` cred (2026-11-06, operator's go).** chat's own
+    creds cover only "you"'s subjects, and the `admin` observer is space-wide, so chat-own signs a narrow
+    cred from the space signer per job ([remote-mesh.md](remote-mesh.md#paw-chat--paw-web-taps) has the
+    exact subject list): for each of the target's ids (live + ledger, ≤16) its DMs to and from it and its
+    own channel posts — never the space wildcard. Earlier rows and every read-back sign a fresh 5-minute
+    READ cred (pinned consumers, no subscribe). Live rows come off ONE tap on the current target
+    (`ensurePeerTap` in chat.ts, `tapAgentTraffic` in chat-own.ts), subscribe-only, re-signed before expiry
+    make-before-break; a retarget in the messages view retires it, and coming back to that agent reads
+    the time it was off back (`peerTapOffAt` → `catchUpPeers(since, [agent])`). Failures stay loud (red
+    line); >16 ids = a yellow note. Anycasts aren't read remotely. The old yellow "not readable" note and
+    `remotePeersNote` are gone.
   - Tests: `check:chat` (`peers:` — classification incl. old ids, cron/office, channels, "you" excluded,
-    unnamed ids; indent/rows/wrap; sizing; summary; the remote note; `mergeByTs`; the remote read throws
-    and signs nothing; `ensurePeers` never follows/marks read); `check:chat-tty` 17 (real pty: echoer's
+    unnamed ids; indent/rows/wrap; sizing; summary; `mergeByTs`; a remote read signs `chat-peers` and
+    dials instead of refusing, never `dmHistory`; a remote switch retires the tap and reads back; `ensurePeers`
+    never follows/marks read); `check:remote` (the cred's subjects are exactly the agent's, no wildcard /
+    admin rows, re-signed per read, the tap renewed make-before-break, only chat-own mints it); `check:chat-tty` 17 (real pty: echoer's
     earlier DM to `bob` merged into the block at col 24 as `echoer → bob`, your DM from echoer at col 0, a
-    live `bob → echoer` at col 24). Not verified against team2027 (the note is asserted by source grep).
+    live `bob → echoer` at col 24). The remote path is not verified against team2027 (hermetic only).
 - **The beads view (`src/chat-tasks.ts`, pure; wired in chat.ts `paintTasks`; was `tasks`, fullscreen
   2026-11-06)** — title `beads · <agent>` + live status, the `paw status` info row, then the target's
   beads (`assignee` = the agent; with no target, the operator's own via `operatorName()` plus "pick an

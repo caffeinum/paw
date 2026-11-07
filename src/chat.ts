@@ -65,7 +65,7 @@ import { LinkProbe, PROBE_MS, isAckTimeout } from "./link-probe.ts";
 import { PresenceHold, type PresenceLine } from "./presence-hold.ts";
 import { AwaitTracker } from "./chat-awaiting.ts";
 import { arrowRun, CLEAR_ALL, displayWidth, fitWidth, entryVisible, hintFor, hintWithTag, whereTag, History, LogFollower, navKey, scrollKey, Painter, type Entry, pickerWindow, showsChat, showsLogs, showsPeers, stepView, VIEW_LABEL, viewNeedsTarget, type ChatView } from "./chat-views.ts";
-import { classifyPeer, isPeerForwardOf, mergeByTs, peerRows, peerSummary, pickPeers, remotePeersNote, type PeerMsg, type RawMsg } from "./chat-peers.ts";
+import { classifyPeer, isPeerForwardOf, mergeByTs, peerRows, peerSummary, pickPeers, type PeerMsg, type RawMsg } from "./chat-peers.ts";
 import { agentBeads, agentInfo, CLOSED_RECENT_MS, hitAt, renderTasksPanel, type InfoFacts, type TasksHit } from "./chat-tasks.ts";
 import { MOUSE_OFF, MOUSE_ON, SELECT_MODE_KEY, stripMouse, type MouseEvent } from "./mouse.ts";
 import { collectStatus, contextShare, contextText, inboxText, toolLabel } from "./status.ts";
@@ -87,7 +87,7 @@ import {
 import { FRESH_SPAWN_MS, LIVE_AGENT_MS } from "./dm.ts";
 import { messageText as textOf, type Entry as FeedEntry } from "./feed.ts";
 import { forwardedFrom, isForwardOf, withoutForwardNote } from "./forward-mark.ts";
-import { peerMsg, readOwnConversation, readPeerTraffic, startEcho, tapOwnSubject, tapPeerTraffic } from "./chat-own.ts";
+import { MAX_PEER_IDS, peerMsg, readOwnConversation, readPeerTraffic, startEcho, tapAgentTraffic, tapOwnSubject, tapPeerTraffic } from "./chat-own.ts";
 import { backlogSize, earlierDivider, moreCount, moreInsertAt, NOW_DIVIDER, nothingEarlier, pickBacklog } from "./chat-backlog.ts";
 import { dedupeRoster } from "./commands/who.ts";
 import { isContinueKey, joinLines, LEAKED_TAIL, leaksTail, peelContinuation } from "./multiline.ts";
@@ -1564,8 +1564,9 @@ async function chat(argv: string[]): Promise<void> {
 
   // ── the messages view's other-peer rows (src/chat-peers.ts) ──────────────────────────────────────
   // What the target said to and heard from everyone but "you", indented right and dimmed. Open mesh:
-  // live off a space-wide tap, earlier rows from the DM + channel streams. Remote: not readable with
-  // chat's narrow creds — the view carries a loud note instead (pushed at the first paint).
+  // live off a space-wide tap, earlier rows from the DM + channel streams. Remote: the operator-only
+  // `chat-peers` cred on the target's own subjects — signed per read, plus one live tap for the current
+  // target (src/chat-own.ts tapAgentTraffic), retired on a switch and read back when it comes back.
   /** Every id → name the tap has seen a sender use (a DM's `to` is a bare id). */
   const peerIdNames = new Map<string, string>();
   /** Agents whose other-peer history has been read (or is being read) this session, key → name. From
@@ -1602,6 +1603,51 @@ async function chat(argv: string[]): Promise<void> {
   };
   const peerEntry = (agent: string, p: PeerMsg, historical: boolean): Entry => ({ kind: "peer", agent, msg: p, ...(historical ? { historical: true } : {}) });
   const peerNote = (text: string): Entry & { kind: "chat" } => ({ kind: "chat", text, side: "sys", tight: true, onlyMessages: true });
+  /** Agents already told that their oldest ids are past the chat-peers cap — said once each. */
+  const peerOmittedSaid = new Set<string>();
+  const onPeerOmitted = (agent: string) => (n: number): void => {
+    if (peerOmittedSaid.has(agent.toLowerCase())) return;
+    peerOmittedSaid.add(agent.toLowerCase());
+    show(peerNote(c.yellow(`! ${agent} has had more than ${MAX_PEER_IDS} mesh ids — messages on its ${n} oldest aren't read`)));
+  };
+  const readPeers = (e: CotalEndpoint, agent: string): Promise<PeerMsg[]> =>
+    readPeerTraffic(e, space, server, agent, agentIdsFor(agent), peerNameOf, { onOmitted: onPeerOmitted(agent) });
+
+  // Remote: ONE live chat-peers tap, on the current target. A switch retires it (when, per agent, so
+  // coming back reads the time it was off back); a failed start or renewal is a red line.
+  let peerTap: { key: string; stop?: () => Promise<void> } | undefined;
+  const peerTapOffAt = new Map<string, number>();
+  function ensurePeerTap(): void {
+    if (!remoteSpace || !curName || closing) return;
+    const key = curName.toLowerCase();
+    if (peerTap?.key === key) return;
+    if (peerTap) retirePeerTap();
+    const agent = curName;
+    const tap: { key: string; stop?: () => Promise<void> } = { key };
+    peerTap = tap;
+    const offAt = peerTapOffAt.get(key);
+    tapAgentTraffic(space, server, agent, () => agentIdsFor(agent), onPeerTraffic, (e) => emit(c.red(`! messages view: ${e.message}`)), onPeerTransport, { onOmitted: onPeerOmitted(agent) }).then(
+      (stop) => {
+        if (peerTap !== tap || closing) return void stop();
+        tap.stop = stop;
+        if (offAt !== undefined) {
+          peerTapOffAt.delete(key);
+          catchUpPeers(offAt - PEER_GAP_SLACK_MS, [agent]);
+        }
+      },
+      (e: Error) => {
+        if (peerTap === tap) peerTap = undefined;
+        emit(c.red(`! messages view: couldn't tap ${agent}'s messages with other peers: ${e.message}`));
+      },
+    );
+  }
+  function retirePeerTap(): void {
+    const t = peerTap;
+    if (!t) return;
+    peerTap = undefined;
+    if (peerAgents.has(t.key)) peerTapOffAt.set(t.key, Date.now());
+    void t.stop?.().catch(() => {});
+  }
 
   /** A frame off the space-wide tap: other-peer traffic of the target or any tracked agent becomes a row
    *  (shown in the messages view only). Never news: no follow, no await, no cursor. */
@@ -1649,17 +1695,19 @@ async function chat(argv: string[]): Promise<void> {
    * The messages view's earlier other-peer rows for the target — once per agent per session, sized like
    * the earlier block (`--history`), behind a `◌` loader, never blocking keys. They are merged by time
    * into that agent's earlier block when there is one; a summary line takes the loader's place. A
-   * failed read says so in red. Remote spaces never get here (the note says why).
+   * failed read says so in red. On a remote space it also keeps the live tap on the target.
    */
   function ensurePeers(): void {
-    if (!showsPeers(view) || !curName || !interactive || !ep || remoteSpace || historySize.limit === 0) return;
+    if (!showsPeers(view) || !curName || !interactive || !ep) return;
+    ensurePeerTap();
+    if (historySize.limit === 0) return;
     const key = curName.toLowerCase();
     if (peerAgents.has(key)) return;
     const agent = curName;
     peerAgents.set(key, agent); // the tap captures it from here on, target or not
     const slot = peerNote(c.dim(`${LOADER} loading ${agent}'s messages with other peers…`));
     show(slot);
-    readPeerTraffic(ep, space, agent, agentIdsFor(agent), peerNameOf).then(
+    readPeers(ep, agent).then(
       (msgs) => {
         if (closing || !history.entries.includes(slot)) return;
         const placed = new Set(msgs.filter((m) => peerPlaced(agent, m)).map((m) => m.id));
@@ -1684,15 +1732,15 @@ async function chat(argv: string[]): Promise<void> {
   }
 
   /**
-   * The tap was down (`since` = when): read back every tracked agent's other-peer traffic from then and
-   * place what isn't on screen yet, oldest first, under a line saying where it came from. A failed read
-   * says so in red — a silent gap is the failure this exists to close.
+   * The tap was down (`since` = when): read back every tracked agent's (or just `only`'s) other-peer
+   * traffic from then and place what isn't on screen yet, oldest first, under a line saying where it
+   * came from. A failed read says so in red — a silent gap is the failure this exists to close.
    */
-  function catchUpPeers(since: number): void {
-    if (!ep || remoteSpace || closing || !peerAgents.size) return;
+  function catchUpPeers(since: number, only?: string[]): void {
+    if (!ep || closing || !peerAgents.size) return;
     const e = ep;
-    for (const agent of peerAgents.values()) {
-      readPeerTraffic(e, space, agent, agentIdsFor(agent), peerNameOf).then(
+    for (const agent of only ?? [...peerAgents.values()]) {
+      readPeers(e, agent).then(
         (msgs) => {
           if (closing) return;
           const fresh = msgs.filter((p) => p.ts >= since && !peerPlaced(agent, p));
@@ -3280,6 +3328,7 @@ async function chat(argv: string[]): Promise<void> {
   /** Stop the endpoint and retire the inbox — what a quit (or a pipe-mode failure) owes the broker. */
   async function teardown(): Promise<void> {
     await stopOwnTap?.().catch(() => {});
+    retirePeerTap();
     await ep?.stop().catch(() => {});
     dropEndpoint();
     await inboxRelease?.().catch((e: Error) => consoleOrig.error(c.red(e.message)));
@@ -3624,7 +3673,6 @@ async function chat(argv: string[]): Promise<void> {
 
   if (interactive) {
     paintBanner();
-    if (remoteSpace) show(peerNote(c.yellow(remotePeersNote(space))));
     createRepl();
     installConsole();
     rl!.prompt();
