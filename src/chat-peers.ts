@@ -98,9 +98,11 @@ export function classifyPeer(
   return undefined;
 }
 
-/** How far right the other-peer rows sit: a quarter of the width, at most 24 columns, at least 4. */
-export function peerIndent(cols: number): number {
-  return Math.max(4, Math.min(24, Math.floor(cols / 4)));
+/** How far right the other-peer rows sit: a fixed 4-column shift (operator, 2026-11-06: a quarter of
+ *  the width read as a separate column, not a nudge). `cols` stays in the signature for callers. */
+export const PEER_INDENT = 4;
+export function peerIndent(_cols: number): number {
+  return PEER_INDENT;
 }
 
 /**

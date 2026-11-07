@@ -1709,14 +1709,14 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
   assert(eq(classifyPeer(m({ from: { id: "K1", name: "kit" }, to: "ZZZZZZZZZZZZ" }), o), { from: "kit", to: "ZZZZZZZZ" }), "peers: an unnamed recipient stays its id (short) — never a guessed name");
   assert(classifyPeer({ from: { id: "K1", name: "kit" }, to: "B1" }, o) === undefined, "peers: a frame without an id is not placed");
 
-  assert(peerIndent(80) === 20 && peerIndent(200) === 24 && peerIndent(10) === 4, "peers: indent = a quarter of the width, 4..24 cols");
+  assert(peerIndent(80) === 4 && peerIndent(200) === 4 && peerIndent(10) === 4, "peers: indent = a fixed 4-column shift at every width");
   const plain = { dim: (x: string) => `<${x}>`, md: (t: string) => t.split("\n"), strip: (x: string) => x };
   const one = peerRows({ id: "1", ts: 1, from: "kit", to: "bob", text: "lgtm" }, { cols: 80, age: " (2m ago)", ...plain });
-  assert(eq(one, [`<${" ".repeat(20)}kit → bob (2m ago): lgtm>`]), `peers: a short message is one row, indented right, dimmed (${JSON.stringify(one)})`);
+  assert(eq(one, [`<${" ".repeat(4)}kit → bob (2m ago): lgtm>`]), `peers: a short message is one row, indented right, dimmed (${JSON.stringify(one)})`);
   const multi = peerRows({ id: "2", ts: 1, from: "bob", to: "kit", text: "line one\nline two" }, { cols: 80, age: "", ...plain });
-  assert(eq(multi, [`<${" ".repeat(20)}bob → kit:>`, `<${" ".repeat(22)}line one>`, `<${" ".repeat(22)}line two>`]), "peers: a multi-line body goes under the label, indented further");
+  assert(eq(multi, [`<${" ".repeat(4)}bob → kit:>`, `<${" ".repeat(6)}line one>`, `<${" ".repeat(6)}line two>`]), "peers: a multi-line body goes under the label, indented further");
   const wrapped = peerRows({ id: "3", ts: 1, from: "kit", to: "bob", text: "x".repeat(300) }, { cols: 60, age: "", ...plain, dim: (x: string) => x });
-  assert(wrapped.length > 3 && wrapped.every((r) => displayWidth(r) <= 59 && r.startsWith(" ".repeat(15))), "peers: long rows wrap inside the right column and never reach the last column");
+  assert(wrapped.length > 3 && wrapped.every((r) => displayWidth(r) <= 59 && r.startsWith(" ".repeat(4))), "peers: long rows wrap inside the indent and never reach the last column");
 
   const msgs = [10, 20, 30, 40].map((ts) => ({ id: `p${ts}`, ts, from: "kit", to: "bob", text: `t${ts}` }));
   const pk = pickPeers(msgs, { limit: 2, now: 45, windowMs: 30, shown: (id) => id === "p40" });
