@@ -2,6 +2,7 @@ import { claudeConnector } from "@cotal-ai/connector-claude-code";
 import { registry, type Connector, type LaunchOpts, type LaunchSpec } from "@cotal-ai/core";
 import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { HUMAN_PEER, humanPeer } from "./names.ts";
 import { permissionMode } from "./bypass-consent.ts";
 import { ADDRESSING_BRIEF, BACKGROUND_BASH_BRIEF, CRON_BRIEF, CHANNELS_BRIEF, COTAL_TOOLS_NOTICE_BRIEF, FILES_BRIEF, OPERATOR_REQUESTS_BRIEF, SANDBOX_BRIEF, TASKS_BRIEF, UNATTENDED_BRIEF, WAKE_BRIEF } from "./brief.ts";
@@ -15,6 +16,8 @@ import { routeCotalToHub } from "./hub/route.ts";
 import { isRemoteSpace } from "./server.ts";
 import { localHost, machineName, stampHost } from "./host-stamp.ts";
 import { readTracepaperUrl, routeTracepaperDirect } from "./tracepaper-direct.ts";
+
+const BACKGROUND_PROBE = fileURLToPath(new URL("./background-scan.ts", import.meta.url));
 
 /** TLS trust a REMOTE space's seats need. cotal's launch env is an allowlist without the CA knobs, so a
  *  broker on a private CA (NODE_EXTRA_CA_CERTS on the manager) left every seat's cotal MCP unable to
@@ -211,7 +214,10 @@ export const pawConnector: Connector = {
     // BEADS_ACTOR makes the audit trail honest: without it bd falls back to git user.name and every
     // agent-filed task reads "created by Aleksey Bykhun" — the one fact the operator's hover card
     // exists to answer ("which agent filed this?") fabricated away by a default.
-    const env = { ...spec.env, ...remoteSeatTls(opts.space), BEADS_DIR: beadsDir(), BEADS_ACTOR: opts.name };
+    // PAW_BACKGROUND_PROBE: the patched connector's Stop hook loads this module (from the SAME release as this
+    // connector) to report a turn that ended with background work still running as working, not idle (beads-y1eg).
+    // A sandboxed seat gets no probe (the VM is passed COTAL_* + PASS_ENV only) and reports plain idle.
+    const env = { ...spec.env, ...remoteSeatTls(opts.space), BEADS_DIR: beadsDir(), BEADS_ACTOR: opts.name, PAW_BACKGROUND_PROBE: BACKGROUND_PROBE };
 
     // A sandboxed seat is a VM with its own CPUs: `nice` on the host-side launcher would schedule nothing. Before
     // headless: sandboxLaunch refuses a headless persona (it needs the hub's host socket).

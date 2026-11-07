@@ -59,12 +59,14 @@ export class BackgroundReader {
     return undefined;
   }
 
-  /** `rows` with `background` set where an ended turn left work running. Never throws. */
+  /** `rows` with `background` set where an ended turn left work running. A row whose presence already says so
+   *  (the patched Stop hook, via withPresence) is kept as is: that is the agent's own word. Never throws. */
   annotate<R extends BackgroundRow>(rows: readonly R[]): R[] {
     let inspect: ProcInspector | undefined;
     const now = this.deps.now();
     return rows.map((row) => {
-      const { background: _drop, ...rest } = row;
+      if (row.background) return row;
+      const rest = row;
       if (!row.live || !row.pin || (row.mesh !== "idle" && row.mesh !== "waiting") || running(row)) return rest as R;
       let stamp: string | undefined;
       try {

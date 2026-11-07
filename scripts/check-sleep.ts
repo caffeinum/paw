@@ -626,6 +626,41 @@ ok("G6 kitWakeBlocker: a resumable kit agent has no blocker", S.kitWakeBlocker(p
   ok("G7g this checkout's host acks yields (the feature a CLI checks before waiting on it)", MF.codeRootFeatures(join(import.meta.dirname, "..")).includes(MF.SLEEP_YIELD_ACK_FEATURE));
 }
 
+// H. the Stop hook's probe (src/background-scan.ts stopBackground, loaded by the patched connector) — beads-y1eg
+{
+  const { mkdtempSync, writeFileSync, readFileSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const B = await import("../src/background-scan.ts");
+  ok("H1 etime parses mm:ss, hh:mm:ss, dd-hh:mm:ss", B.etimeMs("01:02") === 62_000 && B.etimeMs("1:00:00") === 3_600_000 && B.etimeMs("2-00:00:01") === 172_801_000);
+  ok("H1 a bad etime throws", throws(() => B.etimeMs("soon")));
+  const now = Date.parse("2026-11-06T12:00:00Z");
+  const dir = mkdtempSync(join(tmpdir(), "paw-bg-"));
+  const file = join(dir, "t.jsonl");
+  const rec = (iso: string, r: object) => JSON.stringify({ timestamp: iso, ...r });
+  const wfOpen = rec("2026-11-06T11:50:00Z", { type: "user", toolUseResult: { status: "async_launched", taskId: "w1", taskType: "local_workflow", workflowName: "x" } });
+  const agentOpen = rec("2026-11-06T11:51:00Z", { type: "user", toolUseResult: { isAsync: true, status: "async_launched", agentId: "a1" } });
+  const agentOld = rec("2026-11-06T09:00:00Z", { type: "user", toolUseResult: { isAsync: true, status: "async_launched", agentId: "a0" } });
+  const bashOpen = rec("2026-11-06T11:52:00Z", { type: "user", toolUseResult: { stdout: "", backgroundTaskId: "b1" } });
+  const wfDone = rec("2026-11-06T11:55:00Z", { type: "user", message: { content: "<task-notification>\n<task-id>w1</task-id>\n<status>completed</status>\n</task-notification>" } });
+  // claude 500 started 1h ago (etime 01:00:00); 501 = a shell under it; 600 = a hub (not claude)
+  const ps = (withShell: boolean) => ["  500   1 01:00:00 /Users/x/.local/bin/claude --resume abc", "  700 500 00:10 node /x/mcp.cjs", ...(withShell ? ["  501 500 00:05 /bin/zsh -c sleep 100"] : []), "  600   1 05:00:00 node /x/hub.js"].join("\n");
+  writeFileSync(file, [agentOld, wfOpen, agentOpen, bashOpen].join("\n") + "\n");
+  const r1 = B.stopBackground(file, 500, now, ps(true));
+  ok("H2 open workflow + subagent + backed shell → one label", r1.label === "workflow + subagent + shell" && r1.recheckMs === B.RECHECK_MAX_MS, JSON.stringify(r1));
+  ok("H2 a launch from before claude started is ignored", !r1.label?.includes("2 subagents"));
+  const r2 = B.stopBackground(file, 500, now, ps(false));
+  ok("H3 a bash task with no live shell under claude does not count", r2.label === "workflow + subagent", JSON.stringify(r2));
+  writeFileSync(file, [wfOpen, wfDone].join("\n") + "\n");
+  ok("H4 all done → nothing (the hook reports idle)", B.stopBackground(file, 500, now, ps(false)).label === undefined);
+  ok("H5 a parent that is not claude (hosted MCP) throws", throws(() => B.stopBackground(file, 600, now, ps(false))));
+  ok("H5 a parent missing from ps throws", throws(() => B.stopBackground(file, 999, now, ps(false))));
+  // the CJS require path the patched hook uses
+  const viaRequire = (await import("node:module")).createRequire(import.meta.url)(join(import.meta.dirname, "..", "src", "background-scan.ts"));
+  ok("H6 the probe loads through require() (the patched mcp.cjs is CommonJS)", typeof viaRequire.stopBackground === "function");
+  const patch = readFileSync(join(import.meta.dirname, "..", "patches", "@cotal-ai__connector-claude-code@0.100.0.patch"), "utf8");
+  ok("H7 the connector patch wires the probe into Stop", patch.includes("PAW_BACKGROUND_PROBE") && patch.includes("+          await idleOrBackground(agent, ev.transcript_path);"));
+}
+
 process.env.HOME = realHome;
 console.log(fails ? `\n${fails} FAILED` : "\nall passed");
 process.exit(fails ? 1 : 0);
