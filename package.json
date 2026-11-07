@@ -80,7 +80,8 @@
     "check:smart-restart": "node scripts/check-smart-restart.ts",
     "check:release": "node scripts/check-release.ts",
     "check:cron": "node scripts/check-cron.ts",
-    "check:kv-consumer-perms": "node scripts/check-kv-consumer-perms.ts"
+    "check:kv-consumer-perms": "node scripts/check-kv-consumer-perms.ts",
+    "check:pgrep": "node scripts/check-pgrep-ancestors.ts"
   },
   "dependencies": {
     "@cotal-ai/cli": "0.100.0",

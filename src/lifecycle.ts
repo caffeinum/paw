@@ -1312,8 +1312,14 @@ function escapeRegex(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 /** pgrep -f pattern → pids (empty on no match / pgrep unavailable). Never throws. */
+/** `pgrep -f` that also sees its OWN ANCESTORS. macOS pgrep silently excludes the calling process's ancestors
+ *  (`-a` includes them); procps (Linux) only skips itself, and its `-a` means "print the command line". So any paw
+ *  command run inside an agent — whose ancestor IS its space's manager — could not see that manager: `paw restart
+ *  --full --space <own space>` reported "no manager running", adopted it and bounced nothing (2026-11-07). */
+export const PGREP_MATCH = process.platform === "darwin" ? ["-a", "-f"] : ["-f"];
+
 function pgrepF(pattern: string): number[] {
-  const r = spawnSync("pgrep", ["-f", pattern], { encoding: "utf8" });
+  const r = spawnSync("pgrep", [...PGREP_MATCH, pattern], { encoding: "utf8" });
   if (r.error || typeof r.stdout !== "string") return [];
   return parsePids(r.stdout);
 }
@@ -1326,7 +1332,7 @@ function parsePids(stdout: string): number[] {
 /** {@link pgrepF} without blocking the event loop, so several scans (and other I/O) overlap. */
 function pgrepFAsync(pattern: string): Promise<number[]> {
   return new Promise((resolve) =>
-    execFile("pgrep", ["-f", pattern], { encoding: "utf8" }, (_err, stdout) => resolve(typeof stdout === "string" ? parsePids(stdout) : [])),
+    execFile("pgrep", [...PGREP_MATCH, pattern], { encoding: "utf8" }, (_err, stdout) => resolve(typeof stdout === "string" ? parsePids(stdout) : [])),
   );
 }
 /** pid → command line (`env` adds the environment, `ps -E`), one `ps -p <pid>` per pid run CONCURRENTLY.
@@ -1384,7 +1390,7 @@ export type MailboxScan = Map<number, string>;
 export function scanDaemons(space: string): { manager: Map<number, string>; mailbox: MailboxScan } {
   // The flag that prints the full command line: `-l` with `-f` on BSD/macOS pgrep, `-a` on procps (Linux).
   const list = process.platform === "linux" ? "-a" : "-l";
-  const r = spawnSync("pgrep", ["-f", list, `${managerMatchPattern(space)}|${mailboxMatchPattern(space)}`], { encoding: "utf8" });
+  const r = spawnSync("pgrep", [...PGREP_MATCH, list, `${managerMatchPattern(space)}|${mailboxMatchPattern(space)}`], { encoding: "utf8" });
   if (r.error) throw new Error(`paw: couldn't list paw's daemons for "${space}" (pgrep: ${r.error.message})`);
   return classifyDaemonListing(space, r.stdout);
 }
