@@ -86,6 +86,8 @@ export function classifyPeer(
   if (m.from.id === o.me || m.to === o.me) return undefined;
   const key = o.agent.toLowerCase();
   const fromAgent = m.from.name.toLowerCase() === key || (!!m.from.id && o.agentIds.has(m.from.id));
+  // `events.*` channels carry the agent's machine frames (ag-ui JSON per turn), not speech — same rule as the office bridge.
+  if (m.channel?.startsWith("events.")) return undefined;
   if (m.channel) return fromAgent ? { from: m.from.name, to: `#${m.channel}` } : undefined;
   if (m.toService) return fromAgent ? { from: m.from.name, to: `@${m.toService}` } : undefined;
   if (!m.to) return undefined;
