@@ -12,8 +12,8 @@
  *   3. paw dm --space R <folder> spawns a real claude (haiku) there; it replies; paw inbox reads it;
  *   4. paw chat @agent --space R (piped stdin) binds "you"'s durable inbox, sends, and shows the reply;
  *      a second `paw chat --all` mirrors its DM and #general post; /who, /ps, #channel, @name work; no
- *      permission error is printed; the messages + logs views work under a pty (messages says loudly that
- *      other-peer rows aren't readable with chat's creds here); paw web serves cleanly;
+ *      permission error is printed; the messages + logs views work under a pty (messages reads the agent's
+ *      other-peer traffic with the narrow chat-peers cred: a summary line, no refusal, no red line); paw web serves cleanly;
  *   4b. paw attach agent --space R under a real pty: cotal's grant is issued + redeemed with a
  *       session-caller cred minted from the signer, the TUI streams, a typed key reaches it, Ctrl-]
  *       detaches and the agent stays live — also `paw cotal attach --space R --creds <junk>` (the
@@ -521,7 +521,14 @@ try {
     p.write("/quit\r");
     for (let i = 0; i < 20 && !exited; i++) await sleep(500);
     if (!exited) p.kill();
-    ok("chat messages view (pty): your conversation with no error, and the loud remote note", !DENIED.test(tasksView) && /gnip|gnop/i.test(tasksView) && /other-peer messages aren't readable with this chat's credentials on a remote space/.test(tasksView), tail(tasksView, 4));
+    ok(
+      "chat messages view (pty): your conversation, the chat-peers read's summary, no refusal or error",
+      !DENIED.test(tasksView) &&
+        /gnip|gnop/i.test(tasksView) &&
+        /between \S+ and other peers/.test(tasksView) &&
+        !/aren't readable|couldn't load .* messages with other peers|couldn't tap/.test(tasksView),
+      tail(tasksView, 4),
+    );
     ok("chat logs view (pty) shows the agent's transcript with no error", !DENIED.test(logsView) && !/no logs for/.test(logsView) && /gnip|gnop|pong|ping/i.test(logsView), tail(logsView, 4));
     ok("…and the pty session quits cleanly", exited);
   }
