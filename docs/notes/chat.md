@@ -603,7 +603,7 @@ agent BEFORE the chat started … not start from an empty screen", on open AND o
     its channel posts (`kit → #general`) and anycasts. Cron and the office bridge are DM senders
     (`cron`, `office`), so they show as `cron → kit`. Anything with "you" in it is chat's, never here.
     An unnamed recipient stays its short id — never a guessed name.
-  - **Layout** (`peerRows`): indent = a quarter of the width, 4..24 cols (24 at 120); `from → to (age):`
+  - **Layout** (`peerRows`): indent = a fixed 4 cols (`PEER_INDENT`; was a quarter of the width until 2026-11-06 — read as a separate column); `from → to (age):`
     label, a one-line body on the label row else a block under it (2 more cols), markdown-rendered then
     stripped and dimmed whole; wraps inside the right column, never reaching the last column. Painted as
     a side of its own (`other`, tight), so a run of them sits together with air around it. The `peer`

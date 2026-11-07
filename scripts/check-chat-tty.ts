@@ -537,10 +537,10 @@ try {
       const lines = messagesScreen.split(/\r?\n/);
       const peerHist = lines.find((l) => l.includes(`peer-hist-${nonce}`)) ?? "";
       const mine = lines.find((l) => l.includes(`mine-${nonce}`)) ?? "";
-      ok("17. messages view: echoer's earlier DM to bob shows, indented right with an `echoer → bob` label", /^ {24}echoer → bob[^\n]*: peer-hist-/.test(peerHist), JSON.stringify(peerHist));
+      ok("17. messages view: echoer's earlier DM to bob shows, indented right with an `echoer → bob` label", /^ {4}echoer → bob[^\n]*: peer-hist-/.test(peerHist), JSON.stringify(peerHist));
       ok("17. …your own conversation with echoer stays left-aligned", mine !== "" && !/^ {4}/.test(mine), JSON.stringify(mine));
       ok("17. …the loader was replaced by a summary of the other-peer rows", /── \d+ messages? between echoer and other peers in the last 24h, indented right/.test(messagesScreen) && !/◌ loading echoer's messages with other peers/.test(messagesScreen));
-      ok("17. …a LIVE DM bob → echoer shows indented right", new RegExp(`[\\r\\n] {24}bob → echoer: peer-live-${nonce}`).test(r.plain), r.plain.split("\n").filter((l) => l.includes("peer-live")).join(" | "));
+      ok("17. …a LIVE DM bob → echoer shows indented right", new RegExp(`[\\r\\n] {4}bob → echoer: peer-live-${nonce}`).test(r.plain), r.plain.split("\n").filter((l) => l.includes("peer-live")).join(" | "));
       const order = ["chat  │", "messages  │", "beads  │", "logs  │"].map((h) => hints.indexOf(h));
       ok("18. → walks chat → messages → beads, ← walks back to logs (the hint names each view)", order.every((i) => i >= 0) && order[0] < order[1] && order[1] < order[2] && hints.indexOf("logs  │", order[2]) > order[2], JSON.stringify(order));
       const beadsPlain = strip(beadsRaw.slice(beadsRaw.lastIndexOf("\x1b[H\x1b[2J\x1b[3J")));
