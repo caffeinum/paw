@@ -193,6 +193,17 @@ agent holds or can mint it (`check:remote` fails if any other src module names i
 - **Channels:** sender-scoped (`chat.<o>.<a>.>` puts the sender before the channel), so the agent's posts
   on ANY channel are covered without a space wildcard. Anycasts (`svc.<role>.<o>.<a>`, a work-queue stream)
   are not read on a remote space.
+- **Ids come from paw's peer ledger — kept on remote spaces since the team2027 miss (2026-11-06).** The
+  read is scoped by id, and an agent gets a new principal on every respawn. The ledger's only writer was
+  the stale-id forwarder, which is off under auth, so on team2027 the ledger held nothing and chat read
+  vercel's LIVE id only: `(no messages between vercel and other peers in the last 24h)` while `paw history`
+  showed vercel ↔ evals-intern on its previous id (the filters, stream, start seq and ts parse were all
+  right — 310 rows once the ids were known). Now the mailbox keeps the ledger on a remote space too
+  (`src/ledger-recorder.ts`): the roster it watches, plus a one-time seed of the DM backlog's sender
+  (id, name) pairs at start — the `admin` read `paw history` does, ids and names only, nothing stored but
+  the ledger. Takes effect on the mailbox's next start (`paw restart --space <s>`, operator's call). Until
+  the ledger names an earlier id, the view says so in yellow under the summary (`remoteNoPastIdsNote`)
+  instead of an empty view that looks complete.
 - A failed sign/dial/read is a red line in the view (`! couldn't load kit's messages with other peers: …`,
   `! messages view: couldn't tap …`), never a silent empty view. An agent with >16 ids gets a yellow note
   naming how many of its oldest aren't read. Live team2027 is untested (hermetic `check:remote`/`check:chat`
@@ -209,7 +220,8 @@ machine 1: DM round-trip, `!pwd` gives that line, no permission line.
 
 ## Off on a remote space
 
-The stale-id forwarder (re-publishes ANY peer's DM under its sender — no narrow grant for that) and
+The stale-id forwarder (re-publishes ANY peer's DM under its sender — no narrow grant for that; the peer
+ledger it used to be the only writer of is kept by `src/ledger-recorder.ts` instead) and
 `paw spaces` (reads the local broker only). Presence-latch detection is ON since 2026-10-28 (a paw-signed
 one-key `presence-probe` cred — [addressing.md#presence-latch-guard](addressing.md#presence-latch-guard)).
 

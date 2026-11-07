@@ -1764,11 +1764,12 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
   assert(/if \(isRemoteSpace\(space\)\) return false;/.test(tap.slice(0, tap.indexOf("\n}\n"))), "peers: no space-wide tap on a remote space (the narrow tapAgentTraffic does it)");
   const chatSrc = readFileSync(new URL("../src/chat.ts", import.meta.url), "utf8");
   const ens = chatSrc.slice(chatSrc.indexOf("function ensurePeers("), chatSrc.indexOf("\n  }\n", chatSrc.indexOf("function ensurePeers(")));
-  assert(!/remoteSpace/.test(ens) && /ensurePeerTap\(\)/.test(ens) && !/advanceCursor|shouldFollowDm|awaiting\.|curName =|curId =/.test(ens), "peers: remote reads too (keeping the live tap on the target); never marks read, follows, answers an await or moves the target");
+  assert(/if \(!showsPeers\(view\) \|\| !curName \|\| !interactive \|\| !ep\) return;/.test(ens) && /ensurePeerTap\(\)/.test(ens) && !/advanceCursor|shouldFollowDm|awaiting\.|curName =|curId =/.test(ens), "peers: remote reads too (keeping the live tap on the target); never marks read, follows, answers an await or moves the target");
   const ept = chatSrc.slice(chatSrc.indexOf("function ensurePeerTap("), chatSrc.indexOf("function retirePeerTap("));
   assert(/if \(peerTap\) retirePeerTap\(\)/.test(ept) && /catchUpPeers\(offAt - PEER_GAP_SLACK_MS, \[agent\]\)/.test(ept), "peers: a remote switch retires the old agent's tap, and coming back reads the time it was off back");
   assert(/retirePeerTap\(\);\n\s+await ep\?\.stop\(\)/.test(chatSrc), "peers: quitting retires the remote tap");
   assert(!/remotePeersNote/.test(chatSrc), "peers: no 'not readable' note on a remote chat any more");
+  assert(/const noPast = remoteSpace && !Object\.values\(cachedLedger\(space\)\)/.test(ens) && /remoteNoPastIdsNote\(agent, space\)/.test(ens), "peers: a remote read with none of the agent's earlier ids known says so loudly (team2027: empty view while history had rows)");
 
   // Review fixes (2026-11-06).
   // Stale-id forwards: paw's forwarder re-sends a DM to an agent's dead id as a second copy (same

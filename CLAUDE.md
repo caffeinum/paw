@@ -244,7 +244,8 @@ Each entry: what it is + the most load-bearing rule. Full notes behind the link.
 - `src/dm.ts` — `paw dm`: fire-and-forget as "you", consume:false; `-` reads stdin. A KNOWN (roster/ledger) but absent
   name or a down mesh is waited for (`src/dm-wait.ts`, `--wait-for`/`PAW_DM_WAIT`, 20s, one budget), unknown fails at
   once; publish retries keep one msg id. → [messaging.md#paw-dm](docs/notes/messaging.md#paw-dm)
-- `src/mailbox.ts` — the "you" presence beacon daemon (consume:false); also hosts the sleep host. → [messaging.md#paw-mailbox](docs/notes/messaging.md#paw-mailbox)
+- `src/mailbox.ts` — the "you" presence beacon daemon (consume:false); also hosts the sleep host; on a remote space it
+  keeps the peer ledger (`src/ledger-recorder.ts`: roster + one DM-backlog seed) — chat-peers reads by every id an agent had. → [messaging.md#paw-mailbox](docs/notes/messaging.md#paw-mailbox)
 - `src/inbox.ts` — `paw inbox`: pure reader + shared cursor; `--watch` keeps its own high-water mark;
   `--json` never advances the cursor; `--sent`, `--mark-read`. → [messaging.md#paw-inbox](docs/notes/messaging.md#paw-inbox)
 - `src/feed.ts` — `messageText` (THE flattener), `observerEndpoint`, `readConversation`, `pollLoop`. → [messaging.md#srcfeedts](docs/notes/messaging.md#srcfeedts)

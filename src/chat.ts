@@ -87,7 +87,7 @@ import {
 import { FRESH_SPAWN_MS, LIVE_AGENT_MS } from "./dm.ts";
 import { messageText as textOf, type Entry as FeedEntry } from "./feed.ts";
 import { forwardedFrom, isForwardOf, withoutForwardNote } from "./forward-mark.ts";
-import { MAX_PEER_IDS, peerMsg, readOwnConversation, readPeerTraffic, startEcho, tapAgentTraffic, tapOwnSubject, tapPeerTraffic } from "./chat-own.ts";
+import { MAX_PEER_IDS, peerMsg, remoteNoPastIdsNote, readOwnConversation, readPeerTraffic, startEcho, tapAgentTraffic, tapOwnSubject, tapPeerTraffic } from "./chat-own.ts";
 import { backlogSize, earlierDivider, moreCount, moreInsertAt, NOW_DIVIDER, nothingEarlier, pickBacklog } from "./chat-backlog.ts";
 import { dedupeRoster } from "./commands/who.ts";
 import { isContinueKey, joinLines, LEAKED_TAIL, leaksTail, peelContinuation } from "./multiline.ts";
@@ -1715,13 +1715,15 @@ async function chat(argv: string[]): Promise<void> {
         for (const p of pick.entries) markPeer(agent, p);
         const rows = pick.entries.map((p) => peerEntry(agent, p, true));
         const summary = peerNote(c.dim(peerSummary(agent, rows.length, pick.older, historySize.windowMs !== undefined)));
+        const noPast = remoteSpace && !Object.values(cachedLedger(space)).some((e) => e.name.toLowerCase() === key);
+        const tail = noPast ? [summary, peerNote(c.yellow(remoteNoPastIdsNote(agent, space)))] : [summary];
         const block = backlogs.get(key);
         const from = block ? history.entries.indexOf(block.divider) + 1 : 0;
         const nowAt = from > 0 ? history.entries.findIndex((e, i) => i >= from && e.kind === "chat" && e.historical === true && stripVTControlCharacters(e.text) === NOW_DIVIDER) : -1;
-        if (!rows.length || nowAt < 0) return placeOver(slot, [...rows, summary]);
+        if (!rows.length || nowAt < 0) return placeOver(slot, [...rows, ...tail]);
         const merged = mergeByTs(history.entries, from, nowAt, rows, (e) => (e.kind === "peer" ? e.msg.ts : e.kind === "chat" ? e.ts : undefined));
         history.entries.splice(0, history.entries.length, ...merged);
-        history.replace(slot, [summary]);
+        history.replace(slot, tail);
         redraw();
       },
       (e: Error) => {

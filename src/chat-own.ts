@@ -182,6 +182,13 @@ export function tapPeerTraffic(ep: CotalEndpoint, space: string, handler: TapHan
   return true;
 }
 
+/** The loud line under a remote read when paw's ledger knows none of `agent`'s earlier ids: only its live
+ *  id was read, so whatever it said before its last restart is missing — never an empty view that looks
+ *  complete. The mailbox records ids on remote spaces (src/ledger-recorder.ts) from its next start. */
+export function remoteNoPastIdsNote(agent: string, space: string): string {
+  return `! only ${agent}'s current mesh id is known on ${space} — messages from its earlier instances (before its last restart) aren't read; paw's mailbox records them once restarted with this release`;
+}
+
 /** At most this many of an agent's ids are read/tapped (current ids first, then the ledger's most
  *  recently seen) — each id is three pinned consumers per read. */
 export const MAX_PEER_IDS = 16;
