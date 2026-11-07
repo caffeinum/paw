@@ -239,8 +239,8 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
   assert([dmT, dmO, sys, echo].every((e) => vis(e, "chat")) && !vis(logA, "chat"), "visible: chat = the conversation, no transcript");
   assert(![dmT, dmO, sys, echo, logA, { kind: "banner", text: "B" } as E].some((e) => vis(e, "beads")), "visible: beads paints from its own model — nothing from the history");
   assert([dmT, dmO, sys, echo].every((e) => vis(e, "messages")) && !vis(logA, "messages"), "visible: messages = everything chat shows…");
-  const peerA: E = { kind: "peer", agent: "A", text: "    a → bob: hi", ts: 1, id: "p1" };
-  const peerB: E = { kind: "peer", agent: "b", text: "    b → bob: hi", ts: 1, id: "p2" };
+  const peerA: E = { kind: "peer", agent: "A", msg: { id: "p1", ts: 1, from: "a", to: "bob", text: "hi" } };
+  const peerB: E = { kind: "peer", agent: "b", msg: { id: "p2", ts: 1, from: "b", to: "bob", text: "hi" } };
   const peerNote: E = { kind: "chat", text: "! not readable", side: "sys", tight: true, onlyMessages: true };
   assert(vis(peerA, "messages") && !vis(peerB, "messages"), "visible: …plus the CURRENT target's other-peer rows (case-insensitive), never another agent's");
   assert(!["logs", "chat", "beads"].some((v) => vis(peerA, v as never) || vis(peerNote, v as never)) && vis(peerNote, "messages"), "visible: other-peer rows and notes about them are the messages view's alone");
@@ -1740,6 +1740,37 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
   const ens = chatSrc.slice(chatSrc.indexOf("function ensurePeers("), chatSrc.indexOf("\n  }\n", chatSrc.indexOf("function ensurePeers(")));
   assert(/remoteSpace/.test(ens) && !/advanceCursor|shouldFollowDm|awaiting\.|curName =|curId =/.test(ens), "peers: never on a remote space; never marks read, follows, answers an await or moves the target");
   assert(/if \(remoteSpace\) show\(peerNote\(c\.yellow\(remotePeersNote\(space\)\)\)\)/.test(chatSrc), "peers: a remote chat puts the loud note in the messages view");
+
+  // Review fixes (2026-11-06).
+  // Stale-id forwards: paw's forwarder re-sends a DM to an agent's dead id as a second copy (same
+  // sender, id = forwardId(orig, live id)). Both copies are the agent's traffic — show one.
+  const { forwardId } = await import("../src/forward-mark.ts");
+  const { dropPairedPeerForwards, isPeerForwardOf } = await import("../src/chat-peers.ts");
+  const orig = { id: "o1", ts: 5, from: "bob", to: "kit", text: "hi", fromId: "B1", toId: "K0" };
+  const fwd = { id: forwardId("o1", "K1"), ts: 5, from: "bob", to: "kit", text: "hi", fromId: "B1", toId: "K1", forwardOf: "K0" };
+  assert(isPeerForwardOf(fwd, orig) && !isPeerForwardOf({ ...fwd, id: "x" }, orig) && !isPeerForwardOf(fwd, { ...orig, toId: "K9" }), "peers: a forward pairs with its original exactly by id, never by text");
+  assert(eq(dropPairedPeerForwards([orig, fwd]).map((m) => m.id), ["o1"]) && dropPairedPeerForwards([fwd]).length === 1, "peers: history drops a paired forward, keeps an unpaired one");
+  const { peerMsg } = await import("../src/chat-own.ts");
+  const fwdWire = { id: fwd.id, ts: 5, from: { id: "B1", name: "bob" }, to: "K1", parts: [{ kind: "text", text: `[paw: forwarded — this DM was sent to your previous instance (K0); reply to the sender as usual]` }, { kind: "text", text: "hi" }] };
+  const pm = peerMsg(fwdWire as never, { from: "bob", to: "kit" });
+  assert(pm.text === "hi" && pm.forwardOf === "K0" && pm.toId === "K1" && pm.fromId === "B1", "peers: a forward's row shows what the sender wrote, the note dropped, with the ids it pairs by");
+  // Laid out at PAINT time: the same entry re-lays out at a new width (a resize redraws it).
+  let width = 120;
+  const lay = (p: import("../src/chat-peers.ts").PeerMsg) => peerRows(p, { cols: width, age: "", dim: (x: string) => x, md: (t: string) => [t], strip: (x: string) => x }).join("\n");
+  const { Painter: PeerPainter } = await import("../src/chat-views.ts");
+  const pp = new PeerPainter(() => "", (x) => x, "  ", () => false, lay);
+  const longPeer: import("../src/chat-views.ts").Entry = { kind: "peer", agent: "kit", msg: { id: "w", ts: 1, from: "kit", to: "bob", text: "y".repeat(150) } };
+  const wide = pp.paint(longPeer, "messages");
+  width = 60;
+  const narrow = pp.paint(longPeer, "messages");
+  assert(narrow.split("\n").filter(Boolean).every((l: string) => l.length <= 59 && l.startsWith(" ".repeat(peerIndent(60)))) && wide !== narrow, "peers: a peer row is laid out at the width when painted — narrowing never overflows the indent");
+  // Exact dedup: a channel post the tap placed is swapped for onMessage's line, never shown twice.
+  assert(/if \(!swapPeerRowFor\(m\.id, line\)\) show\(line\)/.test(chatSrc), "peers: onMessage's channel line replaces a tapped row of the same id");
+  // Tracked agents keep capturing; a tap gap is read back.
+  assert(/for \(const agent of agents\.values\(\)\)/.test(chatSrc) && /catchUpPeers\(since\)/.test(chatSrc), "peers: every tracked agent is captured, target or not, and a tap gap is read back");
+  // ctrl+z gives the terminal back before stopping.
+  const tstp = chatSrc.slice(chatSrc.indexOf('r.on("SIGTSTP"'));
+  assert(tstp.indexOf("MOUSE_OFF") < tstp.indexOf('process.kill(process.pid, "SIGSTOP")') && tstp.indexOf("MOUSE_OFF") > 0, "views: ctrl+z turns mouse reporting off before the process stops");
 }
 
 rmSync(process.env.PAW_HOME as string, { recursive: true, force: true });

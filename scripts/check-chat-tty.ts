@@ -109,7 +109,7 @@ const pasteRestored = (raw: string): boolean => raw.lastIndexOf("\x1b[?2004h") <
 const pasteDetail = (raw: string): string => (raw.includes("\x1b[?2004h") ? (raw.includes("\x1b[?2004l") ? "on → off" : "left ON") : "never switched on");
 
 /** One `paw chat` under a pty. `script` runs against it; returns the plain output and exit code. */
-async function chat(args: string[], script: (io: { write(s: string): void; kill(sig: string): void; out(): string; raw(): string; t(): number; waitFor(re: RegExp, ms: number): Promise<boolean> }) => Promise<void>, budgetMs = 30_000, rows = 40) {
+async function chat(args: string[], script: (io: { pid: number; write(s: string): void; kill(sig: string): void; out(): string; raw(): string; t(): number; waitFor(re: RegExp, ms: number): Promise<boolean> }) => Promise<void>, budgetMs = 30_000, rows = 40) {
   const t0 = Date.now();
   const p = ptySpawn(exe, [...pre, "chat", ...args], { name: "xterm-256color", cols: 120, rows, cwd: REPO, env: { ...(process.env as Record<string, string>), FORCE_COLOR: "1" } });
   let raw = "";
@@ -119,6 +119,7 @@ async function chat(args: string[], script: (io: { write(s: string): void; kill(
   let done = false;
   void exited.then(() => (done = true));
   const io = {
+    pid: p.pid,
     write: (s: string) => !done && p.write(s),
     kill: (sig: string) => !done && p.kill(sig),
     out: () => strip(raw),
@@ -138,6 +139,15 @@ async function chat(args: string[], script: (io: { write(s: string): void; kill(
   const code = await Promise.race([exited, sleep(budgetMs).then(() => undefined)]);
   if (code === undefined) p.kill();
   return { raw, plain: strip(raw), code, signal, ms: Date.now() - t0 };
+}
+
+/** `pid` and every descendant of it. */
+function tree(pid: number): number[] {
+  let kids: number[] = [];
+  try {
+    kids = execFileSync("pgrep", ["-P", String(pid)], { encoding: "utf8" }).split("\n").filter(Boolean).map(Number);
+  } catch {} // pgrep exits 1 when there are no children
+  return [pid, ...kids.flatMap(tree)];
 }
 
 try {
@@ -542,6 +552,34 @@ try {
       ok("19. …leaving the view turns reporting off", afterLeave.includes(MOUSE_OFF) && !afterLeave.includes(MOUSE_ON), JSON.stringify(afterLeave.slice(0, 40)));
       ok("19. …no other view turned it on (the first ?1000h comes after the chat and messages views were used)", r.raw.indexOf(MOUSE_ON) > r.raw.indexOf(`peer-live-${nonce}`) && r.raw.indexOf(`peer-live-${nonce}`) > 0);
       ok("20. /quit in the beads view turns mouse reporting off on the way out", r.raw.lastIndexOf(MOUSE_OFF) > r.raw.lastIndexOf(MOUSE_ON) && r.code === 0, `exit ${r.code}`);
+
+      // 21. ctrl+z in the beads view: reporting off BEFORE the process stops (a parent shell left in
+      // mouse mode types `\e[<64;…M` on every wheel), and back on with `fg`.
+      let suspendRaw = "";
+      let stopped: number[] = [];
+      let resumedRaw = "";
+      const z = await chat(["echoer"], async (io) => {
+        await io.waitFor(/● connected/, 20_000);
+        await sleep(300);
+        io.write("\x1b[C");
+        await sleep(300);
+        io.write("\x1b[C"); // → beads
+        await io.waitFor(/beads · /, 5000);
+        await sleep(500);
+        const mark = io.raw().length;
+        io.write("\x1a"); // ctrl+z
+        await sleep(800);
+        suspendRaw = io.raw().slice(mark);
+        stopped = tree(io.pid).filter((pid) => /T/.test(execFileSync("ps", ["-o", "stat=", "-p", String(pid)], { encoding: "utf8" })));
+        const back = io.raw().length;
+        for (const pid of stopped) process.kill(pid, "SIGCONT");
+        await sleep(800);
+        resumedRaw = io.raw().slice(back);
+        io.write("/quit\r");
+      });
+      ok("21. ctrl+z in beads stops the chat process", stopped.length > 0, JSON.stringify(stopped));
+      ok("21. …after turning mouse reporting and bracketed paste off", suspendRaw.includes(MOUSE_OFF) && suspendRaw.includes("\x1b[?2004l") && !suspendRaw.slice(suspendRaw.indexOf(MOUSE_OFF)).includes(MOUSE_ON), JSON.stringify(suspendRaw.slice(0, 60)));
+      ok("21. …and `fg` (SIGCONT) takes reporting back and repaints the beads view", resumedRaw.includes(MOUSE_ON) && /beads · /.test(strip(resumedRaw)) && z.code === 0, `exit ${z.code}`);
     } finally {
       await bob.stop().catch(() => {});
     }

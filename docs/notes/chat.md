@@ -606,12 +606,25 @@ agent BEFORE the chat started … not start from an empty screen", on open AND o
   - **Layout** (`peerRows`): indent = a quarter of the width, 4..24 cols (24 at 120); `from → to (age):`
     label, a one-line body on the label row else a block under it (2 more cols), markdown-rendered then
     stripped and dimmed whole; wraps inside the right column, never reaching the last column. Painted as
-    a side of its own (`other`, tight), so a run of them sits together with air around it.
+    a side of its own (`other`, tight), so a run of them sits together with air around it. The `peer`
+    entry stores the MESSAGE (`PeerMsg`), not rendered text: `Painter` lays it out at paint time (its
+    `peer` constructor arg = chat.ts `layPeer`) at the width and age of that moment, and a resize in the
+    messages view redraws (debounced 150ms) — a row frozen at the old width used to overflow its indent
+    and wrap into the left column after a narrowing (review, 2026-11-06).
   - **Live** (open mesh): `tapPeerTraffic` — a second space-wide `ep.tap` in chat-own.ts, attached before
-    the endpoint starts. Rows are captured for the CURRENT target only and shown only while it is the
-    target. A channel post "you" also receive comes through `onMessage` as a chat line (which adds its id
-    to `shownIds`); the tap waits 300ms for that and prints the row only if it didn't. Never news: no
-    follow, no await, no cursor.
+    the endpoint starts. Rows are captured for the current target AND every agent whose earlier rows were
+    read this session (`peerAgents`), and shown only while that agent is the target — so @kit → @bob →
+    @kit shows what kit said in between. Dedup is per agent (`peerShown`, `<agent>\0<id>`: kit → bob is a
+    row under both). A gap in the tap (transport down, or the endpoint replaced by `/reconnect`;
+    `peerDownAt`) is READ BACK once a started endpoint is up again (`catchUpPeers`: every tracked agent,
+    from 5s before the gap, unseen ids only, under a `── N messages … while the connection was down ──`
+    line; a failed read is red). A channel post "you" also receive comes through `onMessage` as a chat
+    line (which adds its id to `shownIds`); the tap waits 300ms for that, and if delivery is slower still,
+    `onMessage` SWAPS the tapped row for its line (`swapPeerRowFor`, exact by id) — never shown twice.
+    Stale-id forwards (src/forward-mark.ts) are paired exactly (`isPeerForwardOf`): history drops a
+    forward whose original it holds (`dropPairedPeerForwards`), live drops one whose original was placed
+    (`peerOriginals`), and an unpaired forward shows what the sender wrote, the note removed. Never news:
+    no follow, no await, no cursor.
   - **Earlier** (open mesh, `ensurePeers`): once per agent per session, on entering the view and on every
     retarget while in it (`pumpLogs` checks each second — the target moves down many paths). Sized like
     the earlier block (`--history`: last 20 within 24h; N = last N; 0 = off), deduped by id against
@@ -681,7 +694,11 @@ agent BEFORE the chat started … not start from an empty screen", on open AND o
   front of every listener, readline included — readline would otherwise type `0;10;5M` into the line);
   the strip is always on. **Off on every way out:** leaving the view, ctrl+o, `shutdown()` (ctrl+c/EOF/
   SIGINT/SIGTERM/`/quit`) writes `?1000l ?1006l` unconditionally, and a `process.on("exit")` hook writes it
-  synchronously if reporting is still on (crash path). Folds are view state. A folded parent renders
+  synchronously if reporting is still on (crash path). **Ctrl-Z** (`r.on("SIGTSTP")` in `createRepl`, which
+  takes readline's own suspend over): reporting + bracketed paste off and raw mode off, THEN
+  `SIGSTOP` (not SIGTSTP — the kernel discards that in an orphaned process group, e.g. a chat leading its
+  pty session); on SIGCONT raw mode, bracketed paste and `syncMouse()` come back and the view repaints.
+  `check:chat-tty` 21. Folds are view state. A folded parent renders
   `▸ ○ id (+N)` (N = every hidden descendant); its descendants are NOT rows at all, so the pager's counts
   are painted rows only and the wheel/PgUp/PgDn reach every one. `renderTasksPanel` (pure) returns
   `{ rows, hits }` and `hitAt` resolves a click. Caveat: needs SGR (1006) mouse support — every modern

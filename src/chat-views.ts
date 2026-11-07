@@ -26,6 +26,7 @@
  *
  * Pure: no tty, no readline, no mesh — chat.ts wires these in; check:chat asserts them.
  */
+import type { PeerMsg } from "./chat-peers.ts";
 import type { Block } from "./transcript.ts";
 import type { Machine } from "./hosted.ts";
 import { displayWidth, fitWidth } from "./width.ts";
@@ -201,8 +202,9 @@ export interface FollowSource {
  *   `ts` is the message's own time, set on earlier-block rows so other-peer history can be merged
  *   between them in time order. `onlyMessages` marks a note ABOUT the messages view (the remote-space
  *   warning, the other-peer loader and summary).
- * - `peer` — one message between the target (`agent`) and SOMEONE ELSE (src/chat-peers.ts), already
- *   rendered indented right and dimmed. Shown in the messages view only, and only while `agent` is the
+ * - `peer` — one message between the target (`agent`) and SOMEONE ELSE (src/chat-peers.ts), stored as
+ *   the message and laid out (indented right, dimmed) at PAINT time, at the width then — a resize
+ *   re-lays it out instead of overflowing the indent. Shown in the messages view only, and only while `agent` is the
  *   target — another agent's traffic, captured before a switch, is not this conversation.
  * - `echo` — a line you typed, exactly as readline echoed it. readline prints it, not emit, so without
  *   recording it here your own half of the conversation would vanish on the first redraw.
@@ -212,7 +214,7 @@ export interface FollowSource {
 export type Entry =
   | { kind: "banner"; text: string }
   | { kind: "chat"; text: string; side: "you" | "peer" | "sys"; tight: boolean; from?: string; onlyLogs?: boolean; onlyMessages?: boolean; bannerDelta?: boolean; historical?: boolean; ts?: number }
-  | { kind: "peer"; agent: string; text: string; ts: number; id: string; historical?: boolean }
+  | { kind: "peer"; agent: string; msg: PeerMsg; historical?: boolean }
   | { kind: "echo"; text: string }
   | { kind: "log"; agent: string; blocks: Block[]; backfill: boolean; note?: string };
 
@@ -300,17 +302,21 @@ export class Painter {
   private readonly pad: string;
   /** `paw log`'s spacing predicate (src/log.ts attachesAbove): true for a `⎿` result rail. */
   private readonly attachesAbove: (rendered: string) => boolean;
+  /** An other-peer message as screen rows, at the width of the moment (chat.ts: peerRows). */
+  private readonly peer: (p: PeerMsg) => string;
 
   constructor(
     render: (b: Block) => string,
     dim: (s: string) => string = (s) => s,
     pad = "  ",
     attachesAbove: (rendered: string) => boolean = () => false,
+    peer: (p: PeerMsg) => string = (p) => `${p.from} → ${p.to}: ${p.text}`,
   ) {
     this.render = render;
     this.dim = dim;
     this.pad = pad;
     this.attachesAbove = attachesAbove;
+    this.peer = peer;
   }
 
   reset(): void {
@@ -334,9 +340,9 @@ export class Painter {
       case "chat":
         return this.put(e.side, e.text.split("\n").join(`\n${this.pad}`), e.side === "sys" || e.tight);
       case "peer":
-        // Already laid out (indented right, dimmed) — a side of its own, so a run of other-peer rows
-        // sits together with air above and below it, apart from your conversation.
-        return this.put("other", e.text, true);
+        // Laid out now (indented right, dimmed) — a side of its own, so a run of other-peer rows sits
+        // together with air above and below it, apart from your conversation.
+        return this.put("other", this.peer(e.msg), true);
       case "log": {
         const lines = e.blocks
           .map((b) => logBlockFor(view, b))

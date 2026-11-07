@@ -21,6 +21,7 @@
  *
  * Pure: no tty, no mesh. check:chat asserts it.
  */
+import { forwardId } from "./forward-mark.ts";
 import { displayWidth } from "./width.ts";
 
 /** One message between the target and someone else, in the shape the view renders. */
@@ -31,7 +32,35 @@ export interface PeerMsg {
   from: string;
   /** recipient: a peer's name, `#channel`, or a raw id when nothing names it (never a guess) */
   to: string;
+  /** the message as the sender wrote it (a stale-id forward's note removed) */
   text: string;
+  /** wire ids, DMs only — what a stale-id forward is paired against */
+  fromId?: string;
+  toId?: string;
+  /** set on a stale-id forward (src/forward-mark.ts): the dead id the original was sent to */
+  forwardOf?: string;
+}
+
+/**
+ * Is `fwd` paw's stale-id forward of `orig` (src/forward-mark.ts)? Exact, by id: same sender, the
+ * original went to the dead id the forward names, and the forward's id is forwardId(orig, live id).
+ * An agent's dead ids count as its own, so both copies classify as its traffic — show one.
+ */
+export function isPeerForwardOf(fwd: PeerMsg, orig: PeerMsg): boolean {
+  return (
+    fwd.forwardOf !== undefined &&
+    fwd.toId !== undefined &&
+    fwd.fromId !== undefined &&
+    fwd.fromId === orig.fromId &&
+    orig.toId === fwd.forwardOf &&
+    fwd.id === forwardId(orig.id, fwd.toId)
+  );
+}
+
+/** `msgs` minus every forward whose original is also in it. */
+export function dropPairedPeerForwards(msgs: PeerMsg[]): PeerMsg[] {
+  const originals = msgs.filter((m) => m.forwardOf === undefined);
+  return msgs.filter((m) => m.forwardOf === undefined || !originals.some((o) => isPeerForwardOf(m, o)));
 }
 
 /** What a raw message must carry to be classified. */

@@ -21,7 +21,8 @@
 import { createHash, randomUUID } from "node:crypto";
 import { chatSubject, type CotalMessage, idFromCreds, newIdentity, parsePrincipalKey, unicastRecvFilter, unicastSubject, type CotalEndpoint } from "@cotal-ai/core";
 import { connect, credsAuthenticator, type NatsConnection } from "@nats-io/transport-node";
-import { classifyPeer, type PeerMsg, type RawMsg } from "./chat-peers.ts";
+import { classifyPeer, dropPairedPeerForwards, type PeerMsg, type RawMsg } from "./chat-peers.ts";
+import { forwardedFrom, withoutForwardNote } from "./forward-mark.ts";
 import { conversationEntries, dmRow, FETCH_CAP, messageText, readConversation, type Entry } from "./feed.ts";
 import { cachedLedger } from "./peer-ledger.ts";
 import { ECHO_TTL_SEC, FORWARD_TTL_SEC, RENEW_BEFORE_SEC, credsSecondsLeft, echoGrants, filteredReadGrants, signScopedCreds } from "./remote-creds.ts";
@@ -197,7 +198,24 @@ export async function readPeerTraffic(
     const who = classifyPeer(m as RawMsg, { agent, agentIds, me, nameOf: (id) => nameById.get(id) ?? rosterName(id) });
     if (!who) continue;
     if (!m.id) throw new Error(`paw: a history row from ${m.from.name} at ${m.ts} has no id — can't dedup it against the live view`);
-    out.push({ id: m.id, ts: m.ts, from: who.from, to: who.to, text: messageText(m as CotalMessage) });
+    out.push(peerMsg(m as CotalMessage & RawMsg, who));
   }
-  return out.sort((a, b) => a.ts - b.ts);
+  return dropPairedPeerForwards(out).sort((a, b) => a.ts - b.ts);
+}
+
+/** A classified wire message as a {@link PeerMsg}: the text the sender wrote (a stale-id forward's note
+ *  dropped), and for a DM the wire ids a forward is paired by. */
+export function peerMsg(m: CotalMessage & RawMsg, who: { from: string; to: string }): PeerMsg {
+  const forwardOf = forwardedFrom(m.parts);
+  const dm = !m.channel && !m.toService && !!m.to;
+  return {
+    id: m.id,
+    ts: m.ts,
+    from: who.from,
+    to: who.to,
+    text: messageText({ ...m, parts: withoutForwardNote(m.parts) }),
+    ...(dm && m.from.id ? { fromId: m.from.id } : {}),
+    ...(dm ? { toId: m.to } : {}),
+    ...(forwardOf !== undefined ? { forwardOf } : {}),
+  };
 }
