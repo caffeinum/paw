@@ -73,7 +73,7 @@ export function rosterRows(roster: readonly RosterPresence[], now: number): Rost
     for (const p of machines.values()) {
       const emoji = metaString(p.card.meta, "emoji");
       const hue = metaHue(p.card.meta);
-      const background = presenceBackground(p.activity);
+      const background = presenceBackground(p.status, p.activity);
       const activity = p.activity && !background ? clip(p.activity, 120) : "";
       rows.push({
         name: collides ? collisionName(name, p.card.id) : name,

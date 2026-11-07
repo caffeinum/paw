@@ -112,9 +112,11 @@ export interface PresenceLike {
 }
 
 const BACKGROUND_PREFIX = "background:";
-/** The patched Stop hook's presence activity "background: workflow + 2 subagents" → "workflow + 2 subagents". */
-export function presenceBackground(activity: string | undefined): string | undefined {
-  if (!activity?.startsWith(BACKGROUND_PREFIX)) return undefined;
+/** The patched Stop hook's presence (`working`, activity "background: workflow + 2 subagents") → "workflow + 2
+ *  subagents". Only on `working`: cotal keeps the last activity across status changes, so an older hook's idle (or
+ *  any other status) can still carry a stale "background: …" line. */
+export function presenceBackground(status: string, activity: string | undefined): string | undefined {
+  if (status !== "working" || !activity?.startsWith(BACKGROUND_PREFIX)) return undefined;
   return activity.slice(BACKGROUND_PREFIX.length).trim() || undefined;
 }
 
@@ -130,7 +132,7 @@ export function withPresence<R extends Row>(rows: readonly R[], roster: readonly
     const p = newest.get(r.name);
     const { statusSince: _s, activeAt: _a, background: _b, ...rest } = r;
     if (!p || p.status !== r.mesh) return rest as R;
-    const background = presenceBackground(p.activity);
+    const background = presenceBackground(p.status, p.activity);
     return { ...rest, ...(typeof p.statusSince === "number" ? { statusSince: p.statusSince } : {}), ...(typeof p.activeAt === "number" ? { activeAt: p.activeAt } : {}), ...(background ? { background } : {}) } as R;
   });
 }

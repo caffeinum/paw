@@ -565,12 +565,15 @@ if (!url || !admin) {
 console.log("6. background work (beads-y1eg)");
 {
   const { presenceBackground } = await import("../src/office-bridge.ts");
-  assert(presenceBackground("background: workflow + 2 subagents") === "workflow + 2 subagents" && presenceBackground("Bash: ls") === undefined && presenceBackground("background:") === undefined && presenceBackground(undefined) === undefined, "presenceBackground reads only a 'background: …' activity");
+  assert(presenceBackground("working", "background: workflow + 2 subagents") === "workflow + 2 subagents" && presenceBackground("working", "Bash: ls") === undefined && presenceBackground("working", "background:") === undefined && presenceBackground("working", undefined) === undefined, "presenceBackground reads only a 'background: …' activity");
+  assert(presenceBackground("idle", "background: shell") === undefined && presenceBackground("waiting", "background: shell") === undefined, "a stale 'background: …' left on idle/waiting is ignored (cotal keeps the last activity — seen live 2026-11-07)");
   const now0 = 1_000_000;
   const pres = (status: string, activity?: string) => ({ card: { name: "a" }, status, ts: now0, statusSince: now0 - 5, ...(activity ? { activity } : {}) });
   const wp = withPresence([row("a", { mesh: "working" })], [pres("working", "background: workflow")]);
   assert(wp[0].background === "workflow" && desiredFor(wp[0]).status === "running", `local mode: the Stop hook's presence → running (${JSON.stringify(wp[0])})`);
   assert(withPresence([row("a", { mesh: "idle" })], [pres("working", "background: workflow")])[0].background === undefined, "a presence in another status says nothing about this row");
+  const stale = rosterRows([{ card: { id: "local.Y", name: "a", kind: "agent" }, status: "idle", ts: Date.now(), activity: "background: shell" } as never], Date.now());
+  assert(stale[0].background === undefined && desiredFor(stale[0]).status === "idle", `roster: idle with a stale background activity → idle (${JSON.stringify(stale[0])})`);
   const rr = rosterRows([{ card: { id: "local.X", name: "a", kind: "agent" }, status: "working", ts: Date.now(), activity: "background: 2 subagents" } as never], Date.now());
   assert(rr.length === 1 && rr[0].background === "2 subagents" && rr[0].activity === undefined && desiredFor(rr[0]).status === "running" && desiredFor(rr[0]).activity === "background: 2 subagents", `roster mode (the fly bridge): → running "background: 2 subagents" (${JSON.stringify(rr[0])} → ${JSON.stringify(rr.length ? desiredFor(rr[0]) : null)})`);
 }

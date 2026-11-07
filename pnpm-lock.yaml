@@ -5,7 +5,7 @@ settings:
   excludeLinksFromLockfile: false
 
 patchedDependencies:
-  '@cotal-ai/connector-claude-code@0.100.0': 92e47927553eb5b849081fd61b7096e192dac629c6bd3438e502bb306c06a288
+  '@cotal-ai/connector-claude-code@0.100.0': e728246890570e44196b00c3bafbe8ed3718b1b0ce82c7659648e03b68b522f8
   '@cotal-ai/core@0.100.0': f206d14976154ac035546b79574db97a85dde4dfea39aa84748d26d8c1b3653b
   '@nats-io/transport-node@3.4.0': ede15edbd9f8a1316e377cfd578eabd75f247211c205eb756a7d4b6edcb4217e
 
@@ -21,7 +21,7 @@ importers:
         version: 0.100.0(@cotal-ai/core@0.100.0(patch_hash=f206d14976154ac035546b79574db97a85dde4dfea39aa84748d26d8c1b3653b))
       '@cotal-ai/connector-claude-code':
         specifier: 0.100.0
-        version: 0.100.0(patch_hash=92e47927553eb5b849081fd61b7096e192dac629c6bd3438e502bb306c06a288)(@cotal-ai/core@0.100.0(patch_hash=f206d14976154ac035546b79574db97a85dde4dfea39aa84748d26d8c1b3653b))
+        version: 0.100.0(patch_hash=e728246890570e44196b00c3bafbe8ed3718b1b0ce82c7659648e03b68b522f8)(@cotal-ai/core@0.100.0(patch_hash=f206d14976154ac035546b79574db97a85dde4dfea39aa84748d26d8c1b3653b))
       '@cotal-ai/connector-codex':
         specifier: 0.100.0
         version: 0.100.0(@cotal-ai/core@0.100.0(patch_hash=f206d14976154ac035546b79574db97a85dde4dfea39aa84748d26d8c1b3653b))
@@ -713,7 +713,7 @@ snapshots:
     dependencies:
       '@cotal-ai/core': 0.100.0(patch_hash=f206d14976154ac035546b79574db97a85dde4dfea39aa84748d26d8c1b3653b)
 
-  '@cotal-ai/connector-claude-code@0.100.0(patch_hash=92e47927553eb5b849081fd61b7096e192dac629c6bd3438e502bb306c06a288)(@cotal-ai/core@0.100.0(patch_hash=f206d14976154ac035546b79574db97a85dde4dfea39aa84748d26d8c1b3653b))':
+  '@cotal-ai/connector-claude-code@0.100.0(patch_hash=e728246890570e44196b00c3bafbe8ed3718b1b0ce82c7659648e03b68b522f8)(@cotal-ai/core@0.100.0(patch_hash=f206d14976154ac035546b79574db97a85dde4dfea39aa84748d26d8c1b3653b))':
     dependencies:
       '@cotal-ai/core': 0.100.0(patch_hash=f206d14976154ac035546b79574db97a85dde4dfea39aa84748d26d8c1b3653b)
 

@@ -150,6 +150,12 @@ line. Each completion delivers a `<task-notification>` turn that ends in another
 Launches older than the seat's claude (`ps` etime, −1s for its whole-second precision) belong to a previous
 incarnation and are ignored. Sandboxed seats get no probe (the VM gets COTAL_* + PASS_ENV only) → plain idle.
 
+cotal keeps the LAST activity across status changes unless one is passed, so leaving the background state clears
+it (`leaveBackground`: idle and the next prompt's working both pass ""), and the bridge trusts "background: …" only
+on a `working` presence — seen live 2026-11-07: idle still carried "background: shell" and the office stayed running.
+Live loop (throwaway office, isolated space, real claude agent, roster bridge): idle → working (DM) → running
+"background: shell" 6s later (turn ended, `sleep 90` going) → working (completion turn, +88s) → idle 2s later.
+
 Bridge: `presenceBackground` reads that activity in `withPresence` (local) and `rosterRows` (roster) into
 `row.background`; `desiredFor` maps background (no pending tool; mesh working/idle/waiting) to agent-office's
 `running` status (seated still, screen shows the job; office.bykhun.com accepts it since 2026-11-06 — an older office

@@ -115,7 +115,14 @@ process.stdin.pipe(c.stdin); c.on("exit", (code) => process.exit(code ?? 1));`);
     rec(100, { type: "user", message: { content: "<task-notification>\n<task-id>a1</task-id>\n<status>completed</status>\n</task-notification>" } }),
   ].join("\n") + "\n");
   await hook({ hook_event_name: "Stop", transcript_path: transcript });
-  ok("Stop after everything finished → idle", await waitFor("idle", (p) => p?.status === "idle"), JSON.stringify(presence()));
+  ok("Stop after everything finished → idle, the background line cleared", await waitFor("idle", (p) => p?.status === "idle" && !p?.activity), JSON.stringify(presence()));
+
+  // background again, then a NEW prompt: working, and the stale background line must not ride along
+  writeFileSync(transcript, readFileSync(transcript, "utf8") + rec(0, { type: "user", toolUseResult: { status: "async_launched", taskId: "w2", taskType: "local_workflow", workflowName: "y" } }) + "\n");
+  await hook({ hook_event_name: "Stop", transcript_path: transcript });
+  ok("background again → working + 'background: workflow'", await waitFor("background 2", (p) => p?.status === "working" && p?.activity === "background: workflow"), JSON.stringify(presence()));
+  await hook({ hook_event_name: "UserPromptSubmit", transcript_path: transcript });
+  ok("a new prompt → working with the background line cleared", await waitFor("cleared", (p) => p?.status === "working" && !p?.activity), JSON.stringify(presence()));
 } finally {
   child?.kill("SIGTERM");
   await observer?.stop().catch(() => {});
