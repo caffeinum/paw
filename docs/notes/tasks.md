@@ -186,3 +186,12 @@ Moved verbatim from CLAUDE.md (2026-10-02 split). Index: [CLAUDE.md](../../CLAUD
   connector injects it) and an operator shell may carry one for some repo's tracker, so honouring it
   would silently redirect the fleet's list. Daemons inherit `PAW_BEADS_DIR` via daemonEnv, so test
   agents spawned in an isolated space file into the same throwaway db (`bd init` it first).
+
+## paw chat's beads view
+
+- **`paw chat`'s beads view (was `tasks`, 2026-10-07; renamed + fullscreen 2026-11-06)** — the fourth
+  chat view (logs · chat · messages · beads, ←/→ on an empty line): the target's beads from the same db
+  (`listAssigned`, the READ lane, `PAW_BEADS_DIR` for isolated tests), fullscreen — no conversation pane
+  under the list any more. The mouse wheel scrolls it (SGR reporting on only while the view is up;
+  ctrl+o hands the mouse back for selecting text), PgUp/PgDn too. →
+  [chat.md#views](chat.md#views)

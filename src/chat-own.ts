@@ -1,6 +1,6 @@
 /**
  * What `paw chat` reads of "you"'s OWN mail beyond its inbox: the cross-session echo (what another
- * `paw chat` sent) and the tasks view's last-exchange seed.
+ * `paw chat` sent), the earlier block's read, and the messages view's other-peer rows.
  *
  * Open mesh: unchanged — a space-wide `ep.tap` and `readConversation` over the whole DM stream.
  *
@@ -13,11 +13,17 @@
  *    ONLY that subscription (src/remote-creds.ts), TLS required, re-signed before it expires;
  *  - history seed: DMs to and from "you", read through named filter-pinned consumers with a one-shot
  *    `chat-history` cred. Never another agent's mail.
+ *
+ * The messages view's other-peer rows (another agent's mail, by design) are OPEN-mesh only
+ * ({@link tapPeerTraffic}, {@link readPeerTraffic}); on a remote space they are refused, never read
+ * with a widened cred.
  */
 import { createHash, randomUUID } from "node:crypto";
-import { chatSubject, idFromCreds, newIdentity, parsePrincipalKey, unicastRecvFilter, unicastSubject, type CotalEndpoint } from "@cotal-ai/core";
+import { chatSubject, type CotalMessage, idFromCreds, newIdentity, parsePrincipalKey, unicastRecvFilter, unicastSubject, type CotalEndpoint } from "@cotal-ai/core";
 import { connect, credsAuthenticator, type NatsConnection } from "@nats-io/transport-node";
-import { conversationEntries, dmRow, readConversation, type Entry } from "./feed.ts";
+import { classifyPeer, type PeerMsg, type RawMsg } from "./chat-peers.ts";
+import { conversationEntries, dmRow, FETCH_CAP, messageText, readConversation, type Entry } from "./feed.ts";
+import { cachedLedger } from "./peer-ledger.ts";
 import { ECHO_TTL_SEC, FORWARD_TTL_SEC, RENEW_BEFORE_SEC, credsSecondsLeft, echoGrants, filteredReadGrants, signScopedCreds } from "./remote-creds.ts";
 import { isRemoteSpace, natsTls } from "./server.ts";
 import { readFiltered } from "./sleep-dial.ts";
@@ -118,8 +124,8 @@ export async function startEcho(ep: CotalEndpoint, space: string, server: string
 }
 
 /** "you"'s conversation, both directions, with message ids — the whole DM stream on an open mesh,
- *  only "you"'s own mail on a remote space. The tasks-view seed and chat's earlier-history block
- *  (src/chat-backlog.ts) both read through here; nothing else in chat reads the DM stream. */
+ *  only "you"'s own mail on a remote space. Chat's earlier-history block
+ *  (src/chat-backlog.ts) reads through here; the only other DM-stream read in chat is {@link readPeerTraffic} (open mesh only). */
 export async function readOwnConversation(ep: CotalEndpoint, space: string, server: string): Promise<Entry[]> {
   if (!isRemoteSpace(space)) return readConversation(ep, { withSent: true, withIds: true });
   const me = ep.card.id;
@@ -147,4 +153,51 @@ export async function readOwnConversation(ep: CotalEndpoint, space: string, serv
   } finally {
     await nc.close().catch(() => {});
   }
+}
+
+/**
+ * The messages view's live other-peer rows (src/chat-peers.ts). OPEN mesh: a space-wide tap, like the
+ * echo's — `handler` sees every frame and classifies it. REMOTE: false, and nothing is tapped — chat's
+ * creds cover only "you"'s own subjects and paw mints no narrow cred for another agent's mail, so the
+ * view says that loudly instead. Sync, attached before the endpoint starts (no frame is missed).
+ */
+export function tapPeerTraffic(ep: CotalEndpoint, space: string, handler: TapHandler): boolean {
+  if (isRemoteSpace(space)) return false;
+  ep.tap(handler);
+  return true;
+}
+
+/**
+ * Everything the DM and chat streams hold that classifies as `agent`'s other-peer traffic — the
+ * messages view's earlier rows. OPEN mesh only: the whole DM stream (every DM, agent↔agent included)
+ * plus every channel's backlog. A recipient is named from the stream's senders, paw's ledger, then the
+ * caller's live roster (a peer that only ever received has no name in the stream). A remote space THROWS: those reads need the space-wide `admin` cred
+ * (what `paw history`/`paw web` hold), and chat never widens its creds silently.
+ */
+export async function readPeerTraffic(
+  ep: CotalEndpoint,
+  space: string,
+  agent: string,
+  knownIds: ReadonlySet<string>,
+  rosterName: (id: string) => string | undefined,
+): Promise<PeerMsg[]> {
+  if (isRemoteSpace(space)) throw new Error(`other-peer messages aren't readable with this chat's credentials on a remote space (${space})`);
+  const me = ep.card.id;
+  const dms = await ep.dmHistory({ limit: FETCH_CAP });
+  const channels = (await ep.listChannels()).filter((c) => c.messages > 0 && !/[*>]/.test(c.channel)).map((c) => c.channel);
+  const posts = channels.length ? (await ep.multiChannelHistory(channels, { limit: FETCH_CAP })).map((r) => ({ ...r.msg, channel: r.channel })) : [];
+  const nameById = new Map<string, string>();
+  for (const [id, e] of Object.entries(cachedLedger(space))) nameById.set(id, e.name);
+  for (const m of dms) if (m.from.id && m.from.name) nameById.set(m.from.id, m.from.name);
+  const key = agent.toLowerCase();
+  const agentIds = new Set(knownIds);
+  for (const [id, name] of nameById) if (name.toLowerCase() === key) agentIds.add(id);
+  const out: PeerMsg[] = [];
+  for (const m of [...dms, ...posts]) {
+    const who = classifyPeer(m as RawMsg, { agent, agentIds, me, nameOf: (id) => nameById.get(id) ?? rosterName(id) });
+    if (!who) continue;
+    if (!m.id) throw new Error(`paw: a history row from ${m.from.name} at ${m.ts} has no id — can't dedup it against the live view`);
+    out.push({ id: m.id, ts: m.ts, from: who.from, to: who.to, text: messageText(m as CotalMessage) });
+  }
+  return out.sort((a, b) => a.ts - b.ts);
 }

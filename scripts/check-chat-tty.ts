@@ -30,10 +30,18 @@
  *      delivered live again) shows after `@echo2`; history never marks it read (cursor unchanged), never
  *      retargets (no `↪ replying`), and plain lines still go to the switched-to target;
  *  16. `--history 1` + `/more 3` grows the block in place; `--history 0` shows none.
+ *  17. the MESSAGES view (→ from chat): echoer's earlier DM to a second peer `bob` (in the stream from
+ *      before chat opened) and a live DM bob → echoer show INDENTED RIGHT with an `a → b` label, while
+ *      echoer's DM to you stays left-aligned;
+ *  18. ←/→ walk logs → chat → messages → beads (the hint names each view on the way) and clamp;
+ *  19. the BEADS view is fullscreen (no conversation pane), turns SGR mouse reporting on, and the wheel
+ *      scrolls the bead list (40 beads in an isolated PAW_BEADS_DIR); ctrl+o hands the mouse back
+ *      (reporting off) and takes it again; leaving the view turns reporting off;
+ *  20. /quit typed in the beads view turns mouse reporting off on the way out.
  *  (1. also covers a peer registered nowhere here that IS on the roster: found → the normal prompt.)
  */
 import { spawn as ptySpawn } from "@lydell/node-pty";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -62,6 +70,14 @@ const ok = (label: string, pass: boolean, detail = ""): void => {
   console.log(`${pass ? "  ok " : "  FAIL"}  ${label}${detail ? ` — ${detail}` : ""}`);
   if (!pass) failures.push(label);
 };
+
+// The beads view reads bd: point it (and every child chat) at a throwaway db, never the operator's ~/.beads.
+const beadsDb = join(home, "beads");
+mkdirSync(beadsDb, { recursive: true });
+process.env.PAW_BEADS_DIR = beadsDb;
+const bd = (...args: string[]): string => execFileSync("bd", args, { cwd: beadsDb, env: { ...process.env, BEADS_DIR: beadsDb }, encoding: "utf8" }).trim();
+bd("init", "--quiet");
+for (let i = 0; i < 40; i++) bd("create", `bead number ${String(i).padStart(2, "0")}`, "-a", "echoer", "--silent");
 
 await ensure({ needMesh: true, needManager: true, space });
 const server = pawServer(space);
@@ -93,7 +109,7 @@ const pasteRestored = (raw: string): boolean => raw.lastIndexOf("\x1b[?2004h") <
 const pasteDetail = (raw: string): string => (raw.includes("\x1b[?2004h") ? (raw.includes("\x1b[?2004l") ? "on → off" : "left ON") : "never switched on");
 
 /** One `paw chat` under a pty. `script` runs against it; returns the plain output and exit code. */
-async function chat(args: string[], script: (io: { write(s: string): void; kill(sig: string): void; out(): string; t(): number; waitFor(re: RegExp, ms: number): Promise<boolean> }) => Promise<void>, budgetMs = 30_000, rows = 40) {
+async function chat(args: string[], script: (io: { write(s: string): void; kill(sig: string): void; out(): string; raw(): string; t(): number; waitFor(re: RegExp, ms: number): Promise<boolean> }) => Promise<void>, budgetMs = 30_000, rows = 40) {
   const t0 = Date.now();
   const p = ptySpawn(exe, [...pre, "chat", ...args], { name: "xterm-256color", cols: 120, rows, cwd: REPO, env: { ...(process.env as Record<string, string>), FORCE_COLOR: "1" } });
   let raw = "";
@@ -106,6 +122,7 @@ async function chat(args: string[], script: (io: { write(s: string): void; kill(
     write: (s: string) => !done && p.write(s),
     kill: (sig: string) => !done && p.kill(sig),
     out: () => strip(raw),
+    raw: () => raw,
     t: () => Date.now() - t0,
     waitFor: async (re: RegExp, ms: number) => {
       const end = Date.now() + ms;
@@ -437,6 +454,97 @@ try {
       io.write("/quit\r");
     });
     ok("16. --history 0 shows no earlier block", !/earlier messages|── earlier/.test(off.plain));
+  }
+
+  // 17–20. the messages view, the view order, the fullscreen beads view and its mouse wheel.
+  {
+    const nonce = Date.now().toString(36);
+    const MOUSE_ON = "\x1b[?1000h";
+    const MOUSE_OFF = "\x1b[?1000l";
+    const bob = new CotalEndpoint({ space, servers: server, creds: await controlCreds(space), card: { name: "bob", kind: "agent" }, registerPresence: true, consume: true, watchPresence: true });
+    bob.on("error", (e: Error) => console.error("bob:", e.message));
+    bob.on("warning", () => {});
+    bob.on("message", (_m: CotalMessage, d: Delivery) => d.ack());
+    await bob.start();
+    try {
+      if (!youId) throw new Error("check:chat-tty: echoer never saw \"you\" on the roster");
+      await echoer.unicast(bob.card.id, `peer-hist-${nonce}`); // before the chat: only the DM stream has it
+      await sleep(300);
+      let messagesScreen = "";
+      let hints = "";
+      let beadsRaw = "";
+      let afterLeave = "";
+      const r = await chat(["echoer"], async (io) => {
+        await io.waitFor(/── now ──/, 20_000);
+        await io.waitFor(/● connected/, 10_000);
+        await echoer.unicast(youId!, `mine-${nonce}`);
+        await io.waitFor(new RegExp(`mine-${nonce}`), 10_000);
+        await sleep(300);
+        io.write("\x1b[C"); // chat → messages
+        await io.waitFor(/messages {2}│/, 5000);
+        await io.waitFor(/between echoer and other peers/, 15_000);
+        await sleep(500);
+        messagesScreen = lastScreen(io.raw());
+        await bob.unicast(echoer.card.id, `peer-live-${nonce}`);
+        await io.waitFor(new RegExp(`peer-live-${nonce}`), 10_000);
+        await sleep(300);
+        const mark = io.raw().length;
+        io.write("\x1b[C"); // messages → beads
+        await io.waitFor(/beads · /, 5000);
+        await io.waitFor(/… \+\d+ more · wheel\/PgDn/, 20_000);
+        await sleep(300);
+        io.write("\x1b[<65;20;10M"); // wheel down
+        await io.waitFor(/↑ 3 above · wheel\/PgUp/, 5000);
+        await sleep(200);
+        io.write("\x0f"); // ctrl+o: select mode
+        await io.waitFor(/select mode · /, 5000);
+        await sleep(200);
+        io.write("\x0f"); // ctrl+o: the wheel back
+        await sleep(400);
+        io.write("\x1b[C"); // clamps at beads
+        await sleep(300);
+        beadsRaw = io.raw().slice(mark);
+        const leave = io.raw().length;
+        io.write("\x1b[D"); // beads → messages
+        await sleep(400);
+        afterLeave = io.raw().slice(leave);
+        io.write("\x1b[D"); // → chat
+        await sleep(400);
+        io.write("\x1b[D"); // → logs
+        await io.waitFor(/logs {2}│/, 5000);
+        await sleep(300);
+        io.write("\x1b[D"); // clamps at logs
+        await sleep(300);
+        hints = io.out();
+        for (let i = 0; i < 3; i++) {
+          io.write("\x1b[C"); // back to beads
+          await sleep(400);
+        }
+        await io.waitFor(/beads · /, 5000);
+        await sleep(300);
+        io.write("/quit\r");
+      });
+      const lines = messagesScreen.split(/\r?\n/);
+      const peerHist = lines.find((l) => l.includes(`peer-hist-${nonce}`)) ?? "";
+      const mine = lines.find((l) => l.includes(`mine-${nonce}`)) ?? "";
+      ok("17. messages view: echoer's earlier DM to bob shows, indented right with an `echoer → bob` label", /^ {24}echoer → bob[^\n]*: peer-hist-/.test(peerHist), JSON.stringify(peerHist));
+      ok("17. …your own conversation with echoer stays left-aligned", mine !== "" && !/^ {4}/.test(mine), JSON.stringify(mine));
+      ok("17. …the loader was replaced by a summary of the other-peer rows", /── \d+ messages? between echoer and other peers in the last 24h, indented right/.test(messagesScreen) && !/◌ loading echoer's messages with other peers/.test(messagesScreen));
+      ok("17. …a LIVE DM bob → echoer shows indented right", new RegExp(`[\\r\\n] {24}bob → echoer: peer-live-${nonce}`).test(r.plain), r.plain.split("\n").filter((l) => l.includes("peer-live")).join(" | "));
+      const order = ["chat  │", "messages  │", "beads  │", "logs  │"].map((h) => hints.indexOf(h));
+      ok("18. → walks chat → messages → beads, ← walks back to logs (the hint names each view)", order.every((i) => i >= 0) && order[0] < order[1] && order[1] < order[2] && hints.indexOf("logs  │", order[2]) > order[2], JSON.stringify(order));
+      const beadsPlain = strip(beadsRaw.slice(beadsRaw.lastIndexOf("\x1b[H\x1b[2J\x1b[3J")));
+      ok("19. beads view is FULLSCREEN: title, beads to the bottom, no conversation pane", /beads · [^\n]*echoer/.test(beadsPlain) && (beadsPlain.match(/○ \S+ +bead number/g) ?? []).length >= 20 && !/no messages between|you → echoer ·|peer-live|mine-/.test(beadsPlain), `${(beadsPlain.match(/bead number/g) ?? []).length} bead rows`);
+      ok("19. …entering it turns SGR mouse reporting on", beadsRaw.indexOf(MOUSE_ON) >= 0 && beadsRaw.includes("\x1b[?1006h"));
+      ok("19. …the wheel scrolls the bead list (↑ 3 above)", /↑ 3 above · wheel\/PgUp/.test(strip(beadsRaw)));
+      const sel = beadsRaw.indexOf("select mode");
+      ok("19. …ctrl+o turns reporting off for select mode, and ctrl+o again back on", sel > 0 && beadsRaw.lastIndexOf(MOUSE_OFF, sel) > beadsRaw.indexOf(MOUSE_ON) && beadsRaw.indexOf(MOUSE_ON, sel) > sel);
+      ok("19. …leaving the view turns reporting off", afterLeave.includes(MOUSE_OFF) && !afterLeave.includes(MOUSE_ON), JSON.stringify(afterLeave.slice(0, 40)));
+      ok("19. …no other view turned it on (the first ?1000h comes after the chat and messages views were used)", r.raw.indexOf(MOUSE_ON) > r.raw.indexOf(`peer-live-${nonce}`) && r.raw.indexOf(`peer-live-${nonce}`) > 0);
+      ok("20. /quit in the beads view turns mouse reporting off on the way out", r.raw.lastIndexOf(MOUSE_OFF) > r.raw.lastIndexOf(MOUSE_ON) && r.code === 0, `exit ${r.code}`);
+    } finally {
+      await bob.stop().catch(() => {});
+    }
   }
 } finally {
   await echoer.stop().catch(() => {});

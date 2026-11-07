@@ -408,7 +408,7 @@ agent BEFORE the chat started … not start from an empty screen", on open AND o
   reader) and placed directly; it never passes through `onMessage`, so it can't follow/retarget, answer an
   await, or advance the unread cursor (`check:chat` greps `loadBacklog` for it; `check:chat-tty` 15 asserts
   the cursor didn't move). Entries are `historical: true` chat entries: shown in the chat view only (the
-  logs view's transcript already says it), dimmed (ANSI stripped, then dim), rendered like their live twins
+  logs view's transcript already says it — and in the messages view, which is chat plus), dimmed (ANSI stripped, then dim), rendered like their live twins
   — inbound through markdown with the agent's glyph, outbound on the rail via `parseComposed`/`railMessage`
   (images and `[Pasted text #N]` inline), `(Nh ago)` age tags.
 - **Dedup by id.** `readOwnConversation` now returns ids (`feed.ts` `withIds`, opt-in so other surfaces'
@@ -560,14 +560,18 @@ agent BEFORE the chat started … not start from an empty screen", on open AND o
 
 ## views
 
-- **`paw chat` views: logs | chat | tasks (`src/chat-views.ts`, tasks 2026-10-07)** — ← → on an EMPTY
-  input line step between exactly three views (clamped at the ends, no wrap); ↓ opens the picker. The
-  default is `chat`. `logs` = the target's transcript (needs a target — with none it says "pick one
-  with ↓"); `chat` = the conversation; `tasks` = a dashboard for the target. The interleaved
+- **`paw chat` views: logs | chat | messages | beads (`src/chat-views.ts`; tasks 2026-10-07, the order
+  and the messages view 2026-11-06)** — ← → on an EMPTY input line step between exactly four views
+  (clamped at the ends, no wrap); ↓ opens the picker. The default is `chat`. `logs` = the target's
+  transcript (needs a target — with none it says "pick one with ↓"); `chat` = the conversation;
+  `messages` = chat plus the target's traffic with OTHER peers, indented right (below); `beads` (was
+  `tasks`, renamed 2026-11-06) = a fullscreen dashboard of the target's beads. The interleaved
   `logs + chat` view that used to sit in the middle was REMOVED on the operator's ask (2026-10-07) —
   and with it the transcript-vs-DM dedup (`dropSender`) that only that view needed. `logs`/`chat`
   are filters over one `History`, reprinted on a switch (`\e[2J\e[3J` + replay through the shared
-  `Painter`); `tasks` shows NOTHING from the history (`entryVisible` is false for every entry there).
+  `Painter`); `beads` shows NOTHING from the history (`entryVisible` is false for every entry there).
+  `messages` behaves like `chat` everywhere chat-ness matters (`showsChat`: follow-the-conversation,
+  the banner repainted in place, the earlier block placed in place) and adds `peer` entries (`showsPeers`).
   The hint under the prompt names the current view and where each arrow goes from here.
 - **A transcript that isn't written YET is followed, not given up on (2026-10-28).** Operator: "i dont think
   logs view works for the containers, why?" — `paw log fly#team2027` showed fly's trace, chat's logs view
@@ -583,54 +587,108 @@ agent BEFORE the chat started … not start from an empty screen", on open AND o
   its trace shows here once written"), and backfills the moment turn one lands. Other errors stay final.
   `paw web`'s trace (`traceBlocks` → `blocksForAgent`) was checked for the same bug and doesn't have it: it
   is stateless and re-polled every 5s. `check:chat` covers the follower and an end-to-end sandboxed persona.
-- **The tasks view (`src/chat-tasks.ts`, pure; wired in chat.ts `paintTasks`)** — top: the target's
+- **The messages view (`src/chat-peers.ts`, pure; wired in chat.ts `onPeerTraffic`/`ensurePeers`,
+  2026-11-06).** Operator: "same as chat, PLUS the messages this agent sent to and received from OTHER
+  peers … indented/tabulated to the RIGHT … so they don't distract from my own conversation". Screen:
+
+      you → kit: rebase #104 please
+      🐈 kit: on it
+                              kit → bob (2m ago): can you review #104 after CI?
+                              bob → kit (1m ago): lgtm, merging
+                              kit → #general: #104 merged
+      🐈 kit: done — pushed, CI green
+
+  - **What counts** (`classifyPeer`): DMs the target sent to anyone but "you", DMs anyone but "you" sent
+    to it (by every id it had — roster, tap-seen senders, paw's ledger, `curId`; a restart changes it),
+    its channel posts (`kit → #general`) and anycasts. Cron and the office bridge are DM senders
+    (`cron`, `office`), so they show as `cron → kit`. Anything with "you" in it is chat's, never here.
+    An unnamed recipient stays its short id — never a guessed name.
+  - **Layout** (`peerRows`): indent = a quarter of the width, 4..24 cols (24 at 120); `from → to (age):`
+    label, a one-line body on the label row else a block under it (2 more cols), markdown-rendered then
+    stripped and dimmed whole; wraps inside the right column, never reaching the last column. Painted as
+    a side of its own (`other`, tight), so a run of them sits together with air around it.
+  - **Live** (open mesh): `tapPeerTraffic` — a second space-wide `ep.tap` in chat-own.ts, attached before
+    the endpoint starts. Rows are captured for the CURRENT target only and shown only while it is the
+    target. A channel post "you" also receive comes through `onMessage` as a chat line (which adds its id
+    to `shownIds`); the tap waits 300ms for that and prints the row only if it didn't. Never news: no
+    follow, no await, no cursor.
+  - **Earlier** (open mesh, `ensurePeers`): once per agent per session, on entering the view and on every
+    retarget while in it (`pumpLogs` checks each second — the target moves down many paths). Sized like
+    the earlier block (`--history`: last 20 within 24h; N = last N; 0 = off), deduped by id against
+    `shownIds`/`ownIds`. A `◌ loading kit's messages with other peers…` loader holds the place (keys never
+    blocked); the rows are MERGED BY TIME into that agent's earlier block (between its divider and
+    `── now ──`, `mergeByTs`; earlier-block rows now carry `ts`) and the view redrawn, and a summary
+    `── N messages between kit and other peers in the last 24h, indented right · M older not shown ──`
+    replaces the loader; with no earlier block they go where the loader was. A failed read replaces the
+    loader with a red `! couldn't load kit's messages with other peers: <why>`. Read by `readPeerTraffic`
+    (chat-own.ts): `dmHistory` (the whole DM stream) + `listChannels`/`multiChannelHistory`, recipients
+    named from stream senders → ledger → live roster. No `/more` for these rows yet.
+  - **Remote spaces: not readable, said loudly.** chat holds only narrow creds for "you"'s own subjects
+    (`chat-echo`, `chat-history`), and the only creds paw has that read another agent's DMs are the
+    space-wide `admin` observer (`paw history`, `paw web`) — not narrow, so not used. `tapPeerTraffic`
+    taps nothing and `readPeerTraffic` throws on a remote space; the messages view carries a yellow
+    `! other-peer messages aren't readable with this chat's credentials on a remote space (<s>) — this
+    view shows only your conversation with the agent and channel posts you receive` (an `onlyMessages`
+    entry pushed at the first paint). Follow-up if wanted: a paw-signed `chat-peers` cred with two
+    name+filter-pinned consumers on the TARGET's DM subjects (the `chat-history` shape, `filteredReadGrants`)
+    — an operator decision, since it reads another agent's mail.
+  - Tests: `check:chat` (`peers:` — classification incl. old ids, cron/office, channels, "you" excluded,
+    unnamed ids; indent/rows/wrap; sizing; summary; the remote note; `mergeByTs`; the remote read throws
+    and signs nothing; `ensurePeers` never follows/marks read); `check:chat-tty` 17 (real pty: echoer's
+    earlier DM to `bob` merged into the block at col 24 as `echoer → bob`, your DM from echoer at col 0, a
+    live `bob → echoer` at col 24). Not verified against team2027 (the note is asserted by source grep).
+- **The beads view (`src/chat-tasks.ts`, pure; wired in chat.ts `paintTasks`; was `tasks`, fullscreen
+  2026-11-06)** — title `beads · <agent>` + live status, the `paw status` info row, then the target's
   beads (`assignee` = the agent; with no target, the operator's own via `operatorName()` plus "pick an
-  agent with ↓"): in_progress ◐ → blocked ⊘ → open ○ → deferred ◌ (priority, then most recently
-  touched), then the last 24h's closed ✓ dimmed, at most 3; one row each — glyph, id, title, age.
-  Below: the agent's LAST message to you and YOUR last message to it, oldest first (the newer one sits
-  by the prompt), markdown-rendered like chat. **Reads:** `listAssigned` (src/tasks.ts) = two bd reads
+  agent with ↓ to see its beads"): in_progress ◐ → blocked ⊘ → open ○ → deferred ◌ (priority, then most
+  recently touched), then the last 24h's closed ✓ dimmed, at most 3; one row each — glyph, id, title, age.
+  **Fullscreen** (operator: "NOT a split view anymore"): the last message each way that sat under the
+  beads is gone, and with it the DM-stream seed (`seedConversation`/`lastSaid`/`lastExchange`) — the bead
+  list gets every row between the head and the receipt line. **Reads:** `listAssigned` (src/tasks.ts) = two bd reads
   on the READ lane (never the write chain), uncached, only while the view is on screen: on entry,
   every 12s, and (≥3s apart) on a DM or presence change from that agent; one read in flight at a time;
-  a failed read is SHOWN (`! beads: …`), never rendered as "no beads". Last messages: the DM stream once
-  per session (`readConversation withSent`), then live — every DM in, every send (`markWaiting`) and
-  the cross-session echo update a per-agent `lastSaid`, newest ts wins. **Painting:** cursor home, each
+  a failed read is SHOWN (`! beads: …`), never rendered as "no beads". **Painting:** cursor home, each
   row overwritten + `\e[K`, `\e[J` below, then the prompt — and ONLY when the painted text changed, so
   an idle refresh writes zero bytes (measured: 0 bytes over 13s incl. a refresh). Ages are
   MINUTE-resolution (`now`, `3m`, `2h`) for that reason — a seconds counter repainted every tick. The
   first paint after a switch clears the scrollback like any view switch; a submitted line, a resize or
-  a view switch force a repaint (readline's echo moved the screen). **Fit:** never taller than the
-  terminal minus prompt+hint: beads clip first (to 3 rows, `… +N more`), then the longer message loses
-  its OLDEST lines (`⋮` in the indent), then beads go to 1 row. Receipts and errors (`⏳ waiting…`,
+  a view switch force a repaint (readline's echo moved the screen). **Fit:** exactly the terminal minus
+  prompt+hint: the beads scroll (`↑ N above · wheel/PgUp`, `… +N more · wheel/PgDn`, whole beads). Receipts and errors (`⏳ waiting…`,
   `! …`) have no scrolling conversation to land in here, so the newest one is a notice line under the
   title, cleared when a message arrives. The picker, paste, images, modes and `!cmd` all keep working
-  (paints are skipped while the picker is open). Tests: `check:chat` (3 views, hint, bead order and
-  filtering, last-message selection, ANSI wrap, render fits 8–60 rows); live:
+  (paints are skipped while the picker is open). Tests: `check:chat` (4 views, hint, bead order and
+  filtering, fullscreen render fills 4–60 rows with no conversation pane, ANSI wrap); `check:chat-tty`
+  19 (real pty, 40 beads in an isolated `PAW_BEADS_DIR`: fullscreen, no conversation rows); live (not
+  re-run since 2026-11-06 — needs nats-server + @xterm/headless):
   `scripts/lean/e2e-chat-tasks.ts` (isolated nats + PAW_HOME + PAW_BEADS_DIR, fake `kit` peer, node-pty
   + @xterm/headless — order, glyphs, round-trip, no-flicker idle, a bead closed elsewhere turning ✓,
   a 14-row terminal, ← back through chat to logs).
-- **Click mode in the tasks view (ctrl+o, 2026-10-10; `src/mouse.ts`)** — selection by default, folds on
-  demand. Always-on SGR mouse capture (7b39ffe) killed native drag-select and was reverted; terminals
-  can't capture clicks for part of the screen, so capture is now an opt-in toggle. **Default: no
-  mouse reporting at all** (e2e asserts no `?1000h` is ever written). **ctrl+o** in the tasks view
-  turns on `?1000h ?1006h`, adds a yellow `click mode · ctrl+o to leave · select is off` row under the
-  title, and swaps the hint's `ctrl+o click to fold` for `ctrl+o select`. ctrl+o was picked because
-  readline binds nothing to it (probed: inserts nothing, moves nothing), unlike ctrl+f (forward-char)
-  and the kill/yank/history keys; it's ignored while picking or mid-paste. In click mode a left click
-  on a parent's icon cell (`▾`/`▸` + its status glyph, 3 cols) toggles its fold, the wheel scrolls
-  the bead list by 3, everything else is a no-op. Mouse reports are cut out of every stdin chunk by a
-  wrapper on `process.stdin.emit` (in front of every listener, readline included — readline would
-  otherwise type `0;10;5M` into the line); the strip is always on. **Off on every way out:** ctrl+o
-  again, leaving the tasks view, `shutdown()` (ctrl+c/EOF/SIGINT/SIGTERM) writes `?1000l ?1006l`
-  unconditionally, and a `process.on("exit")` hook writes it synchronously if click mode is still on
-  (crash path). Folds are view state and outlive click mode. A folded parent renders `▸ ○ id (+N)`
-  (N = every hidden descendant); its descendants are NOT rows at all, so the pager's `↑ N above` /
-  `… +N more` count only painted rows and PgUp/PgDn reach every one (the old fold-row bug).
-  `renderTasksPanel` (pure) returns `{ rows, hits }` — `hits[i]` = the clickable icon on row i —
-  and `hitAt` resolves a click; `renderTasksView` is the rows-only wrapper. Caveat: needs SGR (1006)
-  mouse support — every modern terminal (iTerm2, Terminal.app, kitty, ghostty/cmux, tmux with
-  `mouse on`) has it; under tmux with `mouse off` the clicks never reach chat. Tests: `check:chat`
-  (fold tree + hidden counts, scroll with folds reaching every row, hit map, SGR decode/strip, hint);
-  live `scripts/lean/e2e-chat-tasks.ts` §5.
+- **The mouse in the beads view (`src/mouse.ts`; opt-in click mode 2026-10-10, ON BY DEFAULT in the view
+  2026-11-06).** Operator: "Mouse wheel scrolling must work in it, not only PgUp/PgDn". Terminals can't
+  capture the mouse for part of the screen, and always-on capture across chat (7b39ffe) killed native
+  drag-select and was reverted — so reporting is tied to the VIEW: `syncMouse()` turns `?1000h ?1006h`
+  on exactly while the beads view is up and select mode is off, and off otherwise. The wheel scrolls the
+  bead list by 3, a left click on a parent's icon cell (`▾`/`▸` + its status glyph, 3 cols) toggles its
+  fold, everything else is a no-op. **ctrl+o = select mode** (reconciles the old click mode, inverted):
+  the mouse goes back to the terminal (`?1000l`), a yellow `select mode · mouse is the terminal's (select
+  text) · wheel doesn't scroll · ctrl+o gives it back` row sits under the title, the hint swaps
+  `wheel scrolls · ctrl+o select text` for `ctrl+o mouse back (wheel scrolls)`; every entry into beads
+  starts with select mode off. Most terminals also select with a modifier held while reporting is on
+  (shift in iTerm2/kitty/ghostty/xterm, fn/option in Terminal.app). ctrl+o because readline binds nothing
+  to it (probed); ignored while picking or mid-paste. The chat/messages/logs views NEVER have reporting on
+  (`check:chat-tty` 19 asserts the first `?1000h` comes after both were used), so selection there is the
+  terminal's. Mouse reports are cut out of every stdin chunk by a wrapper on `process.stdin.emit` (in
+  front of every listener, readline included — readline would otherwise type `0;10;5M` into the line);
+  the strip is always on. **Off on every way out:** leaving the view, ctrl+o, `shutdown()` (ctrl+c/EOF/
+  SIGINT/SIGTERM/`/quit`) writes `?1000l ?1006l` unconditionally, and a `process.on("exit")` hook writes it
+  synchronously if reporting is still on (crash path). Folds are view state. A folded parent renders
+  `▸ ○ id (+N)` (N = every hidden descendant); its descendants are NOT rows at all, so the pager's counts
+  are painted rows only and the wheel/PgUp/PgDn reach every one. `renderTasksPanel` (pure) returns
+  `{ rows, hits }` and `hitAt` resolves a click. Caveat: needs SGR (1006) mouse support — every modern
+  terminal has it; under tmux with `mouse off` the wheel never reaches chat (PgUp/PgDn still work). Tests:
+  `check:chat` (fold tree + hidden counts, scroll with folds reaching every row, hit map, SGR decode/strip,
+  hints, select-mode row); `check:chat-tty` 19–20 (real pty: on at entry, a synthetic wheel-down shows
+  `↑ 3 above`, ctrl+o off then on, ← out writes `?1000l`, `/quit` in beads writes `?1000l` last).
 
 ## remote agents
 

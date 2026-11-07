@@ -1,15 +1,16 @@
 /**
- * END-TO-END: `paw chat @kit`'s tasks view in a real pty, on a REAL, ISOLATED mesh and beads db.
+ * END-TO-END: `paw chat @kit`'s beads view in a real pty, on a REAL, ISOLATED mesh and beads db.
+ * (Rewritten for the 2026-11-06 view order + fullscreen beads + mouse-on-by-default; NOT re-run since —
+ *  it needs nats-server and @xterm/headless. check:chat-tty 17–20 covers the same ground hermetically.)
  *
  *   1 a presence-only fake agent `kit` (replies to every DM), four beads assigned to it + one not
- *   2 `paw chat @kit` in node-pty, the screen rendered by @xterm/headless; → on the empty line
- *     opens the tasks view: beads in order, the last message each way
- *   3 send a line from the tasks view → the reply replaces "its last message"; an idle stretch
+ *   2 `paw chat @kit` in node-pty, the screen rendered by @xterm/headless; → → on the empty line
+ *     (chat → messages → beads) opens the beads view FULLSCREEN: beads in order, no conversation pane
+ *   3 send a line from the beads view → the receipt line, then the reply clears it; an idle stretch
  *     writes NOTHING (no flicker); a bead closed behind its back shows up on the next refresh
- *   4 a short terminal: the panel still fits; ← goes back to chat, ← again to logs
- *   5 click mode (ctrl+o): no mouse capture by default; ctrl+o emits ?1000h, a synthetic SGR click on
- *     a parent's icon folds it (▸ … (+3)), ctrl+o emits ?1000l; leaving tasks or quitting chat in
- *     click mode emits ?1000l
+ *   4 a short terminal: the panel still fits; ← walks back messages → chat → logs
+ *   5 mouse: SGR reporting is ON while beads is up (a click on a parent's icon folds it), ctrl+o hands
+ *     it back (?1000l, select mode) and takes it again; leaving beads or quitting chat in it emits ?1000l
  *
  *   XTERM_DIR=<dir with node_modules/@xterm/headless + addon-unicode11> \
  *   PAW_HOME=$(mktemp -d) PAW_SPACE=chat-tasks-$$ PAW_RELEASE=dev PAW_COTAL_ROOT=$(mktemp -d) PAW_BEADS_DIR=$(mktemp -d) \
@@ -129,8 +130,8 @@ try {
   });
   const up = await until(() => (screen().includes("you → kit") && screen().includes("chat  │") ? true : undefined), 40_000, 50);
   ok("paw chat @kit is up (prompt + hint)", !!up);
-  ok("banner names the three views, no `logs + chat`", screen().includes("← → switch logs · chat · tasks") && !screen().includes("logs + chat"));
-  ok("hint: chat │ ← logs ↓ mention tasks →", screen().includes("chat  │  ← logs   ↓ mention   tasks →"));
+  ok("banner names the four views, no `logs + chat`", screen().includes("← → switch logs · chat · messages · beads") && !screen().includes("logs + chat"));
+  ok("hint: chat │ ← logs ↓ mention messages →", screen().includes("chat  │  ← logs   ↓ mention   messages →"));
 
   // ── a multi-line draft is editable across lines ──────────────────────────────────────────────
   const repliesBefore = replies;
@@ -151,28 +152,27 @@ try {
   await sleep(1500);
   ok("nothing was sent while editing the draft", replies === repliesBefore);
 
-  // ── → opens the tasks view ──────────────────────────────────────────────────────────────────
+  // ── → → opens the beads view (chat → messages → beads) ─────────────────────────────────────────
   p.write("\x1b[C");
-  const tasks = await until(() => (screen().includes("tasks · kit") && screen().includes(ipId) ? true : undefined), 30_000, 50);
-  ok("→ on an empty line opens the tasks view with kit's beads", !!tasks);
+  await until(() => (screen().includes("messages  │") ? true : undefined), 5_000, 50);
+  p.write("\x1b[C");
+  const tasks = await until(() => (screen().includes("beads · kit") && screen().includes(ipId) ? true : undefined), 30_000, 50);
+  ok("→ → on an empty line opens the beads view with kit's beads", !!tasks);
   const s = screen();
   const at = (id: string) => s.indexOf(id);
   ok("order: in_progress, blocked, open, then closed", at(ipId) < at(blkId) && at(blkId) < at(openId) && at(openId) < at(doneId) && at(doneId) > 0);
   ok("glyphs: ◐ in progress, ⊘ blocked, ○ open, ✓ closed", /◐ \S+ +Fix the flaky/.test(s) && /⊘ \S+ +Ship the tasks/.test(s) && /○ \S+ +Write the chat/.test(s) && /✓ \S+ +Remove the logs/.test(s));
   ok("someone else's bead is not listed", !s.includes("Someone else"));
-  ok("hint: tasks │ ← chat ↓ mention, no →", s.includes("tasks  │  ← chat   ↓ mention") && !s.includes("tasks →"));
-  ok("no messages yet says so", s.includes("no messages between you and kit yet"));
-  show("tasks view, before any message");
+  ok("hint: beads │ ← messages ↓ mention, no →", s.includes("beads  │  ← messages   ↓ mention") && !s.includes("beads →"));
+  ok("fullscreen: no conversation pane", !s.includes("no messages between") && !s.includes("you → kit"));
+  show("beads view, before any message");
 
-  // ── send from the tasks view; the reply lands in place ─────────────────────────────────────────
+  // ── send from the beads view; the receipt, then the reply clears it ─────────────────────────────────────────
   p.write("please look at the flaky reconnect test\r");
-  const got = await until(() => (screen().includes("reply #1") && screen().includes("please look at the flaky") ? true : undefined), 20_000, 50);
-  ok("a line sent from the tasks view: your message + kit's reply both shown", !!got);
-  ok("the reply clears the ⏳ notice", !screen().includes("⏳ waiting"));
-  ok("the reply is markdown-rendered (no ** left, bullets)", !screen().includes("**fixed**") && screen().includes("50 runs green"));
-  const s2 = screen();
-  ok("messages oldest first: you, then kit (by the prompt)", s2.indexOf("you → kit ·") < s2.indexOf("kit · ") || s2.lastIndexOf("kit ·") > s2.indexOf("you → kit ·"));
-  show("tasks view after a round-trip");
+  const got = await until(() => (replies > repliesBefore && !screen().includes("⏳ waiting") ? true : undefined), 20_000, 50);
+  ok("a line sent from the beads view reaches kit, and its reply clears the ⏳ notice", !!got);
+  ok("…the reply itself stays out of the fullscreen beads view", !screen().includes("reply #1"));
+  show("beads view after a round-trip");
 
   // ── idle: an unchanged repaint writes nothing ─────────────────────────────────────────────────
   await sleep(1500);
@@ -194,31 +194,26 @@ try {
   p.resize(COLS, ROWS);
   await sleep(800);
   const small = screen();
-  ok("14 rows: title, the reply's last line and the prompt + hint all on screen", small.includes("tasks · kit") && small.includes("50 runs green") && small.includes("you → kit") && small.includes("tasks  │"));
-  show("tasks view, short terminal");
+  ok("14 rows: title and the prompt + hint on screen", small.includes("beads · kit") && small.includes("beads  │"));
+  show("beads view, short terminal");
   p.write("\x1b[6~"); // PgDn scrolls the bead list
-  const down = await until(() => (screen().includes("↑") && screen().includes("above · PgUp") ? true : undefined), 5_000, 50);
+  const down = await until(() => (screen().includes("↑") && screen().includes("above · wheel/PgUp") ? true : undefined), 5_000, 50);
   ok("PgDn scrolls the beads: an ↑ N above row appears", !!down);
-  show("tasks view, scrolled");
+  show("beads view, scrolled");
   p.write("\x1b[5~");
-  const top = await until(() => (!screen().includes("above · PgUp") ? true : undefined), 5_000, 50);
+  const top = await until(() => (!screen().includes("above · wheel/PgUp") ? true : undefined), 5_000, 50);
   ok("PgUp scrolls back to the top", !!top);
   ROWS = 30;
   term.resize(COLS, ROWS);
   p.resize(COLS, ROWS);
   await sleep(500);
 
-  // ── click mode ──────────────────────────────────────────────────────────────────────────────
+  // ── the mouse: on while beads is up, ctrl+o = select mode ──────────────────────────────────────
   const ON = "\x1b[?1000h";
   const OFF = "\x1b[?1000l";
-  ok("default: no mouse-enable sequence ever written (selection stays the terminal's)", !raw.includes(ON) && !raw.includes("\x1b[?1006h"));
+  ok("beads view: SGR mouse reporting is on (the wheel scrolls)", raw.lastIndexOf(ON) > raw.lastIndexOf(OFF) && raw.includes("\x1b[?1006h"));
   ok("an open parent leads with ▾ and lists its children", screen().split("\n").some((l) => l.includes(`▾ ○ ${epicId}`)) && screen().includes("child three"));
-  ok("hint offers ctrl+o", screen().includes("ctrl+o click to fold"));
-  let mark = raw.length;
-  p.write("\x0f");
-  const cOn = await until(() => (raw.slice(mark).includes(ON) && screen().includes("click mode · ctrl+o to leave · select is off") ? true : undefined), 5_000, 50);
-  ok("ctrl+o: ?1000h written, the click-mode hint shows", !!cOn);
-  show("click mode");
+  ok("hint: wheel scrolls · ctrl+o select text", screen().includes("wheel scrolls · ctrl+o select text"));
   const lines = screen().split("\n");
   const row = lines.findIndex((l) => l.includes(`▾ ○ ${epicId}`));
   const col = row >= 0 ? lines[row].indexOf("▾") : -1;
@@ -232,45 +227,41 @@ try {
   ok("a click on a parent's icon folds it: ▸ <id> (+3), the children gone", !!foldedNow);
   const leak = screen().match(/\d+;\d+;\d+[Mm]?|\[<\d/);
   ok("no mouse report leaked into the input line (or anywhere on screen)", !leak, leak?.[0] ?? "");
-  show("click mode, epic folded");
+  let mark = raw.length;
+  p.write("\x0f");
+  const cOff = await until(() => (raw.slice(mark).includes(OFF) && screen().includes("select mode ·") ? true : undefined), 5_000, 50);
+  ok("ctrl+o: ?1000l written, the select-mode row shows", !!cOff);
   mark = raw.length;
   p.write("\x0f");
-  const cOff = await until(() => (raw.slice(mark).includes(OFF) && !screen().includes("click mode ·") ? true : undefined), 5_000, 50);
-  ok("ctrl+o again: ?1000l written, the hint gone", !!cOff);
-  ok("the fold outlives click mode", screen().includes(`▸ ○ ${epicId} (+3)`));
+  const cOn = await until(() => (raw.slice(mark).includes(ON) && !screen().includes("select mode ·") ? true : undefined), 5_000, 50);
+  ok("ctrl+o again: ?1000h written, the row gone", !!cOn);
+  ok("the fold outlives select mode", screen().includes(`▸ ○ ${epicId} (+3)`));
 
-  // ── ← back to chat, ← again to logs ──────────────────────────────────────────────────────────
+  // ── ← back through messages to chat, ← again to logs ───────────────────────────────────────────
+  mark = raw.length;
   p.write("\x1b[D");
-  const chat = await until(() => (screen().includes("chat  │  ← logs") && !screen().includes("tasks · kit") ? true : undefined), 5_000, 50);
+  const msgs = await until(() => (screen().includes("messages  │") && raw.slice(mark).includes(OFF) ? true : undefined), 5_000, 50);
+  ok("← out of beads: the messages view, and ?1000l written", !!msgs);
+  p.write("\x1b[D");
+  const chat = await until(() => (screen().includes("chat  │  ← logs") && !screen().includes("beads · kit") ? true : undefined), 5_000, 50);
   ok("← returns to the chat view (conversation reprinted)", !!chat && screen().includes("reply #1"));
   p.write("\x1b[D");
   const logs = await until(() => (screen().includes("logs  │") ? true : undefined), 5_000, 50);
   ok("← again: the logs view", !!logs);
   p.write("\x1b[D");
   await sleep(300);
-  ok("← at the left end stays on logs (3 views, clamped)", screen().includes("logs  │"));
+  ok("← at the left end stays on logs (4 views, clamped)", screen().includes("logs  │"));
 
-  // ── leaving tasks in click mode turns it off; quitting chat in click mode turns it off ─────────
-  p.write("\x1b[C");
-  await sleep(300);
-  p.write("\x1b[C");
-  await until(() => (screen().includes("tasks · kit") ? true : undefined), 5_000, 50);
-  mark = raw.length;
-  p.write("\x0f");
-  await until(() => (raw.slice(mark).includes(ON) ? true : undefined), 5_000, 50);
-  p.write("\x1b[D");
-  const leftOff = await until(() => (raw.slice(mark).includes(OFF) && screen().includes("chat  │") ? true : undefined), 5_000, 50);
-  ok("← out of the tasks view in click mode writes ?1000l", !!leftOff);
-  p.write("\x1b[C");
-  await until(() => (screen().includes("tasks · kit") ? true : undefined), 5_000, 50);
-  mark = raw.length;
-  p.write("\x0f");
-  const on2 = await until(() => (raw.slice(mark).includes(ON) ? true : undefined), 5_000, 50);
-  ok("back in tasks, ctrl+o: ?1000h", !!on2);
+  // ── quitting chat from the beads view turns reporting off ────────────────────────────────────
+  for (let i = 0; i < 3; i++) {
+    p.write("\x1b[C");
+    await sleep(300);
+  }
+  await until(() => (screen().includes("beads · kit") ? true : undefined), 5_000, 50);
   mark = raw.length;
   p.write("\x03"); // ctrl+c quits chat
   const quit = await until(() => (exited ? true : undefined), 10_000, 50);
-  ok("ctrl+c in click mode: chat exits and writes ?1000l on the way out", !!quit && raw.slice(mark).includes(OFF), `exited=${exited}`);
+  ok("ctrl+c in the beads view: chat exits and writes ?1000l on the way out", !!quit && raw.slice(mark).includes(OFF), `exited=${exited}`);
 } finally {
   try {
     p?.kill();

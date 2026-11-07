@@ -164,6 +164,14 @@ A CLI checkout from before that fix still prints it: chat's CLI runs from the ch
 `ep.tap(handler)`, no subject = `cotal.<s>.>`). `check:remote` now fails if any `src/chat*.ts` calls
 `ep.tap` outside chat-own.ts or if `tapOwnSends` places a tap without a subject on a remote space.
 
+**The messages view's other-peer rows (2026-11-06) are OPEN-mesh only.** They are another agent's mail,
+which none of chat's remote creds (`agent`, `chat-echo`, `chat-history`) can read, and the only paw creds
+that can — the `admin` observer behind `paw history`/`paw web` — are space-wide, not narrow. So on a
+remote space chat-own's `tapPeerTraffic` taps nothing and `readPeerTraffic` throws, and the view says so
+in one loud line instead of silently showing only your chat. A narrow `chat-peers` cred (two name+filter-
+pinned consumers on the target's DM subjects, the `chat-history` shape) would close it — not minted
+without the operator's go. [chat.md#views](chat.md#views)
+
 **`!cmd` for another machine's agent:** `!cmd` (chat and web) runs in the agent's registered folder on
 THIS machine; an agent hosted elsewhere has none, and the old `no registered folder for "evals" —
 \`paw status\` lists them` pointed at a status that only lists this machine's agents. On a remote space,

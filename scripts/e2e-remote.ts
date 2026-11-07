@@ -12,7 +12,8 @@
  *   3. paw dm --space R <folder> spawns a real claude (haiku) there; it replies; paw inbox reads it;
  *   4. paw chat @agent --space R (piped stdin) binds "you"'s durable inbox, sends, and shows the reply;
  *      a second `paw chat --all` mirrors its DM and #general post; /who, /ps, #channel, @name work; no
- *      permission error is printed; the tasks + logs views work under a pty; paw web serves cleanly;
+ *      permission error is printed; the messages + logs views work under a pty (messages says loudly that
+ *      other-peer rows aren't readable with chat's creds here); paw web serves cleanly;
  *   4b. paw attach agent --space R under a real pty: cotal's grant is issued + redeemed with a
  *       session-caller cred minted from the signer, the TUI streams, a typed key reaches it, Ctrl-]
  *       detaches and the agent stays live — also `paw cotal attach --space R --creds <junk>` (the
@@ -496,7 +497,7 @@ try {
     ownConv ? `${ownConv.n} entries` : out(own).slice(0, 300),
   );
 
-  // The tasks + logs views under a real pty (←/→ only work on a tty).
+  // The messages + logs views under a real pty (←/→ only work on a tty).
   {
     const { spawn: ptySpawn } = await import("@lydell/node-pty");
     const p = ptySpawn(process.execPath, [join(REPO, "bin/paw.ts"), "chat", `@${name}`, "--space", R], { name: "xterm-256color", cols: 120, rows: 40, cwd: REPO, env: withCa as Record<string, string> });
@@ -506,7 +507,7 @@ try {
     p.onExit(() => (exited = true));
     await sleep(10_000);
     const before = buf.length;
-    p.write("\x1b[C"); // → tasks
+    p.write("\x1b[C"); // → messages
     await sleep(8000);
     const tasksView = plain(buf.slice(before));
     p.write("\x1b[D"); // ← chat
@@ -520,7 +521,7 @@ try {
     p.write("/quit\r");
     for (let i = 0; i < 20 && !exited; i++) await sleep(500);
     if (!exited) p.kill();
-    ok("chat tasks view (pty) seeds the last exchange with no error", !DENIED.test(tasksView) && !/couldn't read the conversation history/.test(tasksView) && /gnip|gnop/i.test(tasksView), tail(tasksView, 4));
+    ok("chat messages view (pty): your conversation with no error, and the loud remote note", !DENIED.test(tasksView) && /gnip|gnop/i.test(tasksView) && /other-peer messages aren't readable with this chat's credentials on a remote space/.test(tasksView), tail(tasksView, 4));
     ok("chat logs view (pty) shows the agent's transcript with no error", !DENIED.test(logsView) && !/no logs for/.test(logsView) && /gnip|gnop|pong|ping/i.test(logsView), tail(logsView, 4));
     ok("…and the pty session quits cleanly", exited);
   }
