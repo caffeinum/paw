@@ -1700,6 +1700,7 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
   const m = (x: object) => ({ id: "m", ts: 1, ...x });
   assert(eq(classifyPeer(m({ from: { id: "K1", name: "kit" }, to: "B1" }), o), { from: "kit", to: "bob" }), "peers: kit → bob is other-peer traffic, recipient named from its id");
   assert(eq(classifyPeer(m({ from: { id: "B1", name: "bob" }, to: "K0" }), o), { from: "bob", to: "kit" }), "peers: bob → kit's OLD id still counts (every id it had)");
+  assert(classifyPeer(m({ from: { id: "K1", name: "kit" }, channel: "events.local.K1" }), o) === undefined, "peers: the agent's events.* channel (ag-ui machine frames) is never shown as a message");
   assert(eq(classifyPeer(m({ from: { id: "C1", name: "cron" }, to: "K1" }), o), { from: "cron", to: "kit" }) && eq(classifyPeer(m({ from: { id: "O1", name: "office" }, to: "K1" }), o), { from: "office", to: "kit" }), "peers: cron and office DMs to kit count");
   assert(eq(classifyPeer(m({ from: { id: "K1", name: "kit" }, channel: "general" }), o), { from: "kit", to: "#general" }), "peers: kit's channel post counts, labelled #channel");
   assert(classifyPeer(m({ from: { id: "B1", name: "bob" }, channel: "general" }), o) === undefined, "peers: someone else's channel post is not kit's traffic");
