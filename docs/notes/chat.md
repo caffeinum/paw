@@ -646,7 +646,9 @@ agent BEFORE the chat started … not start from an empty screen", on open AND o
     (`ensurePeerTap` in chat.ts, `tapAgentTraffic` in chat-own.ts), subscribe-only, re-signed before expiry
     make-before-break; a retarget in the messages view retires it, and coming back to that agent reads
     the time it was off back (`peerTapOffAt` → `catchUpPeers(since, [agent])`). Failures stay loud (red
-    line); >16 ids = a yellow note. Anycasts aren't read remotely. The old yellow "not readable" note and
+    line); >16 ids = a yellow note. The ids come from paw's ledger, which the mailbox keeps on remote
+    spaces since the team2027 empty-read miss (src/ledger-recorder.ts); with none of the target's earlier
+    ids known, a yellow `! only <agent>'s current mesh id is known …` sits under the summary. Anycasts aren't read remotely. The old yellow "not readable" note and
     `remotePeersNote` are gone.
   - Tests: `check:chat` (`peers:` — classification incl. old ids, cron/office, channels, "you" excluded,
     unnamed ids; indent/rows/wrap; sizing; summary; `mergeByTs`; a remote read signs `chat-peers` and

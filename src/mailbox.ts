@@ -19,6 +19,8 @@ import { pawHomeDir, resolveSpace, sameHome } from "./lifecycle.ts";
 import { humanPeer } from "./names.ts";
 import { startSleepHost } from "./sleep-host.ts";
 import { startStaleForwarder } from "./stale-forward.ts";
+import { startLedgerRecorder } from "./ledger-recorder.ts";
+import { observerEndpoint } from "./feed.ts";
 import { startOfficeBridge } from "./office-daemon.ts";
 import { pawServer } from "./server.ts";
 
@@ -56,7 +58,9 @@ async function mailbox(argv: string[]): Promise<void> {
     card,
     registerPresence: true, // the whole point: keep "you" online so agents can resolve + reply to you
     consume: false, // beacon only — never drain/ack your inbox (that's `paw inbox`)
-    watchPresence: false,
+    // A remote space's ledger is recorded from this roster (src/ledger-recorder.ts); local spaces keep
+    // the forwarder's own observer.
+    watchPresence: !!creds,
   });
   // The endpoint self-heals across mesh blips (reconnect + re-register presence), so a transient error
   // shouldn't kill the daemon — log it and stay up.
@@ -77,6 +81,24 @@ async function mailbox(argv: string[]): Promise<void> {
   let stopForwarder = async () => {};
   if (creds) {
     console.error(`[mailbox] authed mesh: stale-id forwarding is OFF — a DM to a restarted agent's old id stays undelivered (open mesh only)`);
+    // …but the peer ledger is still kept: the messages view's chat-peers read is scoped by every id an
+    // agent had, and with no ledger it knew only the live one. Seeded once from the DM backlog's senders
+    // (ids + names only — the read `paw history` does), then from the roster.
+    const stopLedger = await startLedgerRecorder(
+      space,
+      () => ep.getRoster(),
+      async () => {
+        const obs = await observerEndpoint(space, server);
+        await obs.start();
+        try {
+          return (await obs.dmHistory({ limit: 5000 })).filter((m) => m.from?.id && m.from.name).map((m) => ({ id: m.from.id!, name: m.from.name, ts: m.ts }));
+        } finally {
+          await obs.stop().catch(() => {});
+        }
+      },
+      (msg) => console.error(`[mailbox] ${msg}`),
+    );
+    stopForwarder = async () => stopLedger();
   } else {
     stopForwarder = await startStaleForwarder(space, server).catch((e: Error) => {
       console.error(`[mailbox] stale-id forwarder failed to start — DMs to an old instance id will NOT reach the live agent: ${e.message}`);

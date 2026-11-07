@@ -428,6 +428,44 @@ console.log("paw chat messages view on a remote space: the chat-peers cred");
   assert(JSON.stringify(minters) === JSON.stringify(["chat-own.ts"]), `chat-peers is minted only in chat-own.ts (chat's process) — ${minters.join(" ")}`);
 }
 
+console.log("chat-peers against the real subject shape + the remote peer ledger (2026-11-06 team2027 regression)");
+{
+  // team2027: `paw chat @vercel` showed "(no messages between vercel and other peers)" while `paw history`
+  // held vercel ↔ evals-intern on vercel's PREVIOUS id — the remote ledger was never written, so only the
+  // live id was read. The filters themselves must match the wire subjects cotal builds for real nkey ids.
+  const SP = "remotetest-s";
+  const real = (c: string) => ({ owner: "local", actor: `U${c.repeat(55)}` });
+  const vNow = real("A"), vOld = real("B"), intern = real("C");
+  const reads = own.agentTrafficReads(SP, [vNow, vOld]).map((r) => r.filter);
+  const wire = {
+    internToOld: unicastSubject(SP, vOld.owner, vOld.actor, intern.owner, intern.actor),
+    oldToIntern: unicastSubject(SP, intern.owner, intern.actor, vOld.owner, vOld.actor),
+    oldPost: `cotal.${SP}.chat.${vOld.owner}.${vOld.actor}.general`,
+    internToOther: unicastSubject(SP, real("D").owner, real("D").actor, intern.owner, intern.actor),
+  };
+  assert(subjectMatches(reads[3]!, wire.internToOld) && subjectMatches(reads[4]!, wire.oldToIntern) && subjectMatches(reads[5]!, wire.oldPost), "the filters match cotal's real inst/chat subjects for an old id, both directions + its posts");
+  assert(!reads.some((f) => subjectMatches(f, wire.internToOther)), "…and no other peer's DM");
+  const pp = own.peerPrincipals([`local.${vNow.actor}`, `local.${vOld.actor}`], { [`local.${vOld.actor}`]: { name: "vercel", first: 1, last: 2 } });
+  assert(pp.principals.length === 2, "an old id from the ledger is read alongside the live one");
+
+  const { startLedgerRecorder } = await import("../src/ledger-recorder.ts");
+  const { readLedger } = await import("../src/peer-ledger.ts");
+  const logs: string[] = [];
+  const roster = [{ card: { id: `local.${vNow.actor}`, name: "vercel" }, ts: Date.now() }] as unknown as import("@cotal-ai/core").Presence[];
+  const stopRec = await startLedgerRecorder(SP, () => roster, async () => [{ id: `local.${vOld.actor}`, name: "vercel", ts: Date.now() - 3600_000 }], (m) => logs.push(m), 10);
+  stopRec();
+  const led = readLedger(SP);
+  assert(led[`local.${vNow.actor}`]?.name === "vercel" && led[`local.${vOld.actor}`]?.name === "vercel", "the remote ledger recorder keeps the roster's ids AND the DM backlog's earlier ones");
+  const stop2 = await startLedgerRecorder(SP, () => roster, async () => {
+    throw new Error("no admin");
+  }, (m) => logs.push(m), 10);
+  stop2();
+  assert(logs.some((l) => /couldn't seed from the DM backlog.*no admin/.test(l)), "…a failed seed is a loud log line, never a silent empty ledger");
+  const mb = (await import("node:fs")).readFileSync(new URL("../src/mailbox.ts", import.meta.url), "utf8");
+  assert(/if \(creds\) \{[\s\S]*startLedgerRecorder\(/.test(mb) && /watchPresence: !!creds/.test(mb), "the mailbox records the ledger on a remote space (forwarder off there)");
+  assert(/only vercel's current mesh id is known on team2027/.test(own.remoteNoPastIdsNote("vercel", "team2027")), "with no earlier ids known the view says so instead of a complete-looking empty result");
+}
+
 console.log("hosted here (one machine of several on a remote space)");
 const { hostingOf, hosting, localManagerInstanceId } = await import("../src/hosted.ts");
 const { createManagerInstanceIdentity } = await import("@cotal-ai/workspace");
