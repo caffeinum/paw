@@ -23,7 +23,7 @@
  */
 import { spawnSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { accessSync, appendFileSync, chmodSync, constants, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { accessSync, appendFileSync, chmodSync, constants, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, delimiter, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -32,7 +32,7 @@ import { isClaudeHarness, readAgentType, readCwd, readHeadless, readSandbox, san
 import { isRemoteSpace } from "./server.ts";
 import { outsideGuiSession } from "./gui-session.ts";
 import { forceRemoveContainers } from "../bin/paw-sandbox-kill.mjs";
-import { apiserverPlistPath, diagnoseInstallRoot, installRootOf, systemStartCommand } from "../bin/paw-container-root.mjs";
+import { apiserverPlistPath, diagnoseInstallRoot, installRootOf, networkPluginDir, readApiserverInstallRoot, systemStartCommand } from "../bin/paw-container-root.mjs";
 import { collectSandboxSkills, readSandboxSkills, SANDBOX_SKILLS_MOUNT, type SandboxSkillSet, type SkillSelection } from "./sandbox-skills.ts";
 
 /** Where the agent's claude config dir is mounted inside the VM (the image's CLAUDE_CONFIG_DIR). */
@@ -274,7 +274,8 @@ export function assertSandboxHostReady(
 ): void {
   const plistPath = o.plistPath ?? apiserverPlistPath();
   // Over ssh `container` can't see its apiserver (a GUI-domain XPC service), so both probes below are false
-  // negatives there. The manager runs in the login session (src/gui-session.ts) and its launcher fails loud.
+  // negatives there — and paw never starts it from here: `system start` over ssh registers it in user/<uid>, which
+  // the login session can't see. The manager runs in the login session (src/gui-session.ts) and its launcher fails loud.
   if (o.outsideGui ?? outsideGuiSession()) {
     // Reading the apiserver's plist still works here: a wrong install root is said even over ssh.
     let bin: string | undefined;
@@ -289,12 +290,57 @@ export function assertSandboxHostReady(
   }
   const bin = containerBin(env);
   assertApiserverRoot(bin, plistPath);
-  const status = spawnSync(bin, ["system", "status"], { encoding: "utf8", timeout: 20_000 });
-  if (status.status !== 0) throw new Error(`paw: \`container system status\` failed — start it with \`${systemStartCommand(installRootOf(bin))}\` (${(status.stderr || status.stdout || status.error?.message || "").trim()})`);
+  ensureApiserverRunning(bin, plistPath);
   const image = readSandboxImage(configPath);
   const inspect = spawnSync(bin, ["image", "inspect", image], { encoding: "utf8", timeout: 20_000 });
   if (inspect.status !== 0) throw new Error(`paw: the sandbox image ${image} is not built — \`paw sandbox build\``);
   claudeTokenFile(env);
+}
+
+function containerStatus(bin: string): { ok: boolean; out: string } {
+  const r = spawnSync(bin, ["system", "status"], { encoding: "utf8", timeout: 20_000 });
+  return { ok: r.status === 0, out: (r.stderr || r.stdout || r.error?.message || "").trim() };
+}
+
+/** What `container system status` says when launchd has no apiserver at all — every reboot (2026-11-09). */
+const APISERVER_NOT_REGISTERED = /not running|not registered/i;
+const APISERVER_START_TIMEOUT_MS = 90_000;
+let apiserverStartAttempted = false;
+
+/**
+ * `container system status`, and when the apiserver simply isn't registered (after a reboot), start it ONCE per
+ * process — the real binary with the root it lives in, the same command the error prints — then probe again.
+ * A plist that records another root is never overridden (that's the wrong-root diagnosis' job, run before this).
+ * Any other status failure, a failed start, or a status still failing after it: the loud error, with the output.
+ */
+function ensureApiserverRunning(bin: string, plistPath: string): void {
+  const first = containerStatus(bin);
+  if (first.ok) return;
+  const root = installRootOf(bin);
+  const startCmd = systemStartCommand(root);
+  const fail = (detail: string) => new Error(`paw: \`container system status\` failed — start it with \`${startCmd}\` (${detail})`);
+  if (!APISERVER_NOT_REGISTERED.test(first.out) || apiserverStartAttempted) throw fail(first.out);
+  const recorded = readApiserverInstallRoot(plistPath);
+  if (recorded !== undefined && (existsSync(recorded) ? realpathSync(recorded) : recorded) !== root)
+    throw new Error(
+      `paw: Apple container's apiserver isn't running, and ${plistPath} records CONTAINER_INSTALL_ROOT=${recorded} while \`${bin}\` lives in ${root} — ` +
+        `paw won't re-register it under another root. Start the install you mean: \`${startCmd}\` or \`${systemStartCommand(recorded)}\` (${first.out})`,
+    );
+  if (!existsSync(networkPluginDir(root))) throw fail(`${first.out}; ${root} has no ${networkPluginDir(root)}, so paw won't start it — the install is incomplete`);
+  apiserverStartAttempted = true;
+  const start = spawnSync(join(root, "bin", "container"), ["system", "start", "--install-root", root, "--disable-kernel-install"], {
+    encoding: "utf8",
+    timeout: APISERVER_START_TIMEOUT_MS,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  const startOut = `${start.stdout ?? ""}${start.stderr ?? ""}`.trim();
+  if (start.status !== 0) {
+    const how = start.error ? `${start.error.message}${start.error.message.includes("ETIMEDOUT") ? ` after ${APISERVER_START_TIMEOUT_MS / 1000}s` : ""}` : `exit ${start.status ?? start.signal}`;
+    throw fail(`${first.out}; paw ran it and it failed (${how}): ${startOut || "no output"}`);
+  }
+  const again = containerStatus(bin);
+  if (!again.ok) throw fail(`${first.out}; paw ran it (${startOut || "no output"}) but status still fails: ${again.out}`);
+  process.stderr.write("paw: started Apple container's apiserver (it wasn't running — after a reboot?)\n");
 }
 
 /** Apple container's apiserver registered with an install root that has no network plugin crash-loops, and every
