@@ -32,6 +32,7 @@ import { isClaudeHarness, readAgentType, readCwd, readHeadless, readSandbox, san
 import { isRemoteSpace } from "./server.ts";
 import { outsideGuiSession } from "./gui-session.ts";
 import { forceRemoveContainers } from "../bin/paw-sandbox-kill.mjs";
+import { apiserverPlistPath, diagnoseInstallRoot, installRootOf, systemStartCommand } from "../bin/paw-container-root.mjs";
 import { collectSandboxSkills, readSandboxSkills, SANDBOX_SKILLS_MOUNT, type SandboxSkillSet, type SkillSelection } from "./sandbox-skills.ts";
 
 /** Where the agent's claude config dir is mounted inside the VM (the image's CLAUDE_CONFIG_DIR). */
@@ -187,7 +188,7 @@ export function containerBin(env: NodeJS.ProcessEnv = process.env): string {
   throw new Error(
     pinned
       ? `paw: PAW_CONTAINER=${pinned} is not an executable file`
-      : "paw: `container` (Apple's container, github.com/apple/container) is not on PATH — install its signed release .pkg, then `container system start`",
+      : "paw: `container` (Apple's container, github.com/apple/container) is not on PATH — install its signed release .pkg, then `<root>/bin/container system start --install-root <root>` (the real binary, never a symlink to it)",
   );
 }
 
@@ -266,20 +267,41 @@ export function assertSandboxable(space: string, name: string, configPath: strin
 }
 
 /** The host side is ready: the CLI, its services, the image, the token file. Fails loud on each. */
-export function assertSandboxHostReady(configPath: string | undefined, env: NodeJS.ProcessEnv = process.env): void {
+export function assertSandboxHostReady(
+  configPath: string | undefined,
+  env: NodeJS.ProcessEnv = process.env,
+  o: { plistPath?: string; outsideGui?: boolean } = {},
+): void {
+  const plistPath = o.plistPath ?? apiserverPlistPath();
   // Over ssh `container` can't see its apiserver (a GUI-domain XPC service), so both probes below are false
   // negatives there. The manager runs in the login session (src/gui-session.ts) and its launcher fails loud.
-  if (outsideGuiSession()) {
+  if (o.outsideGui ?? outsideGuiSession()) {
+    // Reading the apiserver's plist still works here: a wrong install root is said even over ssh.
+    let bin: string | undefined;
+    try {
+      bin = containerBin(env);
+    } catch {
+      bin = undefined; // an ssh PATH without it: the diagnosis names the bad root without the real one
+    }
+    assertApiserverRoot(bin, plistPath);
     claudeTokenFile(env);
     return;
   }
   const bin = containerBin(env);
+  assertApiserverRoot(bin, plistPath);
   const status = spawnSync(bin, ["system", "status"], { encoding: "utf8", timeout: 20_000 });
-  if (status.status !== 0) throw new Error(`paw: \`container system status\` failed — start it with \`container system start\` (${(status.stderr || status.stdout || status.error?.message || "").trim()})`);
+  if (status.status !== 0) throw new Error(`paw: \`container system status\` failed — start it with \`${systemStartCommand(installRootOf(bin))}\` (${(status.stderr || status.stdout || status.error?.message || "").trim()})`);
   const image = readSandboxImage(configPath);
   const inspect = spawnSync(bin, ["image", "inspect", image], { encoding: "utf8", timeout: 20_000 });
   if (inspect.status !== 0) throw new Error(`paw: the sandbox image ${image} is not built — \`paw sandbox build\``);
   claudeTokenFile(env);
+}
+
+/** Apple container's apiserver registered with an install root that has no network plugin crash-loops, and every
+ *  probe just times out — name that cause (bin/paw-container-root.mjs). Never edits the plist. */
+export function assertApiserverRoot(bin: string | undefined, plistPath: string = apiserverPlistPath()): void {
+  const bad = diagnoseInstallRoot({ bin, plistPath });
+  if (bad) throw new Error(bad);
 }
 
 /** Container ids allow [A-Za-z0-9_.-]; one launch = one fresh id, so a late cleanup of the previous launch

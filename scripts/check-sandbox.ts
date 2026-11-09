@@ -5,7 +5,7 @@
  * `container` binary, so it runs anywhere (no VM, no mesh, no network). Run: pnpm check:sandbox
  */
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -501,6 +501,68 @@ console.log("paw rename carries the home; paw rm keeps it");
   const kept = sandboxHomeKept(SPACE, "smoke", personaFilePath(SPACE, "smoke")).join("\n");
   assert(kept.includes(join(c, "smoke")) && kept.includes(`rm -rf ${join(c, "smoke")} ${join(c, ".owners", "smoke")}`), "paw rm names the kept home and how to delete it");
   assert(sandboxHomeKept(SPACE, "keys", personaFilePath(SPACE, "keys")).length === 0, "…and says nothing for an agent that never launched (no home)");
+}
+
+console.log("apiserver install root (bin/paw-container-root.mjs) — diagnosed, never edited");
+{
+  const cr = await import("../bin/paw-container-root.mjs");
+  // A real-shaped install: <root>/bin/container + the network plugin, reached through a ~/.local/bin symlink.
+  const real = join(home, "opt", "container");
+  mkdirSync(join(real, "bin"), { recursive: true });
+  mkdirSync(join(real, "libexec", "container", "plugins", cr.NETWORK_PLUGIN), { recursive: true });
+  writeFileSync(join(real, "bin", "container"), "#!/bin/sh\nexit 0\n");
+  chmodSync(join(real, "bin", "container"), 0o755);
+  const linkDir = join(home, "dotlocal", "bin");
+  mkdirSync(linkDir, { recursive: true });
+  symlinkSync(join(real, "bin", "container"), join(linkDir, "container"));
+  const viaLink = join(linkDir, "container");
+  const plistDir = join(home, "appsupport", "apiserver");
+  mkdirSync(plistDir, { recursive: true });
+  const plist = join(plistDir, "apiserver.plist");
+  const writePlist = (env: Record<string, string>) => {
+    const tmp = `${plist}.json`;
+    writeFileSync(tmp, JSON.stringify({ Label: "com.apple.container.apiserver", ProgramArguments: [join(real, "bin", "container-apiserver"), "start"], EnvironmentVariables: env }));
+    const r = spawnSync("plutil", ["-convert", "xml1", "-o", plist, tmp]);
+    if (r.status !== 0) throw new Error(`plutil failed: ${r.stderr}`);
+  };
+
+  assert(cr.diagnoseInstallRoot({ bin: viaLink, plistPath: plist }) === undefined, "no plist (services never started) → nothing to judge");
+  assert(cr.installRootOf(viaLink) === real, "the install root comes from the realpath of `container`, not the symlink's dir");
+  assert(cr.systemStartCommand(real) === `${join(real, "bin", "container")} system start --install-root ${real}`, "the start command is the real binary with --install-root");
+
+  writePlist({ CONTAINER_INSTALL_ROOT: real, CONTAINER_APP_ROOT: join(home, "appsupport") });
+  assert(cr.diagnoseInstallRoot({ bin: viaLink, plistPath: plist }) === undefined, "a root that has the network plugin is fine");
+
+  const bad = join(home, "dotlocal"); // what `container system start` through the symlink records
+  writePlist({ CONTAINER_INSTALL_ROOT: bad, CONTAINER_APP_ROOT: join(home, "appsupport") });
+  const before = readFileSync(plist);
+  const msg = cr.diagnoseInstallRoot({ bin: viaLink, plistPath: plist, uid: 501 }) ?? "";
+  assert(msg.includes(`CONTAINER_INSTALL_ROOT=${bad}`) && msg.includes(cr.networkPluginDir(bad)), "a wrong root is named with the missing plugin dir");
+  assert(msg.includes(`the install root is ${real}`) && msg.includes(cr.systemStartCommand(real)), "…with the realpath root and the exact `system start --install-root` fix");
+  assert(msg.includes(`plutil -replace EnvironmentVariables.CONTAINER_INSTALL_ROOT -string '${real}' '${plist}'`) && msg.includes("launchctl bootout gui/501/com.apple.container.apiserver") && msg.includes(`launchctl bootstrap gui/501 '${plist}'`), "…or the plutil + bootout/bootstrap edit");
+  assert(throwsLike(() => sbx.assertSandboxHostReady(undefined, { ...process.env, PATH: `${linkDir}:/usr/bin:/bin` }, { plistPath: plist, outsideGui: true }), /wrong install root/), "assertSandboxHostReady says it OVER SSH too (outsideGuiSession skips only the status probes)");
+  assert(throwsLike(() => sbx.assertSandboxHostReady(undefined, { ...process.env, PATH: `${linkDir}:/usr/bin:/bin` }, { plistPath: plist, outsideGui: false }), /wrong install root/), "…and in the login session, before a `system status` that would just time out");
+  assert(throwsLike(() => sbx.assertSandboxHostReady(undefined, { ...process.env, PATH: "/usr/bin:/bin" }, { plistPath: plist, outsideGui: true }), new RegExp(`CONTAINER_INSTALL_ROOT=${bad}.*\\n.*not on this PATH`)), "an ssh shell without `container` on PATH still names the bad root");
+  assert(Buffer.compare(before, readFileSync(plist)) === 0, "the plist is never modified");
+
+  rmSync(join(real, "libexec"), { recursive: true });
+  assert(/install itself is incomplete/.test(cr.diagnoseInstallRoot({ bin: viaLink, plistPath: plist }) ?? ""), "a real root without the plugin either says the install is incomplete, never a fix that can't work");
+
+  writePlist({ CONTAINER_APP_ROOT: join(home, "appsupport") });
+  assert(cr.diagnoseInstallRoot({ bin: viaLink, plistPath: plist }) === undefined, "a plist that records no install root is not judged (no guessed root)");
+  writePlist({ CONTAINER_INSTALL_ROOT: real });
+  mkdirSync(join(real, "libexec", "container", "plugins", cr.NETWORK_PLUGIN), { recursive: true });
+  let ok = true;
+  try {
+    sbx.assertSandboxHostReady(undefined, { ...process.env, PATH: `${linkDir}:/usr/bin:/bin` }, { plistPath: plist, outsideGui: true });
+  } catch {
+    ok = false;
+  }
+  assert(ok, "a good root passes the ssh-side check");
+
+  const bare = /`container system start`/;
+  const sources = ["src/sandbox.ts", "bin/paw-sandbox-run.mjs"].map((f) => readFileSync(join(import.meta.dirname, "..", f), "utf8"));
+  assert(sources.every((s) => !bare.test(s)), "paw's own messages never suggest a bare `container system start` (the real binary + --install-root)");
 }
 
 console.log("sandbox image recipe");

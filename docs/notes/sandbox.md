@@ -9,7 +9,8 @@ macOS 26+, Apple silicon) and is still the same peer on the cotal mesh: `paw dm`
 ## Use
 
 ```
-container system start                     # once per boot (Apple's services; `paw` never starts them)
+<root>/bin/container system start --install-root <root>   # once per boot (Apple's services; `paw` never starts them).
+                                           # The REAL binary + --install-root, never via a symlink — see "A wrong install root"
 paw sandbox build                          # build paw's image (src/sandbox/Containerfile), then stop the builder VM
 cd <folder> && paw claude --sandbox --space <remote space> --name <n>
 paw start|stop|restart <n>#<s> · paw chat @<n>#<s> · paw dm <n>#<s> "…" · paw attach <n>#<s> · paw log <n>#<s>
@@ -328,6 +329,32 @@ launcher and `container run` on the host were alive. When the operator restarted
 
 The memory itself is the persona's call: a wedge says so in `launcher.log`. `check:sandbox-wedge` uses a fake
 `container` whose guest wedges on cue.
+
+## A wrong install root
+
+**Incident (the mini, 2026-11-06, ~30 h):** something ran `container system start` through the symlink
+`~/.local/bin/container -> ~/.local/opt/container/bin/container`. `system start` derives the install root from the
+path it was INVOKED by, so `~/Library/Application Support/com.apple.container/apiserver/apiserver.plist` recorded
+`EnvironmentVariables.CONTAINER_INSTALL_ROOT = ~/.local` instead of `~/.local/opt/container`. With no plugins
+there the apiserver crash-looped ("Error: cannot find any plugins with type network", 2,400+ launchd runs), and
+every sandboxed wake failed with a `container system status` ETIMEDOUT that said nothing about why.
+
+`bin/paw-container-root.mjs` (plain ESM, shared by `src/sandbox.ts` and the launcher) reads that plist and checks
+`<CONTAINER_INSTALL_ROOT>/libexec/container/plugins/container-network-vmnet`. Missing ⇒ one actionable error naming
+the recorded root, the root from the realpath of the `container` paw would run (`realpath(bin)` minus
+`/bin/container`), and the exact fix — `<root>/bin/container system stop; <root>/bin/container system start
+--install-root <root>`, or `plutil -replace EnvironmentVariables.CONTAINER_INSTALL_ROOT -string <root> <plist>` +
+`launchctl bootout gui/<uid>/com.apple.container.apiserver; launchctl bootstrap gui/<uid> <plist>`. If the realpath
+root lacks the plugin too, it says the install itself is incomplete instead of offering a fix that can't work.
+- **Where:** `assertSandboxHostReady` runs it ALWAYS (one `plutil`), before `container system status` — and also
+  over ssh, where `outsideGuiSession()` skips the status probes but a file read is fine (`container` not on an ssh
+  PATH ⇒ the bad root is still named, without the real one). The launcher runs it when `container ls` fails.
+- **Never edits the plist** and never starts Apple's services. No plist (services never started) or a plist that
+  records no install root ⇒ nothing judged, never a guessed root.
+- paw's own hints that used to say `container system start` now say `<realpath root>/bin/container system start
+  --install-root <root>`, so paw can never cause this itself.
+- `check:sandbox` ("apiserver install root"): fake install tree + symlink + fake plist (good / wrong / no key /
+  incomplete install), the ssh path, the plist unchanged after.
 
 ## Why remote spaces only (v1) — and the local plan
 

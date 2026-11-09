@@ -27,6 +27,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { containerTransport, startForwarder } from "./paw-sandbox-forward.mjs";
 import { forceRemoveContainers, stillListed } from "./paw-sandbox-kill.mjs";
+import { diagnoseInstallRoot, installRootOf, systemStartCommand } from "./paw-container-root.mjs";
 
 const KILLER = fileURLToPath(new URL("./paw-sandbox-kill.mjs", import.meta.url));
 const argv = process.argv.slice(2);
@@ -71,7 +72,15 @@ if (!token) die(`the Claude OAuth token file ${tokenFile} is empty`);
 // Leftovers of this agent: same labels, any state. One container per launch id, so this never races
 // a live sibling of the same agent — there is none (one seat per name per manager).
 const ls = spawnSync(container, ["ls", "--all", "--format", "json"], { encoding: "utf8", timeout: 30_000 });
-if (ls.status !== 0) die(`\`container ls\` failed — is it running? \`container system start\` (${(ls.stderr || ls.error?.message || "").trim()})`);
+if (ls.status !== 0) {
+  let why;
+  try {
+    why = diagnoseInstallRoot({ bin: container });
+  } catch (e) {
+    why = e.message;
+  }
+  die(why ?? `\`container ls\` failed — is it running? \`${systemStartCommand(installRootOf(container))}\` (${(ls.stderr || ls.error?.message || "").trim()})`);
+}
 let listed;
 try {
   listed = JSON.parse(ls.stdout || "[]");
