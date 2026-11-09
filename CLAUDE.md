@@ -185,6 +185,9 @@ Each entry: what it is + the most load-bearing rule. Full notes behind the link.
   (a `system start` through a symlink — the mini's 30h crash loop) fails loud naming the bad root, the realpath root and the
   `<root>/bin/container system start --install-root <root>` / plutil fix; diagnose only, runs over ssh too; paw's own hints use
   the real binary + `--install-root`. → [sandbox.md#a-wrong-install-root](docs/notes/sandbox.md#a-wrong-install-root)
+  An apiserver merely NOT REGISTERED (every reboot) is started by the CLI-side preflight itself, once per process, with that
+  same command (+ `--disable-kernel-install`, 90s bound), then re-probed; never over ssh, never under a root other than the
+  plist's. → [sandbox.md#after-a-reboot](docs/notes/sandbox.md#after-a-reboot)
 - `src/session.ts` — `readResumeId`, `transcriptExists`; leaf module. → [agents.md#srcsessionts](docs/notes/agents.md#srcsessionts)
 - **Two-writer guard** — never start an agent whose pinned session a standalone claude holds. → [agents.md#two-writer-guard](docs/notes/agents.md#two-writer-guard)
 - `src/open.ts` — `paw open`/`paw attach`: runtime-aware; tmux → real window, cmux → names the tab, pty

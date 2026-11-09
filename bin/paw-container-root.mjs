@@ -7,8 +7,9 @@
  * where there are no plugins: the apiserver crash-looped ("cannot find any plugins with type network", 2,400+
  * launchd runs) and every sandboxed wake failed with a `container system status` ETIMEDOUT for ~30 hours.
  *
- * Only ever DIAGNOSES — paw never edits the plist or (re)starts Apple's services. Reading a file works over ssh
- * too, where `container system status` can't see the GUI-domain apiserver.
+ * Only ever DIAGNOSES — paw never edits the plist, and never starts Apple's services under a root other than the one
+ * recorded (src/sandbox.ts starts a merely unregistered apiserver, with the root it already has). Reading a file
+ * works over ssh too, where `container system status` can't see the GUI-domain apiserver.
  *
  * Plain node ESM, no dependencies: imported by bin/paw-sandbox-run.mjs (manager's node) and src/sandbox.ts.
  */

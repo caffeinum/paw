@@ -565,6 +565,100 @@ console.log("apiserver install root (bin/paw-container-root.mjs) — diagnosed, 
   assert(sources.every((s) => !bare.test(s)), "paw's own messages never suggest a bare `container system start` (the real binary + --install-root)");
 }
 
+console.log("apiserver not registered (after a reboot) → paw starts it once, with the root it already has");
+{
+  const cr = await import("../bin/paw-container-root.mjs");
+  const base = join(home, "autostart");
+  const real = join(base, "opt", "container");
+  const other = join(base, "opt", "other-container");
+  for (const r of [real, other]) mkdirSync(join(r, "libexec", "container", "plugins", cr.NETWORK_PLUGIN), { recursive: true });
+  mkdirSync(join(real, "bin"), { recursive: true });
+  // `system status` reads $STATE/up; `system start` sets it unless FAKE_START says otherwise. Every call is logged as "$0 $*".
+  writeFileSync(
+    join(real, "bin", "container"),
+    `#!/bin/sh
+echo "$0 $*" >> "$FAKE_LOG"
+case "$1 $2" in
+  "system status") [ -f "$FAKE_STATE/up" ] && { echo "apiserver is running"; exit 0; }; echo "\${FAKE_STATUS_MSG:-apiserver is not running and not registered with launchd}" >&2; exit 1 ;;
+  "system start") case "$FAKE_START" in
+      fail) echo "Error: failed to bootstrap com.apple.container.apiserver: Input/output error" >&2; exit 1 ;;
+      noop) echo "Verifying apiserver is running..."; exit 0 ;;
+      *) touch "$FAKE_STATE/up"; echo "Verifying apiserver is running..."; exit 0 ;;
+    esac ;;
+  "image inspect") exit 0 ;;
+esac
+`,
+  );
+  chmodSync(join(real, "bin", "container"), 0o755);
+  const linkDir = join(base, "dotlocal", "bin");
+  mkdirSync(linkDir, { recursive: true });
+  symlinkSync(join(real, "bin", "container"), join(linkDir, "container"));
+  const plist = join(base, "apiserver.plist");
+  const writePlist = (root: string) => {
+    const tmp = `${plist}.json`;
+    writeFileSync(tmp, JSON.stringify({ Label: "com.apple.container.apiserver", EnvironmentVariables: { CONTAINER_INSTALL_ROOT: root } }));
+    const r = spawnSync("plutil", ["-convert", "xml1", "-o", plist, tmp]);
+    if (r.status !== 0) throw new Error(`plutil failed: ${r.stderr}`);
+  };
+  const sandboxUrl = new URL("../src/sandbox.ts", import.meta.url).href;
+  let n = 0;
+  // One fresh process per scenario (the start is once per PROCESS); `calls` = how many wakes that process does.
+  const run = (o: { outsideGui?: boolean; start?: string; statusMsg?: string; calls?: number }) => {
+    const state = join(base, `state-${++n}`);
+    mkdirSync(state);
+    const log = join(state, "calls.log");
+    writeFileSync(log, "");
+    const code = `const sbx = await import(${JSON.stringify(sandboxUrl)});
+const out = [];
+for (let i = 0; i < ${o.calls ?? 1}; i++) {
+  try { sbx.assertSandboxHostReady(undefined, process.env, { plistPath: ${JSON.stringify(plist)}, outsideGui: ${o.outsideGui ?? false} }); out.push("ok"); }
+  catch (e) { out.push(e.message); }
+}
+console.log(JSON.stringify(out));`;
+    const r = spawnSync(process.execPath, ["--input-type=module", "-e", code], {
+      encoding: "utf8",
+      env: { ...process.env, PATH: `${linkDir}:/usr/bin:/bin`, PAW_CONTAINER: "", FAKE_LOG: log, FAKE_STATE: state, FAKE_START: o.start ?? "", FAKE_STATUS_MSG: o.statusMsg ?? "" },
+    });
+    if (r.status !== 0) throw new Error(`driver failed: ${r.stderr}`);
+    const calls = readFileSync(log, "utf8").split("\n").filter(Boolean);
+    return { results: JSON.parse(r.stdout) as string[], stderr: r.stderr, calls, starts: calls.filter((c) => c.includes(" system start")) };
+  };
+  const startLine = `${join(real, "bin", "container")} system start --install-root ${real} --disable-kernel-install`;
+
+  writePlist(real);
+  const ok = run({});
+  assert(ok.starts.length === 1 && ok.starts[0] === startLine, "not registered → `system start` with the REAL binary and its realpath root (not the ~/.local symlink's)");
+  assert(ok.results[0] === "ok" && ok.calls.filter((c) => c.endsWith("system status")).length === 2 && ok.calls.some((c) => c.includes("image inspect")), "…status re-probed, and the launch proceeds (image check reached, no error)");
+  assert(ok.stderr.includes("paw: started Apple container's apiserver (it wasn't running — after a reboot?)"), "…and says so in one line");
+
+  const failed = run({ start: "fail" });
+  assert(failed.starts.length === 1 && /`container system status` failed — start it with .*system start --install-root/.test(failed.results[0]) && failed.results[0].includes("Input/output error"), "start fails → the loud status error, with the start's own output");
+  assert(!failed.calls.some((c) => c.includes("image inspect")), "…and nothing past it runs");
+
+  const still = run({ start: "noop", calls: 2 });
+  assert(/status still fails: apiserver is not running/.test(still.results[0]), "start 'succeeds' but status still fails → loud, with both outputs");
+  assert(still.starts.length === 1 && /start it with/.test(still.results[1]), "…and a second wake in the same process does NOT start it again (once per process)");
+
+  const timeout = run({ statusMsg: "XPC connection error: Connection invalid (timeout)" });
+  assert(timeout.starts.length === 0 && /timeout/.test(timeout.results[0]), "any other status failure → no start, the loud error as before");
+
+  writePlist(join(base, "dotlocal"));
+  const wrong = run({});
+  assert(wrong.starts.length === 0 && /wrong install root/.test(wrong.results[0]) && wrong.calls.length === 0, "a wrong-root registration → the #116 diagnosis, `system start` never called (not even status)");
+
+  writePlist(other);
+  const elsewhere = run({});
+  assert(elsewhere.starts.length === 0 && elsewhere.results[0].includes(`CONTAINER_INSTALL_ROOT=${other}`) && /won't re-register it under another root/.test(elsewhere.results[0]), "a plist naming ANOTHER (working) root → loud, never re-registered under this binary's root");
+
+  writePlist(real);
+  const ssh = run({ outsideGui: true });
+  assert(ssh.results[0] === "ok" && ssh.calls.length === 0, "over ssh → neither status nor start is run");
+
+  rmSync(plist);
+  const fresh = run({});
+  assert(fresh.starts.length === 1 && fresh.results[0] === "ok", "no plist at all (never started here) → started with the binary's own root");
+}
+
 console.log("sandbox image recipe");
 {
   const cf = readFileSync(sbx.CONTAINERFILE, "utf8");

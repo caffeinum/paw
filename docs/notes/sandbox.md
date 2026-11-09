@@ -349,12 +349,36 @@ root lacks the plugin too, it says the install itself is incomplete instead of o
 - **Where:** `assertSandboxHostReady` runs it ALWAYS (one `plutil`), before `container system status` — and also
   over ssh, where `outsideGuiSession()` skips the status probes but a file read is fine (`container` not on an ssh
   PATH ⇒ the bad root is still named, without the real one). The launcher runs it when `container ls` fails.
-- **Never edits the plist** and never starts Apple's services. No plist (services never started) or a plist that
-  records no install root ⇒ nothing judged, never a guessed root.
+- **Never edits the plist**, and never starts Apple's services under another root (see below). No plist (services
+  never started) or a plist that records no install root ⇒ nothing judged, never a guessed root.
 - paw's own hints that used to say `container system start` now say `<realpath root>/bin/container system start
   --install-root <root>`, so paw can never cause this itself.
 - `check:sandbox` ("apiserver install root"): fake install tree + symlink + fake plist (good / wrong / no key /
   incomplete install), the ssh path, the plist unchanged after.
+
+## After a reboot
+
+**Incident (the mini, 2026-11-09, macOS 27.2→27.3):** `container`'s services are registered with launchd by
+`system start`, not by a LaunchAgents file, so a reboot leaves the apiserver "not running and not registered with
+launchd". Every sandboxed agent (vercel, neon, fly, stripe, cf…) then refused to wake with a message naming the exact
+`<root>/bin/container system start --install-root <root>` — which fixed it when the operator ran it by hand.
+
+`assertSandboxHostReady` (the CLI-side preflight of every sandboxed spawn, including `paw start --boot`) now runs
+that command itself when `container system status` fails with "not running"/"not registered":
+- **Once per process**, bounded at 90s, `stdin` closed and `--disable-kernel-install` (never an interactive prompt);
+  then `system status` again. One stderr line: `paw: started Apple container's apiserver (it wasn't running — after
+  a reboot?)`.
+- **Never a guessed root:** the binary is `realpath(container)`, the root is its parent's parent (`installRootOf`). The
+  wrong-root diagnosis runs first and still throws (start never called); a plist recording a DIFFERENT working root
+  is refused loud (paw won't re-register it under another one); a root without the network plugin is refused.
+- Any other status failure (a timeout…), a failed start, or a status still failing after it ⇒ the old loud error,
+  now with the start's own output.
+- **Never over ssh:** `outsideGuiSession()` skips the probes there, and a `system start` from a Background session
+  would register it in `user/<uid>`, invisible to the login session (see the install notes below). An ssh wake of a
+  sandboxed agent after a reboot still fails in the launcher (`container ls`), until a login-session `paw start`
+  (the fleet job at login does it).
+- The launcher (`bin/paw-sandbox-run.mjs`) does not start it — only reports.
+- `check:sandbox` ("apiserver not registered"): fake `container` + install tree + plist, one process per scenario.
 
 ## Why remote spaces only (v1) — and the local plan
 
