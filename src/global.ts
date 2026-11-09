@@ -21,6 +21,7 @@ import { optedIn, sleepSweep, sweepOtherSpaces } from "./sleep.ts";
 import { tidySweep } from "./commands/tidy.ts";
 import { revivePendingElsewhere } from "./revive.ts";
 import { cronSweep } from "./commands/cron.ts";
+import { recordLive, recordLiveElsewhere } from "./boot-live.ts";
 
 /** The always-on agent's fixed mesh name. Exported so other surfaces can reference it without a literal. */
 export const GLOBAL_NAME = "global";
@@ -78,6 +79,9 @@ async function globalUp(argv: string[]): Promise<void> {
   const othersAfter = async () => {
     await revivePendingElsewhere(space).catch((e: Error) => console.error(`paw keeper: reviving other spaces failed: ${e.message}`));
     await sweepOtherSpaces(space).catch((e: Error) => console.error(`paw keeper: sleep sweep of other spaces failed: ${e.message}`));
+    // Who is live in every other space this machine's manager runs — what the login fleet job brings back
+    // after a reboot (src/boot-live.ts). After the sleep sweep, so a sleeper is never recorded live.
+    await recordLiveElsewhere(space).catch((e: Error) => console.error(`paw keeper: recording other spaces' live agents failed: ${e.message}`));
   };
   const { spawned, starting, stuck } = await withEnsuredManager(space, async (ctl) => {
     const r = await ensureAgentSpawned(ctl, { space, name, cwd: folder, brief: GLOBAL_BRIEF });
@@ -90,6 +94,9 @@ async function globalUp(argv: string[]): Promise<void> {
         (e: Error) => console.error(`paw keeper: sleep sweep failed: ${e.message}`),
       );
     }
+    // What the login fleet job brings back after a reboot (src/boot-live.ts) — after the sleep sweep, so a
+    // sleeper is never recorded live. Never fails the tick.
+    await recordLive(space, ctl);
     // Every 6h: ask agents holding NEW background processes whether they still use them (paw tidy). A DM,
     // never a kill or restart — the agent decides. A failure is logged, never fails the tick.
     await tidySweep(space).then(

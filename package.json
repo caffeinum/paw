@@ -70,6 +70,7 @@
     "check:nats-reconnect": "node scripts/check-nats-reconnect.ts",
     "check:hash-space": "node scripts/check-hash-space.ts",
     "check:boot": "node scripts/check-boot.ts",
+    "check:reboot": "node scripts/check-reboot.ts",
     "check:teleport": "node scripts/check-teleport.ts",
     "check:move": "node scripts/check-move.ts",
     "check:relocate": "node scripts/check-relocate.ts",

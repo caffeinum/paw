@@ -24,6 +24,13 @@
  * fails loud if nothing is live, rather than guessing. The spawn-pacing gate (src/pacing.ts) still
  * staggers the boot.
  *
+ * EVERY SPACE (2026-11-08): the job runs `paw start --boot <names…> --space <s>` — the baked names in <s>,
+ * plus, in every space (team2027, a remote mesh, included), the agents this machine's manager ran before the
+ * reboot, from the keeper-written `spaces/<space>/live.json` (src/boot-live.ts, src/reboot.ts). Other spaces
+ * are NOT baked into the plist: their list changes with every hire, stop and sleep, and a baked one would be
+ * stale by the next reboot. A space with no record starts nothing. An older plist (no `--boot`) keeps
+ * starting only its own space until `paw launchd install` is re-run — `status` says so.
+ *
  * Runs the CLI the documented way — plain node (native TS) over the CHECKOUT's bin/paw.ts (the daemons it
  * ensures resolve through the pinned release, as always). PATH is written into the plist from
  * `toolDirs()` because launchd starts jobs with a minimal environment — the same class of failure
@@ -201,7 +208,7 @@ function jobEnv(): Record<string, string> {
 export function fleetJob(space: string, names: string[], opts: { cli?: string[]; env?: Record<string, string>; log: string; cwd: string }): JobSpec {
   return {
     label: FLEET_LABEL,
-    args: [...(opts.cli ?? pawCli(FLEET_BIN)), "start", ...names, "--space", space],
+    args: [...(opts.cli ?? pawCli(FLEET_BIN)), "start", "--boot", ...names, "--space", space],
     keepAlive: false,
     log: opts.log,
     cwd: opts.cwd,
@@ -262,6 +269,12 @@ function readFleetJob(): { path: string; plist: Record<string, unknown> & { Prog
     throw new Error(`paw: ${path} has no string ProgramArguments — fix or reinstall it (\`paw launchd install\`)`);
   }
   return { path, plist: { ...plist, ProgramArguments: args } };
+}
+
+/** Does a fleet job's argv bring back every space (`paw start --boot`)? Older installs ran a plain `paw start`. */
+export function fleetJobBoots(args: string[]): boolean {
+  const start = args.indexOf("start");
+  return start >= 0 && args.slice(start + 1).includes("--boot");
 }
 
 /** The fleet plist's path when its login `paw start` names `name` in `space` (read-only), else undefined. */
@@ -371,6 +384,9 @@ async function run(argv: string[]): Promise<void> {
     console.log(`${WEB_LABEL}  ${jobState(WEB_LABEL)}`);
     console.log(`${GLOBAL_LABEL}  ${jobState(GLOBAL_LABEL)}  (every ${GLOBAL_INTERVAL_S}s: \`paw global\`)`);
     console.log(`  plists: ${plistPath(FLEET_LABEL)} · ${plistPath(WEB_LABEL)} · ${plistPath(GLOBAL_LABEL)}`);
+    const job = readFleetJob();
+    if (job && !fleetJobBoots(job.plist.ProgramArguments))
+      console.log(`  ⚠ the fleet job predates \`paw start --boot\`: after a reboot it brings back only its own space — re-run \`paw launchd install\` so every space this machine hosts comes back`);
     return;
   }
 
@@ -403,7 +419,10 @@ async function run(argv: string[]): Promise<void> {
     const err = loadJob(job);
     if (err) { failures.push(err); console.log(`✗ ${job.label}: not loaded — ${err}`); } else console.log(okLine);
   };
-  load(fleetJob(space, names, { log: logPath(space, "launchd"), cwd }), `✓ ${FLEET_LABEL}: \`paw start ${names.join(" ")}\` at login (running now)`);
+  load(
+    fleetJob(space, names, { log: logPath(space, "launchd"), cwd }),
+    `✓ ${FLEET_LABEL}: \`paw start --boot ${names.join(" ")}\` at login (running now) — plus, in every space, what this machine ran before the reboot (spaces/<s>/live.json)`,
+  );
   if (a.web) {
     load(webJob(space, a.webPort, { log: logPath(space, "launchd-web"), cwd }), `✓ ${WEB_LABEL}: \`paw web --no-open${a.webPort ? ` --port ${a.webPort}` : ""}\` kept alive`);
   } else {

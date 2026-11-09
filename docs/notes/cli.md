@@ -349,6 +349,8 @@ an old server ignores the header and frames land on "default". `rm` the file to 
   just those. Idempotent (a live agent reads as "already live", not re-spawned); vanished folders + spawn
   failures (e.g. two-writer guard) are reported per-agent, never fatal to the rest. Self-ensures, NOT in
   bin gating. Live-tested on an isolated mesh (2 offline-registered agents → both cold-started).
+  **`paw start --boot` (2026-11-08)** is the login fleet job's mode — see
+  [Every space after a reboot](#every-space-after-a-reboot-2026-11-08) below.
 
 ## spawn pacing
 
@@ -401,6 +403,39 @@ an old server ignores the header and frames land on "default". `rm` the file to 
   `--no-global` opts out. Gotcha met on install: zsh does NOT word-split `$NAMES` — passing a shell
   variable of names to `paw launchd install` bakes ONE bogus quoted name into the fleet plist; pass
   the names literally (or `${=NAMES}`).
+
+### Every space after a reboot (2026-11-08)
+
+**Incidents:** the mini rebooted 2026-11-07 04:07 and the mac 2026-11-01. The fleet job ran `paw start <names>
+--space paw` and brought `paw` back; team2027 — a REMOTE mesh (`spaces/team2027/remote-mesh.json`, the fly broker),
+never in any plist — stayed down (lizard, paw, mcpc, evals-intern) until someone noticed.
+
+**There was no reliable "was live" record.** `restart-revive.json` exists only while a `paw restart` is unfinished;
+the manager's ps dies with the machine; sleep records say who is asleep, not who was up. So:
+- **The keeper writes one** (`src/boot-live.ts`): every 60s tick, `spaces/<s>/live.json` = `{space, bootAt, at,
+  names}` for its own space (inside the tick's manager handle, after the sleep sweep) and for every OTHER space whose
+  manager runs on this machine (`managerProcs`; never starts one; 30s ps cap per space). `names` = ps rows whose
+  process runs (`psRowRunning` — the rule `paw restart` revives by), with a persona here, not asleep. On a remote space
+  the rail is pinned to this machine's manager instance, so another machine's seats never appear. A ps that doesn't
+  answer never overwrites the last good record.
+- **The hold:** `bootAt` = this machine's boot time. A record from an EARLIER boot is not overwritten for
+  `BOOT_HOLD_MS` (1h) after boot, or until the fleet job re-stamps it — the keeper ticks while the fleet job is still
+  bringing agents back, and that half-empty snapshot must not become "what was live".
+- **The fleet job is `paw start --boot <names…> --space <s>`** (`src/reboot.ts`): the plist's space first — its baked
+  names (unchanged) ∪ its record; then every other space — its record, nothing else. Per name: recorded asleep → stays
+  asleep; teleported → skipped; on a remote space the persona must be here with `machine:` = this machine's name there
+  (`machineName`, src/host-stamp.ts) — another machine's or an unstamped persona is skipped and named.
+- **Conservative by construction:** a space with no record starts NOTHING (never the whole registry — the herd), and
+  the log names the agents hosted there with `paw start <names> --space <s>`. A `paw stop`/`paw sleep` leaves the
+  record within one tick. Accepted gap: a stop in the last minute before a reboot comes back.
+- **Unreachable broker:** a space whose start throws (ensure/connect) is retried after 10s/30s/60s/120s/240s (6 tries,
+  ~7.5 min), each failure logged; then `✗ <space>: gave up`, the other spaces still run, every read record is
+  re-stamped (names kept), and the job exits 1 naming who is down and the exact `paw start … --space` to finish.
+- **Why other spaces are NOT baked into the plist:** their list changes with every hire/stop/sleep; a baked one is
+  stale by the next reboot. Install still bakes only the plist space's names; the argv is the same on every run
+  (idempotent). An OLD plist (no `--boot`) keeps starting only its own space until `paw launchd install` is re-run —
+  `paw launchd status` warns (`fleetJobBoots`).
+- Tests: `check:reboot` (record/hold/restamp, keeper spaces, planSpace, runBoot retry/give-up/stuck, the plist argv).
 
 ## src/stdout.ts
 
