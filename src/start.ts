@@ -15,13 +15,15 @@ import { registry, type Command } from "@cotal-ai/core";
 import { elsewhereHint, ensureAgentSpawned, folderForName, listAgents, psRowAlive, stuckWarning, type PsRow } from "./addressing.ts";
 import { resolveSpace, withEnsuredManager } from "./lifecycle.ts";
 import { awaitSpawnHeadroom } from "./pacing.ts";
+import { realBootDeps, runBoot, type StartResult } from "./reboot.ts";
 
-function parseArgs(argv: string[]): { space?: string; names: string[] } {
-  const out: { space?: string; names: string[] } = { names: [] };
+export function parseArgs(argv: string[]): { space?: string; names: string[]; boot: boolean } {
+  const out: { space?: string; names: string[]; boot: boolean } = { names: [], boot: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--space") out.space = argv[++i];
-    else if (a.startsWith("-")) throw new Error(`paw: unknown flag "${a}" — start [<name>…] [--space <s>]`);
+    else if (a === "--boot") out.boot = true;
+    else if (a.startsWith("-")) throw new Error(`paw: unknown flag "${a}" — start [<name>…] [--boot] [--space <s>]`);
     else out.names.push(a);
   }
   return out;
@@ -33,20 +35,9 @@ export function notRegisteredSkip(space: string, name: string): string {
   return hint ? `${name} (not registered in "${space}"${hint})` : `${name} (not registered)`;
 }
 
-async function start(argv: string[]): Promise<void> {
-  const { space: spaceArg, names } = parseArgs(argv);
-  const space = spaceArg ?? resolveSpace();
-
-  // Resolve the target set: the named agents, or the WHOLE registry. Names are persona filenames, so
-  // listAgents needs no dedup; a named target that isn't registered resolves to no folder and is
-  // reported (never fabricated).
-  const targets = names.length ? names.map((name) => ({ name, folder: folderForName(space, name) })) : listAgents(space);
-
-  if (!targets.length) {
-    console.log("paw: no agents registered to start (`paw chat --fresh <folder>` to make one)");
-    return;
-  }
-
+/** Start `targets` in `space` (ensuring its manager). Throws only when the manager can't be had; per-agent
+ *  failures land in `skipped`, stuck seats in `stuck`. */
+export async function startAgents(space: string, targets: Array<{ name: string; folder?: string }>): Promise<StartResult> {
   const started: string[] = [];
   const alive: string[] = [];
   const skipped: string[] = [];
@@ -95,13 +86,50 @@ async function start(argv: string[]): Promise<void> {
       else started.push(o.r.starting ? `${o.t.name} (still starting — messages wait in its inbox)` : o.t.name);
     }
   });
+  return { started, alive, skipped, stuck };
+}
 
-  console.log(`✓ paw start — ${started.length} started, ${alive.length} already live, ${skipped.length} skipped`);
-  if (started.length) console.log(`  started:      ${started.join(", ")}`);
-  if (alive.length) console.log(`  already live: ${alive.join(", ")}`);
-  if (skipped.length) console.log(`  skipped:      ${skipped.join(" · ")}`);
+function report(label: string, r: StartResult, indent = ""): void {
+  console.log(`${indent}✓ ${label} — ${r.started.length} started, ${r.alive.length} already live, ${r.skipped.length} skipped`);
+  if (r.started.length) console.log(`${indent}  started:      ${r.started.join(", ")}`);
+  if (r.alive.length) console.log(`${indent}  already live: ${r.alive.join(", ")}`);
+  if (r.skipped.length) console.log(`${indent}  skipped:      ${r.skipped.join(" · ")}`);
+}
+
+async function start(argv: string[]): Promise<void> {
+  const { space: spaceArg, names, boot } = parseArgs(argv);
+  const space = spaceArg ?? resolveSpace();
+
+  if (boot) {
+    // The login fleet job: the baked names here, plus every space's live record (src/reboot.ts).
+    console.log(`paw start --boot at ${new Date().toISOString()} — bringing back what this machine ran before the reboot`);
+    const deps = realBootDeps(
+      async (s, ns) => {
+        const r = await startAgents(s, ns.map((name) => ({ name, folder: folderForName(s, name) })));
+        report(`paw start (${s})`, r, "  ");
+        return r;
+      },
+      (s) => listAgents(s).map((a) => a.name),
+    );
+    await runBoot(space, names, deps);
+    console.log("✓ paw start --boot — done");
+    return;
+  }
+
+  // Resolve the target set: the named agents, or the WHOLE registry. Names are persona filenames, so
+  // listAgents needs no dedup; a named target that isn't registered resolves to no folder and is
+  // reported (never fabricated).
+  const targets = names.length ? names.map((name) => ({ name, folder: folderForName(space, name) })) : listAgents(space);
+
+  if (!targets.length) {
+    console.log("paw: no agents registered to start (`paw chat --fresh <folder>` to make one)");
+    return;
+  }
+
+  const r = await startAgents(space, targets);
+  report("paw start", r);
   // Nothing to queue a message into here: a stuck seat is a failed start, said loud with a non-zero exit.
-  if (stuck.length) throw new Error(`paw start — ${stuck.length} stuck:\n  ${stuck.join("\n  ")}`);
+  if (r.stuck.length) throw new Error(`paw start — ${r.stuck.length} stuck:\n  ${r.stuck.join("\n  ")}`);
 }
 
 const startCommand: Command = {
@@ -109,7 +137,7 @@ const startCommand: Command = {
   name: "start",
   group: "Lifecycle",
   summary: "cold-start the fleet — spawn every registered agent (or the named ones), each resuming its session",
-  usage: "start [<name>…] [--space <s>]   (from truly cold; use `paw restart --full` to bounce the manager)",
+  usage: "start [<name>…] [--space <s>]   (from truly cold; use `paw restart --full` to bounce the manager) · start --boot [<name>…] --space <s> (the login fleet job: those names + every space's live record)",
   run: (a) => start([...a.raw]),
 };
 

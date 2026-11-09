@@ -117,7 +117,7 @@ assert(renameAgentOnDisk(SPACE, FOLDER, "api2", "queue2").from === "api", "a for
     writeFileSync(plistPath(FLEET_LABEL), renderPlist(job));
     assert(renameInFleetJob("paw", "a", "z") === plistPath(FLEET_LABEL), "fleet job: a started name is rewritten on disk");
     const back = JSON.parse(execFileSync("plutil", ["-convert", "json", "-o", "-", plistPath(FLEET_LABEL)], { encoding: "utf8" }));
-    assert(back.ProgramArguments.join(" ") === "/n /paw.ts start z b --space paw", "fleet job: the plist now starts the new name");
+    assert(back.ProgramArguments.join(" ") === "/n /paw.ts start --boot z b --space paw", "fleet job: the plist now starts the new name (--boot kept)");
     assert(back.EnvironmentVariables?.PAW_HOME === "/h" && back.Label === FLEET_LABEL, "fleet job: the rest of the plist survives");
     assert(renameInFleetJob("paw", "a", "y") === undefined, "fleet job: the old name is gone, a second rename of it is a no-op");
   } finally {

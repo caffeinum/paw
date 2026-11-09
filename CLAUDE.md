@@ -87,11 +87,16 @@ Each entry: what it is + the most load-bearing rule. Full notes behind the link.
   refuses to clobber a differently-named mapping. → [cli.md#paw-global](docs/notes/cli.md#paw-global)
 - `src/keeper.ts` — the unstick sweep on the global keeper tick (history; see the no-auto-restart rule). → [cli.md#keeper-unstick-sweep](docs/notes/cli.md#keeper-unstick-sweep)
 - `src/start.ts` — `paw start [<name>…]`: cold-start every REGISTERED agent (restart only revives live ones). → [cli.md#paw-start](docs/notes/cli.md#paw-start)
+- `src/boot-live.ts` + `src/reboot.ts` — after a reboot EVERY space comes back, not just the plist's: the keeper writes
+  `spaces/<s>/live.json` (running seats of THIS machine's manager, persona here, not asleep; held 1h after boot for the
+  fleet job); `paw start --boot` = baked names ∪ each space's record, sleepers stay asleep, remote = persona `machine:`
+  here; no record ⇒ nothing started; unreachable broker ⇒ bounded retry then loud exit 1. `check:reboot`.
+  → [cli.md#every-space-after-a-reboot-2026-11-08](docs/notes/cli.md#every-space-after-a-reboot-2026-11-08)
 - `src/commands/tidy.ts` — `paw tidy`: DM each live agent holding background processes (age/size floors) to ask if it still uses them; never kills itself (cotal `idle` ≠ nothing pending). → [cli.md#paw-tidy](docs/notes/cli.md#paw-tidy)
 - `src/cron.ts` + `src/commands/cron.ts` — `paw cron add [<agent>] "<cron>"|--in|--at "<prompt>" [--run <cmd>]` / `ls` / `rm` / `tick`: durable agent wake-ups in `spaces/<s>/cron.json`; fired by the global keeper tick as a `paw dm`-path DM from the peer "cron" (never a restart), missed fires collapse into one, one-shots deleted after. → [cron.md](docs/notes/cron.md)
 - `src/commands/nice.ts` — `paw nice`: per-agent CPU priority (persona `nice:` > `PAW_NICE` > 10); launches run under `/usr/bin/nice`, `--apply`/`<name> <n>` renice the live tree (absolute `renice <n>`, NOT `-n` — on macOS that is an increment). → [cli.md#paw-nice](docs/notes/cli.md#paw-nice)
 - `src/pacing.ts` — `awaitSpawnHeadroom`: load-gated revival (bounded 90s), anti-thundering-herd. → [cli.md#spawn-pacing](docs/notes/cli.md#spawn-pacing)
-- `src/commands/launchd.ts` — `paw launchd`: fleet (one-shot, NO KeepAlive), web (KeepAlive), global
+- `src/commands/launchd.ts` — `paw launchd`: fleet (one-shot `paw start --boot`, NO KeepAlive; old plists need a re-install), web (KeepAlive), global
   keeper (60s StartInterval); explicit name list baked in. → [cli.md#paw-launchd](docs/notes/cli.md#paw-launchd)
 - `src/stdout.ts` — `writeOut`/`writeJson`: loop on partial writes; bun truncated piped `--json`. → [cli.md#srcstdoutts](docs/notes/cli.md#srcstdoutts)
 
@@ -176,6 +181,10 @@ Each entry: what it is + the most load-bearing rule. Full notes behind the link.
   A wedged guest (out of memory, every `container exec`/`stop`/`delete` hangs) is caught by the launcher's watchdog:
   the VM process is SIGKILLed (`bin/paw-sandbox-kill.mjs`), the launcher exits 75, and the spawn's `supervise` policy restarts
   the seat in place, keeping its queued DMs. `check:sandbox-wedge`. → [sandbox.md#a-wedged-vm](docs/notes/sandbox.md#a-wedged-vm)
+  `bin/paw-container-root.mjs`: the apiserver plist's `CONTAINER_INSTALL_ROOT` without `libexec/container/plugins/container-network-vmnet`
+  (a `system start` through a symlink — the mini's 30h crash loop) fails loud naming the bad root, the realpath root and the
+  `<root>/bin/container system start --install-root <root>` / plutil fix; diagnose only, runs over ssh too; paw's own hints use
+  the real binary + `--install-root`. → [sandbox.md#a-wrong-install-root](docs/notes/sandbox.md#a-wrong-install-root)
 - `src/session.ts` — `readResumeId`, `transcriptExists`; leaf module. → [agents.md#srcsessionts](docs/notes/agents.md#srcsessionts)
 - **Two-writer guard** — never start an agent whose pinned session a standalone claude holds. → [agents.md#two-writer-guard](docs/notes/agents.md#two-writer-guard)
 - `src/open.ts` — `paw open`/`paw attach`: runtime-aware; tmux → real window, cmux → names the tab, pty

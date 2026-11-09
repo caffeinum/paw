@@ -412,7 +412,7 @@ rmSync(unmapped, { recursive: true, force: true });
   const env = { PATH: "/a:/b", HOME: "/h" };
   const fleet = fleetJob("paw", ["research", "a&b"], { cli, env, log: "/l/launchd.log", cwd: "/h" });
   assert(fleet.label === FLEET_LABEL && !fleet.keepAlive, "launchd: fleet job is one-shot (no KeepAlive)");
-  assert(fleet.args.join(" ") === "/usr/bin/node /repo/bin/paw.ts start research a&b --space paw", "launchd: fleet job runs `paw start <names> --space`");
+  assert(fleet.args.join(" ") === "/usr/bin/node /repo/bin/paw.ts start --boot research a&b --space paw", "launchd: fleet job runs `paw start --boot <names> --space` (every space's live record too)");
   const web = webJob("paw", 7788, { cli, env, log: "/l/web.log", cwd: "/h" });
   assert(web.label === WEB_LABEL && web.keepAlive, "launchd: web job is KeepAlive");
   assert(web.args.slice(2).join(" ") === "web --no-open --port 7788 --space paw", "launchd: web job args");
