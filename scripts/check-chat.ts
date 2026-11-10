@@ -1261,7 +1261,14 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
 
 // ── instant UI: the pure half (src/chat-boot.ts, src/chat-banner.ts, src/chat-consent.ts) ──────────
 {
-  const { lineNeedsMesh, DeferredQueue, bootLabel, slotText, loading, ok, failed } = await import("../src/chat-boot.ts");
+  const { lineNeedsMesh, DeferredQueue, bootLabel, slotText, loading, ok, failed, bootRetry } = await import("../src/chat-boot.ts");
+  // A failed connect retries by itself when the network may answer next time (operator, 2026-11-10).
+  const brokerDrop = 'paw: remote mesh "team2027" at tls://x:4222: the connect failed. … the peer closed the connection before any NATS INFO greeting';
+  assert(bootRetry("timeout", 1) === 5_000 && bootRetry("timeout", 2) === 10_000 && bootRetry("timeout", 3) === 20_000, "bootRetry: a timeout retries at 5s, then doubles");
+  assert(bootRetry("timeout", 9) === 60_000, "bootRetry: the wait is capped at 60s");
+  assert(bootRetry(brokerDrop, 1) === 5_000 && bootRetry("error connecting - node provided an undefined error", 1) === 5_000 && bootRetry("getaddrinfo ENOTFOUND x", 1) === 5_000, "bootRetry: a dropped connect, a socket error and DNS retry");
+  assert(bootRetry("Authorization Violation", 1) === undefined && bootRetry("permission denied for subscribe after timeout", 1) === undefined, "bootRetry: auth and permission never retry, even when the text mentions a timeout");
+  assert(bootRetry("paw: no agent named bob", 1) === undefined, "bootRetry: an error that is not a network blip waits for /reconnect");
   const local = ["/imgs", "/noimg", "/paste", "/nopaste", "/help", "/quit", "/exit", "quit", "exit", "/conn", "/reconnect", " /QUIT "];
   const mesh = ["hi", "@bob hi", "@bob", "#general hi", "!ls", "/who", "/ps", "/retry", "/dm bob hi", "exit now"];
   assert(local.every((l) => !lineNeedsMesh(l)), `lineNeedsMesh: local commands run at once (${local.filter((l) => lineNeedsMesh(l)).join(", ") || "all"})`);

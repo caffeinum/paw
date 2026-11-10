@@ -8,8 +8,26 @@
  * is how a live agent looks dead. Core-free and side-effect-free: `check:chat` covers all of it.
  */
 
-/** Where the background connect is. `failed` is terminal until `/reconnect`. */
+/** Where the background connect is. `failed` waits for the next self-retry ({@link bootRetry}) or `/reconnect`. */
 export type BootPhase = "mesh" | "inbox" | "endpoint" | "agent" | "roster" | "ready" | "failed";
+
+/**
+ * A failed connect that the network may answer next time: the broker or its proxy dropped the
+ * connection, a read timed out, DNS hiccuped. Those retry by themselves ({@link bootRetry}). Anything
+ * else (auth, permission, a refused target) stays failed until `/reconnect`, since retrying cannot
+ * change the answer. Operator, 2026-11-10: a chat opened during a network outage showed "× timeout"
+ * and sat there until /reconnect, with lines queued behind it.
+ */
+const TRANSIENT_CONNECT = /timeout|timed out|deadline-exceeded|ECONNRESET|ECONNREFUSED|ECONNABORTED|EPIPE|ENOTFOUND|EAI_AGAIN|ENETUNREACH|EHOSTUNREACH|socket hang up|closed connection|connection closed|peer closed|connect failed|error connecting|disconnect|isn't answering|unreachable/i;
+const NEVER_RETRY = /authori[sz]ation|permission|denied|forbidden|not registered|ambiguous|invalid|refus/i;
+
+/** The wait before self-retry `attempt` (1-based) of a failed connect, or undefined: don't retry. */
+export function bootRetry(message: string, attempt: number): number | undefined {
+  if (NEVER_RETRY.test(message) || !TRANSIENT_CONNECT.test(message)) return undefined;
+  return Math.min(BOOT_RETRY_MAX_MS, BOOT_RETRY_BASE_MS * 2 ** Math.max(0, attempt - 1));
+}
+export const BOOT_RETRY_BASE_MS = 5_000;
+export const BOOT_RETRY_MAX_MS = 60_000;
 
 /** A field the network fills in: loading, a value, or why it could not. */
 export type Slot<T> = { s: "loading" } | { s: "ok"; v: T } | { s: "err"; msg: string };

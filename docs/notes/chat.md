@@ -190,6 +190,14 @@ or fails to start is forgotten whole (`dropEndpoint`: `ep`, `conn`, `me`, `roste
 a boot failure after the concurrent startup tears down what it acquired — so `/reconnect` never trusts
 a dead endpoint's roster (a live agent shown `offline`, `@name` "no peer") nor leaks a first inbox.
 
+**A failed connect retries by itself** (`bootRetry`, src/chat-boot.ts; 2026-11-10). A network blip
+(timeout, the broker or its proxy dropping the connect, a socket or DNS error) schedules another boot
+after 5s, doubling to a 60s cap, and says so: `retrying by itself in 5s (attempt 1) · /reconnect tries
+now`. Auth, permission and other non-network errors still wait for `/reconnect`, since retrying can't
+change them. A success resets the count; `/reconnect`, a new lookup and quitting cancel a pending retry.
+Before this, a chat opened during the mini's 2026-11-10 network outage sat on `✕ timeout` with lines
+queued until the operator typed `/reconnect`.
+
 **Pipe mode** (stdin or stdout not a tty) keeps today's order: connect + resolve, then the banner, then
 read lines; a failure throws. `check:chat-tty` (isolated space, real pty, a bare `echoer` peer)
 covers type-ahead delivery (once, in order, nothing to #general), `@ghost` refusal, an unreachable
