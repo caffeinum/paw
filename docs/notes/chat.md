@@ -598,9 +598,9 @@ agent BEFORE the chat started … not start from an empty screen", on open AND o
 
       you → kit: rebase #104 please
       🐈 kit: on it
-                              kit → bob (2m ago): can you review #104 after CI?
-                              bob → kit (1m ago): lgtm, merging
-                              kit → #general: #104 merged
+          🐈 kit → 🦊 bob (2m ago): can you review #104 after CI?
+          🦊 bob → 🐈 kit (1m ago): lgtm, merging
+          🐈 kit → #general: #104 merged
       🐈 kit: done — pushed, CI green
 
   - **What counts** (`classifyPeer`): DMs the target sent to anyone but "you", DMs anyone but "you" sent
@@ -608,9 +608,15 @@ agent BEFORE the chat started … not start from an empty screen", on open AND o
     its channel posts (`kit → #general`) and anycasts. Cron and the office bridge are DM senders
     (`cron`, `office`), so they show as `cron → kit`. Anything with "you" in it is chat's, never here.
     An unnamed recipient stays its short id — never a guessed name.
-  - **Layout** (`peerRows`): indent = a fixed 4 cols (`PEER_INDENT`; was a quarter of the width until 2026-11-06 — read as a separate column); `from → to (age):`
-    label, a one-line body on the label row else a block under it (2 more cols), markdown-rendered then
-    stripped and dimmed whole; wraps inside the right column, never reaching the last column. Painted as
+  - **Layout** (`peerRows`): drawn like a chat message, then shifted and muted. Operator, 2026-11-10:
+    "it's fine that they're muted, but … it should be identical between if I've been chatting with the
+    agent or if it's the background message". Indent = a fixed 4 cols (`PEER_INDENT`; was a quarter of
+    the width until 2026-11-06, which read as a separate column). Label `🐈 from → 🦊 to (age):` uses
+    the agents' chat tags (`#channel`/`@service` untagged). A one-line body sits on the label row, else
+    a block under it (+2 cols, the chat pad). Markdown-rendered, then stripped and dimmed whole. Rows
+    WORD-wrap inside the shift (`wrapHanging`): the label row hangs under the body pad, a list item
+    under its text. Until 2026-11-10 a character wrap split words ("bef|ore"). Never reaches the last
+    column. Painted as
     a side of its own (`other`, tight), so a run of them sits together with air around it. The `peer`
     entry stores the MESSAGE (`PeerMsg`), not rendered text: `Painter` lays it out at paint time (its
     `peer` constructor arg = chat.ts `layPeer`) at the width and age of that moment, and a resize in the

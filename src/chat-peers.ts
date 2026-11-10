@@ -2,13 +2,13 @@
  * `paw chat`'s MESSAGES view (2026-11-06): the chat view PLUS what the target said to and heard from
  * OTHER peers — other agents, the channels it posted in, cron, the office bridge. Operator: those rows
  * are "indented/tabulated to the RIGHT … so they don't distract from my own conversation, which stays
- * left-aligned and normal". Screen (80 cols):
+ * left-aligned and normal" — drawn like a chat message, shifted 4 and muted (see peerRows). Screen:
  *
  *     you → kit: rebase #104 please
  *     🐈 kit: on it
- *                         kit → bob (2m ago): can you review #104 after CI?
- *                         bob → kit (1m ago): lgtm, merging
- *                         kit → #general: #104 merged
+ *         🐈 kit → 🦊 bob (2m ago): can you review #104 after CI?
+ *         🦊 bob → 🐈 kit (1m ago): lgtm, merging
+ *         🐈 kit → #general: #104 merged
  *     🐈 kit: done — pushed, CI green
  *
  * Where the rows come from (chat.ts wires it; src/chat-own.ts reads):
@@ -21,7 +21,7 @@
  * Pure: no tty, no mesh. check:chat asserts it.
  */
 import { forwardId } from "./forward-mark.ts";
-import { displayWidth } from "./width.ts";
+import { displayWidth, sliceWidth } from "./width.ts";
 
 /** One message between the target and someone else, in the shape the view renders. */
 export interface PeerMsg {
@@ -106,41 +106,68 @@ export function peerIndent(_cols: number): number {
 }
 
 /**
- * One other-peer message as screen rows: `from → to (age): text`, the body on the label row when it is
- * one short line, else a block under it — every row indented by {@link peerIndent} and passed through
- * `dim`. `md` renders the body at a width (markdown, like every chat body). Rows never pass `cols - 1`.
+ * One other-peer message as screen rows, drawn the way the chat view draws a message (chat.ts `said`),
+ * then shifted right and muted. Operator, 2026-11-10: "it's fine that they're muted, but … it should be
+ * identical between if I've been chatting with the agent or if it's the background message". So:
+ *  - the label carries the agents' tags (`🐈 kit → 🦊 bob (2m ago):`) like a chat header;
+ *  - the body is the same markdown render, on the label row when it is one line, else a block under it
+ *    indented 2 (the chat view's continuation pad);
+ *  - rows word-wrap inside the shift, keeping each row's own indent (a bullet's continuation stays under
+ *    its text). The old character wrap split words ("bef|ore") and ran to the last column.
+ * Every row is shifted by {@link peerIndent} and passed through `dim`; rows never pass `cols - 1`.
  */
 export function peerRows(
   p: PeerMsg,
-  o: { cols: number; age: string; dim: (s: string) => string; md: (text: string, width: number) => string[]; strip: (s: string) => string },
+  o: {
+    cols: number;
+    age: string;
+    dim: (s: string) => string;
+    md: (text: string, width: number) => string[];
+    strip: (s: string) => string;
+    /** An agent's tag as the chat header shows it (emoji + name); a `#channel`/`@service` stays as is. */
+    tag?: (name: string) => string;
+  },
 ): string[] {
-  const ind = peerIndent(o.cols);
-  const pad = " ".repeat(ind);
-  const room = Math.max(10, o.cols - 1 - ind);
-  const label = `${p.from} → ${p.to}${o.age}:`;
-  const body = o.md(p.text, room - 2).map((l) => o.strip(l));
-  const oneLine = body.length <= 1 && displayWidth(label) + 1 + displayWidth(body[0] ?? "") <= room;
-  const rows = oneLine ? [`${label} ${body[0] ?? ""}`] : [label, ...body.map((l) => `  ${l}`)];
-  return rows.flatMap((r) => hardWrap(r, room)).map((r) => o.dim(pad + r));
+  const pad = " ".repeat(peerIndent(o.cols));
+  const room = Math.max(10, o.cols - 1 - pad.length);
+  const tag = (n: string): string => o.strip(o.tag && !/^[#@]/.test(n) ? o.tag(n) : n);
+  const label = `${tag(p.from)} → ${tag(p.to)}${o.age}:`;
+  const body = o.md(p.text, room - BODY_PAD.length).map((l) => o.strip(l));
+  const rows = body.length <= 1 ? [`${label} ${body[0] ?? ""}`.trimEnd()] : [label, ...body.map((l) => (l ? BODY_PAD + l : l))];
+  return rows.flatMap((r, i) => wrapHanging(r, room, i === 0 ? BODY_PAD : hangOf(r))).map((r) => o.dim(pad + r));
 }
 
-/** Plain-text wrap at `cols` display columns (the rows are stripped of escapes before this). */
-function hardWrap(s: string, cols: number): string[] {
-  if (displayWidth(s) <= cols) return [s];
+/** The chat view's continuation pad (Painter's `pad`): a body block sits this far under its label. */
+const BODY_PAD = "  ";
+
+/** Where a wrapped row's continuation starts: under a list item's text (`• `, `- `, `1. `), else at the
+ *  row's own indent. */
+function hangOf(row: string): string {
+  const m = /^(\s*)(?:[•*+-]|\d+[.)])\s+/.exec(row);
+  return " ".repeat(m ? displayWidth(m[0]) : /^ */.exec(row)![0].length);
+}
+
+/**
+ * Word-wrap one plain row to `cols` columns; continuation rows start with `hang`. Breaks at the last
+ * space that fits (never inside the row's leading indent), else mid-word for a word longer than a row.
+ * Never drops a character.
+ */
+function wrapHanging(row: string, cols: number, hang: string): string[] {
+  if (displayWidth(row) <= cols) return [row];
   const out: string[] = [];
-  let cur = "";
-  let w = 0;
-  for (const ch of s) {
-    const cw = displayWidth(ch);
-    if (w + cw > cols && w > 0) {
-      out.push(cur);
-      cur = "  ";
-      w = 2;
-    }
-    cur += ch;
-    w += cw;
+  let rest = row;
+  let lead = "";
+  while (displayWidth(lead + rest) > cols) {
+    const room = Math.max(1, cols - displayWidth(lead));
+    let head = sliceWidth(rest, room) || Array.from(rest)[0]!;
+    const indent = /^ */.exec(head)![0].length;
+    const space = head.lastIndexOf(" ");
+    if (space > indent && head.length < rest.length && rest[head.length] !== " ") head = head.slice(0, space + 1);
+    out.push((lead + head).trimEnd());
+    rest = rest.slice(head.length).replace(/^ +/, "");
+    lead = hang;
   }
-  out.push(cur);
+  if (rest) out.push(lead + rest);
   return out;
 }
 

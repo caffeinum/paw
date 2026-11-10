@@ -1717,6 +1717,17 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
   assert(eq(multi, [`<${" ".repeat(4)}bob → kit:>`, `<${" ".repeat(6)}line one>`, `<${" ".repeat(6)}line two>`]), "peers: a multi-line body goes under the label, indented further");
   const wrapped = peerRows({ id: "3", ts: 1, from: "kit", to: "bob", text: "x".repeat(300) }, { cols: 60, age: "", ...plain, dim: (x: string) => x });
   assert(wrapped.length > 3 && wrapped.every((r) => displayWidth(r) <= 59 && r.startsWith(" ".repeat(4))), "peers: long rows wrap inside the indent and never reach the last column");
+  // Drawn like a chat message (operator, 2026-11-10): agent tags in the label, words never split, the
+  // label row's continuation hangs under the body pad, a bullet's continuation keeps its indent.
+  const words = "started a Fable subagent reviewing the ownership check before any write and the data flow end to end";
+  const tagged = peerRows({ id: "4", ts: 1, from: "kit", to: "bob", text: words }, { cols: 50, age: "", ...plain, dim: (x: string) => x, tag: (n: string) => `🐈 ${n}` });
+  assert(tagged[0]!.startsWith("    🐈 kit → 🐈 bob: started"), `peers: the label carries the agents' tags like a chat header (${tagged[0]})`);
+  assert(tagged.every((r) => displayWidth(r) <= 49) && tagged.slice(1).every((r) => r.startsWith("      ") && !r.startsWith("       ")), `peers: label-row continuations hang under the body pad (${JSON.stringify(tagged)})`);
+  assert(tagged.map((r) => r.trim()).join(" ") === `🐈 kit → 🐈 bob: ${words}`, `peers: wrapping breaks between words, never inside one (${JSON.stringify(tagged)})`);
+  const chan = peerRows({ id: "5", ts: 1, from: "kit", to: "#general", text: "hi" }, { cols: 80, age: "", ...plain, dim: (x: string) => x, tag: (n: string) => `🐈 ${n}` });
+  assert(chan[0] === "    🐈 kit → #general: hi", `peers: a #channel recipient is not tagged (${chan[0]})`);
+  const bullets = peerRows({ id: "6", ts: 1, from: "kit", to: "bob", text: `verdict:\n• blocker: ${words}` }, { cols: 50, age: "", ...plain, dim: (x: string) => x });
+  assert(bullets[1] === "      verdict:" && bullets[2] === "      • blocker: started a Fable subagent" && bullets.slice(3).every((r) => r.startsWith("        ") && !r.startsWith("         ") && displayWidth(r) <= 49), `peers: a wrapped list item hangs under its text (${JSON.stringify(bullets)})`);
 
   const msgs = [10, 20, 30, 40].map((ts) => ({ id: `p${ts}`, ts, from: "kit", to: "bob", text: `t${ts}` }));
   const pk = pickPeers(msgs, { limit: 2, now: 45, windowMs: 30, shown: (id) => id === "p40" });
