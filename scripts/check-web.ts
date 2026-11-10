@@ -1622,6 +1622,28 @@ const stillAligned = async (ws: RawWs, label: string, ...setup: Buffer[]): Promi
   console.log("✓ reconnect backoff");
 }
 
+/* ── roster read retries once (src/web.ts retryOnce) ──────────────────────────────────────────────── */
+{
+  const { retryOnce } = await import("../src/web.ts");
+  const log: string[] = [];
+  const flaky = (fails: number) => {
+    let n = 0;
+    return async (): Promise<string> => {
+      log.push(`try${++n}`);
+      if (n <= fails) throw new Error(`deadline-exceeded #${n}`);
+      return "rows";
+    };
+  };
+  const reset = async (): Promise<void> => void log.push("reset");
+  assert((await retryOnce(flaky(0), reset)) === "rows" && log.join() === "try1", `retryOnce: a first success neither resets nor retries (${log.join()})`);
+  log.length = 0;
+  assert((await retryOnce(flaky(1), reset)) === "rows" && log.join() === "try1,reset,try2", `retryOnce: one blip resets the handle and the retry's rows win (${log.join()})`);
+  log.length = 0;
+  const err = await retryOnce(flaky(2), reset).then(() => undefined, (e: Error) => e.message);
+  assert(err === "deadline-exceeded #2" && log.join() === "try1,reset,try2", `retryOnce: two failures surface the second error, no third try (${err}; ${log.join()})`);
+  console.log("✓ roster retry once");
+}
+
 /* ── incremental DM reconcile (src/feed.ts DmWindow) ──────────────────────────────────────────────── */
 {
   const { DmWindow, conversationEntries, dmRow } = await import("../src/feed.ts");

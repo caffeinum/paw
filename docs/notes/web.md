@@ -369,5 +369,10 @@ Moved verbatim from CLAUDE.md (2026-10-02 split). Index: [CLAUDE.md](../../CLAUD
   so message ids are the cursor. `readConversation` and the window share `conversationEntries`.
 - **Manager reconnects back off** (`Backoff`): 10s → 20s → … → 5min, reset on success; the failure note
   rides the stale rows meanwhile (was: a re-resolve every 10s, 11k failures in one log).
+- **One retry before a tick fails** (`retryOnce`): a failed roster read drops the shared handle and
+  tries once more right away. Only a second failure shows the note and starts the backoff. On team2027
+  (manager reached through fly) a warm `ps` took 31ms–1.25s, median 250ms, but a single network stall
+  past the 4s budget used to flash "roster refresh failed" and push the next attempt out 10s+
+  (2026-11-09).
 - Not done: `collectStatus` still runs `gitInfoMany` for every folder on each web tick (git subprocesses,
   not counted in the web process's own CPU).
