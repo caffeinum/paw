@@ -267,6 +267,21 @@ export function hasProse(body: string): boolean {
   return body.replace(PLACEHOLDER_RE, "").trim().length > 0;
 }
 
+/**
+ * The typed line without the given placeholders, whitespace tidied — what `/noimg` puts back into the
+ * input after a send was refused for its images, so Enter sends the words alone. Each line keeps its
+ * own breaks; a gap a placeholder left (`see [Image #1] here`, `look [Image #1], ok`) closes up.
+ */
+export function dropPlaceholders(body: string, placeholders: string[]): string {
+  const gone = new Set(placeholders);
+  return body
+    .replace(PLACEHOLDER_RE, (p) => (gone.has(p) ? "" : p))
+    .split("\n")
+    .map((l) => l.replace(/[ \t]{2,}/g, " ").replace(/ +([,.;:!?])/g, "$1").trim())
+    .join("\n")
+    .trim();
+}
+
 /** The marker that prefixes each attachment line on the wire (and in paw's own echo). */
 export const ATTACH_ICON = "📷";
 const FILE_ICON = "📎";

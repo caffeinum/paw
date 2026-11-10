@@ -76,6 +76,7 @@ import {
   ATTACH_ICON,
   attachmentsRide,
   composeMessage,
+  dropPlaceholders,
   formatBytes,
   hasProse,
   isBig,
@@ -1007,6 +1008,12 @@ async function chat(argv: string[]): Promise<void> {
   let replaying = false;
   /** Queued lines refused at replay that could not go back into the input: printed in full on quit. */
   const keptUnsent: { to: string; text: string }[] = [];
+  /**
+   * The last line refused because its images are files on THIS machine and its agent runs on another
+   * (flush's AwayFilesRefused). The input is needed to type `/noimg`, so the line waits here — `/noimg`
+   * puts it back without its placeholders, and a quit prints it in full. Never dropped.
+   */
+  let awayDraft: { to: string; text: string; placeholders: string[] } | undefined;
 
   /** The prompt reflects where plain lines go right now: a sticky target, or the broadcast room —
    *  plus what's riding along with your next message. */
@@ -1058,7 +1065,6 @@ async function chat(argv: string[]): Promise<void> {
           : `  /noimg, /nopaste, or @${attempted} to retry`,
       ),
     );
-    if (body) emit(c.dim(`  your message is not lost, it just wasn't sent: ${body.length > 60 ? `${body.slice(0, 60)}…` : body}`));
   };
 
   /** Compose the outgoing text from a typed body + the staged attachments, then clear the pending
@@ -1078,7 +1084,28 @@ async function chat(argv: string[]): Promise<void> {
   /** Said the moment a file is staged for an agent running elsewhere — flush refuses to send it. */
   const warnAwayFile = (): void => {
     const away = curName ? awayOf(curName) : undefined;
-    if (away) emit(c.yellow(`  ⚠ ${curName} runs on ${away.where} and can't open a file on this machine — /noimg drops it`));
+    if (away) emit(c.yellow(`  ⚠ ${curName} runs on ${away.where} and can't open a file on this machine — /noimg drops it and keeps your text`));
+  };
+
+  /**
+   * A refused line goes back into the input, so nothing typed is lost to a refusal. A multi-line one
+   * comes back as the draft it was (held lines + the last one being edited). When the input is in use
+   * by then (the operator typed on during a slow refusal), it is kept and printed in full on quit.
+   */
+  const giveBack = (to: string, text: string, said: string): void => {
+    if (!rl || closing || !text.trim()) return;
+    setImmediate(() => {
+      if (!rl || closing) return;
+      if (rl.line !== "" || held.length) {
+        keptUnsent.push({ to, text });
+        emit(c.dim("  the refused line is kept, not sent — it is printed in full when you quit"));
+        return;
+      }
+      emit(c.dim(said));
+      const lines = text.split("\n");
+      for (const l of lines.slice(0, -1)) holdLine(l);
+      rl.write(lines[lines.length - 1]!);
+    });
   };
 
   const flush = (body: string, target?: string, to: string | undefined = target): string => {
@@ -1087,7 +1114,10 @@ async function chat(argv: string[]): Promise<void> {
     // cannot open. Refuse the send (thrown → printed, nothing sent, still staged) — pastes are inline
     // text and would travel fine, but the message is one unit.
     const away = pending.length && to && !to.startsWith("#") ? awayOf(to) : undefined;
-    if (away) throw new Error(`${elsewhereFiles(to!, away, pending.map((a) => a.placeholder))} — /noimg drops ${pending.length === 1 ? "it" : "them"}`);
+    if (away) {
+      const placeholders = pending.map((a) => a.placeholder);
+      throw new AwayFilesRefused(to!, `${elsewhereFiles(to!, away, placeholders)} — /noimg drops ${pending.length === 1 ? "it" : "them"} and keeps your text`, placeholders);
+    }
     // Bound to someone else? HOLD them. Sending the body alone is the right half to get wrong: the
     // words were typed for THIS agent, the attachment was not.
     if (!attachmentsRide(stagedFor, target)) {
@@ -2918,6 +2948,14 @@ async function chat(argv: string[]): Promise<void> {
     /** The line was refused whole (its target can't be reached): nothing of it was sent. `body` is the
      *  line with its dragged paths already swapped for placeholders (they are staged). */
     let refused: { refusedTo: string; body: string } | undefined;
+    /** The line as typed, paths swapped for placeholders — what a refusal keeps. */
+    let line = typed;
+    /** Not sent to `to` and not reachable from this line again: back into the input (or, replayed,
+     *  to replayDeferred, which knows where it can go). */
+    const keep = (to: string): void => {
+      if (opts.replay) refused = { refusedTo: to, body: line };
+      else giveBack(to, line, "  your text is back in the input — edit it, or @name to send it elsewhere");
+    };
     try {
       if (bang) {
         bang = false; // one command per entry; the next line starts as a message again
@@ -2936,6 +2974,12 @@ async function chat(argv: string[]): Promise<void> {
         if (!pastes.length) stagedFor = undefined; // nothing is held for anyone any more
         rl!.setPrompt(promptFor());
         if (!closing) rl!.prompt();
+        const draft = awayDraft;
+        awayDraft = undefined;
+        if (draft) {
+          const words = dropPlaceholders(draft.text, draft.placeholders);
+          if (words) giveBack(draft.to, words, `  your text is back in the input without ${draft.placeholders.length === 1 ? "the image" : "the images"} — Enter sends it to ${draft.to}`);
+        }
         return;
       }
       if (cmd === "/imgs") {
@@ -2975,6 +3019,7 @@ async function chat(argv: string[]): Promise<void> {
       });
       if (peeled.paths.length) warnAwayFile();
       const text = peeled.body;
+      line = text;
 
       // A line that was ONLY paths stages and waits — see `pending` above for why it must not send.
       // Tested against `hasProse`, not emptiness: a path-only line peels to the non-empty body
@@ -3080,8 +3125,11 @@ async function chat(argv: string[]): Promise<void> {
           const body = rest.slice(sp + 1);
           const to = inThisSpace(typed); // undefined: another space, already said in red
           const peer = to === undefined ? undefined : findPeer(to);
-          if (to !== undefined && !peer) emit(c.red(`no peer named "${to}" present`));
-          else if (peer) {
+          if (to === undefined) keep(typed);
+          else if (!peer) {
+            emit(c.red(`no peer named "${to}" present`));
+            keep(to);
+          } else {
             sendDm(peer.card.name, peer.card.id, flush(body, undefined, peer.card.name)); // confirm sent + await the reply (typed line alone isn't proof)
           }
         }
@@ -3091,8 +3139,10 @@ async function chat(argv: string[]): Promise<void> {
         const typed = (sp === -1 ? text.slice(1) : text.slice(1, sp)).trim();
         const body = sp === -1 ? "" : text.slice(sp + 1).trim();
         const to = typed ? inThisSpace(typed) : "";
-        if (to === undefined) warnStranded(typed, body);
-        else if (!to) emit(c.red("usage: @<name> [message]"));
+        if (to === undefined) {
+          warnStranded(typed, body);
+          if (body) keep(typed);
+        } else if (!to) emit(c.red("usage: @<name> [message]"));
         else {
           // A roster that was never read is not one with nobody in it: wait for it (≤5s), and never
           // wake (respawn) an agent on the word of a roster that hasn't loaded.
@@ -3137,9 +3187,11 @@ async function chat(argv: string[]): Promise<void> {
           } else if (!peer) {
             emit(c.red(`no peer named "${to}" present (/who to list)`));
             warnStranded(to, body);
+            if (body) keep(to);
           } else if (peer.status === "offline") {
             emit(c.red(`"${peer.card.name}" hasn't come up yet — a cold start can outlast the wait; try \`@${to}\` again in a moment`));
             warnStranded(to, body);
+            if (body) keep(to);
           } else {
             const switched = peer.card.name.toLowerCase() !== curName?.toLowerCase();
             if (peer.card.name !== curName) bang = false; // a command typed for one agent's folder never runs in another's
@@ -3167,7 +3219,10 @@ async function chat(argv: string[]): Promise<void> {
           const channel = typed?.slice(1);
           const body = text.slice(sp + 1).trim();
           if (channel !== undefined) sendPost(channel, flush(body, `#${channel}`));
-          else warnStranded(text.slice(0, sp).trim(), body);
+          else {
+            warnStranded(text.slice(0, sp).trim(), body);
+            if (body) keep(text.slice(0, sp).trim());
+          }
         }
       } else if (curName) {
         // The sticky target. A target that could not be reached REFUSES the line (kept, ↑ recalls it):
@@ -3189,6 +3244,14 @@ async function chat(argv: string[]): Promise<void> {
       }
     } catch (e) {
       emit(c.red("! " + (e as Error).message));
+      if (e instanceof AwayFilesRefused) {
+        // The images stay staged; the words wait for `/noimg` (the input is where it gets typed).
+        if (awayDraft) {
+          keptUnsent.push({ to: awayDraft.to, text: awayDraft.text });
+          emit(c.dim("  the line refused before this one is kept — it is printed in full when you quit"));
+        }
+        awayDraft = { to: e.to, text: line, placeholders: e.placeholders };
+      }
     }
     if (!closing) rl!.prompt();
     return refused;
@@ -3596,10 +3659,11 @@ async function chat(argv: string[]): Promise<void> {
   function printUnsent(draft: string): void {
     const queued = deferred.unsentLines();
     const out = [...outbox.pending(), ...outbox.failed()];
-    const n = keptUnsent.length + queued.length + out.length;
+    const kept = awayDraft ? [...keptUnsent, { to: awayDraft.to, text: awayDraft.text }] : keptUnsent;
+    const n = kept.length + queued.length + out.length;
     if (n) {
       writeOut(c.red(`\n✕ quitting with ${n} message${n === 1 ? "" : "s"} not sent:\n`));
-      for (const k of keptUnsent) writeOut(c.dim(`   → ${k.to} (refused): `) + `${k.text}\n`);
+      for (const k of kept) writeOut(c.dim(`   → ${k.to} (refused): `) + `${k.text}\n`);
       for (const t of queued) writeOut(c.dim(`   → ${curName ?? pendingName() ?? `#${room}`} (queued): `) + `${t}\n`);
       for (const it of out) writeOut(c.dim(`   → ${it.label}: `) + `${textOf(it.msg.msg)}${it.lastError ? c.dim(` (${shortReason(it.lastError)})`) : ""}\n`);
     }
@@ -3706,6 +3770,17 @@ function timing(mark: string): void {
 
 /** The console as it was before chat routed it above its prompt. */
 const consoleOrig = { log: console.log, warn: console.warn, error: console.error, info: console.info };
+/** flush's refusal of a line whose images are files on this machine, to an agent running on another. */
+class AwayFilesRefused extends Error {
+  readonly to: string;
+  readonly placeholders: string[];
+  constructor(to: string, message: string, placeholders: string[]) {
+    super(message);
+    this.to = to;
+    this.placeholders = placeholders;
+  }
+}
+
 function restoreConsole(): void {
   Object.assign(console, consoleOrig);
 }
