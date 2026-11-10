@@ -1,3 +1,5 @@
+import type { BriefWhere } from "./brief.ts";
+import { machineName } from "./host-stamp.ts";
 import { readRemoteMesh } from "./remote-mesh.ts";
 
 /**
@@ -22,6 +24,11 @@ export const HUMAN_PEER = "you";
  */
 export function humanPeer(space: string): string {
   return readRemoteMesh(space)?.human ?? HUMAN_PEER;
+}
+
+/** What a brief says about where an agent on `space` runs and who chats from this machine (src/brief.ts). */
+export function briefWhere(space: string): BriefWhere {
+  return { machine: machineName(space), human: humanPeer(space) };
 }
 
 /**

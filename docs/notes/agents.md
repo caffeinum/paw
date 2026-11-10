@@ -8,7 +8,8 @@ Moved verbatim from CLAUDE.md (2026-10-02 split). Index: [CLAUDE.md](../../CLAUD
   @cotal-ai/connector-claude-code and injects: `--permission-mode bypassPermissions`
   (PAW_PERMISSION overrides; "default" emits no flag), `--disallowedTools AskUserQuestion,ExitPlanMode`
   (so a warm agent can't hang on a terminal prompt), the mesh brief (merged into
-  `--append-system-prompt`, and it names the human peer so agents reply to it), and optional
+  `--append-system-prompt`; it says which machine the agent runs on and this machine's human peer,
+  and that humans on other machines have their own peer names — see [remote-mesh.md#human-name](remote-mesh.md#human-name)), and optional
   a durable session pin from an agent file's `resume:` frontmatter. **Durability:** every persona is
   minted with a stable `resume: <uuid>` at birth (`ensurePersonaFile`); the connector emits
   `--session-id <id>` on FIRST boot (no transcript under `~/.claude/projects/*/<id>.jsonl` yet) and

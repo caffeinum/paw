@@ -18,17 +18,18 @@ import { acpConnector } from "cotal-connector-acp";
 import type { Connector, LaunchOpts, LaunchSpec } from "@cotal-ai/core";
 import { resolveAcpHost } from "./acp-host.ts";
 import { beadsDir } from "./beads-dir.ts";
-import { ADDRESSING_BRIEF, CRON_BRIEF, CHANNELS_BRIEF, OPERATOR_REQUESTS_BRIEF, TASKS_BRIEF, UNATTENDED_BRIEF, WAKE_BRIEF } from "./brief.ts";
+import { ADDRESSING_BRIEF, CRON_BRIEF, CHANNELS_BRIEF, OPERATOR_REQUESTS_BRIEF, TASKS_BRIEF, UNATTENDED_BRIEF, WAKE_BRIEF, whereBrief, type BriefWhere } from "./brief.ts";
 import { niced, remoteTlsEnv } from "./connector.ts";
-import { HUMAN_PEER, humanPeer } from "./names.ts";
+import { briefWhere } from "./names.ts";
 import { personaValue, readNice } from "./session.ts";
 
 export { ACP_AGENT } from "./acp-agent.ts";
 
-export function acpBrief(name: string, human: string = HUMAN_PEER): string {
+export function acpBrief(name: string, where: BriefWhere): string {
   return [
     `You are "${name}", a paw agent rooted at this folder and a peer on the cotal mesh, running on an ACP harness.`,
-    `The human operator is the peer "${human}"; a teammate is addressed by their agent name.`,
+    ...whereBrief(where),
+    `A teammate is addressed by their agent name.`,
     ...ADDRESSING_BRIEF,
     ...CHANNELS_BRIEF,
     ...UNATTENDED_BRIEF,
@@ -82,7 +83,7 @@ export const pawAcpConnector: Connector = {
         ...spec,
         env: {
           ...spec.env,
-          COTAL_ACP_INSTRUCTIONS: acpBrief(opts.name, humanPeer(opts.space)),
+          COTAL_ACP_INSTRUCTIONS: acpBrief(opts.name, briefWhere(opts.space)),
           BEADS_DIR: beadsDir(),
           BEADS_ACTOR: opts.name,
         },

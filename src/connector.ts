@@ -3,9 +3,9 @@ import { registry, type Connector, type LaunchOpts, type LaunchSpec } from "@cot
 import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { HUMAN_PEER, humanPeer } from "./names.ts";
+import { briefWhere } from "./names.ts";
 import { permissionMode } from "./bypass-consent.ts";
-import { ADDRESSING_BRIEF, BACKGROUND_BASH_BRIEF, CRON_BRIEF, CHANNELS_BRIEF, COTAL_TOOLS_NOTICE_BRIEF, FILES_BRIEF, OPERATOR_REQUESTS_BRIEF, SANDBOX_BRIEF, TASKS_BRIEF, UNATTENDED_BRIEF, WAKE_BRIEF } from "./brief.ts";
+import { ADDRESSING_BRIEF, BACKGROUND_BASH_BRIEF, CRON_BRIEF, CHANNELS_BRIEF, COTAL_TOOLS_NOTICE_BRIEF, FILES_BRIEF, OPERATOR_REQUESTS_BRIEF, SANDBOX_BRIEF, TASKS_BRIEF, UNATTENDED_BRIEF, WAKE_BRIEF, whereBrief, type BriefWhere } from "./brief.ts";
 import { beadsDir } from "./beads-dir.ts";
 import { voiceLineFor } from "./personality.ts";
 import { personaTranscriptRoots, readClaudeArgs, readCwd, readHeadless, readNice, readResumeId, readSandbox, transcriptExists } from "./session.ts";
@@ -57,20 +57,21 @@ function warnUnattended(name: string, mode: string): void {
 /**
  * The mesh brief appended to every paw agent's system prompt: who it is and how to reach its
  * peers (the human included) over the cotal tools. The sections live in src/brief.ts, where
- * src/kit.ts composes its own brief from the ones that hold for any harness. `human` is the operator's
- * mesh name on the agent's space (`humanPeer(space)`, src/names.ts).
+ * src/kit.ts composes its own brief from the ones that hold for any harness. `where` is the machine the
+ * agent runs on and the human peer chatting from it (`briefWhere(space)`, src/names.ts).
  */
-export function meshBrief(name: string, voice?: string, human: string = HUMAN_PEER): string {
+export function meshBrief(name: string, voice: string | undefined, where: BriefWhere): string {
   return [
     `You are "${name}", a paw agent rooted at this folder and a peer on the cotal mesh.`,
     ...(voice ? [voice] : []),
+    ...whereBrief(where),
     `Reach teammates with the cotal_* MCP tools: cotal_dm(to, text) for a direct message,`,
     `cotal_anycast(role, text) to reach any agent of a role, cotal_roster to see who is online,`,
     `and cotal_inbox to drain messages waiting for you.`,
     `CRITICAL: NO human is watching this session — text you write here reaches NO ONE. The ONLY way`,
     `to answer a message is to call cotal_dm(sender, your_answer). When you cotal_inbox a DM, you MUST`,
-    `then cotal_dm your reply back to that exact sender (a human operator is the peer "${human}",`,
-    `e.g. cotal_dm("${human}", …); a teammate is their agent name). Ending your turn without`,
+    `then cotal_dm your reply back to that exact sender (a human by their peer name, e.g.`,
+    `cotal_dm("${where.human}", …) when "${where.human}" wrote; a teammate by their agent name). Ending your turn without`,
     `cotal_dm means your reply is silently lost — reading the inbox is NOT replying.`,
     ...ADDRESSING_BRIEF,
     ...CHANNELS_BRIEF,
@@ -190,7 +191,7 @@ export const pawConnector: Connector = {
 
     // The personality's VOICE line (src/personality.ts) rides right after the identity line; a malformed
     // vibe/emoji/hue throws here, at spawn, rather than reaching the model half-read.
-    appendSystemPrompt(args, [meshBrief(opts.name, voiceLineFor(opts.configPath), humanPeer(opts.space)), ...(sandboxed ? [SANDBOX_BRIEF.join("\n")] : [])].join("\n\n"));
+    appendSystemPrompt(args, [meshBrief(opts.name, voiceLineFor(opts.configPath), briefWhere(opts.space)), ...(sandboxed ? [SANDBOX_BRIEF.join("\n")] : [])].join("\n\n"));
 
     // Durable session pin: paw writes a stable `resume:` id into every persona (minted at birth, or
     // a real past id via `adopt`). If its transcript exists → resume it; if not, this is the first

@@ -179,12 +179,13 @@ const space = "pers";
   ok("voice line: never changes care/thoroughness/honesty", /never how careful, thorough, honest/.test(voice));
   ok("voice line: ≲ 80 words (the ~60-token budget plus the vibe)", voice.split(/\s+/).length <= 80, `${voice.split(/\s+/).length} words`);
 
-  const mb = meshBrief("voiced", voice);
+  const WHERE = { machine: "test-box", human: "you" };
+  const mb = meshBrief("voiced", voice, WHERE);
   ok("claude brief: VOICE right after the identity line", mb.startsWith(`You are "voiced", a paw agent rooted at this folder and a peer on the cotal mesh. VOICE (style only)`));
-  ok("claude brief: no voice → no VOICE", !meshBrief("voiced").includes("VOICE"));
-  const kb = kitBrief("voiced", readKitPersona(file).voice);
+  ok("claude brief: no voice → no VOICE", !meshBrief("voiced", undefined, WHERE).includes("VOICE"));
+  const kb = kitBrief("voiced", readKitPersona(file).voice, WHERE);
   ok("kit brief: VOICE right after kit's identity paragraph", /a teammate by their agent name\. VOICE \(style only\): you are one of aeon's cats/.test(kb));
-  ok("kit brief: no voice → no VOICE", !kitBrief("voiced").includes("VOICE"));
+  ok("kit brief: no voice → no VOICE", !kitBrief("voiced", undefined, WHERE).includes("VOICE"));
 
   const claudeFile = personaFilePath(space, "voiced-claude");
   writeFileSync(claudeFile, readFileSync(file, "utf8").replace("agent: kit\nprovider: codex\n", ""));

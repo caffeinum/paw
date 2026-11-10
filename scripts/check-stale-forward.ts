@@ -155,8 +155,8 @@ ok("forward is marked, naming the old instance", parts[0].text.includes("forward
 // ── brief ───────────────────────────────────────────────────────────────────────────────────────
 const line = ADDRESSING_BRIEF.join(" ");
 ok("brief: address by name, ids change on restart (one sentence)", ADDRESSING_BRIEF.length === 1 && /by NAME/.test(line) && /change on every restart/.test(line));
-ok("claude brief carries it", meshBrief("evals").includes(line));
-ok("kit brief carries it", kitBrief("evals").includes(line));
+ok("claude brief carries it", meshBrief("evals", undefined, { machine: "test-box", human: "you" }).includes(line));
+ok("kit brief carries it", kitBrief("evals", undefined, { machine: "test-box", human: "you" }).includes(line));
 
 console.log(fails ? `\n${fails} FAILED` : "\nall passed");
 process.exit(fails ? 1 : 0);

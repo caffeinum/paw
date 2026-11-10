@@ -122,6 +122,7 @@ A shared broker sees every operator's mailbox, and they were all `you` (team2027
 
     paw mesh add team2027 --server tls://2027-cotal.fly.dev:4222 --root <dir> --as aleks-mac-mini
     paw mesh set team2027 --as aleks-mac-mini     # existing record; `--as you` resets
+    paw mesh set team2027 --as aleks-macbook      # the same operator's MacBook
     paw restart --space team2027                  # running mailbox + agents pick it up (operator's call)
 
 - **Resolution:** `humanPeer(space)` (src/names.ts) = record `human`, else `"you"`. No record ⇒ `"you"`,
@@ -129,9 +130,25 @@ A shared broker sees every operator's mailbox, and they were all `you` (team2027
   the manager that writes briefs and every CLI call must agree; a per-shell `PAW_HUMAN` would split them.
 - **Validation:** `checkHumanName` — `[A-Za-z0-9][A-Za-z0-9._-]{0,63}` (a strict subset of cotal's
   `assertValidName`). Bad `--as` refused; a bad `human` in a record fails loud on read, never falls back.
+- **Convention: name a human peer after the machine it chats from** (`aleks-macbook`, `aleks-mac-mini`).
+  The same person on two machines is two peers; the name says who is writing and from where.
 - **Uses:** the card name of every human endpoint (mailbox beacon, dm, msg, ask, chat, inbox/history/
-  watch/files observers, who) and the human named in the claude/kit/hermes/acp briefs (resolved at
-  spawn). PR/website persona briefs no longer name the human (they defer to the mesh brief).
+  watch/files observers, who) and the briefs. PR/website persona briefs defer to the mesh brief.
+- **What the briefs say** (`whereBrief` in src/brief.ts, filled by `briefWhere(space)` in src/names.ts at
+  spawn; claude/kit/hermes/acp): `You run on <machine>.` (`machineName(space)` = the persona's
+  `machine:` stamp: `PAW_MACHINE` > record `human` > hostname label), then that humans reach it from a
+  peer usually named after their machine — `"<human>"` is the one on this machine, a human on another
+  machine has its own name — so the sender tells who and from where; reply to that exact sender. There is
+  **no operator allow-list and no trust rule on purpose** (2026-11-10): the old wording "a human operator
+  is the peer `aleks-mac-mini`" made lizard refuse the same operator's DM from the MacBook (`you`) as
+  "can't verify who you are". Briefs name only this machine's human — a list of every human peer in the
+  space was not cheap (no record of other machines' names) and would have been another allow-list.
+- **Not changed (single-name, by design or out of scope):** the office bridge routes an agent's DM to the
+  office owner only when it is addressed to THIS machine's human (`speechFor` `humanName`) — the roster-mode
+  fly bridge's record names its own human; the chat messages view shows an agent's DMs with another
+  machine's human as other-peer traffic (correct: a different endpoint); the mailbox beacon, inbox
+  durables and unread cursor are per machine; `lastHuman` is the office's own owner key, not a mesh name.
+  The beads `-a aleks` assignee (`operatorName()`) is the OS login, not a peer name.
 - **Identity is the nkey, not the name:** the DM inbox durable (`dlv_<id>`), unread cursor and
   `human.nkey.json` are untouched by a rename, so nothing is orphaned. UI labels for your own messages
   (web village/pending, dialog, feed `from`) stay `"you"` — perspective, not identity.
