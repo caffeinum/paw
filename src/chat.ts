@@ -98,7 +98,7 @@ import { renderMarkdown } from "./markdown.ts";
 import { HUMAN_PEER, humanPeer } from "./names.ts";
 import { sameSpaceAddress } from "./dispatch.ts";
 import { describeInboxBindFailure, inboxLedgerDir, prepareHumanInbox, sweepOrphanInboxes, type HumanInbox } from "./human-inbox.ts";
-import { bootLabel, DeferredQueue, failed as failedSlot, LOADER, lineNeedsMesh, loading as loadingSlot, ok as okSlot, slotText, type BootPhase, type Slot } from "./chat-boot.ts";
+import { bootLabel, bootRetry, DeferredQueue, failed as failedSlot, LOADER, lineNeedsMesh, loading as loadingSlot, ok as okSlot, slotText, type BootPhase, type Slot } from "./chat-boot.ts";
 import { canRepaintInPlace, paintedRows, renderBanner, type BannerState } from "./chat-banner.ts";
 import { PendingConsent } from "./chat-consent.ts";
 import { lookingFor, takeFrame } from "./chat-preshell.ts";
@@ -3065,6 +3065,7 @@ async function chat(argv: string[]): Promise<void> {
       } else if (text === "/reconnect") {
         if (bootPhase !== "failed" || booting) emit(c.dim(booting ? "(already connecting)" : "(connected — nothing to reconnect)"));
         else {
+          cancelBootRetry();
           bootAbort = new AbortController();
           bootSettled = boot().catch((e: Error) => emit(c.red(`! ${e.message}`)));
         }
@@ -3319,6 +3320,14 @@ async function chat(argv: string[]): Promise<void> {
   let bootSettled: Promise<void> = Promise.resolve();
   let booting = false;
   let bootAbort = new AbortController();
+  /** Self-retries of a failed connect since the last success, and the pending one (src/chat-boot.ts bootRetry). */
+  let bootRetries = 0;
+  let bootRetryTimer: ReturnType<typeof setTimeout> | undefined;
+  /** A connect that starts now (/reconnect, a new lookup) replaces any self-retry still waiting. */
+  const cancelBootRetry = (): void => {
+    if (bootRetryTimer) clearTimeout(bootRetryTimer);
+    bootRetryTimer = undefined;
+  };
   /** Retires this run's remote inbox (registered before provisioning; src/human-inbox.ts). */
   let inboxRelease: (() => Promise<void>) | undefined;
   let inboxUid: string | undefined;
@@ -3490,6 +3499,7 @@ async function chat(argv: string[]): Promise<void> {
     updateBanner();
     if (bootPhase === "failed") {
       if (booting) return;
+      cancelBootRetry();
       bootAbort = new AbortController();
       bootSettled = boot().catch((e: Error) => emit(c.red(`! ${e.message}`)));
       return;
@@ -3607,6 +3617,7 @@ async function chat(argv: string[]): Promise<void> {
       }
       ready = true;
       everReady = true;
+      bootRetries = 0;
       setPhase("ready");
       timing("ready");
       rl?.setPrompt(promptFor());
@@ -3640,7 +3651,17 @@ async function chat(argv: string[]): Promise<void> {
       bootPhase = "failed";
       fields.status = failedSlot("not connected");
       emit(c.red(`✕ ${(e as Error).message}`));
-      emit(c.dim("  /reconnect tries again · what you type is kept until then"));
+      const wait = bootRetry((e as Error).message, ++bootRetries);
+      if (wait === undefined) emit(c.dim("  /reconnect tries again · what you type is kept until then"));
+      else {
+        emit(c.dim(`  retrying by itself in ${Math.round(wait / 1000)}s (attempt ${bootRetries}) · /reconnect tries now · what you type is kept until then`));
+        bootRetryTimer = setTimeout(() => {
+          bootRetryTimer = undefined;
+          if (closing || booting || bootPhase !== "failed") return;
+          bootAbort = new AbortController();
+          bootSettled = boot().catch((err: Error) => emit(c.red(`! ${err.message}`)));
+        }, wait);
+      }
       if (lookup === "pending") {
         lookup = "unreachable";
         lookupWhy = "not connected (why is above)";
@@ -3688,6 +3709,7 @@ async function chat(argv: string[]): Promise<void> {
     bootAbort.abort();
     if (followTimer) clearInterval(followTimer);
     clearInterval(connTimer);
+    cancelBootRetry();
     const draft = [...held, ...(rl ? [rl.line] : [])].filter((l) => l !== "").join("\n");
     // Leave the terminal as we found it — bracketed paste is a MODE, and a shell that inherits it
     // set without knowing would see raw \e[200~ markers in its own input.
