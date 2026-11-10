@@ -15,6 +15,7 @@ import {
   attachedPlaceholders,
   attachmentsRide,
   composeMessage,
+  dropPlaceholders,
   formatBytes,
   hasProse,
   imagesDir,
@@ -155,6 +156,17 @@ writeFileSync(bigish, "z".repeat(2048));
   assert(hasProse(peelLine(`${plain} what is this?`).body), "a path WITH text is prose (sends)");
   assert(hasProse("hello"), "ordinary text is prose");
   assert(!hasProse(""), "an empty body is not prose");
+}
+
+// ── dropPlaceholders: what /noimg puts back after a refused send (2026-11-10) ────────────────────
+{
+  assert(dropPlaceholders("i added cc to betterstack account [Image #1]", ["[Image #1]"]) === "i added cc to betterstack account", "a trailing placeholder goes, the words stay");
+  assert(dropPlaceholders("see [Image #1] and [Image #2] here", ["[Image #1]", "[Image #2]"]) === "see and here", "the gaps close up to one space");
+  assert(dropPlaceholders("look [Image #1], ok", ["[Image #1]"]) === "look, ok", "no space left before punctuation");
+  assert(dropPlaceholders("[Image #1] with [Pasted text #1]", ["[Image #1]"]) === "with [Pasted text #1]", "a paste placeholder is not an image — kept");
+  assert(dropPlaceholders("keep [Image #2] drop [Image #1]", ["[Image #1]"]) === "keep [Image #2] drop", "only the named placeholders go");
+  assert(dropPlaceholders("line one [Image #1]\nline two", ["[Image #1]"]) === "line one\nline two", "line breaks survive");
+  assert(dropPlaceholders("[Image #1]", ["[Image #1]"]) === "", "a placeholder-only line leaves nothing");
 }
 
 // ── peelWords: the paw dm argv path (shell already unquoted) ─────────────────────────────────────

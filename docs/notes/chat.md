@@ -150,6 +150,11 @@ Rules that keep a queued line from going somewhere it wasn't typed for:
   one line; otherwise it is kept whole (pastes + image lines composed in) in `keptUnsent` and printed
   on quit — never "↑ to recall" for a line readline's history doesn't hold. The target coming up later
   clears it; `@other` recovers;
+- every other refusal keeps the line too (`keep()` in `handleLine`, `giveBack`): `@name msg` / `/dm name msg`
+  / `#chan msg` to a name that isn't there (or another space) used to print "no peer" and drop `msg`
+  (`warnStranded` only previewed 60 chars, and only with something staged). A live one now goes back into
+  the input (`your text is back in the input — …`), a replayed one through replayDeferred as above; if the
+  input is in use by then it goes to `keptUnsent` instead. `check:chat-tty` 2;
 - `@name` and `/who` after ready wait (≤5s, `waitForPresenceSnapshot`) for the roster's first read,
   and never respawn an agent on the word of a roster that hasn't loaded.
 
@@ -734,7 +739,7 @@ or disable functions that don't make sense for remote agents"):
 | `← logs` view | `(no logs for tracepaper — logs live on ssh:mini, where it runs — the transcript on this machine stopped when it left)` |
 | `paw log`, web trace | `paw: no logs for "tracepaper" here — logs live on ssh:mini, where it runs — …` (guard in `openAgentLog`, persona-present agents only) |
 | `!cmd` (chat + web) | `! !cmd runs on this machine, not on ssh:mini where tracepaper works` |
-| image/file attachment (chat) | staging warns `⚠ tracepaper runs on ssh:mini and can't open a file on this machine — /noimg drops it`; the send is refused (thrown in `flush`, nothing sent, still staged): `! not sent — tracepaper runs on ssh:mini and can't open [Image #1] (a file on this machine) — /noimg drops it` |
+| image/file attachment (chat) | staging warns `⚠ tracepaper runs on ssh:mini and can't open a file on this machine — /noimg drops it and keeps your text`; the send is refused (`AwayFilesRefused` thrown in `flush`, nothing sent, still staged): `! not sent — tracepaper runs on ssh:mini and can't open [Image #1] (a file on this machine) — /noimg drops it and keeps your text`. The refused line waits in `awayDraft` (the input is needed to type `/noimg`); `/noimg` drops the images AND puts the line back into the input without its placeholders (`dropPlaceholders`, whitespace tidied), so Enter sends the words alone. A quit before that prints it in full; a second refusal moves the first into `keptUnsent`. Before 2026-11-10 `/noimg` cleared the images and the typed line was simply gone. Actually carrying the image to the other machine is the real follow-up. `check:chat-tty` 22 |
 | `paw dm` / web send with an attachment line | `sendAsYou` refuses: `paw: not sent — … (a file on this machine)` (`attachedPlaceholders` reads the `📷/📎 [Image #N] /abs` lines) |
 | `paw attach` / `paw open` | `paw: "tracepaper" runs on ssh:mini — attach to it there; from here \`paw chat @tracepaper\` messages it` |
 | `paw status` / tasks-view info | live + mesh from the roster, busy only from its own `working` claim; no ctx/failure/last-active/inbox/git; never "unmanaged — paw restart re-adopts it"; note `runs on ssh:mini · <cwd> — ctx, logs and folder are there` |

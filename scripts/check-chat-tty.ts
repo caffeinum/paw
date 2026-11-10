@@ -6,7 +6,7 @@
  * A raw CotalEndpoint peer `echoer` records every DM and #general post it gets. Then `paw chat`:
  *   1. a line typed BEFORE the prompt and one typed once it shows are both queued, then delivered to
  *      echoer exactly once each, in order — and nothing reaches #general;
- *   2. `@ghost hi` typed before ready says "no peer named ghost" and posts nothing;
+ *   2. `@ghost hi` typed before ready says "no peer named ghost", posts nothing, and is back in the input;
  *   3. `paw chat nosuch` + an early line: the line is refused and kept (✕ not sent … text kept), the
  *      process stays up, /quit leaves, #general stays silent;
  *   4. echoer DMs "you" the moment its presence appears: the DM renders (listeners attach before connect);
@@ -38,6 +38,8 @@
  *      scrolls the bead list (40 beads in an isolated PAW_BEADS_DIR); ctrl+o hands the mouse back
  *      (reporting off) and takes it again; leaving the view turns reporting off;
  *  20. /quit typed in the beads view turns mouse reporting off on the way out.
+ *  22. an image to an agent on another machine (teleported persona): refused, `/noimg` drops it and puts
+ *      the typed words back in the input; Enter sends them alone, exactly once.
  *  (1. also covers a peer registered nowhere here that IS on the roster: found → the normal prompt.)
  */
 import { spawn as ptySpawn } from "@lydell/node-pty";
@@ -179,9 +181,10 @@ try {
       setTimeout(() => io.write("@ghost hi-ghost\r"), 30);
       await io.waitFor(/no peer named "ghost"/, 20_000);
       await sleep(300);
-      io.write("/quit\r");
+      io.write("\x15/quit\r"); // the refused line is back in the input: clear it first
     });
     ok("2. @ghost before ready → no peer named ghost", /no peer named "ghost"/.test(r.plain), r.plain.split("\n").slice(-6).join(" | "));
+    ok("2. …and the refused line is back in the input, never lost", /(that line|your text) is back in the input/.test(r.plain) && /> ?@ghost hi-ghost/.test(r.plain), r.plain.split("\n").slice(-6).join(" | "));
     ok("2. …and nothing was sent anywhere", dms.every((d) => !/hi-ghost/.test(d)) && general.length === 0);
   }
 
@@ -582,6 +585,52 @@ try {
       ok("21. …and `fg` (SIGCONT) takes reporting back and repaints the beads view", resumedRaw.includes(MOUSE_ON) && /beads · /.test(strip(resumedRaw)) && z.code === 0, `exit ${z.code}`);
     } finally {
       await bob.stop().catch(() => {});
+    }
+  }
+
+  // 22. an image to an agent that runs on another machine: the send is refused, and /noimg drops the
+  // image and puts the typed words back in the input — Enter sends them alone (operator, 2026-11-10).
+  {
+    const persona = join(home, "spaces", space, "personas", "farcat.md");
+    mkdirSync(join(home, "spaces", space, "personas"), { recursive: true });
+    writeFileSync(persona, "---\nname: farcat\nteleported: ssh:mini\n---\n");
+    const png = join(home, "shot.png");
+    writeFileSync(png, Buffer.from("89504e470d0a1a0a", "hex"));
+    const farDms: string[] = [];
+    const far = new CotalEndpoint({ space, servers: server, creds: await controlCreds(space), card: { name: "farcat", kind: "agent" }, registerPresence: true, consume: true, watchPresence: true });
+    far.on("error", (e: Error) => console.error("farcat:", e.message));
+    far.on("warning", () => {});
+    far.on("message", (m: CotalMessage, d: Delivery, meta: MessageMeta) => {
+      d.ack();
+      if (meta.kind === "dm") farDms.push(text(m));
+    });
+    await far.start();
+    try {
+      let refusedSeen = false;
+      let restoredSeen = false;
+      const r = await chat(["farcat"], async (io) => {
+        await io.waitFor(/● connected/, 20_000);
+        await sleep(300);
+        io.write(`i added cc to betterstack account ${png}\r`);
+        refusedSeen = await io.waitFor(/not sent — farcat runs on ssh:mini and can't open \[Image #1\][\s\S]*\/noimg drops it and keeps your text/, 10_000);
+        await sleep(300);
+        io.write("/noimg\r");
+        restoredSeen = await io.waitFor(/your text is back in the input without the image/, 5000);
+        await sleep(300);
+        io.write("\r"); // the restored words, as they are
+        const end = Date.now() + 10_000;
+        while (Date.now() < end && !farDms.length) await sleep(50);
+        await sleep(300);
+        io.write("/quit\r");
+      });
+      const afterNoimg = r.plain.slice(Math.max(0, r.plain.indexOf("your text is back in the input without")));
+      ok("22. an image to an agent on another machine is refused, and the hint says the text is kept", refusedSeen, r.plain.split("\n").filter((l) => /not sent|⚠/.test(l)).join(" | "));
+      ok("22. …nothing reached farcat while the image was staged", !farDms.some((d) => /\[Image|shot\.png/.test(d)), JSON.stringify(farDms));
+      ok("22. …/noimg puts the typed words back into the input", restoredSeen && /i added cc to betterstack account[\s\S]*⏳ waiting for farcat/.test(afterNoimg), JSON.stringify(afterNoimg.slice(0, 600)));
+      ok("22. …and Enter sends exactly those words, without the image", JSON.stringify(farDms) === JSON.stringify(["i added cc to betterstack account"]), JSON.stringify(farDms));
+    } finally {
+      await far.stop().catch(() => {});
+      rmSync(persona, { force: true });
     }
   }
 } finally {
