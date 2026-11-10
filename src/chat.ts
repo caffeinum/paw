@@ -637,6 +637,7 @@ async function chat(argv: string[]): Promise<void> {
       dim: c.dim,
       md: (t, w) => renderMarkdown(t, { width: w }),
       strip: stripVTControlCharacters,
+      tag: (n) => agentTag(n),
     }).join("\n");
   const painter = new Painter(renderBlock, c.dim, "  ", attachesAbove, layPeer);
   const follower = new LogFollower(
