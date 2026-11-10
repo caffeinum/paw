@@ -157,6 +157,21 @@ export class Backoff {
     this.nextAt = 0;
   }
 }
+/**
+ * Run `attempt`; if it throws, run `reset` and try exactly once more. The second error is the one
+ * reported. The roster read is one `ps` round trip to a manager reached through a remote NATS server.
+ * A warm round trip there takes 30ms–1.3s (team2027 via fly, 2026-11-09), and one network stall
+ * past the 4s budget used to fail the whole tick. That put "roster refresh failed" on the page and
+ * pushed the next try out by the backoff, though the very next request would have answered.
+ */
+export async function retryOnce<T>(attempt: () => Promise<T>, reset: () => Promise<void>): Promise<T> {
+  try {
+    return await attempt();
+  } catch {
+    await reset();
+    return attempt();
+  }
+}
 /** Matches `paw log` — transcripts reach hundreds of MB, so a trace read only touches the end. */
 const TRACE_TAIL_BYTES = 512 * 1024;
 /**
@@ -1714,7 +1729,11 @@ async function web(argv: string[]): Promise<void> {
     try {
       // The roster comes from THIS long-lived observer: a per-tick throwaway endpoint left its two KV
       // watch consumers behind for 5 minutes each (see CollectOpts.roster).
-      fresh = await collectStatus(space, await sharedManagerControl(space, server), { roster: () => ep.getRoster() });
+      // A failed first read retries once on a freshly resolved handle before the tick counts as failed.
+      fresh = await retryOnce(
+        async () => collectStatus(space, await sharedManagerControl(space, server), { roster: () => ep.getRoster() }),
+        () => dropSharedManagerControl(space, server),
+      );
     } catch (e) {
       await dropSharedManagerControl(space, server);
       const wait = reconnect.failed(Date.now());
