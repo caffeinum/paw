@@ -111,7 +111,7 @@ ok("refuses a cotal fork/continue handle", throws(() => kitLaunch({ ...opts, res
 ok("refuses a pinless persona", throws(() => kitLaunch(opts, { ...p, pin: undefined }, deps(false)), /no `resume:` pin/));
 
 // ── brief ─────────────────────────────────────────────────────────────────────────────────────
-const b = kitBrief("evals-reviewer");
+const b = kitBrief("evals-reviewer", undefined, { machine: "test-box", human: HUMAN_PEER });
 ok("brief names the agent, the human peer and kit's tools", b.includes('"evals-reviewer"') && b.includes(`cotal_dm("${HUMAN_PEER}"`) && b.includes("cotal_send") && b.includes("cotal_roster"));
 ok("brief carries the shared sections (channels, wake, tasks)", b.includes("CHANNELS ARE DIFFERENT") && b.includes('cotal_dm("global", "wake <name>")') && b.includes("bd create"));
 ok("brief has none of claude's tools", !/cotal_inbox|cotal_anycast|Monitor tool|run_in_background|cotal_join/.test(b));

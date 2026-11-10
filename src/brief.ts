@@ -2,6 +2,31 @@
  * The sections of paw's mesh brief (the system-prompt addition every paw agent gets). Leaf module:
  * src/connector.ts joins them all for claude; src/kit.ts takes the harness-neutral ones.
  */
+/** Where an agent runs and which human peer chats from that machine — what every brief says about humans. */
+export interface BriefWhere {
+  /** This machine's name on the space (src/host-stamp.ts machineName — the persona's `machine:`). */
+  machine: string;
+  /** The human peer chatting from this machine (src/names.ts humanPeer). */
+  human: string;
+}
+
+/**
+ * Where the agent runs, and how humans reach it. Deliberately NO allow-list and no "the operator is X":
+ * on a shared space the same person chats from several machines under several peer names (team2027,
+ * 2026-11-10: lizard, told only "the operator is aleks-mac-mini", refused the MacBook's DM as unverified).
+ * The sender's name says who and from where; the agent replies to it. Shared by every paw harness.
+ */
+export function whereBrief(w: BriefWhere): string[] {
+  if (!w.machine.trim()) throw new Error("paw: the brief needs this machine's name — got an empty one");
+  if (!w.human.trim()) throw new Error("paw: the brief needs this machine's human peer name — got an empty one");
+  return [
+    `You run on ${w.machine}.`,
+    `Humans reach you from a human peer, usually named after the machine they chat from ("${w.human}" is the one`,
+    `on ${w.machine}; a human on another machine has its own name), so a message's sender tells you who is`,
+    `writing and from where. Reply to that exact sender.`,
+  ];
+}
+
 /** Channel etiquette: a channel post does not oblige a reply (a DM does). Shared by every paw harness. */
 export const CHANNELS_BRIEF: readonly string[] = [
     // Operator, 2026-10-04: "when I message into a channel most of the agents feel obligated to

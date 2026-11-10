@@ -134,7 +134,10 @@ Each entry: what it is + the most load-bearing rule. Full notes behind the link.
   space on a broker paw never starts; `root/.cotal/auth/auth.json` = the `cotal auth signer` file (`mint --signer` before 0.100)
   (bearer secret, 0600, never printed). `pawServer(space)` routes; no record ⇒ local, unchanged.
   `--as <name>` / `paw mesh set <space> --as <name>` = your human name there (`humanPeer(space)`, default
-  `you`; shared brokers need distinct ones). → [remote-mesh.md#human-name](docs/notes/remote-mesh.md#human-name)
+  `you`; shared brokers need distinct ones — name it after the machine: `aleks-macbook`, `aleks-mac-mini`).
+  Briefs say `You run on <machine>.` + this machine's human peer + "humans on other machines have their
+  own names; reply to the exact sender" (`whereBrief`/`briefWhere`) — NO operator allow-list or trust rule
+  (a single "operator is the peer X" made lizard refuse the MacBook). → [remote-mesh.md#human-name](docs/notes/remote-mesh.md#human-name)
 - `src/human-inbox.ts` — `paw chat` on a remote space provisions its own DM/DELIVER durables (agent creds
   only BIND under auth) and retires them on quit, TLS required. → [remote-mesh.md](docs/notes/remote-mesh.md)
 - `src/hosted.ts` + `src/remote-creds.ts` + `src/sleep-dial.ts` — remote control is PINNED to this machine's

@@ -24,8 +24,8 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { loadAgentFile, type Connector, type LaunchOpts, type LaunchSpec } from "@cotal-ai/core";
 import { beadsDir } from "./beads-dir.ts";
-import { ADDRESSING_BRIEF, CRON_BRIEF, CHANNELS_BRIEF, OPERATOR_REQUESTS_BRIEF, TASKS_BRIEF, UNATTENDED_BRIEF, WAKE_BRIEF } from "./brief.ts";
-import { HUMAN_PEER, humanPeer } from "./names.ts";
+import { ADDRESSING_BRIEF, CRON_BRIEF, CHANNELS_BRIEF, OPERATOR_REQUESTS_BRIEF, TASKS_BRIEF, UNATTENDED_BRIEF, WAKE_BRIEF, whereBrief, type BriefWhere } from "./brief.ts";
+import { briefWhere } from "./names.ts";
 import { voiceLineFor } from "./personality.ts";
 import { readKitArgs, readKitStorage, readResumeId, transcriptExists, transcriptRoots, type KitStorage } from "./session.ts";
 
@@ -83,16 +83,18 @@ export function ensureKitBinary(opts: { rebuild?: boolean } = {}): string {
 
 /**
  * The brief for a kit agent. kit's own system prompt already covers its tools and the reply rule
- * (engine.systemPrompt); this adds what paw knows: who the operator is, channels, waking, tasks.
+ * (engine.systemPrompt); this adds what paw knows: where it runs and how humans reach it, channels, waking, tasks.
  * Claude-only parts of the claude brief (cotal_inbox/anycast, cotal_join, image Reads, Monitor) are
  * left out because kit has no such tools.
  */
-export function kitBrief(name: string, voice?: string, human: string = HUMAN_PEER): string {
+export function kitBrief(name: string, voice: string | undefined, where: BriefWhere): string {
   return [
     `You are "${name}", a paw agent rooted at this folder and a peer on the cotal mesh, running on kit:`,
     `a small harness with a shell, file tools and three cotal tools — cotal_dm(to, text), cotal_send(channel, text)`,
-    `and cotal_roster. Messages arrive as your turns; there is no inbox to drain. The human operator is the`,
-    `peer "${human}": answer them with cotal_dm("${human}", …), a teammate by their agent name.`,
+    `and cotal_roster. Messages arrive as your turns; there is no inbox to drain.`,
+    ...whereBrief(where),
+    `Answer with cotal_dm to that sender: a human by their peer name (e.g. cotal_dm("${where.human}", …) when`,
+    `"${where.human}" wrote), a teammate by their agent name.`,
     ...(voice ? [voice] : []),
     ...ADDRESSING_BRIEF,
     ...CHANNELS_BRIEF,
@@ -245,7 +247,7 @@ export const kitConnector: Connector = {
     const dir = kitAgentDir(opts.space, opts.name);
     mkdirSync(dir, { recursive: true });
     const brief = join(dir, "system.md");
-    writeFileSync(`${brief}.tmp`, [persona.body, kitBrief(opts.name, persona.voice, humanPeer(opts.space))].filter(Boolean).join("\n\n") + "\n");
+    writeFileSync(`${brief}.tmp`, [persona.body, kitBrief(opts.name, persona.voice, briefWhere(opts.space))].filter(Boolean).join("\n\n") + "\n");
     renameSync(`${brief}.tmp`, brief);
     // kit refuses `--session-id` for an id it can already find in the stores it reads (kit's, then
     // claude's; claude's alone under --overwrite) — so a transcript in EITHER means --resume.

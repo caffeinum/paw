@@ -112,9 +112,28 @@ const { meshBrief } = await import("../src/connector.ts");
 const { kitBrief } = await import("../src/kit.ts");
 const { hermesBrief } = await import("../src/hermes.ts");
 const { acpBrief } = await import("../src/acp.ts");
-assert(meshBrief("a").includes('cotal_dm("you"') && kitBrief("a").includes('cotal_dm("you"') && hermesBrief("a").includes('"you"') && acpBrief("a").includes('"you"'), "briefs default to \"you\"");
-assert(meshBrief("a", undefined, "aleks-mac-mini").includes('peer "aleks-mac-mini", e.g. cotal_dm("aleks-mac-mini"') && !meshBrief("a", undefined, "aleks-mac-mini").includes('"you"'), "claude brief names the custom human");
-assert(kitBrief("a", undefined, "aleks-mac-mini").includes('cotal_dm("aleks-mac-mini"') && hermesBrief("a", undefined, "aleks-mac-mini").includes('"aleks-mac-mini"') && acpBrief("a", "aleks-mac-mini").includes('"aleks-mac-mini"'), "kit/hermes/acp briefs name the custom human");
+const mini = { machine: "aleks-mac-mini", human: "aleks-mac-mini" };
+const local = { machine: "aleks-macbook", human: "you" };
+const all = (w: { machine: string; human: string }) => [meshBrief("a", undefined, w), kitBrief("a", undefined, w), hermesBrief("a", undefined, w), acpBrief("a", w)];
+assert(all(local).every((b) => b.includes("You run on aleks-macbook.") && b.includes('"you" is the one on aleks-macbook')), "every brief says where it runs and names this machine's human peer (local: \"you\")");
+assert(meshBrief("a", undefined, local).includes('cotal_dm("you"') && kitBrief("a", undefined, local).includes('cotal_dm("you"'), "claude/kit reply example uses this machine's human peer");
+assert(all(mini).every((b) => b.includes("You run on aleks-mac-mini.") && b.includes('"aleks-mac-mini" is the one on aleks-mac-mini') && !b.includes('"you"')), "a machine-named human: every brief names it, never \"you\"");
+assert(all(mini).every((b) => b.includes("a human on another machine has its own name") && b.includes("Reply to that exact sender")), "every brief says other machines' humans have their own names; reply to the exact sender");
+assert(all(mini).every((b) => !/operator is the peer/.test(b) && !/verify|cryptograph|allow-?list/i.test(b)), "no brief pins the operator to ONE peer name or adds trust/verification rules");
+throws(() => meshBrief("a", undefined, { machine: "", human: "x" }), /machine's name/, "an empty machine name fails loud");
+throws(() => kitBrief("a", undefined, { machine: "m", human: " " }), /human peer name/, "an empty human name fails loud");
+{
+  const { briefWhere } = await import("../src/names.ts");
+  rm.writeRemoteMesh({ space: "remotetest-h", server: "tls://127.0.0.1:14322", root, human: "aleks-mac-mini", ts: new Date().toISOString() });
+  const prev = process.env.PAW_MACHINE;
+  delete process.env.PAW_MACHINE;
+  const w = briefWhere("remotetest-h");
+  assert(w.human === "aleks-mac-mini" && w.machine === "aleks-mac-mini", "briefWhere on a remote space: machine + human both from the record's --as");
+  process.env.PAW_MACHINE = "studio";
+  assert(briefWhere("remotetest-h").machine === "studio" && briefWhere("remotetest-local").human === "you", "PAW_MACHINE names the machine; a local space's human stays \"you\"");
+  if (prev === undefined) delete process.env.PAW_MACHINE;
+  else process.env.PAW_MACHINE = prev;
+}
 rm.removeRemoteMesh("remotetest-h");
 
 console.log("CLI routing");
