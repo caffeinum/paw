@@ -235,21 +235,27 @@ try {
   // command names a REMOTE space with --space: then that space's broker/manager is the one it needs.
   // `<agent>#<space>` becomes `<agent> --space <space>` FIRST, so the gate below ensures that space.
   const args = hoistAddressSpace(cmd, raw.slice(1));
-  // Unnamed, a spawning verb run inside an agent defaults to THAT agent's space (src/space.ts).
-  const space = explicitSpace(args) ?? defaultSpaceFor(cmd);
-  const flagged = explicitSpace(raw.slice(1)) !== undefined;
-  const choice = spaceChoiceOf({ space, flag: flagged, address: !flagged && explicitSpace(args) !== undefined, verb: cmd, env: process.env });
-  noteSpaceChoice(choice);
-  // A verb that WRITES agent state names the space when PAW_SPACE picked it: an `export PAW_SPACE=…` in a
-  // shell rc is invisible, and it routed `paw adopt .` into another machine's space (2026-11-11).
-  if (choice.how === "env" && SPACE_WRITING_VERBS.has(cmd)) process.stderr.write(`paw: space ${space} (from PAW_SPACE)\n`);
-  const gate = isRemoteSpace(space) ? { space } : {};
-  if (cmd === "dm") await gateDm(() => ensure({ needMesh: true, needManager: true, ...gate }), args, space);
-  else if (NEEDS_MANAGER.has(cmd)) await ensure({ needMesh: true, needManager: true, ...gate });
-  else if (NEEDS_MESH.has(cmd)) await ensure({ needMesh: true, ...gate });
+  // A machine checkup over every space resolves no default space and gates nothing: it must run even
+  // under an empty PAW_SPACE, one of the states it reports.
+  if (ALL_SPACE_VERBS.has(cmd) && explicitSpace(args) === undefined) {
+    await command.run({ values: {}, positionals: [], raw: expandEqFlags(args) });
+  } else {
+    // Unnamed, a spawning verb run inside an agent defaults to THAT agent's space (src/space.ts).
+    const space = explicitSpace(args) ?? defaultSpaceFor(cmd);
+    const flagged = explicitSpace(raw.slice(1)) !== undefined;
+    const choice = spaceChoiceOf({ space, flag: flagged, address: !flagged && explicitSpace(args) !== undefined, verb: cmd, env: process.env });
+    noteSpaceChoice(choice);
+    // A verb that WRITES agent state names the space when PAW_SPACE picked it: an `export PAW_SPACE=…` in a
+    // shell rc is invisible, and it routed `paw adopt .` into another machine's space (2026-11-11).
+    if (choice.how === "env" && SPACE_WRITING_VERBS.has(cmd)) process.stderr.write(`paw: space ${space} (from PAW_SPACE)\n`);
+    const gate = isRemoteSpace(space) ? { space } : {};
+    if (cmd === "dm") await gateDm(() => ensure({ needMesh: true, needManager: true, ...gate }), args, space);
+    else if (NEEDS_MANAGER.has(cmd)) await ensure({ needMesh: true, needManager: true, ...gate });
+    else if (NEEDS_MESH.has(cmd)) await ensure({ needMesh: true, ...gate });
 
-  const argv = expandEqFlags(ALL_SPACE_VERBS.has(cmd) ? args : withDefaultSpace(args, space));
-  await command.run({ values: {}, positionals: [], raw: argv });
+    const argv = expandEqFlags(withDefaultSpace(args, space));
+    await command.run({ values: {}, positionals: [], raw: argv });
+  }
 } catch (err) {
   // A `paw chat` that failed before its banner: the skeleton frame promised a chat — take it down first.
   if (cmd === "chat") (await import("../src/chat-preshell.ts")).eraseFrame();

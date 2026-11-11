@@ -78,7 +78,15 @@ function fakeSh(over: Partial<DoctorSh> = {}): DoctorSh {
       const line = listing.find((l) => l.trim().startsWith(`${pid} `));
       return line ? line.trim().split(/\s+/).slice(2).join(" ") : realSh.psCmd(pid);
     },
-    psEnv: () => undefined,
+    // A fixture process is this home's unless its argv says otherwise (a checkout manager reads its env).
+    psEnv: (pid) => {
+      const line = listing.find((l) => l.trim().startsWith(`${pid} `));
+      return line ? `${line.trim().split(/\s+/).slice(2).join(" ")} PATH=/bin PAW_HOME=${PAW}` : undefined;
+    },
+    psComm: (pid) => {
+      const line = listing.find((l) => l.trim().startsWith(`${pid} `));
+      return line ? line.trim().split(/\s+/)[2] : realSh.psComm(pid);
+    },
     launchctl: () => ({ ok: false, out: "Could not find service" }),
     plutil: (p) => readFileSync(p, "utf8"),
     statfs: () => ({ bavail: (100 * 2 ** 30) / 4096, bsize: 4096, blocks: (1000 * 2 ** 30) / 4096 }),
@@ -246,9 +254,11 @@ console.log("daemons.orphan");
   mkdirSync(liveHome);
   const a = spawn(process.execPath, [join(binDir, "paw.ts"), "mailbox", "--space", "test-doctor-x", "--home", goneHome], { stdio: "ignore" });
   const b = spawn(process.execPath, [join(binDir, "paw.ts"), "mailbox", "--space", "test-doctor-y", "--home", liveHome], { stdio: "ignore" });
-  children.push(a, b);
+  // A shell whose command line merely CONTAINS a mailbox argv (an agent's Bash tool, a grep): never a mailbox.
+  const shell = spawn("/bin/bash", ["-c", `sleep 30; : "${join(binDir, "paw.ts")} mailbox --space test-doctor-x --home ${goneHome}"`], { stdio: "ignore" });
+  children.push(a, b, shell);
   await new Promise((r) => setTimeout(r, 300));
-  const ours = new Set([a.pid, b.pid]);
+  const ours = new Set([a.pid, b.pid, shell.pid]);
   const realPs = () => realSh.ps().split("\n").filter((l) => ours.has(Number(l.trim().split(/\s+/)[0]))).join("\n");
   const asked: number[] = [];
   const sh = fakeSh({ ps: realPs, psCmd: (pid) => realSh.psCmd(pid) });
@@ -258,13 +268,19 @@ console.log("daemons.orphan");
   };
   const rows = dc.checkDaemonsOrphan(ctx({ sh, defaultHome: true, kill }));
   const r = expectRow(rows, "daemons.orphan", "warn", `mailbox pid ${a.pid} (space test-doctor-x) belongs to PAW_HOME ${goneHome}, which is gone`, "fix", "a mailbox of a deleted PAW_HOME is a fixable orphan");
-  assert(rows.length === 1, "a mailbox whose --home exists is not an orphan");
+  assert(rows.length === 1, "a mailbox whose --home exists is not an orphan, nor is a shell naming one", rows.map((x) => x.fact));
   const gated = dc.checkDaemonsOrphan(ctx({ sh, defaultHome: false, kill }));
   assert(gated.length === 1 && !!gated[0]!.skipped && !gated[0]!.fix, "from a test PAW_HOME the orphan fix is skipped");
   await r!.fix!.run();
   await new Promise((res) => setTimeout(res, 300));
-  assert(asked.length === 1 && asked[0] === a.pid && !lockTs.pidAlive(a.pid!) && lockTs.pidAlive(b.pid!), "the fix signals ONLY the orphan; the other mailbox lives", { asked, a: a.pid, b: b.pid });
+  assert(asked.length === 1 && asked[0] === a.pid && !lockTs.pidAlive(a.pid!) && lockTs.pidAlive(b.pid!) && lockTs.pidAlive(shell.pid!), "the fix signals ONLY the orphan; the other mailbox and the shell live", { asked, a: a.pid, b: b.pid });
   b.kill();
+  shell.kill();
+  assert(dc.daemonArgs("/n/node /r/bin/paw.ts mailbox --space s", "paw.ts")?.join(" ") === "mailbox --space s", "daemonArgs: node + script");
+  assert(dc.daemonArgs("/n/node --require /x/p.cjs --import file:///x/l.mjs /r/bin/cotald.ts supervise", "cotald.ts")?.join(" ") === "supervise", "daemonArgs: node flags with values before the script");
+  assert(dc.daemonArgs("/n/node -e x /r/bin/paw.ts mailbox --space s", "paw.ts") === undefined, "daemonArgs: an inline script naming the path is not the daemon");
+  assert(dc.daemonArgs("/bin/zsh -c source /s; /n/node /r/bin/paw.ts mailbox --space s", "paw.ts") === undefined, "daemonArgs: a shell is not the daemon");
+  assert(dc.mailboxOf("/n/node /r/bin/paw.ts mailbox --space s --home /a b")?.home === "/a b" && dc.mailboxOf("/n/node /r/bin/paw.ts mailbox --space s --extra") === undefined, "mailboxOf: --home is the rest; any other tail is not a mailbox");
 }
 
 // ── manager / manager.tmpdir / ui ──────────────────────────────────────────────────────────────────
@@ -272,7 +288,7 @@ console.log("manager");
 {
   wipe();
   space("test-m");
-  const mgr = (pid: number, ppid: number, extra = "") => `${pid} ${ppid} /n/node /x/releases/abc123/bin/cotald.ts supervise --space test-m --server nats://127.0.0.1:4222${extra}`;
+  const mgr = (pid: number, ppid: number, extra = "") => `${pid} ${ppid} /n/node ${PAW}/releases/abc123/bin/cotald.ts supervise --space test-m --server nats://127.0.0.1:4222${extra}`;
   listing = [];
   expectRow(await dc.checkManager(ctx(), "test-m"), "manager", "ok", "not running here — starts on the next paw command", "none", "no manager");
   listing = [mgr(100, 1, " --runtime tmux")];
@@ -289,6 +305,28 @@ console.log("manager");
   expectRow(await dc.checkManager(ctx({ net: fakeNet({ managerPs: async () => { throw new Error("request timeout"); } }) }), "test-m"), "manager", "fail", "pid 100 · pty · release abc123 · isn't answering (no answer in 2s; log: another manager serves this space)", "command", "a manager that doesn't answer names the log's cause");
   expectRow(await dc.checkManager(ctx({ capMs: 100, net: fakeNet({ managerPs: () => new Promise(() => {}) }) }), "test-m"), "manager", "fail", "pid 100 · pty · release abc123 · isn't answering (no answer in 0.1s; log: another manager serves this space)", "command", "a hung manager is capped, never ok");
   expectRow(await dc.checkManager(ctx({ offline: true }), "test-m"), "manager", "ok", "pid 100 · pty · release abc123 · answer not checked (--offline)", "none", "--offline doesn't probe");
+  writeFileSync(join(sp("test-m"), "manager.log"), "boot\nmanager ready\n");
+  expectRow(await dc.checkManager(ctx({ net: fakeNet({ managerPs: async () => { throw new Error("request timeout"); } }) }), "test-m"), "manager", "fail", "pid 100 · pty · release abc123 · isn't answering (no answer in 2s)", "command", "a clean log adds no log segment");
+  listing = [mgr(100, 1, " --runtime weird")];
+  expectRow(await dc.checkManager(ctx({ offline: true }), "test-m"), "manager", "ok", "pid 100 · release abc123 · answer not checked (--offline)", "none", "an unreadable runtime is left out, never a placeholder");
+  // Another PAW_HOME's manager on a same-named space (a test home beside the live one): a fact, no command, no probe.
+  const other = join(ROOT, "other-home");
+  mkdirSync(other, { recursive: true });
+  const foreign = `200 1 /n/node ${other}/releases/b7de/bin/cotald.ts supervise --space test-m --server nats://127.0.0.1:4222 --runtime tmux`;
+  listing = [foreign];
+  let probed = 0;
+  const fr = await dc.checkManager(ctx({ net: fakeNet({ managerPs: async () => (probed++, []) }) }), "test-m");
+  expectRow(fr, "manager", "warn", `pid 200 belongs to PAW_HOME ${other}, not this one — run doctor there to check it`, "none", "another home's manager is a fact, never this home's");
+  assert(fr.length === 1 && probed === 0, "another home's manager is never probed or counted as ours", { fr, probed });
+  const fsh = fakeSh({ psEnv: () => `${foreign.split(" ").slice(2).join(" ")} PATH=/bin TMPDIR=/var/folders/x1/T/` });
+  assert(dc.checkManagerTmpdir(ctx({ sh: fsh }), "test-m").length === 0, "another home's manager gets no tmpdir row (no restart suggested for its fleet)");
+  assert(dc.checkUi(ctx({ sh: fakeSh({ tmuxHasSession: () => false }) }), "test-m").length === 0, "another home's manager gets no ui row");
+  listing = [mgr(100, 1), foreign];
+  const both = await dc.checkManager(ctx({ offline: true }), "test-m");
+  assert(both.length === 2 && both[0]!.status === "ok" && both[1]!.fact === `pid 200 belongs to PAW_HOME ${other} — two managers on one space fight for the lease` && !both[1]!.command, "ours plus another home's: two facts, no bounce command for theirs", both);
+  listing = [`100 1 /bin/zsh -c echo /x/bin/cotald.ts supervise --space test-m --server nats://127.0.0.1:4222`];
+  expectRow(await dc.checkManager(ctx(), "test-m"), "manager", "ok", "not running here — starts on the next paw command", "none", "a shell naming a manager's argv is not a manager");
+  listing = [mgr(100, 1)];
   const env = (tmp: string) => fakeSh({ psEnv: () => `${mgr(100, 1).split(" ").slice(2).join(" ")} PATH=/bin TMPDIR=${tmp}` });
   expectRow(dc.checkManagerTmpdir(ctx({ sh: env("/var/folders/x1/T/") }), "test-m"), "manager.tmpdir", "warn", "manager pid 100 runs with TMPDIR=/var/folders/x1/T/ — a disk-full purge strands every seat", "command", "a purgeable TMPDIR");
   assert(dc.checkManagerTmpdir(ctx({ sh: env(lc.durableTmpPath()) }), "test-m").length === 0, "a durable TMPDIR → no row");
@@ -303,13 +341,26 @@ console.log("mailbox");
 {
   wipe();
   space("test-mb");
-  listing = [`200 1 /n/node /x/bin/paw.ts mailbox --space test-mb --home /other/home`];
-  expectRow(dc.checkMailbox(ctx(), "test-mb"), "mailbox", "fail", `pid 200 belongs to PAW_HOME /other/home — two homes on one space mint two "you" peers`, "command", "another home's mailbox is ✕, never auto-fixed");
+  const otherHome = join(ROOT, "other-mb-home");
+  mkdirSync(otherHome, { recursive: true });
+  listing = [`200 1 /n/node /x/bin/paw.ts mailbox --space test-mb --home ${otherHome}`];
+  expectRow(dc.checkMailbox(ctx(), "test-mb"), "mailbox", "warn", `pid 200 belongs to PAW_HOME ${otherHome}, not this one — run doctor there to check it`, "none", "another home's mailbox on a space this home runs nothing on: a fact, no command");
+  const ownMgr = `100 1 /n/node ${PAW}/releases/r/bin/cotald.ts supervise --space test-mb --server nats://127.0.0.1:4222`;
+  listing = [ownMgr, `200 1 /n/node /x/bin/paw.ts mailbox --space test-mb --home ${otherHome}`];
+  const fm = expectRow(dc.checkMailbox(ctx({ defaultHome: true }), "test-mb"), "mailbox", "fail", `pid 200 belongs to PAW_HOME ${otherHome} — two homes on one space mint two "you" peers`, "command", "another home's mailbox beside this home's manager is ✕, never auto-fixed");
+  assert(fm?.command === `kill 200  (that home's "you" mailbox; touches no agent)` && !/paw down/.test(fm.command), "from ~/.paw its command stops that one pid, never `paw down` (which stops the space's manager, whatever home)", fm?.command);
+  listing = [ownMgr, `200 1 /n/node /x/bin/paw.ts mailbox --space test-mb --home ${otherHome}`, `201 1 /n/node /x/bin/paw.ts mailbox --space test-mb --home ${PAW}`];
+  const tm = dc.checkMailbox(ctx({ defaultHome: false }), "test-mb").find((x) => x.status === "fail");
+  assert(tm?.command === `kill 201  (this test home's "you" mailbox; touches no agent)`, "from a test home the mailbox to stop is its own", tm?.command);
+  listing = [`200 1 /n/node /x/bin/paw.ts mailbox --space test-mb --home ${join(ROOT, "gone-mb-home")}`];
+  assert(dc.checkMailbox(ctx(), "test-mb").length === 0, "a gone home's mailbox is daemons.orphan's row only (one fact, one place)");
+  listing = [`200 1 /bin/bash -c sleep 30; : paw.ts mailbox --space test-mb --home ${otherHome}`];
+  expectRow(dc.checkMailbox(ctx(), "test-mb"), "mailbox", "ok", "not running (nothing needs it)", "none", "a shell naming a mailbox's argv is not a mailbox");
   listing = [`200 1 /n/node /x/bin/paw.ts mailbox --space test-mb --home ${PAW}`];
   expectRow(dc.checkMailbox(ctx(), "test-mb"), "mailbox", "ok", "pid 200, this PAW_HOME", "none", "our own mailbox");
   listing = [];
   expectRow(dc.checkMailbox(ctx(), "test-mb"), "mailbox", "ok", "not running (nothing needs it)", "none", "no mailbox, nothing needs one");
-  listing = [`100 1 /n/node /x/releases/r/bin/cotald.ts supervise --space test-mb --server nats://127.0.0.1:4222`];
+  listing = [`100 1 /n/node ${PAW}/releases/r/bin/cotald.ts supervise --space test-mb --server nats://127.0.0.1:4222`];
   const called: string[] = [];
   const c = ctx({
     ensureMailbox: (s) => {
@@ -324,6 +375,11 @@ console.log("mailbox");
   mkdirSync(join(sp("test-mb"), "sleep"));
   writeFileSync(join(sp("test-mb"), "sleep", "aws.json"), JSON.stringify({ name: "aws", folder: "/x", since: 1, cursorSeq: 1, reason: "idle" }));
   expectRow(dc.checkMailbox(ctx(), "test-mb"), "mailbox", "warn", "no mailbox — replies to you (and wakes of 1 sleeping agent) have no host", "fix", "a sleeper needs the mailbox too");
+  listing = [`200 1 /n/node ${otherHome}/releases/r/bin/cotald.ts supervise --space test-mb --server nats://127.0.0.1:4222`];
+  const sk = expectRow(dc.checkMailbox(ctx(), "test-mb"), "mailbox", "warn", "no mailbox — replies to you (and wakes of 1 sleeping agent) have no host", "skipped", "another home's manager on this space: no mailbox is started from here");
+  assert(sk?.skipped === "another PAW_HOME's manager serves test-mb (pid 200)", "the skip names that manager", sk?.skipped);
+  rmSync(join(sp("test-mb"), "sleep"), { recursive: true });
+  expectRow(dc.checkMailbox(ctx(), "test-mb"), "mailbox", "ok", "not running (nothing needs it)", "none", "another home's manager alone needs no mailbox from this home");
 }
 
 // ── release ────────────────────────────────────────────────────────────────────────────────────────
@@ -439,12 +495,21 @@ console.log("remote");
   expectRow(dc.checkChatInboxes(ctx(), "test-rm"), "chat-inboxes", "ok", "1 chat inbox, all held by running chats", "none", "every chat inbox held");
   writeFileSync(join(inbox, "u2.json"), entry(dead));
   const swept: string[] = [];
-  const c = ctx({ net: fakeNet({ sweep: async (s) => (swept.push(s), { retired: ["u2"], skipped: ["u1"] }) }) });
+  const c = ctx({ net: fakeNet({ sweep: async (s) => (swept.push(s), rmSync(join(inbox, "u2.json")), { retired: ["u2"], skipped: ["u1"] }) }) });
   const ir = expectRow(dc.checkChatInboxes(c, "test-rm"), "chat-inboxes", "warn", `1 chat inbox left on the broker by dead chats (pid ${dead})`, "fix", "a dead chat's inbox is fixable");
   const did = await ir!.fix!.run();
   assert(swept.join() === "test-rm" && did === "retired 1, 1 held by running chats", "the fix sweeps the space once", { swept, did });
+  writeFileSync(join(inbox, "u2.json"), entry(dead));
   const off = dc.checkChatInboxes(ctx({ offline: true }), "test-rm");
   assert(off[0]?.skipped === "(--offline)" && !off[0]?.fix, "--offline skips the sweep");
+  const noop = dc.checkChatInboxes(ctx(), "test-rm")[0]!;
+  let noopErr = "";
+  await noop.fix!.run().catch((e: Error) => (noopErr = e.message));
+  assert(noopErr === `retired 0, but 1 dead chat's inbox is still on the ledger (pid ${dead})`, "a sweep that leaves a dead chat's inbox is a failed fix, never a ✓", noopErr);
+  space("test-local-ci");
+  mkdirSync(join(sp("test-local-ci"), "chat-inboxes"));
+  writeFileSync(join(sp("test-local-ci"), "chat-inboxes", "u.json"), entry(dead));
+  assert(dc.checkChatInboxes(ctx(), "test-local-ci").length === 0, "a local space has no chat-inboxes row (paw chat provisions inboxes on remote spaces only)");
 }
 
 // ── agents.folder / frozen / pins ─────────────────────────────────────────────────────────────────
@@ -620,7 +685,7 @@ console.log("--fix: every class-A fault, twice");
   writeFileSync(join(sp("test-fixr"), "remote-mesh.json"), JSON.stringify({ space: "test-fixr", server: "tls://b.example:4222", root: signerRoot, human: "m", ts: "2026-11-11T00:00:00Z" }));
   mkdirSync(join(sp("test-fixr"), "chat-inboxes"));
   writeFileSync(join(sp("test-fixr"), "chat-inboxes", "u.json"), JSON.stringify({ pid: dead, server: "tls://b.example:4222", channels: [], startedAt: 1 }));
-  listing = [`100 1 /n/node /x/releases/r/bin/cotald.ts supervise --space test-fix --server nats://127.0.0.1:4222`, `500 1 /n/node /x/bin/paw.ts mailbox --space test-gone --home ${join(ROOT, "nohome")}`];
+  listing = [`100 1 /n/node ${PAW}/releases/r/bin/cotald.ts supervise --space test-fix --server nats://127.0.0.1:4222`, `500 1 /n/node /x/bin/paw.ts mailbox --space test-gone --home ${join(ROOT, "nohome")}`];
   const effects: string[] = [];
   const make = (o: { offline: boolean; spaces: string[] }) =>
     ctx({
@@ -750,6 +815,15 @@ console.log("render");
   assert(verbose.includes("      you: paw release --prune 3  (keeps current + every in-use)\n      a\n"), "--verbose lists items under the row");
   const tty = doc.renderReport(report, { tty: true, verbose: false, columns: 60 });
   assert(/\x1b\[31m✕\x1b\[0m/.test(tty) && tty.split("\n").every((l) => l.replace(/\x1b\[[0-9;]*m/g, "").length <= 60), "on a tty: coloured glyphs, lines elided to the width");
+  const longCmd = "paw launchd install <names…>  (re-runs paw start --boot now: starts registered agents that are down, never restarts live ones)";
+  const wr = doc.renderReport({ ...report, rows: [{ id: "launchd.fleet", status: "warn", fact: "no login job — after a reboot nothing comes back and this fact is long enough to be cut", command: longCmd, items: [] }] }, { tty: true, verbose: false, columns: 60 });
+  const plainWr = wr.replace(/\x1b\[[0-9;]*m/g, "");
+  const youLines = plainWr.split("\n").filter((l) => /^      (you: | {5}\S)/.test(l));
+  assert(youLines.join(" ").replace(/\s+/g, " ").includes(longCmd.replace(/\s+/g, " ")) && plainWr.split("\n").every((l) => l.length <= 60), "a `you:` line wraps under its head, never cut", plainWr);
+  assert(plainWr.split("\n\n").at(-1)!.replace(/\s+/g, " ").includes("· --verbose shows cut lines whole"), "a cut fact points at --verbose (the footer wraps, never cut)", plainWr);
+  const vr = doc.renderReport({ ...report, rows: [{ id: "launchd.fleet", status: "warn", fact: "no login job — after a reboot nothing comes back and this fact is long enough to be cut", command: longCmd, items: [] }] }, { tty: true, verbose: true, columns: 60 });
+  assert(vr.replace(/\x1b\[[0-9;]*m/g, "").split("\n").filter((l) => l.startsWith("      ") && !l.includes("you:")).join(" ").replace(/\s+/g, " ").includes("this fact is long enough to be cut"), "--verbose shows a cut fact whole", vr);
+  assert(JSON.stringify(doc.wrapLine("  you: ", "aaaaaa bbbbbb cccccc", 20)) === JSON.stringify(["  you: aaaaaa bbbbbb", "       cccccc"]), "wrapLine indents continuation lines to the head");
   const fixedR = { ...report, fix: true, rows: [], fixed: [{ id: "locks", space: "paw", did: "removed 3: a, b, c" }, { id: "registry.leftover", did: "dropped forktest-90246 from ~/.cotal/meshes" }] };
   const ft = doc.renderReport(fixedR, { tty: false, verbose: false });
   assert(ft.startsWith("paw doctor --fix · aleks-macbook · ~/.paw · 2 spaces\n\nfixed\n  ✓ paw/locks        removed 3: a, b, c\n  ✓ registry.leftover dropped forktest-90246 from ~/.cotal/meshes\n"), "the --fix block", ft);
@@ -861,6 +935,8 @@ console.log("CLI smoke");
   assert(second.stdout.includes("nothing to fix — no safe repair applies"), "a second `--fix --offline` has nothing to fix", second.stdout);
   const after = spawnSync("pgrep", ["-f", "space test-cli"], { encoding: "utf8" }).stdout.trim();
   assert(before === "" && after === "", "doctor started nothing (no process names --space test-cli)", { before, after });
+  const empty = spawnSync(process.execPath, [join(REPO, "bin", "paw.ts"), "doctor", "--offline"], { env: { ...env, PAW_SPACE: "" }, encoding: "utf8" });
+  assert(empty.status === 1 && empty.stdout.includes("✕ env.space        PAW_SPACE is set but empty — every paw verb refuses"), "an empty PAW_SPACE: doctor still runs and reports it as ✕", empty.stdout + empty.stderr);
   const h = spawnSync(process.execPath, [join(REPO, "bin", "paw.ts"), "doctor", "--help"], { env, encoding: "utf8" });
   assert(h.status === 0 && h.stdout.startsWith("usage: paw doctor"), "`paw doctor --help` works with no mesh");
 }

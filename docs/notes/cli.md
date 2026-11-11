@@ -494,8 +494,30 @@ Exit 0 iff no ✕ is left (after fixes); a failed fix exits 1. `--json` = `write
 
 **Gating.** `doctor` is in neither NEEDS_MESH nor NEEDS_MANAGER and is in bin/paw.ts's `ALL_SPACE_VERBS`: no
 `--space` is injected, so the shell's `PAW_SPACE=team2027` never narrows a machine checkup (an explicit
-`--space` still does; an unknown one fails loud listing the spaces). It starts nothing — the one exception is
-`ensureMailbox` as an explicit `--fix`.
+`--space` still does; an unknown one fails loud listing the spaces). Without `--space` it resolves no default
+space at all, so an empty `PAW_SPACE` (which every other verb refuses) still gets its ✕ `env.space` row. It
+starts nothing — the one exception is `ensureMailbox` as an explicit `--fix`.
+
+**Which processes are paw's, and whose.** A daemon is matched by its ARGV, never by words its command line
+contains (`daemonArgs`): argv0 is node/bun/tsx, then node flags (and their values) or a tsx cli, then
+`…/bin/paw.ts mailbox --space <s> [--home <dir>]` or `…/bin/cotald.ts supervise --space <s> --server …` and
+nothing else. A shell, a grep or an agent's own Bash-tool zsh naming those words is never listed and never
+signalled (QA found the first cut SIGTERMing exactly those). A manager's home is the one its release lives
+under (`<home>/releases/<id>/bin/cotald.ts`), else its env's `PAW_HOME` (none = `~/.paw`); a mailbox's is its
+`--home`. The manager, `manager.tmpdir`, `ui`, `presence`, `agents.folder` and the mailbox fix look at THIS
+home's manager only: another home's is a ⚠ fact with no command (from a test home with a `paw` space dir the
+live manager reads `pid N belongs to PAW_HOME ~/.paw, not this one`, never a "restart" for the live fleet), and
+no mailbox is started on a space another home's manager serves. Another home's mailbox is a ✕ conflict only
+when this home runs daemons on that space too; its command is `kill <pid>` of the TEST home's mailbox (theirs
+from `~/.paw`, ours from a test home) — never `paw down`, which stops the space's manager by signature,
+whatever home owns it. A gone home's mailbox is only `daemons.orphan`'s row.
+
+**Rendering.** On a tty a fact line is cut to the width (one line per fact); the line the operator acts on
+(`you:`, `--fix:`), a fix's error and the footer WRAP under their head, never cut. A cut fact adds
+`· --verbose shows cut lines whole` to the footer; `--verbose` prints it whole, and a row whose fact is an
+error carrying its own fix (signer, container.token, node, presence refused, remote, registry, check failed)
+keeps the whole message in `items`. A segment doctor can't read is left out (`pid N · release <id>`, no
+"unknown runtime"); a hung manager whose log names no cause reads `isn't answering (no answer in 2s)`.
 
 **Files.** `src/doctor.ts` (args, run, render, JSON, the verb), `src/doctor-checks.ts` (the `DoctorCtx` —
 ONE `ps -axww -o pid=,ppid=,command=` snapshot, every system call and network probe injectable — and one
@@ -517,10 +539,12 @@ importing a command module would register its verb from doctor's and break check
 - per space: `broker` (`diagnoseConnect`; a local broker down with no manager is a ✓ fact), `signer` (A: chmod
   600; else `checkSignerRoot`'s message) and `name` (remote only), `manager` (wrapper/child pairs count once;
   duplicates, bun, no answer = ✕ with the log's cause), `manager.tmpdir`, `ui` (tmux only), `mailbox` (another
-  home's = ✕ B; none while a manager runs or agents sleep = ⚠ A `ensureMailbox`), `presence` (local, broker up,
+  home's = ⚠ fact, or ✕ B `kill <pid>` when both homes run there; none while this home's manager runs or
+  agents sleep = ⚠ A `ensureMailbox`), `presence` (local, broker up,
   manager running), `locks` (A), `agents.folder` (registry fact; live in the manager's ps = not gone),
-  `frozen`, `sleep`, `chat-inboxes` (remote, A `sweepOrphanInboxes` capped 8s), `empty` (B `rm -r`, never
-  auto).
+  `frozen`, `sleep`, `chat-inboxes` (remote spaces only — a local one has none; A `sweepOrphanInboxes` capped
+  8s, re-reads the ledger after: a dead chat's inbox still there = a failed fix, never a ✓), `empty` (B `rm -r`,
+  never auto).
 
 **Safety classes.** A (`--fix` runs it): touches no live agent, loses no data, is what paw would do itself on
 its next use, re-validates its precondition right before acting, idempotent. B (`you:` — printed, never run):

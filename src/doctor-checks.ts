@@ -27,10 +27,8 @@ import {
   defaultTmuxEnv,
   durableTmpPath,
   ensureMailbox,
-  mailboxMatchPattern,
   mailboxOwnerHome,
   managerLogPath,
-  managerMatchPattern,
   nodeBin,
   readRuntimePreference,
   runtimeOfCommands,
@@ -101,6 +99,8 @@ export interface DoctorSh {
   psCmd(pid: number): string | undefined;
   /** One process's command line with its environment appended (`ps -E`), or undefined. */
   psEnv(pid: number): string | undefined;
+  /** One process's executable (`ps -o comm=`), or undefined when it's gone. */
+  psComm(pid: number): string | undefined;
   launchctl: Launchctl;
   plutil(path: string): string;
   statfs(path: string): { bavail: number; bsize: number; blocks: number };
@@ -201,6 +201,10 @@ export function realSh(): DoctorSh {
     },
     psEnv(pid) {
       const r = spawnSync("ps", [...PS_ENV, "-o", "command=", "-p", String(pid)], { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 });
+      return r.status === 0 && r.stdout.trim() ? r.stdout.trim() : undefined;
+    },
+    psComm(pid) {
+      const r = spawnSync("ps", ["-o", "comm=", "-p", String(pid)], { encoding: "utf8" });
       return r.status === 0 && r.stdout.trim() ? r.stdout.trim() : undefined;
     },
     launchctl,
@@ -332,8 +336,9 @@ export function gib(bytes: number): string {
 
 const plural = (n: number, one: string, many: string): string => (n === 1 ? one : many);
 const strip = (msg: string): string => msg.replace(/^paw( doctor)?: /, "").split("\n")[0]!.trim();
+/** An error's whole text, for --verbose: a fact cut to the terminal's width must not lose the fix it names. */
+const whole = (msg: string): string[] => msg.replace(/^paw( doctor)?: /, "").split("\n").map((l) => l.trimEnd()).filter(Boolean);
 const spaceDir = (ctx: DoctorCtx, s: string): string => join(ctx.pawHome, "spaces", s);
-const re = (pattern: string): RegExp => new RegExp(pattern);
 const darwin = (ctx: DoctorCtx): boolean => ctx.platform === "darwin";
 
 /** Each persona of a space: name + file. Read-only. */
@@ -346,17 +351,80 @@ function personaFiles(ctx: DoctorCtx, s: string): Array<{ name: string; file: st
     .map((f) => ({ name: f.slice(0, -".md".length), file: join(dir, f) }));
 }
 
-/** Manager processes of `space`: wrapper/child pairs (a pre-native release ran two) count once. */
+const RUNNERS = new Set(["node", "bun", "tsx"]);
+const FLAG_WITH_VALUE = new Set(["--require", "-r", "--import", "--loader"]);
+
+/**
+ * The args after `<node|bun|tsx> [node flags] [tsx cli] …/bin/<script>`, or undefined for any other
+ * command line. A daemon is matched by its argv, never by words its command line merely contains: a
+ * shell, a grep or an agent's Bash tool naming `paw.ts mailbox --space x --home y` is not a mailbox.
+ */
+export function daemonArgs(cmd: string, script: string): string[] | undefined {
+  const t = cmd.trim().split(/\s+/);
+  if (!RUNNERS.has(basename(t[0] ?? ""))) return undefined;
+  for (let i = 1; i < t.length; i++) {
+    const a = t[i]!;
+    if (a === `bin/${script}` || a.endsWith(`/bin/${script}`)) return t.slice(i + 1);
+    if (a.startsWith("-")) {
+      if (FLAG_WITH_VALUE.has(a)) i++;
+      continue;
+    }
+    if (a.includes("/tsx/")) continue;
+    return undefined;
+  }
+  return undefined;
+}
+
+/** A mailbox argv: `… paw.ts mailbox --space <s> [--home <dir>]` and nothing else. */
+export function mailboxOf(cmd: string): { space: string; home?: string } | undefined {
+  const a = daemonArgs(cmd, "paw.ts");
+  if (!a || a[0] !== "mailbox" || a[1] !== "--space" || !a[2]) return undefined;
+  if (a.length === 3) return { space: a[2] };
+  if (a[3] === "--home" && a.length >= 5) return { space: a[2], home: a.slice(4).join(" ") };
+  return undefined;
+}
+
+/** Manager processes of `space`, any PAW_HOME: wrapper/child pairs (a pre-native release ran two) count once. */
 export function managerProcs(ctx: DoctorCtx, space: string): Proc[] {
-  const m = re(managerMatchPattern(space));
-  const all = ctx.procs().filter((p) => m.test(p.cmd));
+  const all = ctx.procs().filter((p) => {
+    const a = daemonArgs(p.cmd, "cotald.ts");
+    return !!a && a[0] === "supervise" && a[1] === "--space" && a[2] === space && a[3] === "--server";
+  });
   const pids = new Set(all.map((p) => p.pid));
   return all.filter((p) => !pids.has(p.ppid));
 }
 
+/**
+ * The PAW_HOME a manager belongs to: the home its release lives under (`<home>/releases/<id>/bin/cotald.ts`),
+ * else its environment's PAW_HOME (none = ~/.paw). Undefined when neither tells.
+ */
+export function managerOwnerHome(ctx: DoctorCtx, p: Proc): string | undefined {
+  const fromRelease = /(\S+)\/releases\/[^/\s]+\/bin\/cotald\.ts/.exec(p.cmd)?.[1];
+  if (fromRelease) return fromRelease;
+  try {
+    return mailboxOwnerHome(p.cmd, () => ctx.sh.psEnv(p.pid));
+  } catch {
+    return undefined;
+  }
+}
+
+/** This home's managers of `space`, and every other one (another PAW_HOME's, or one whose home can't be read). */
+export function splitManagers(ctx: DoctorCtx, space: string): { ours: Proc[]; others: Array<Proc & { home?: string }> } {
+  const ours: Proc[] = [];
+  const others: Array<Proc & { home?: string }> = [];
+  for (const p of managerProcs(ctx, space)) {
+    const home = managerOwnerHome(ctx, p);
+    if (home !== undefined && sameHome(home, ctx.pawHome)) ours.push(p);
+    else others.push({ ...p, ...(home !== undefined ? { home } : {}) });
+  }
+  return { ours, others };
+}
+
+/** This home's managers of `space` only: what the manager, ui, tmpdir, presence and mailbox rows look at. */
+export const ownManagers = (ctx: DoctorCtx, space: string): Proc[] => splitManagers(ctx, space).ours;
+
 export function mailboxProcs(ctx: DoctorCtx, space: string): Proc[] {
-  const m = re(mailboxMatchPattern(space));
-  return ctx.procs().filter((p) => m.test(p.cmd));
+  return ctx.procs().filter((p) => mailboxOf(p.cmd)?.space === space);
 }
 
 /** Run a check; a throw is a ✕ row naming it, never a skip. */
@@ -364,7 +432,8 @@ export async function guard(id: string, space: string | undefined, f: () => Row[
   try {
     return await f();
   } catch (e) {
-    return [{ id, ...(space ? { space } : {}), status: "fail", fact: `check failed: ${strip((e as Error).message || String(e))}` }];
+    const msg = (e as Error).message || String(e);
+    return [{ id, ...(space ? { space } : {}), status: "fail", fact: `check failed: ${strip(msg)}`, items: whole(msg) }];
   }
 }
 
@@ -471,7 +540,7 @@ export function checkNode(ctx: DoctorCtx): Row[] {
   try {
     bin = ctx.nodeBin();
   } catch (e) {
-    return [{ id: "node", status: "fail", fact: strip((e as Error).message), command }];
+    return [{ id: "node", status: "fail", fact: strip((e as Error).message), items: whole((e as Error).message), command }];
   }
   const version = ctx.sh.nodeVersion(bin);
   if (bin.startsWith("/opt/homebrew/") || bin.startsWith("/usr/local/Cellar/")) {
@@ -627,7 +696,7 @@ export function checkLaunchdFleet(ctx: DoctorCtx): Row[] {
   try {
     job = readJobPlist(FLEET_LABEL, ctx.sh.plutil);
   } catch (e) {
-    return [{ id: "launchd.fleet", status: "fail", fact: strip((e as Error).message), command }];
+    return [{ id: "launchd.fleet", status: "fail", fact: strip((e as Error).message), items: whole((e as Error).message), command }];
   }
   if (!job) return [{ id: "launchd.fleet", status: "warn", fact: "no login job — after a reboot nothing comes back", command }];
   const args = job.plist.ProgramArguments;
@@ -707,7 +776,7 @@ export function checkRegistry(ctx: DoctorCtx): Row[] {
   const rows: Row[] = [{ id: "registry", status: "ok", fact: names.length ? `${names.length} ${plural(names.length, "mesh", "meshes")} in ${where} (${names.join(", ")})` : `no meshes in ${where}` }];
   for (const u of unusable) {
     const s = spaceOfRegistryFile(u.file);
-    rows.push({ id: "registry", status: "fail", fact: strip(u.message), command: s ? `paw cotal meshes rm ${s}` : `rm ${u.file ?? "<the file named above>"}` });
+    rows.push({ id: "registry", status: "fail", fact: strip(u.message), items: whole(u.message), command: s ? `paw cotal meshes rm ${s}` : `rm ${u.file ?? "<the file named above>"}` });
   }
   return rows;
 }
@@ -762,16 +831,23 @@ export function checkRegistryLeftover(ctx: DoctorCtx): Row[] {
   });
 }
 
-const ORPHAN_MAILBOX = /paw\.ts mailbox --space (\S+) --home (.+)$/;
+/** A mailbox argv whose `--home` is gone from disk. */
+const orphanOf = (cmd: string): { space: string; home: string } | undefined => {
+  const m = mailboxOf(cmd);
+  return m?.home !== undefined && !existsSync(m.home) ? { space: m.space, home: m.home } : undefined;
+};
 
 export function checkDaemonsOrphan(ctx: DoctorCtx): Row[] {
   const tilde = tildeOf(ctx.home);
   const rows: Row[] = [];
   for (const p of ctx.procs()) {
-    const m = ORPHAN_MAILBOX.exec(p.cmd);
-    if (!m || existsSync(m[2]!)) continue;
-    const [, space, home] = m as unknown as [string, string, string];
-    const mgrs = managerProcs(ctx, space).map((q) => `manager pid ${q.pid} — kill ${q.pid} (your call)`);
+    const o = orphanOf(p.cmd);
+    if (!o) continue;
+    const { space, home } = o;
+    // Only the gone home's own manager is named: another home's (the live fleet's) is never a kill target.
+    const mgrs = managerProcs(ctx, space)
+      .filter((q) => { const h = managerOwnerHome(ctx, q); return h !== undefined && sameHome(h, home); })
+      .map((q) => `manager pid ${q.pid} of the same gone home — kill ${q.pid} (your call)`);
     const row: Row = { id: "daemons.orphan", status: "warn", fact: `mailbox pid ${p.pid} (space ${space}) belongs to PAW_HOME ${tilde(home)}, which is gone`, items: mgrs };
     if (!ctx.defaultHome) {
       rows.push({ ...row, skipped: "PAW_HOME is a test home; machine-wide repairs run from ~/.paw" });
@@ -783,8 +859,9 @@ export function checkDaemonsOrphan(ctx: DoctorCtx): Row[] {
         action: "stop it (SIGTERM)",
         run: async () => {
           const now = ctx.sh.psCmd(p.pid);
-          const again = now ? ORPHAN_MAILBOX.exec(now) : null;
-          if (!again || again[2] !== home || existsSync(home)) return `mailbox pid ${p.pid}: no longer that orphan — left alone`;
+          const again = now ? orphanOf(now) : undefined;
+          const exe = ctx.sh.psComm(p.pid);
+          if (!again || again.home !== home || !exe || !RUNNERS.has(basename(exe))) return `mailbox pid ${p.pid}: no longer that orphan — left alone`;
           ctx.kill(p.pid, "SIGTERM");
           return `stopped mailbox pid ${p.pid} (PAW_HOME ${tilde(home)} is gone)`;
         },
@@ -880,7 +957,7 @@ export async function checkContainerApiserver(ctx: DoctorCtx): Promise<Row[]> {
   try {
     bin = containerBin(ctx.env);
   } catch (e) {
-    return [{ id: "container.apiserver", status: "fail", fact: strip((e as Error).message) }];
+    return [{ id: "container.apiserver", status: "fail", fact: strip((e as Error).message), items: whole((e as Error).message) }];
   }
   const r = await ctx.sh.containerStatus(bin, ctx.capMs);
   const start = (() => {
@@ -904,7 +981,7 @@ export function checkContainerToken(ctx: DoctorCtx): Row[] {
     const msg = strip((e as Error).message);
     const file = /^(\S+) \(the Claude OAuth token\)/.exec(msg)?.[1] ?? / and (\S+) does not exist/.exec(msg)?.[1];
     const command = /chmod 600 it/.test(msg) && file ? `chmod 600 ${file}` : /does not exist/.test(msg) ? `claude setup-token, then save the token to ${file} (chmod 600)` : undefined;
-    return [{ id: "container.token", status: "fail", fact: msg, ...(command ? { command } : {}) }];
+    return [{ id: "container.token", status: "fail", fact: msg, items: whole((e as Error).message), ...(command ? { command } : {}) }];
   }
 }
 
@@ -1019,7 +1096,7 @@ export async function checkBroker(ctx: DoctorCtx, s: string): Promise<Row[]> {
   }
   const verdict = a.trace ? connectVerdict("unreachable", a.trace) : { word: "no answer", hint: `no answer in ${capWord(ctx.capMs)}` };
   if (remote) return [{ id: "broker", space: s, status: "fail", fact: `${server}: ${verdict.word} — ${verdict.hint}` }];
-  if (managerProcs(ctx, s).length) return [{ id: "broker", space: s, status: "fail", fact: `${server}: ${verdict.word} — the manager here has no broker`, command: `paw status --space ${s}  (ensures the mesh)` }];
+  if (ownManagers(ctx, s).length) return [{ id: "broker", space: s, status: "fail", fact: `${server}: ${verdict.word} — the manager here has no broker`, command: `paw status --space ${s}  (ensures the mesh)` }];
   if (server !== localServer() || ctx.env.PAW_SERVER?.trim()) return [{ id: "broker", space: s, status: "fail", fact: `${server}: ${verdict.word} — ${verdict.hint}` }];
   return [{ id: "broker", space: s, status: "ok", fact: "down — starts on the next paw command" }];
 }
@@ -1047,7 +1124,7 @@ export function checkSigner(ctx: DoctorCtx, s: string, rec: RemoteMesh): Row[] {
   try {
     checkSignerRoot(s, rec.root);
   } catch (e) {
-    return [{ id: "signer", space: s, status: "fail", fact: strip((e as Error).message) }];
+    return [{ id: "signer", space: s, status: "fail", fact: strip((e as Error).message), items: whole((e as Error).message) }];
   }
   return [{ id: "signer", space: s, status: "ok", fact: existsSync(auth) ? `${tilde(auth)} (0600)` : `${tilde(join(rec.root, ".cotal", "auth"))} (split layout)` }];
 }
@@ -1063,42 +1140,58 @@ export function checkName(ctx: DoctorCtx, s: string, rec: RemoteMesh): Row[] {
   }];
 }
 
-/** Why a manager doesn't answer, from its own log (read-only). */
-function managerLogCause(s: string): string {
+/** Why a manager doesn't answer, from its own log (read-only); undefined when the log names no cause. */
+function managerLogCause(s: string): string | undefined {
   const path = managerLogPath(s);
   if (!existsSync(path)) return "no manager.log";
   const tail = withoutBenignWarnings(readFileSync(path, "utf8").split("\n").slice(-50).join("\n"));
   if (/already serves space/.test(tail)) return "another manager serves this space";
   const { reason } = classifyManagerFailure(tail);
-  // A hung manager's log is often healthy: say that, never "a failure" nobody logged.
-  return reason === "an unrecognised failure" ? "names no known cause" : reason;
+  // A hung manager's log is often healthy: say nothing, never "a failure" nobody logged.
+  return reason === "an unrecognised failure" ? undefined : reason;
 }
 
-const releaseOfCmd = (cmd: string): string => {
+/** `release <id>` / `checkout <root>`; undefined when the command line names neither. */
+const releaseOfCmd = (cmd: string): string | undefined => {
   const id = /\/releases\/([^/\s]+)\/bin\/cotald\.ts/.exec(cmd)?.[1];
   if (id) return `release ${id}`;
   const root = /(\S+)\/bin\/cotald\.ts/.exec(cmd)?.[1];
-  return root ? `checkout ${root}` : "unknown code root";
+  return root ? `checkout ${root}` : undefined;
 };
 
+/** Another PAW_HOME's manager on this space: a fact, never a command (a restart from here would bounce the wrong fleet). */
+function foreignManagerRow(ctx: DoctorCtx, s: string, p: Proc & { home?: string }, oursToo: boolean): Row {
+  const who = p.home !== undefined ? `PAW_HOME ${tildeOf(ctx.home)(p.home)}` : "a PAW_HOME doctor can't read (no release path, no environment)";
+  const fact = oursToo ? `pid ${p.pid} belongs to ${who} — two managers on one space fight for the lease` : `pid ${p.pid} belongs to ${who}, not this one — run doctor there to check it`;
+  return { id: "manager", space: s, status: "warn", fact, items: [`${p.pid} ${p.cmd}`] };
+}
+
 export async function checkManager(ctx: DoctorCtx, s: string): Promise<Row[]> {
-  const procs = managerProcs(ctx, s);
+  const { ours: procs, others } = splitManagers(ctx, s);
   const base = { id: "manager", space: s };
-  if (!procs.length) return [{ ...base, status: "ok", fact: "not running here — starts on the next paw command" }];
+  const foreign = others.map((p) => foreignManagerRow(ctx, s, p, procs.length > 0));
+  if (!procs.length) return foreign.length ? foreign : [{ ...base, status: "ok", fact: "not running here — starts on the next paw command" }];
+  return [...(await checkOwnManager(ctx, s, procs)), ...foreign];
+}
+
+async function checkOwnManager(ctx: DoctorCtx, s: string, procs: Proc[]): Promise<Row[]> {
+  const base = { id: "manager", space: s };
   if (procs.length > 1) return [{ ...base, status: "fail", fact: `${procs.length} managers serve ${s} (pids ${procs.map((p) => p.pid).join(", ")}) — they fight for the lease`, items: procs.map((p) => `${p.pid} ${p.cmd}`), command: fullRestart(s) }];
   const p = procs[0]!;
   const argv0 = basename(p.cmd.split(/\s+/)[0]!);
   if (argv0 === "bun") return [{ ...base, status: "fail", fact: `pid ${p.pid} runs under bun — node-pty breaks every agent`, command: fullRestart(s) }];
-  const head = `pid ${p.pid} · ${runtimeOfCommands([p.cmd]) ?? "unknown runtime"} · ${releaseOfCmd(p.cmd)}`;
+  // A segment that can't be read is left out, never filled with a placeholder.
+  const head = [`pid ${p.pid}`, runtimeOfCommands([p.cmd]), releaseOfCmd(p.cmd)].filter((x): x is string => x !== undefined).join(" · ");
   if (ctx.offline) return [{ ...base, status: "ok", fact: `${head} · answer not checked (--offline)` }];
   const a = await managerAnswer(ctx, s, spaceServer(s).server);
   if (a.ok) return [{ ...base, status: "ok", fact: `${head} · answers (${a.agents.length} ${plural(a.agents.length, "agent", "agents")})` }];
-  return [{ ...base, status: "fail", fact: `${head} · isn't answering (${a.why}; log: ${managerLogCause(s)})`, command: fullRestart(s) }];
+  const cause = managerLogCause(s);
+  return [{ ...base, status: "fail", fact: `${head} · isn't answering (${a.why}${cause ? `; log: ${cause}` : ""})`, command: fullRestart(s) }];
 }
 
 export function checkManagerTmpdir(ctx: DoctorCtx, s: string): Row[] {
   const rows: Row[] = [];
-  for (const p of managerProcs(ctx, s)) {
+  for (const p of ownManagers(ctx, s)) {
     const env = ctx.sh.psEnv(p.pid);
     if (env === undefined) continue; // exited since the snapshot
     const tmp = /(?:^| )TMPDIR=(\S+)/.exec(env.startsWith(p.cmd) ? env.slice(p.cmd.length) : env)?.[1];
@@ -1115,7 +1208,7 @@ export function checkManagerTmpdir(ctx: DoctorCtx, s: string): Row[] {
 }
 
 export function checkUi(ctx: DoctorCtx, s: string): Row[] {
-  const procs = managerProcs(ctx, s);
+  const procs = ownManagers(ctx, s);
   if (runtimeOfCommands(procs.map((p) => p.cmd)) !== "tmux") return [];
   const own = ctx.env.TMUX_TMPDIR?.trim();
   if (own) return [{ id: "ui", space: s, status: "warn", fact: `your shell sets TMUX_TMPDIR=${own}; paw's sessions are on the default socket`, command: "unset TMUX_TMPDIR" }];
@@ -1131,28 +1224,50 @@ export function checkMailbox(ctx: DoctorCtx, s: string): Row[] {
   const tilde = tildeOf(ctx.home);
   const rows: Row[] = [];
   const procs = mailboxProcs(ctx, s);
+  const ours: Proc[] = [];
+  const theirs: Array<{ p: Proc; owner: string }> = [];
   for (const p of procs) {
-    const owner = mailboxOwnerHome(p.cmd, () => ctx.sh.psEnv(p.pid));
-    if (sameHome(owner, ctx.pawHome)) rows.push({ id: "mailbox", space: s, status: "ok", fact: `pid ${p.pid}, this PAW_HOME` });
-    else
-      rows.push({
-        id: "mailbox",
-        space: s,
-        status: "fail",
-        fact: `pid ${p.pid} belongs to PAW_HOME ${tilde(owner)} — two homes on one space mint two "you" peers`,
-        command: `PAW_HOME=${owner} paw down --space ${s}  (stops that home's daemons — your go)`,
-      });
+    // A gone home's mailbox is daemons.orphan's row: one fact, one place.
+    if (orphanOf(p.cmd)) continue;
+    let owner: string;
+    try {
+      owner = mailboxOwnerHome(p.cmd, () => ctx.sh.psEnv(p.pid));
+    } catch {
+      rows.push({ id: "mailbox", space: s, status: "fail", fact: `pid ${p.pid}: can't tell which PAW_HOME it belongs to (no --home, environment unreadable)`, items: [`${p.pid} ${p.cmd}`] });
+      continue;
+    }
+    if (sameHome(owner, ctx.pawHome)) ours.push(p);
+    else theirs.push({ p, owner });
+  }
+  for (const p of ours) rows.push({ id: "mailbox", space: s, status: "ok", fact: `pid ${p.pid}, this PAW_HOME` });
+  // Another home's mailbox is a conflict only when this home runs daemons on the space too.
+  const oursHere = ours.length > 0 || ownManagers(ctx, s).length > 0;
+  for (const { p, owner } of theirs) {
+    const base = { id: "mailbox", space: s, items: [`${p.pid} ${p.cmd}`] };
+    if (!oursHere) {
+      rows.push({ ...base, status: "warn", fact: `pid ${p.pid} belongs to PAW_HOME ${tilde(owner)}, not this one — run doctor there to check it` });
+      continue;
+    }
+    // Never `paw down` here: it stops the space's manager by signature, whichever home owns it. The
+    // mailbox to stop is the test home's: theirs from ~/.paw, ours from a test home.
+    const target = ctx.defaultHome || !ours.length ? { pid: p.pid, whose: "that home's" } : { pid: ours[0]!.pid, whose: "this test home's" };
+    rows.push({
+      ...base,
+      status: "fail",
+      fact: `pid ${p.pid} belongs to PAW_HOME ${tilde(owner)} — two homes on one space mint two "you" peers`,
+      command: `kill ${target.pid}  (${target.whose} "you" mailbox; touches no agent)`,
+    });
   }
   if (procs.length) return rows;
-  const manager = managerProcs(ctx, s).length > 0;
+  const { ours: managers, others } = splitManagers(ctx, s);
   const asleep = sleepingIn(ctx, s);
-  if (!manager && !asleep) return [{ id: "mailbox", space: s, status: "ok", fact: "not running (nothing needs it)" }];
+  if (!managers.length && !asleep) return [{ id: "mailbox", space: s, status: "ok", fact: "not running (nothing needs it)" }];
   const wakes = asleep ? ` (and wakes of ${asleep} sleeping ${plural(asleep, "agent", "agents")})` : "";
+  const row: Row = { id: "mailbox", space: s, status: "warn", fact: `no mailbox — replies to you${wakes} have no host` };
+  // Another home's manager serves this space name: a mailbox from here would be a second "you" on its mesh.
+  if (others.length) return [{ ...row, skipped: `another PAW_HOME's manager serves ${s} (pid ${others.map((p) => p.pid).join(", ")})` }];
   return [{
-    id: "mailbox",
-    space: s,
-    status: "warn",
-    fact: `no mailbox — replies to you${wakes} have no host`,
+    ...row,
     fix: {
       action: "start it (adopt-or-spawn from the pinned release; touches no agent)",
       run: async () => {
@@ -1174,7 +1289,7 @@ export function checkMailbox(ctx: DoctorCtx, s: string): Row[] {
 
 export async function checkPresence(ctx: DoctorCtx, s: string): Promise<Row[]> {
   const { server, remote } = spaceServer(s);
-  if (ctx.offline || remote || !managerProcs(ctx, s).length) return [];
+  if (ctx.offline || remote || !ownManagers(ctx, s).length) return [];
   const b = await brokerAnswer(ctx, s, server, false);
   if (!b.ok) return [];
   const command = `free disk first, then ${fullRestart(s)}`;
@@ -1185,7 +1300,8 @@ export async function checkPresence(ctx: DoctorCtx, s: string): Promise<Row[]> {
   if (h.kind === "latched") return [{ id: "presence", space: s, status: "fail", fact: "presence writes time out (latched) — agents can't come online", command }];
   if (h.kind === "not-permitted") {
     const { probeRefusedLine } = await import("./presence-health.ts");
-    return [{ id: "presence", space: s, status: "fail", fact: strip(probeRefusedLine(h.message, "paw doctor")) }];
+    const line = probeRefusedLine(h.message, "paw doctor");
+    return [{ id: "presence", space: s, status: "fail", fact: strip(line), items: whole(line) }];
   }
   if (h.kind === "no-bucket") return [{ id: "presence", space: s, status: "warn", fact: "presence probe: no presence bucket on the broker yet" }];
   return [{ id: "presence", space: s, status: "warn", fact: `presence probe: ${reasonOf(h.message)}` }];
@@ -1195,7 +1311,7 @@ export async function checkAgentsFolder(ctx: DoctorCtx, s: string): Promise<Row[
   const files = personaFiles(ctx, s);
   if (!files.length) return [];
   let live = new Set<string>();
-  if (!ctx.offline && managerProcs(ctx, s).length) {
+  if (!ctx.offline && ownManagers(ctx, s).length) {
     const a = await managerAnswer(ctx, s, spaceServer(s).server);
     if (a.ok) live = new Set(a.agents);
   }
@@ -1287,9 +1403,10 @@ function readInboxLedger(dir: string): Array<{ uid: string; pid: number }> {
     });
 }
 
+/** A remote space's chat inboxes (`paw chat` provisions its own there; a local space has none). */
 export function checkChatInboxes(ctx: DoctorCtx, s: string): Row[] {
   const dir = join(spaceDir(ctx, s), "chat-inboxes");
-  if (!existsSync(dir)) return [];
+  if (!existsSync(dir) || !readRemoteMesh(s)) return [];
   const ledger = readInboxLedger(dir);
   if (!ledger.length) return [];
   const dead = ledger.filter((e) => !pidAlive(e.pid));
@@ -1309,6 +1426,9 @@ export function checkChatInboxes(ctx: DoctorCtx, s: string): Row[] {
       run: async () => {
         const r = await capped(ctx.net.sweep(s), 8000);
         if (!r.done) throw new Error("the sweep didn't finish in 8s");
+        // A ✓ only for a sweep that left no dead chat's inbox behind.
+        const left = existsSync(dir) ? readInboxLedger(dir).filter((e) => !pidAlive(e.pid)) : [];
+        if (left.length) throw new Error(`retired ${r.value.retired.length}, but ${left.length} dead ${plural(left.length, "chat's inbox is", "chats' inboxes are")} still on the ledger (${plural(left.length, "pid", "pids")} ${left.map((e) => e.pid).join(", ")})`);
         return `retired ${r.value.retired.length}${r.value.skipped.length ? `, ${r.value.skipped.length} held by running chats` : ""}`;
       },
     },
@@ -1333,13 +1453,13 @@ export async function spaceChecks(ctx: DoctorCtx, s: string): Promise<Row[]> {
   try {
     rec = readRemoteMesh(s);
   } catch (e) {
-    return [{ id: "remote", space: s, status: "fail", fact: strip((e as Error).message) }];
+    return [{ id: "remote", space: s, status: "fail", fact: strip((e as Error).message), items: whole((e as Error).message) }];
   }
   // Start the network probes now: the rows below await what they need.
   if (!ctx.offline) {
     const { server } = spaceServer(s);
     void brokerAnswer(ctx, s, server, !!rec);
-    void guard("manager", s, () => (managerProcs(ctx, s).length ? managerAnswer(ctx, s, server).then(() => []) : []));
+    void guard("manager", s, () => (ownManagers(ctx, s).length ? managerAnswer(ctx, s, server).then(() => []) : []));
   }
   const checks: Array<[string, () => Row[] | Promise<Row[]>]> = [
     ["broker", () => checkBroker(ctx, s)],

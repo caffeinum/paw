@@ -17,7 +17,7 @@ import { localSpaces } from "./namespace.ts";
 import { DEFAULT_SPACE } from "./space.ts";
 import { writeJson, writeOut } from "./stdout.ts";
 import { FAIL, OK, WARN } from "./ux.ts";
-import { fitWidth } from "./width.ts";
+import { displayWidth, fitWidth, sliceWidth } from "./width.ts";
 
 export const DOCTOR_USAGE = "doctor [--fix] [--space <s> | --all] [--offline] [--verbose] [--json]";
 
@@ -155,42 +155,77 @@ export function exitCode(r: Report): number {
   return r.rows.some((x) => x.status === "fail") || r.fixed.some((f) => f.error !== undefined) ? 1 : 0;
 }
 
+/**
+ * `head + text` word-wrapped to `cols`, every following line indented to `head`'s width. A word wider
+ * than the line is split. What the operator must type is wrapped, never cut. Pure.
+ */
+export function wrapLine(head: string, text: string, cols: number): string[] {
+  const indent = " ".repeat(displayWidth(head));
+  const room = Math.max(10, cols - displayWidth(head));
+  const out: string[] = [];
+  let line = "";
+  for (let tok of text.match(/\S+\s*/g) ?? []) {
+    while (displayWidth(tok.trimEnd()) > room) {
+      if (line.trim()) out.push(line.trimEnd());
+      const cut = sliceWidth(tok, room);
+      out.push(cut);
+      tok = tok.slice(cut.length);
+      line = "";
+    }
+    if (line && displayWidth(line + tok.trimEnd()) > room) {
+      out.push(line.trimEnd());
+      line = "";
+    }
+    line += tok;
+  }
+  if (line.trim() || !out.length) out.push(line.trimEnd());
+  return out.map((l, i) => (i === 0 ? head : indent) + l);
+}
+
 /** The report as the terminal shows it. Pure. */
 export function renderReport(r: Report, o: { tty: boolean; verbose: boolean; columns?: number }): string {
   const tilde = tildeOf(r.home);
   const cols = o.tty && o.columns ? o.columns : undefined;
   const fit = (s: string): string => (cols ? fitWidth(s, cols) : s);
+  let elided = false;
   const lines: string[] = [];
   const n = r.spaces.length;
   lines.push(fit(`paw doctor${r.fix ? " --fix" : ""} · ${r.host} · ${tilde(r.pawHome)} · ${n} ${n === 1 ? "space" : "spaces"}`));
   const rowLine = (status: Row["status"], label: string, text: string): string => {
-    const plain = fit(`  ${GLYPH[status]} ${label.padEnd(16)} ${text}`);
+    const full = `  ${GLYPH[status]} ${label.padEnd(16)} ${text}`;
+    const plain = fit(full);
+    if (plain !== full) elided = true;
     if (!o.tty) return plain;
     // Colour after eliding: the glyph keeps its hue, the id is dim.
     const body = plain.slice(`  ${GLYPH[status]} `.length);
     const idPart = body.slice(0, Math.min(body.length, label.padEnd(16).length));
     return `  ${COLOR[status]}${GLYPH[status]}${RESET} ${DIM}${idPart}${RESET}${body.slice(idPart.length)}`;
   };
-  const sub = (text: string): string => fit(`      ${text}`);
+  // A line the operator acts on (`you:`, `--fix:`) wraps; it is never cut.
+  const sub = (head: string, text: string): string[] => (cols ? wrapLine(`      ${head}`, text, cols) : [`      ${head}${text}`]);
   if (r.fix) {
     lines.push("", "fixed");
     if (!r.fixed.length) lines.push("  nothing to fix — no safe repair applies");
     for (const f of r.fixed) {
       const label = f.space ? `${f.space}/${f.id}` : f.id;
-      lines.push(f.error === undefined ? rowLine("ok", label, f.did ?? "") : rowLine("fail", label, `fix failed: ${f.error}`));
+      if (f.error === undefined) lines.push(rowLine("ok", label, f.did ?? ""));
+      else lines.push(rowLine("fail", label, "fix failed"), ...sub("", f.error));
     }
   }
   const section = (title: string, rows: Row[]): void => {
     lines.push("", fit(title));
     for (const x of rows) {
       lines.push(rowLine(x.status, x.id, x.fact));
+      // --verbose is where the full text lives: a cut fact is shown whole (unless an item already
+      // carries it), and items are never cut.
+      const items = o.verbose ? (x.items ?? []) : [];
+      if (o.verbose && cols && displayWidth(`  ${GLYPH[x.status]} ${x.id.padEnd(16)} ${x.fact}`) > cols && !items.some((i) => i.includes(x.fact))) lines.push(...sub("", x.fact));
       if (x.status !== "ok") {
-        if (x.fix) lines.push(sub(`--fix: ${x.fix.action}`));
-        else if (x.skipped) lines.push(sub(`--fix: skipped${x.skipped.startsWith("(") ? " " : " — "}${x.skipped}`));
-        else if (x.command) lines.push(sub(`you: ${x.command}`));
+        if (x.fix) lines.push(...sub("--fix: ", x.fix.action));
+        else if (x.skipped) lines.push(...sub("--fix: ", `skipped${x.skipped.startsWith("(") ? " " : " — "}${x.skipped}`));
+        else if (x.command) lines.push(...sub("you: ", x.command));
       }
-      // Items are never elided: --verbose is where the full text lives.
-      if (o.verbose) for (const i of x.items ?? []) lines.push(`      ${i}`);
+      for (const i of items) lines.push(`      ${i}`);
     }
   };
   section("machine", r.rows.filter((x) => x.space === undefined));
@@ -204,7 +239,9 @@ export function renderReport(r: Report, o: { tty: boolean; verbose: boolean; col
   if (t.fixable > 0 && !r.fix) foot += ` · paw doctor --fix repairs ${t.fixable} (no agent is touched)`;
   if (r.rows.some((x) => x.status !== "ok" && x.command)) foot += " · the rest need you (commands above)";
   if (r.network === "skipped") foot += " · network not checked (--offline)";
-  lines.push("", fit(foot));
+  if (elided && !o.verbose) foot += " · --verbose shows cut lines whole";
+  // The footer says what to run next: wrapped, never cut.
+  lines.push("", ...(cols ? wrapLine("", foot, cols) : [foot]));
   return lines.join("\n") + "\n";
 }
 
