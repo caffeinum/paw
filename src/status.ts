@@ -13,7 +13,7 @@ import { JetStreamApiCodes, JetStreamApiError, jetstreamManager } from "@nats-io
 import { connect, credsAuthenticator } from "@nats-io/transport-node";
 import { closeSync, existsSync, openSync, readSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { agentNamesForFolder, canonicalDir, humanEndpointAuth, listAgents, personaFilePath, psRowAlive, terminalLost, type PsRow, wirePrincipal } from "./addressing.ts";
+import { agentNamesForFolder, canonicalDir, humanEndpointAuth, listAgents, personaFilePath, psRowAlive, psRowRunning, terminalLost, type PsRow, wirePrincipal } from "./addressing.ts";
 import { withManagerControl, type ManagerControl } from "./control.ts";
 import { listForeground } from "./foreground.ts";
 import { ensure, ensureSpaceFor, formatHubLine, hubState, READY_PROBE_MS, readRuntimeMarker, resolveSpace, type HubState, type Runtime } from "./lifecycle.ts";
@@ -115,6 +115,9 @@ export interface AgentStatus {
   /** It runs on another machine (teleported, src/hosted.ts): no transcript-derived column (ctx,
    *  failure, last active, busy beyond the agent's own `working` claim) and no local git is read. */
   elsewhere?: Elsewhere;
+  /** The manager lists a seat for this registered agent but it is not live: `exited` = nothing runs,
+   *  `off-mesh` = its process runs with no presence (psRowRunning). Absent otherwise. */
+  seat?: "exited" | "off-mesh";
 }
 
 /** Map a manager ps row to the display status. Not listed → offline; "absent" (mid-start) → starting. */
@@ -394,7 +397,7 @@ function stuckOf(space: string, name: string): { stuck?: { since: number; restar
 }
 
 /** A registered agent whose persona names a folder that no longer exists. */
-const folderGone = (r: AgentStatus): boolean => !!r.folder && !r.unregistered && !r.live && !existsSync(r.folder);
+export const folderGone = (r: AgentStatus): boolean => !!r.folder && !r.unregistered && !r.live && !existsSync(r.folder);
 
 /** A trailing durability/health note, or "" when the agent is quietly durable. */
 function note(r: AgentStatus, now: number): string {
@@ -446,7 +449,7 @@ export function contextShare(u: ContextUsage | undefined): number | undefined {
   return u?.limit ? u.tokens / u.limit : undefined;
 }
 
-function tilde(p: string): string {
+export function tilde(p: string): string {
   const home = homedir();
   return p === home ? "~" : p.startsWith(home + "/") ? "~" + p.slice(home.length) : p;
 }
@@ -671,8 +674,8 @@ export function statusTargets(argv: string[]): string[] {
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--space") i++;
-    else if (a === "--json" || a === "--wide") continue;
-    else if (a.startsWith("-")) throw new Error(`paw: unknown flag "${a}" — status takes [<name|folder|state>…] [--json] [--wide]`);
+    else if (a === "--json" || a === "--wide" || a === "--problems") continue;
+    else if (a.startsWith("-")) throw new Error(`paw: unknown flag "${a}" — status takes [<name|folder|state>…] [--json] [--wide] [--problems]`);
     else out.push(a);
   }
   return out;
@@ -1114,6 +1117,7 @@ export async function collectStatus(space: string, ctl?: ManagerControl, opts: C
       failure: t?.failure(),
       ...stuckOf(space, name),
       terminalLost: psRow ? terminalLost(psRow) : undefined,
+      ...(psRow && !live && !away && !unmanaged && !fg ? { seat: psRowRunning(psRow) ? ("off-mesh" as const) : ("exited" as const) } : {}),
       ...(unmanaged ? { unmanaged: true } : {}),
       context: t?.context(),
       // A standalone claude on the pin, OR more than one process of any kind (a leftover `<name>_2` mesh
@@ -1191,6 +1195,8 @@ export async function collectStatus(space: string, ctl?: ManagerControl, opts: C
 }
 
 async function status(argv: string[]): Promise<void> {
+  // A diagnosis, read-only: never ensure()s (a down manager is a finding), loaded only when asked for.
+  if (argv.includes("--problems")) return (await import("./problems.ts")).runProblems(argv, { live: false });
   const space = parseSpace(argv) ?? resolveSpace();
   // `--json` emits the AgentStatus rows verbatim for other tools to consume (the Raycast extension
   // reads exactly this). Deliberately the SAME rows the table renders, so the two can never disagree.
@@ -1255,7 +1261,7 @@ const statusCommand: Command = {
   name: "status",
   group: "Mesh",
   summary: "the agent roster: status · runtime · cwd · session · inbox lag · last-active · durability (was: ps + status)",
-  usage: "status [<name|folder|live|busy|idle|offline|starting|waiting>…] [--json] [--wide] [--space s]",
+  usage: "status [<name|folder|live|busy|idle|offline|starting|waiting>…] [--json] [--wide] [--space s] | --problems [--json] [--space s]",
   run: (a) => status([...a.raw]),
 };
 

@@ -36,20 +36,28 @@ export interface TopArgs {
   all: boolean;
   json: boolean;
   names: string[];
+  /** `--problems`: the problems view (src/problems.ts) — takes only [--json] [--space s]. */
+  problems: boolean;
 }
 
 export function parseTopArgs(argv: string[]): TopArgs {
-  const out: TopArgs = { sort: "mem", verbose: false, all: false, json: false, names: [] };
+  const out: TopArgs = { sort: "mem", verbose: false, all: false, json: false, names: [], problems: false };
+  let sorted = false;
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
-    if (a === "--sort") out.sort = argv[++i] ?? "";
+    if (a === "--problems") out.problems = true;
+    else if (a === "--sort") {
+      out.sort = argv[++i] ?? "";
+      sorted = true;
+    }
     else if (a === "-v" || a === "--verbose") out.verbose = true;
     else if (a === "--all") out.all = true;
     else if (a === "--json") out.json = true;
     else if (a === "--space") out.space = argv[++i];
-    else if (a.startsWith("-")) throw new Error(`paw: unknown flag "${a}" — top [--sort mem|cpu|active|name] [-v] [--all] [--json] [<name>…]`);
+    else if (a.startsWith("-")) throw new Error(`paw: unknown flag "${a}" — top [--sort mem|cpu|active|name] [-v] [--all] [--json] [<name>…] | --problems [--json] [--space s]`);
     else out.names.push(a);
   }
+  if (out.problems && (sorted || out.verbose || out.all || out.names.length)) throw new Error("paw: --problems takes only [--json] [--space s]");
   sortRows([], out.sort); // fail loud on a bad --sort before any work
   return out;
 }
@@ -59,6 +67,7 @@ const line = (it: Item, now: number) =>
 
 async function top(argv: string[]): Promise<void> {
   const args = parseTopArgs(argv);
+  if (args.problems) return (await import("../problems.ts")).runProblems(argv, { live: true });
   const space = args.space ?? resolveSpace();
   // Read-only: it never boots daemons (a dead manager fails loud below), which also skips ensure's own ps round-trip.
   const [status, fleet] = await Promise.all([
@@ -142,7 +151,7 @@ const topCommand: Command = {
   name: "top",
   group: "Lifecycle",
   summary: "every agent's memory, cpu, last activity and subprocesses, with a hint to clean up",
-  usage: "top [--sort mem|cpu|active|name] [-v] [--all] [--json] [<name>…]",
+  usage: "top [--sort mem|cpu|active|name] [-v] [--all] [--json] [<name>…] | --problems [--json] [--space s]",
   run: (a) => top([...a.raw]),
 };
 

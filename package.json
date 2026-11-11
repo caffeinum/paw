@@ -53,6 +53,7 @@
     "check:mcp-sandbox": "node scripts/check-mcp-sandbox.ts",
     "check:bash-tty": "node scripts/check-bash-tty.ts",
     "check:top": "node scripts/check-top.ts",
+    "check:problems-tty": "node scripts/check-problems-tty.ts",
     "check:tidy": "node scripts/check-tidy.ts",
     "check:nice": "node scripts/check-nice.ts",
     "check:sleep": "node scripts/check-sleep.ts",

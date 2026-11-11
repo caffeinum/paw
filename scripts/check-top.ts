@@ -155,4 +155,105 @@ try { parseTopArgs(["--sort", "rss"]); } catch { threw = true; }
 ok(threw && parseTopArgs(["-v", "--all", "--json", "queue"]).names[0] === "queue", "args: flags, names; bad --sort fails loud");
 ok(f.parseVmStat("Mach Virtual Memory Statistics: (page size of 16384 bytes)\nPages wired down: 100.\nPages purgeable: 0.\nAnonymous pages: 200.\nPages occupied by compressor: 100.\n") === (400 * 16384) / 1048576, "vm_stat → used MB");
 
+// ---- problems TUI reducer ----
+{
+  const T = await import("../src/problems-tui.ts");
+  const { fixtureReport } = await import("./fixtures/problems-tui-harness.ts");
+  const N = 1_800_000_000_000;
+  let chunk = 0;
+  let st = T.problemsRefreshed(T.initialState(), await fixtureReport(N), N);
+  /** Each call is one read from the terminal (its own chunk) unless `same` keeps the previous one. */
+  const press = (k: string, same = false) => {
+    if (!same) chunk++;
+    const r = T.problemsKey(st, { k, chunk }, N);
+    st = r.state;
+    return r.effect;
+  };
+  const sel = () => st.selected;
+  const argvOf = (e: { kind: string; argv?: string[] }) => (e.kind === "run" ? JSON.stringify(e.argv) : `(${e.kind})`);
+  ok(T.visible(st).map((p) => `${p.name}#${p.space}`).join(",") === "canary#paw,research#paw,queue#paw,lizard#team2027" && sel() === "canary#paw", "tui: fixture order (dead, then stuck oldest-first, then elsewhere), cursor on the first row");
+  // cursor
+  press("down");
+  ok(sel() === "research#paw", "tui: ↓ moves down");
+  press("j");
+  press("k");
+  ok(sel() === "research#paw", "tui: j/k move");
+  press("up");
+  press("up");
+  ok(sel() === "canary#paw" && st.cursor === 0, "tui: ↑ clamps at the top");
+  // a dead local row: s starts, o isn't offered, r confirms
+  ok(argvOf(press("s")) === JSON.stringify(["start", "canary", "--space", "paw"]), "tui: s on a dead row runs paw start");
+  let e = press("o");
+  ok(e.kind === "show" && /open isn't offered for canary#paw/.test(st.note ?? "") , "tui: o on an offline row is not offered (never spawns)");
+  e = press("r");
+  ok(e.kind === "confirm" && st.mode.kind === "confirm" && st.mode.text === "restart canary#paw? it is not live — this despawns any seat and starts it [y/N]", "tui: r on an offline row asks, naming name#space");
+  e = press("n");
+  ok(e.kind === "show" && st.mode.kind === "list" && st.note === "✕ not restarted", "tui: n declines — nothing runs");
+  // a live row: confirm names its presence; y runs exactly the restart argv
+  press("down");
+  e = press("r");
+  ok(st.mode.kind === "confirm" && st.mode.text === "restart research#paw? it is live (online) — its turn is cut and it resumes from its pin [y/N]", "tui: r on a live row asks, saying it is live");
+  ok(argvOf(press("y")) === JSON.stringify(["restart", "research", "--space", "paw"]), "tui: y runs exactly [restart, name, --space, s]");
+  press("r");
+  e = press("x");
+  ok(e.kind === "show" && st.note === "✕ not restarted" && st.dismissed.size === 0, "tui: any other key cancels the confirm (and does nothing else)");
+  // type-ahead never consents
+  press("r");
+  e = press("y", true);
+  ok(e.kind === "none" && st.mode.kind === "confirm", "tui: `ry` in one read runs nothing — the y is discarded");
+  e = press("Y");
+  ok(argvOf(e) === JSON.stringify(["restart", "research", "--space", "paw"]), "tui: a LATER y still decides");
+  // unstick on the hung tool
+  press("down");
+  e = press("u");
+  ok(st.mode.kind === "confirm" && st.mode.text === "unstick queue#paw? Esc into its running tool (Bash 47m) [y/N]", "tui: u asks, naming the tool and its age");
+  ok(argvOf(press("y")) === JSON.stringify(["unstick", "queue", "--space", "paw"]), "tui: y runs unstick");
+  e = press("o");
+  ok(e.kind === "run" && e.waitKey === false && JSON.stringify(e.argv) === JSON.stringify(["attach", "queue", "--space", "paw"]), "tui: o attaches (returns as soon as the attach ends)");
+  e = press("l");
+  ok(e.kind === "run" && e.waitKey && JSON.stringify(e.argv) === JSON.stringify(["log", "queue", "--space", "paw", "--tail", "40"]), "tui: l reads the log, then waits for a key");
+  // a remote row: every local key is text naming that machine; d works
+  press("down");
+  ok(sel() === "lizard#team2027", "tui: on the remote row");
+  for (const k of ["s", "w", "r", "u", "o", "l", "t"]) {
+    e = press(k);
+    ok(e.kind === "show" && st.note === "on aleks-mac-mini: paw start lizard --space team2027", `tui: ${k} on a remote row runs nothing, names the machine's command`);
+  }
+  e = press("d");
+  ok(e.kind === "prompt" && st.mode.kind === "dm" && st.mode.target === "lizard#team2027", "tui: d opens the dm prompt");
+  for (const k of ["h", "i", "x", "backspace"]) press(k);
+  ok(argvOf(press("enter")) === JSON.stringify(["dm", "lizard#team2027", "hi"]), "tui: Enter sends the draft (backspace edits)");
+  press("d");
+  press("a");
+  ok(press("esc").kind === "none" && st.mode.kind === "list", "tui: Esc cancels the dm");
+  press("d");
+  ok(press("enter").kind === "none" && st.mode.kind === "list", "tui: an empty line cancels the dm");
+  // dismiss / undismiss, and a changed reason comes back
+  press("up");
+  press("up");
+  ok(sel() === "research#paw", "tui: back on research");
+  press("x");
+  ok(T.visible(st).length === 3 && st.dismissed.size === 1 && sel() !== "research#paw", "tui: x hides the row");
+  ok(T.renderTui(st, { width: 140, height: 30, now: N, tty: false }).includes("1 dismissed · X shows them"), "tui: the footer counts the dismissed");
+  press("X");
+  ok(T.visible(st).length === 4 && st.dismissed.size === 0, "tui: X shows them again");
+  press("x");
+  const changed = await fixtureReport(N);
+  const r = changed.problems.find((p) => p.name === "research")!;
+  changed.problems = changed.problems.map((p) => (p === r ? { ...p, reason: "quiet-turn" as const } : p));
+  st = T.problemsRefreshed(st, changed, N);
+  ok(T.visible(st).some((p) => p.name === "research"), "tui: a dismissed row comes back when its reason changes");
+  // inbox growth between two refreshes
+  st = T.problemsRefreshed(T.problemsRefreshed(T.initialState(), await fixtureReport(N, { queued: 3 }), N), await fixtureReport(N, { queued: 5 }), N);
+  ok(st.grew.get("research#paw") === 2 && T.renderTui(st, { width: 140, height: 30, now: N, tty: false }).includes("inbox stuck — 5 queued (+2), not consuming"), "tui: (+N) when the inbox rose since the last refresh");
+  st = T.problemsRefreshed(st, await fixtureReport(N, { queued: 5 }), N);
+  ok(!st.grew.has("research#paw") && !T.renderTui(st, { width: 140, height: 30, now: N, tty: false }).includes("(+"), "tui: no growth → no (+N)");
+  // footer and keys
+  const screen = T.renderTui(st, { width: 140, height: 30, now: N, tty: false });
+  ok(/canary#paw · s start · r restart · l log · d dm · x dismiss\s+↑↓ move · R refresh · q quit/.test(screen), "tui: the footer lists the selected row's bound keys");
+  ok(screen.split("\n").some((l) => l.startsWith("▸ ✕ canary#paw")), "tui: the selected row is marked");
+  ok(T.parseKeys("\x1b[A\x1b[Bry\r\x7f\x03\x1b").join(" ") === "up down r y enter backspace ctrl-c esc", "tui: raw input → key names");
+  ok(press("R").kind === "refresh" && press("q").kind === "quit" && press("ctrl-c").kind === "quit", "tui: R refreshes, q / ctrl-c quit");
+}
+
 console.log(`✓ check:top — ${n} assertions`);

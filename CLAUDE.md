@@ -261,6 +261,7 @@ Each entry: what it is + the most load-bearing rule. Full notes behind the link.
   turns; `busy` = paw's inference, distinct from the mesh's `working`; STATUS words = chat's (`online`, never `idle`;
   a roster-only peer is `online (not registered here)` with the fix once under the table, never a `?` seat); a
   registered agent whose folder is gone gets `⚠ folder gone: … — paw rm`, not a pin note; `--json`. → [status.md#srcstatusts](docs/notes/status.md#srcstatusts)
+- `src/problems.ts` + `src/problems-tui.ts` — `paw status --problems` / `paw top --problems` (TUI on a tty): read-only (never ensure()s), dead/stuck/asleep-with-mail/folder-gone/elsewhere/idle-bg rows with the one command; TUI keys s w r u o l d t x, `r`/`u` always `[y/N]` naming `name#space` (same-read type-ahead discarded); another machine's row = text only. → [status.md#problems](docs/notes/status.md#problems)
 
 ### Transcripts & log → [transcript-log.md](docs/notes/transcript-log.md)
 - `src/sessions.ts`, `src/log.ts`, `src/transcript.ts` — `paw sessions`, `paw log` (dispatches on persona

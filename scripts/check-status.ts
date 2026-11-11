@@ -630,6 +630,285 @@ assert(!inferBusy("idle", true, BUSY_NOW + 5_000, BUSY_NOW), "an mtime in the FU
   assert(out.includes("canary") && out.includes("online (not registered here)") && !/unregistered|seat|persona/.test(out) && /1 online agent isn't registered on this machine — `paw adopt <folder>` registers one/.test(out), `roster-only: one row saying online (not registered here), the fix once at the bottom (${out.split("\n").find((l) => l.includes("canary"))?.trim()})`);
 }
 
+// ---- problems: classify ----
+{
+  const P = await import("../src/problems.ts");
+  type AS = import("../src/status.ts").AgentStatus;
+  type SI = import("../src/problems.ts").SpaceInput;
+  const N = 1_800_000_000_000;
+  const M = 60_000;
+  const H = 3_600_000;
+  const here = { label: "aleks-macbook", via: "manager" as const, here: true };
+  const row = (name: string, o: Partial<AS> = {}): AS => ({ name, space: "paw", folder: join(home, "w", name), mesh: "idle", live: true, durable: true, conflictPids: [], inbox: { kind: "none" }, busy: false, host: here, ...o });
+  const off = (name: string, o: Partial<AS> = {}): AS => row(name, { live: false, mesh: "offline", host: undefined, ...o });
+  const input = (rows: AS[], o: Partial<SI> = {}): SI => ({ space: "paw", machine: "aleks-macbook", rows, sleep: new Map(), wedges: new Map(), asks: [], gone: new Set(), ownedHere: () => true, ...o });
+  const one = (r: AS, o: Partial<SI> = {}) => {
+    const ps = P.classify(input([r], o), N);
+    return ps.length === 1 ? ps[0]! : undefined;
+  };
+  const keys = (p: { actions: Array<{ key?: string; here: boolean }> } | undefined) => (p?.actions ?? []).filter((a) => a.key && a.here).map((a) => a.key).join("");
+  const liveRec = (names: string[], atMs = N - 12 * M) => ({ space: "paw", bootAt: 0, at: new Date(atMs).toISOString(), names });
+
+  // manager-down: one space row, s lists exactly the recorded names
+  {
+    const ps = P.classify(input([], { space: "team2027", live: { ...liveRec(["lizard", "mcpc", "paw", "evals-intern", "x"]), space: "team2027" } }), N);
+    const p = ps[0];
+    assert(ps.length === 1 && p?.reason === "manager-down" && p.group === "dead" && p.name === "team2027", "manager-down: one space-level row");
+    assert(p?.fact === "manager not running on this machine — live.json lists 5: lizard, mcpc, paw, evals-intern +1", `manager-down FACT (${p?.fact})`);
+    assert(P.sinceText(p!, N) === "was live 12m", "manager-down FOR: was live <ago>");
+    assert(JSON.stringify(p?.actions.find((a) => a.key === "s")?.argv) === JSON.stringify(["start", "lizard", "mcpc", "paw", "evals-intern", "x", "--space", "team2027"]), "manager-down: s argv lists exactly the recorded names");
+    assert(p?.row === undefined && keys(p) === "s", "manager-down: no row, only s");
+    assert(P.classify(input([], { live: liveRec([]) }), N).length === 0, "manager-down: an empty record is no row");
+  }
+  // restart-stuck
+  {
+    const p = one(off("canary", { stuck: { since: N - 2 * H, restarts: 4 } }));
+    assert(p?.reason === "restart-stuck" && p.fact === "wake gate gave up — restarted 4× without reaching the mesh" && P.sinceText(p, N) === "since 2h", "restart-stuck: FACT and FOR");
+    assert(p?.primary?.cmd === "paw restart canary --space paw" && keys(p).includes("s") && keys(p).includes("r"), "restart-stuck: DO restart, s and r bound");
+  }
+  // seat-exited
+  {
+    const p = one(off("vibeos-mcp", { seat: "exited", activeMs: N - 3 * H }));
+    assert(p?.reason === "seat-exited" && p.fact === "seat exited — the manager lists it, nothing runs" && P.sinceText(p, N) === "last active 3h", "seat-exited: FACT and FOR");
+    assert(p?.primary?.cmd === "paw start vibeos-mcp --space paw" && !keys(p).includes("o"), "seat-exited: DO start, o never bound (nothing to attach to)");
+    assert(P.sinceText(one(off("y", { seat: "exited", activeMs: undefined }))!, N) === "—", "seat-exited: no transcript → FOR —");
+    assert(one(off("z", { seat: "exited", mesh: "asleep" }))?.reason !== "seat-exited", "seat-exited: an asleep agent is not dead");
+  }
+  // live-record
+  {
+    const p = one(off("hermes", { activeMs: N - 5 * H }), { live: liveRec(["hermes"], N - M) });
+    assert(p?.reason === "live-record" && p.fact === "not running — live.json says it was up" && P.sinceText(p, N) === "was live 1m", "live-record: FACT and FOR");
+    assert(one(off("hermes", { mesh: "asleep" }), { live: liveRec(["hermes"]) }) === undefined, "live-record: asleep → not dead");
+    assert(one(off("hermes", { elsewhere: { how: "teleported", where: "ssh:mini" } }), { live: liveRec(["hermes"]) })?.reason === "offline-elsewhere", "live-record: elsewhere → not live-record");
+    assert(one(off("hermes"), { live: liveRec(["hermes"]), gone: new Set(["hermes"]) })?.reason === "folder-gone", "live-record: a gone folder is folder-gone");
+    assert(one(row("hermes"), { live: liveRec(["hermes"]) }) === undefined, "live-record: a live agent in the record is fine");
+  }
+  // hung-tool (+ precedence)
+  {
+    const tool = { id: "toolu_1", name: "Bash", summary: "fly ssh console -a q", startedMs: N - 47 * M };
+    const p = one(row("queue", { busy: true, tool }));
+    assert(p?.reason === "hung-tool" && p.group === "stuck" && p.fact === "tool running — Bash: fly ssh console -a q" && P.sinceText(p, N) === "47m", "hung-tool: FACT and FOR (bare age)");
+    const u = p?.actions.find((a) => a.key === "u");
+    assert(p?.primary?.key === "u" && u?.confirm === true && u.class === "disruptive", "hung-tool: DO unstick, confirm, disruptive");
+    assert(one(row("queue", { busy: true, tool: { ...tool, startedMs: N - 20 * M } })) === undefined, "hung-tool: under 30m is not a problem");
+    const both = one(row("queue", { busy: false, tool, inbox: { kind: "lag", queued: 2, unread: 0 } }));
+    assert(both?.reason === "hung-tool" && JSON.stringify(both.also) === JSON.stringify(["inbox"]), "precedence: hung-tool wins, inbox goes to also");
+  }
+  // failure
+  {
+    const p = one(row("evals-reviewer", { failure: { text: "You've hit your limit · resets 1am (Europe/Lisbon)", ts: N - 25 * M } }));
+    assert(p?.reason === "failure" && p.fact === "limit — resets 1am" && P.sinceText(p, N) === "25m", `failure: FACT and FOR (${p?.fact})`);
+    assert(p?.primary?.cmd === "paw log evals-reviewer --space paw --tail 40", "failure: DO is the log");
+    assert(one(off("evals-reviewer", { failure: { text: "limit", ts: N } })) === undefined, "failure: only for a live agent");
+  }
+  // off-mesh
+  {
+    const p = one(off("drift", { seat: "off-mesh", activeMs: N - H }));
+    assert(p?.reason === "off-mesh" && p.fact === "process running, off the mesh — not reachable by DM" && P.sinceText(p, N) === "last active 1h", "off-mesh: FACT and FOR");
+    assert(!keys(p).includes("s") && keys(p).includes("r"), "off-mesh: s unbound, r bound");
+  }
+  // inbox
+  {
+    const p = one(row("research", { inbox: { kind: "lag", queued: 3, unread: 0 }, activeMs: N - 2 * H }));
+    assert(p?.reason === "inbox" && p.fact === "inbox stuck — 3 queued, not consuming" && P.sinceText(p, N) === "quiet 2h", "inbox: FACT and FOR");
+    assert(p?.primary?.cmd === "paw restart research --space paw", "inbox: DO says restart (text only in the one-shot)");
+    assert(one(row("research", { busy: true, inbox: { kind: "lag", queued: 0, unread: 1 } })) === undefined, "inbox: a working agent's unread is its turn, not a problem");
+  }
+  // wedged + launcher.log parsing
+  {
+    const iso = (ms: number) => new Date(ms).toISOString();
+    const log = [
+      `${iso(N - 3 * H)} [12] watchdog: lizard is WEDGED — 3 probes in a row failed`.slice(10), // the partial first line of a tail read
+      `${iso(N - 30 * H)} [12] watchdog: lizard is WEDGED — old`,
+      `${iso(N - 2 * H)} [12] watchdog: lizard is WEDGED — 3 probes`,
+      `${iso(N - 5 * M)} [13] watchdog: lizard is WEDGED — 3 probes`,
+      `${iso(N - M)} [13] watchdog: probe ok`,
+      `${iso(N - M)} [paw] mounted skills`,
+    ].join("\n");
+    const w = P.wedgesIn(log, N, true);
+    assert(w?.count === 2 && w.last === N - 5 * M, `wedgesIn: in-window WEDGED lines only (truncated first, old, non-WEDGED skipped) (${JSON.stringify(w)})`);
+    assert(P.wedgesIn(log.split("\n").slice(2).join("\n"), N, false)?.count === 2 && P.wedgesIn(`${iso(N - H)} [1] watchdog: x is WEDGED`, N, false)?.count === 1, "wedgesIn: an untruncated read counts its first line");
+    assert(P.wedgesIn(`${iso(N - 30 * H)} [1] watchdog: x is WEDGED`, N, false) === undefined, "wedgesIn: nothing in 24h → none");
+    const p = one(row("lizard"), { wedges: new Map([["lizard", { count: 2, last: N - 5 * M, persona: join(home, ".paw", "spaces", "paw", "personas", "lizard.md") }]]) });
+    assert(p?.reason === "wedged" && p.fact === "sandbox VM wedged 2× in 24h — out of memory? raise sandboxMemory" && P.sinceText(p, N) === "last 5m", "wedged: FACT and FOR");
+    assert(p?.primary?.class === "shown" && p.primary.cmd === "edit sandboxMemory in ~/.paw/spaces/paw/personas/lizard.md, then r", `wedged: shown action names the persona (${p?.primary?.cmd})`);
+  }
+  // quiet-turn
+  {
+    const p = one(row("harbor", { busy: true, activeMs: N - 14 * M }));
+    assert(p?.reason === "quiet-turn" && p.fact === "mid-turn, transcript quiet — no tool running" && P.sinceText(p, N) === "quiet 14m" && p.primary?.key === "o", "quiet-turn: FACT, FOR, DO attach");
+    assert(one(row("harbor", { busy: true, activeMs: N - 5 * M })) === undefined, "quiet-turn: under 10m is fine");
+    assert(one(row("harbor", { busy: true, mesh: "waiting", activeMs: N - 50 * M })) === undefined, "quiet-turn: an agent waiting on a human is not quiet");
+  }
+  // asleep group
+  {
+    const wf = one(off("tracepaper", { mesh: "wake failed" }), { sleep: new Map([["tracepaper", { since: N - 26 * H, failures: 3, lastError: "timeout waiting for seat" }]]) });
+    assert(wf?.reason === "wake-failed" && wf.fact === "wake failed (3×): no answer" && P.sinceText(wf, N) === "asleep 1d" && wf.primary?.key === "w", `wake-failed: FACT/FOR/DO (${wf?.fact})`);
+    const slow = one(off("x", { mesh: "waking" }), { sleep: new Map([["x", { since: N - H, wakeRequestedAt: N - 3 * M }]]) });
+    assert(slow?.reason === "waking-slow" && P.sinceText(slow, N) === "3m" && slow.primary?.cmd === "paw restart --mailbox --space paw" && slow.primary.class === "shown", "waking-slow: FOR bare, shown mailbox restart");
+    assert(one(off("x", { mesh: "waking" }), { sleep: new Map([["x", { since: N - H, wakeRequestedAt: N - M }]]) }) === undefined, "waking: under 2m is fine");
+    const bl = one(off("vibeos-yc", { mesh: "asleep" }), { sleep: new Map([["vibeos-yc", { since: N - 6 * H, backlog: 2 }]]) });
+    assert(bl?.reason === "backlog" && bl.fact === "asleep, 2 DMs waiting — not woken" && bl.backlog === 2 && P.sinceText(bl, N) === "asleep 6h", "backlog: FACT, count, FOR");
+    assert(JSON.stringify(bl?.actions.find((a) => a.key === "w")?.argv) === JSON.stringify(["start", "vibeos-yc", "--space", "paw"]), "backlog: w = paw start");
+    assert(one(off("a", { mesh: "asleep" }), { sleep: new Map([["a", { since: N, backlog: 1 }]]) })?.fact === "asleep, 1 DM waiting — not woken", "backlog: 1 DM singular");
+    assert(one(off("a", { mesh: "asleep" }), { sleep: new Map([["a", { since: N, backlog: 0 }]]) }) === undefined, "backlog: 0 waiting → no row");
+    assert(one(off("a", { mesh: "asleep" }), { sleep: new Map([["a", { since: N, backlog: "error" }]]) }) === undefined, "backlog: a failed read → no row");
+    const sc = one(off("b", { mesh: "sleep record corrupt" }));
+    assert(sc?.reason === "sleep-corrupt" && sc.fact === "sleep record unreadable — spaces/paw/sleep/b.json" && sc.since === undefined && P.sinceText(sc, N) === "—", "sleep-corrupt: FACT, no since");
+  }
+  // folder-gone, elsewhere, idle-bg
+  {
+    const fg = one(off("sc-entangled", { folder: join(home, "Github", "sc"), activeMs: N - 9 * 86_400_000 }), { gone: new Set(["sc-entangled"]) });
+    assert(fg?.reason === "folder-gone" && fg.fact === "folder gone: ~/Github/sc" && P.sinceText(fg, N) === "last active 9d", "folder-gone: FACT and FOR");
+    assert(fg?.primary?.cmd === "paw rm sc-entangled --space paw" && fg.primary.class === "shown" && !keys(fg).includes("r"), "folder-gone: rm shown, r never bound");
+    const el = one(off("lizard", { space: "team2027", host: { label: "ssh:mini", via: "teleport", here: false }, elsewhere: { how: "teleported", where: "ssh:mini", cwd: "/x" } }), { space: "team2027" });
+    assert(el?.reason === "offline-elsewhere" && el.fact === "offline there — ssh:mini · /x (teleported)" && P.sinceText(el, N) === "—", `elsewhere: FACT (${el?.fact})`);
+    assert(keys(el) === "d" && P.doText(el!) === "on ssh:mini: paw start lizard --space team2027" && !el!.actions.some((a) => a.key === "r"), "elsewhere: only d bound, DO names the machine, no r");
+    const items = [
+      { pid: 1, kind: "task" as const, label: "pnpm dev", ageMs: 3 * H, mem: 1000, ports: [3000], pids: [1] },
+      { pid: 2, kind: "bg" as const, label: "ugrep", ageMs: 3 * H, mem: 400, ports: [], pids: [2] },
+      { pid: 3, kind: "bg" as const, label: "vite", ageMs: 3 * H, mem: 10, ports: [], pids: [3] },
+    ];
+    const ib = one(row("vibeos-app", { activeMs: N - 5 * H }), { asks: [{ agent: "vibeos-app", items, text: "" }] });
+    assert(ib?.reason === "idle-bg" && ib.fact === "idle, holds 3 background procs 1.4G: pnpm dev :3000, ugrep +1" && P.sinceText(ib, N) === "idle 5h" && ib.primary?.key === "t", `idle-bg: FACT/FOR/DO (${ib?.fact})`);
+    const un = one(row("vibeos-app", { activeMs: N - 5 * H }), { asks: [{ agent: "vibeos-app", items: [{ ...items[0]!, mem: undefined }], text: "" }] });
+    assert(un?.fact === "idle, holds 1 background proc —: pnpm dev :3000", `idle-bg: unmeasured memory is —, never 0 (${un?.fact})`);
+    assert(one(row("vibeos-app", { activeMs: N - 10 * M }), { asks: [{ agent: "vibeos-app", items, text: "" }] }) === undefined, "idle-bg: active in the last hour → not a problem");
+  }
+  // unregistered peers are never problems; WHERE; runsHere
+  {
+    assert(one(off("peer", { seat: "exited", unregistered: {} })) === undefined, "unregistered rows are never problems");
+    const p = one(off("a", { seat: "exited" }));
+    assert(p?.where?.label === "aleks-macbook" && p.where.here, "WHERE: a persona this machine owns → this machine");
+    assert(one(off("a", { seat: "exited" }), { ownedHere: () => false })?.where === undefined, "WHERE: nothing names a machine → absent (—), never ?");
+    const q = one(row("a", { failure: { text: "api error 500", ts: N }, host: { label: "?", via: "unknown", here: false } }));
+    assert(q?.where?.label === "?", "WHERE: ? only when machineOf says unknown for a running agent");
+    const rem = one(row("lizard", { space: "team2027", inbox: { kind: "lag", queued: 1, unread: 0 }, host: { label: "aleks-mac-mini", via: "mesh", here: false } }), { space: "team2027", ownedHere: () => false });
+    assert(rem?.where?.label === "aleks-mac-mini" && keys(rem) === "d" && P.doText(rem!) === "on aleks-mac-mini: paw restart lizard --space team2027", "runsHere: another machine's live agent — only d, DO names that machine");
+    assert(P.runsHere(row("a"), () => false) && !P.runsHere(off("a"), () => false) && P.runsHere(off("a"), () => true), "runsHere: host.here, else ownedHere");
+  }
+  // sort: group order, oldest first, no since last, then name
+  {
+    const ps = P.sortProblems(P.classify(input([off("b", { seat: "exited", activeMs: N - H }), off("a", { seat: "exited", activeMs: N - 2 * H }), off("c", { seat: "exited" }), row("q", { busy: true, activeMs: N - 20 * M })]), N));
+    assert(ps.map((p) => p.name).join(",") === "a,b,c,q", `sort: dead oldest-first, no since last, then stuck (${ps.map((p) => p.name)})`);
+  }
+  // render + JSON
+  {
+    const report = {
+      now: N,
+      machine: "aleks-macbook",
+      spaces: [
+        { space: "paw", remote: false, server: "nats://127.0.0.1:4222", read: "ok" as const },
+        { space: "team2027", remote: true, server: "tls://2027-cotal.fly.dev:4222", read: "manager-down" as const },
+      ],
+      notRead: ["team2028"],
+      problems: P.sortProblems([
+        ...P.classify(input([off("vibeos-mcp", { seat: "exited", activeMs: N - 3 * H }), row("queue", { busy: true, tool: { id: "toolu_1", name: "Bash", summary: "fly ssh console -a q", startedMs: N - 47 * M } }), off("sc", { mesh: "sleep record corrupt" })]), N),
+        ...P.classify(input([], { space: "team2027", live: { ...liveRec(["lizard"]), space: "team2027" } }), N),
+      ]),
+      errors: [] as string[],
+    };
+    const wide = P.renderProblems(report, { width: 160, now: N, tty: false });
+    const lines = wide.split("\n");
+    assert(lines[0] === "problems on aleks-macbook · paw (local broker) · team2027 (remote broker tls://2027-cotal.fly.dev:4222) · 4 need attention", `render: header (${lines[0]})`);
+    assert(lines.includes("DEAD 2") && lines.includes("STUCK 1") && lines.includes("ASLEEP WITH MAIL 1") && !lines.some((l) => l.startsWith("IDLE")), "render: group headers with counts, empty groups omitted");
+    assert(lines.some((l) => /^✕ team2027 \(space\)\s+aleks-macbook\s+manager not running.*was live 12m\s+paw start lizard --space team2027$/.test(l)), "render 160: the space row with its DO inline");
+    assert(lines.some((l) => /^⚠ queue#paw\s+aleks-macbook\s+tool running — Bash: fly ssh console -a q\s+47m\s+paw unstick queue --space paw$/.test(l)), "render 160: a row reads glyph · name#space · WHERE · FACT · FOR · DO");
+    assert(!wide.includes("↳") && !wide.includes("\x1b"), "render 160: no ↳ line, no escape codes off a tty");
+    assert(lines.at(-1) === "not read: team2028 (no manager here, nothing recorded live)", "render: the not-read line");
+    const narrow = P.renderProblems(report, { width: 90, now: N, tty: false }).split("\n");
+    assert(narrow.includes("  ↳ paw unstick queue --space paw") && narrow.every((l) => l.length <= 90 || l.startsWith("problems on") || l.startsWith("not read") || l.startsWith("  ↳")), `render 90: DO on a ↳ line, rows fit the width (${narrow.filter((l) => l.length > 90).join(" | ")})`);
+    assert(narrow.some((l) => l.includes("vibeos-mcp#paw")) && narrow.some((l) => l.includes("queue#paw")), "render 90: names never elided");
+    assert(P.renderProblems(report, { width: 160, now: N, tty: true }).includes("\x1b[31m✕\x1b[0m"), "render tty: the glyph carries the colour");
+    const none = P.renderProblems({ ...report, problems: [] }, { width: 160, now: N, tty: false });
+    assert(none === "✓ nothing needs attention — paw, team2027 read on aleks-macbook\nnot read: team2028 (no manager here, nothing recorded live)", `render: the nothing line (${none})`);
+    const j = JSON.parse(JSON.stringify(P.problemsJson(report))) as { spaces: Array<Record<string, unknown>>; problems: Array<Record<string, unknown>>; notRead: string[]; errors: string[] };
+    const md = j.problems.find((p) => p.reason === "manager-down")!;
+    const q = j.problems.find((p) => p.name === "queue")!;
+    const sc = j.problems.find((p) => p.name === "sc")!;
+    assert(j.spaces[1]!.read === "manager-down" && !("server" in j.spaces[0]!) && j.notRead[0] === "team2028" && Array.isArray(j.errors), "json: spaces/notRead/errors shape");
+    assert(!("row" in md) && (q.row as { name: string }).name === "queue" && !("primary" in q), "json: row verbatim, absent for the space row; no primary key");
+    assert(!("since" in sc) && !("backlog" in q) && (q.actions as Array<{ key: string; cmd: string; confirm?: boolean }>).some((a) => a.key === "u" && a.cmd === "paw unstick queue --space paw" && a.confirm), "json: since absent without evidence, backlog only on backlog rows, actions carry key/cmd/confirm");
+  }
+  // collectProblems: read failures, backlog failures, not read — never a guess
+  {
+    const fakeStatus = (rows: AS[]) => async () => ({ rows, errors: [] as string[] });
+    const fleet = async () => ({ agents: {}, orphans: [], other: [], machine: { load: 0, cores: 1 }, measured: true });
+    type CD = import("../src/problems.ts").CollectDeps;
+    const deps = (o: Partial<CD>): Partial<CD> => ({
+      now: () => N,
+      managerUp: () => true,
+      liveRecord: () => undefined,
+      status: fakeStatus([]),
+      fleet,
+      sleepFacts: () => ({ rec: { name: "a", folder: "/a", since: N - H, cursorSeq: 1, reason: "idle" }, facts: { since: N - H } }),
+      backlog: async () => 2,
+      wedge: () => undefined,
+      ownedHere: () => true,
+      folderGone: () => false,
+      remote: () => false,
+      server: () => "nats://x",
+      machine: () => "aleks-macbook",
+      ...o,
+    });
+    let r = await P.collectProblems(["paw"], deps({ status: fakeStatus([off("a", { mesh: "asleep" })]) }));
+    assert(r.problems.length === 1 && r.problems[0]!.reason === "backlog" && r.problems[0]!.backlog === 2 && r.spaces[0]!.read === "ok", "collect: an asleep agent with 2 waiting DMs → backlog row");
+    r = await P.collectProblems(["paw"], deps({ status: fakeStatus([off("a", { mesh: "asleep" })]), backlog: async () => { throw new Error("ECONNREFUSED 127.0.0.1"); } }));
+    assert(r.problems.length === 0 && r.errors.length === 1 && r.errors[0] === "paw: couldn't count a#paw's waiting DMs (connection refused)" && r.spaces[0]!.read === "ok", `collect: a failed backlog read → one error, no row, space still read (${r.errors[0]})`);
+    r = await P.collectProblems(["paw"], deps({ status: fakeStatus([off("a", { mesh: "asleep" })]), backlog: async () => "skip" }));
+    assert(r.problems.length === 0 && r.errors.length === 0, "collect: another machine's asleep agent is not counted, not an error");
+    r = await P.collectProblems(["paw", "x", "y"], deps({
+      managerUp: (s) => s === "paw",
+      liveRecord: (s) => (s === "x" ? { ...liveRec(["k"]), space: "x" } : undefined),
+      status: async () => { throw new Error("paw: manager isn't answering (timeout)"); },
+    }));
+    assert(r.spaces.find((s) => s.space === "paw")?.read === "error" && r.spaces.find((s) => s.space === "paw")?.error === "no answer", "collect: a failed space read is an error with its reason word");
+    assert(r.spaces.find((s) => s.space === "x")?.read === "manager-down" && r.problems.some((p) => p.reason === "manager-down" && p.space === "x"), "collect: manager down + a record → manager-down");
+    assert(JSON.stringify(r.notRead) === JSON.stringify(["y"]), "collect: no manager, no record → not read, never guessed at");
+    assert(P.spaceErrorLine(r.spaces.find((s) => s.space === "paw")!) === "✕ paw — couldn't read (no answer)", "collect: the stderr line is a problemLine");
+    assert(JSON.stringify(P.problemSpaces("paw", "default", () => ["paw", "team2027"])) === JSON.stringify(["paw", "team2027"]) && JSON.stringify(P.problemSpaces("test-1", "env", () => ["paw"])) === JSON.stringify(["test-1"]), "problemSpaces: defaulted → every space dir; chosen → that one");
+  }
+  // arg parsing: --problems takes only [--json] [--space s]
+  {
+    const throws = (f: () => unknown) => {
+      try {
+        f();
+        return false;
+      } catch (e) {
+        return (e as Error).message === "paw: --problems takes only [--json] [--space s]";
+      }
+    };
+    assert(JSON.stringify(P.parseProblemsArgs(["--problems", "--json", "--space", "x"])) === JSON.stringify({ json: true, space: "x" }), "args: --problems --json --space");
+    assert(throws(() => P.parseProblemsArgs(["--problems", "queue"])) && throws(() => P.parseProblemsArgs(["--problems", "--wide"])) && throws(() => P.parseProblemsArgs(["--problems", "busy"])), "args: --problems with a target, a state word or --wide fails loud");
+    const { parseTopArgs } = await import("../src/commands/top.ts");
+    assert(parseTopArgs(["--problems", "--json"]).problems && throws(() => parseTopArgs(["--problems", "--sort", "cpu"])) && throws(() => parseTopArgs(["--problems", "-v"])) && throws(() => parseTopArgs(["--problems", "queue"])), "args: top --problems with --sort/-v/a name fails loud");
+    assert(statusTargets(["--problems", "--space", "x"]).length === 0, "args: statusTargets accepts --problems");
+  }
+  // seat: derived by collectStatus from the manager's ps row (psRowRunning), absent otherwise
+  {
+    const { collectStatus } = await import("../src/status.ts");
+    const saved = process.env.PAW_HOME;
+    process.env.PAW_HOME = join(home, ".paw-seat");
+    const pdir = join(process.env.PAW_HOME, "spaces", "seatx", "personas");
+    mkdirSync(pdir, { recursive: true });
+    for (const n of ["ex", "om", "ok", "unlisted"]) {
+      mkdirSync(join(home, "seat", n), { recursive: true });
+      writeFileSync(join(pdir, `${n}.md`), `---\nname: ${n}\ncwd: ${join(home, "seat", n)}\n---\n`);
+    }
+    const ps = new Map([
+      ["ex", { name: "ex", status: "exited", mesh: "offline" }],
+      ["om", { name: "om", status: "running", mesh: "offline" }],
+      ["ok", { name: "ok", status: "running", mesh: "idle" }],
+    ]);
+    const { rows } = await collectStatus("seatx", undefined, { ps: ps as never, roster: () => [], git: false });
+    const seat = (n: string) => rows.find((r) => r.name === n)?.seat;
+    assert(seat("ex") === "exited" && seat("om") === "off-mesh" && seat("ok") === undefined && seat("unlisted") === undefined, `seat: exited / off-mesh / absent for live and unlisted (${rows.map((r) => `${r.name}=${r.seat}`)})`);
+    if (saved === undefined) delete process.env.PAW_HOME;
+    else process.env.PAW_HOME = saved;
+  }
+  console.log("✓ problems: classify");
+}
+
 if (failures > 0) {
   console.error(`\n${failures} paw status check(s) failed`);
   process.exit(1);

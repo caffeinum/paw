@@ -159,6 +159,75 @@ A machine's NAME (`machineName`): `PAW_MACHINE` > the space's remote record `--a
 first label (`aleks-macbook`). Tests: `check:status` (machineOf, machineName, stampHost round-trip
 through cotal's `loadAgentFile`, the column, the mesh line).
 
+## problems
+
+`paw status --problems [--json] [--space s]` (one-shot, never a TUI) and `paw top --problems` (a live TUI
+when stdin AND stdout are ttys and no `--json`; otherwise byte-for-byte the one-shot). Code:
+`src/problems.ts` (pure `classify`/`renderProblems` + the collect), `src/problems-tui.ts` (pure
+`problemsKey` reducer + the loop). Loaded only with `--problems` (`await import`), so plain status/top pay
+nothing. `--problems` takes only `[--json] [--space s]`; anything else fails loud before any read.
+
+**Read-only.** It never calls `ensure()`: a down manager is a FINDING, never repaired as a side effect. Per
+space: manager-up (`managerProcs`) → `collectStatus` over `withManagerControl(…, { only: ["ps"] })` +
+`snapshotFleet(sampleMs: 0)` + four side reads (live.json, sleep records + backlog, sandbox launcher.log,
+tidy's asks). No manager here + a non-empty live.json → one `manager-down` row; no manager and no record →
+`not read` (never guessed at). Spaces: a chosen space (`--space`, `#space`, `PAW_SPACE`, the calling
+agent's) is that one; a defaulted one means every `spaces/<s>` dir. Exit 0 whenever every space read
+answered (problems or not — a view, not a check); 1 when a space read failed (`✕ <s> — couldn't read
+(<reason>)` on stderr and in `spaces[].error`). A failed backlog count is an `errors` line, never a row.
+The asleep agent's backlog read uses the stand-in identity already on disk — it never mints one.
+
+**live.json caveat.** The keeper rewrites `spaces/<s>/live.json` every tick from the running ps rows, so a
+crashed seat leaves the record within a minute. The record names a non-running agent only after a reboot
+(held 1h), while the space's manager is down, or while the keeper isn't running. "Dead" therefore has four
+sources (manager-down, restart-stuck, seat-exited, live-record), not one. A seat the manager RETIRED (gone
+from ps) after live.json moved on is not detected (needs a `lastSeen` map — keeper change, follow-up).
+
+| group | glyph | reason | detection | FACT |
+|---|---|---|---|---|
+| DEAD | ✕ | manager-down | no manager here, live.json names N | `manager not running on this machine — live.json lists N: a, b +K` |
+| | | restart-stuck | `stuck && !live` | `wake gate gave up — restarted N× without reaching the mesh` |
+| | | seat-exited | `seat === "exited"`, not asleep | `seat exited — the manager lists it, nothing runs` |
+| | | live-record | in live.json, not live, no ps row, not asleep/elsewhere, folder there | `not running — live.json says it was up` |
+| STUCK | ⚠ | hung-tool | `hungTool` ≥ 30m (top's `⚠ stuck in`) | `tool running — <tool>` |
+| | | failure | live + transcript failure | `failureWord` (`limit — resets 1am`) |
+| | | off-mesh | `seat === "off-mesh"` | `process running, off the mesh — not reachable by DM` |
+| | | inbox | `inboxStuck` (TUI adds `(+N)` when it rose since the last refresh) | `inbox stuck — 3 queued, not consuming` |
+| | | wedged | sandboxed + a launcher.log `is WEDGED` line in 24h | `sandbox VM wedged N× in 24h — out of memory? raise sandboxMemory` |
+| | | quiet-turn | live, busy, no tool, transcript quiet ≥10m (not `waiting`) | `mid-turn, transcript quiet — no tool running` |
+| ASLEEP WITH MAIL | ○ | wake-failed / waking-slow (≥2m) / backlog (>0 DMs) / sleep-corrupt | sleep records | `asleep, 2 DMs waiting — not woken` … |
+| FOLDER GONE | ⚠ | folder-gone | `folderGone` | `folder gone: ~/…` |
+| OFFLINE ON ANOTHER MACHINE | ○ | offline-elsewhere | `elsewhere && !live` | `offline there — ssh:mini · /x (teleported)` |
+| IDLE WITH BACKGROUND WORK | ● | idle-bg | live idle ≥1h + `tidyAsks` (1h, 20 MB) | `idle, holds 2 background procs 1.4G: pnpm dev :3000, ugrep` |
+
+One row per (name, space): the FIRST matching reason wins, the rest go to JSON `also`. Rows only for
+registered agents (unregistered and roster-only peers stay in plain `paw status`). FOR always says what it
+measures (`last active`, `was live`, `since`, `quiet`, `asleep`, `idle`; a tool's/failure's age bare) —
+paw has no record of when a seat died, so nothing claims "dead for". WHERE = `host.label` > `elsewhere.where`
+> this machine when `isLocalHere` > `—`. `seat` (`exited` | `off-mesh`) is the one field this added to
+`AgentStatus`: set only for a registered row whose ps row is not live (`psRowRunning`).
+
+**Actions (TUI keys) and safety classes.** Every action is an existing verb run as a child (same runtime,
+release, PAW_HOME/PAW_SPACE/PAW_RELEASE; the tty handed over); paw's own guards stay in force.
+- start — `s` (dead rows) / `w` (asleep with mail): `paw start <name>`. `startAgents` passes no restart
+  consent, so on a live process the wake gate refuses — `s`/`w` can never bounce one.
+- disruptive — `r` restart / `u` unstick: ALWAYS a `[y/N]` naming `name#space` (live/not live, the tool
+  and its age); exactly one LATER key decides — a key in the same read as `r`/`u` is discarded (`ry`
+  typed at once runs nothing). The keypress + confirm IS the operator's go; nothing else ever acts.
+- read — `o` attach (live rows only, so it can never spawn), `l` log `--tail 40`.
+- message — `d` dm (inline prompt; any machine), `t` tidy-ask (idle-bg).
+- shown, never bound — folder-gone `paw rm`, waking-slow `paw restart --mailbox`, sleep-corrupt, wedged
+  `edit sandboxMemory in <persona>, then r`.
+- Another machine's agent: every local key prints `on <machine>: paw … --space <s>` and runs nothing — paw
+  never sshes. `x` dismisses (in memory, keyed `reason:name#space`, so a changed reason comes back), `X`
+  shows them. The one-shot's DO column is the row's primary action (reason-specific: a refused turn → log, a
+  quiet turn → attach, an inbox → restart as TEXT); `--json` and non-tty never act.
+
+A DM that landed in the last second can show as a backlog before the stand-in wakes the agent; the next
+refresh clears it. Tests: `check:status` (`---- problems: classify ----`), `check:top`
+(`---- problems TUI reducer ----`), `check:problems-tty` (pty + @xterm/headless, fixture harness
+`scripts/fixtures/problems-tui-harness.ts`), isolated e2e `scripts/e2e-problems.ts` (not in CI).
+
 ## speed
 
 - **2026-10-05: `paw status <name>` 3.6s → ~0.5s, full `paw status` 3.5s → ~0.65s** (126 registered,
