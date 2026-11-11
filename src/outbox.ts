@@ -41,6 +41,9 @@ export interface OutItem<M> {
   retried: boolean;
   /** The broker reported the msgID as already stored — an earlier attempt had landed. */
   duplicate?: boolean;
+  /** At least one attempt reached a publish (a copy MAY have landed) — a refusal before the publish
+   *  (src/mesh-publish.ts NotPublishedError) cannot have, so no dedup warning applies to it. */
+  published?: boolean;
 }
 
 export type OutEvent<M> =
@@ -175,6 +178,7 @@ export class Outbox<M> {
     }
     if (!error) {
       item.state = "sent";
+      item.published = true;
       if (ack && ack.duplicate) item.duplicate = true;
       this.settle(item);
       this.o.onEvent({ kind: "sent", item });
@@ -182,6 +186,7 @@ export class Outbox<M> {
     }
     const text = error.message || String(error);
     item.lastError = text;
+    if (error.name !== "NotPublishedError") item.published = true;
     const transient = classifyEndpointError(error) === "transient";
     const elapsed = this.now() - item.firstAt;
     if (!transient || elapsed >= this.giveUpMs) {

@@ -227,8 +227,11 @@ console.log("ensure() on a remote space whose broker accepts and never answers (
   } catch (e) {
     msg = (e as Error).message;
   }
-  assert(msg.includes(`remote mesh "${space}"`) && msg.includes("the connect timed out after 10s"), "the probe still times out at 10s", msg);
-  assert(/TCP \d+ms; then no NATS INFO greeting within 3s/.test(msg) && msg.includes("broker is not serving them"), "and the message names the stalled step", msg);
+  assert(msg.startsWith(`paw: can't reach ${space} at tls://`) && / — no answer: /.test(msg), "the probe still times out at 10s, and the one-shot line leads with the reason word", msg);
+  assert(msg.includes("not serving") && /\n  paw doesn't start remote mesh servers · --verbose shows the connect trace$/.test(msg), "and the message names the stalled step in plain words, the trace behind --verbose", msg);
+  assert(!/TCP \d+ms|NATS INFO/.test(msg), "no protocol words on the default line", msg);
+  const diag = (await (async () => { try { await ensure({ space, needMesh: true }); } catch (e) { return e as { diag?: { word: string; trace: string } }; } return {}; })()).diag;
+  assert(diag?.word === "no answer" && /TCP \d+ms; then no NATS INFO greeting within 3s/.test(diag.trace), "the error carries the step trace for /conn and --verbose", JSON.stringify(diag));
   await close(srv);
   for (const d of [process.env.PAW_HOME, process.env.COTAL_HOME, root]) rmSync(d, { recursive: true, force: true });
 }
@@ -288,7 +291,7 @@ console.log("ensure() on a remote space with a manager probe: the probe's answer
     } catch (e) {
       msg = (e as Error).message;
     }
-    assert(msg.includes(`remote mesh "${space}"`) && msg.includes("paw never starts a remote broker"), "a probe that fails → the remote-mesh diagnosis, not a manager timeout", msg);
+    assert(msg.startsWith(`paw: can't reach ${space} at tls://`) && msg.includes("connection refused: nothing listens there") && msg.includes("paw doesn't start remote mesh servers"), "a probe that fails → the remote-mesh diagnosis, not a manager timeout", msg);
     assert(/refused|ECONNREFUSED/i.test(msg), "…naming the step that failed (TCP refused)", msg);
     assert(probes === 1, "…after one probe", `${probes}`);
 
@@ -299,7 +302,7 @@ console.log("ensure() on a remote space with a manager probe: the probe's answer
     } catch (e) {
       msg = (e as Error).message;
     }
-    assert(msg.includes(`remote mesh "${space}"`), "no manager probe → ensure() still proves the broker itself", msg);
+    assert(msg.startsWith(`paw: can't reach ${space} at tls://`), "no manager probe → ensure() still proves the broker itself", msg);
   } finally {
     beacon.kill("SIGKILL");
     delete process.env.PAW_COTAL_HUB;

@@ -192,12 +192,12 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
   // The hint row's right side: which mesh, and which machine runs the target.
   const { whereTag, hintWithTag } = await import("../src/chat-views.ts");
   const mini = { label: "ssh:mini", via: "teleport" as const, here: false };
-  assert(whereTag({ space: "paw", remote: false }) === "mesh paw", "where: no target → the mesh alone");
-  assert(whereTag({ space: "team2027", remote: true, agent: { machine: mini } }) === "mesh team2027 (remote) · on ssh:mini", "where: a remote space is marked, and the target's machine named");
-  assert(whereTag({ space: "paw", remote: false, agent: {} }) === "mesh paw · not running", "where: a target that runs nowhere says so — no machine invented");
-  assert(whereTag({ space: "team2027", remote: true, agent: { machine: { label: "?", via: "unknown", here: false } } }).endsWith("on ?"), "where: running with no evidence → ?");
+  assert(whereTag({ space: "paw" }) === "mesh paw", "where: no target → the mesh alone");
+  assert(whereTag({ space: "team2027", agent: { machine: mini } }) === "mesh team2027 · on ssh:mini", "where: the target's machine is named when something names it");
+  assert(whereTag({ space: "paw", agent: {} }) === "mesh paw", "where: a target that runs nowhere → the mesh alone, no `not running` (the peer cell says offline)");
+  assert(whereTag({ space: "team2027", agent: { machine: { label: "?", via: "unknown", here: false } } }) === "mesh team2027", "where: running with no evidence → nothing, never `on ?`");
   const hint = hintFor({ view: "chat", picking: false, hasTarget: true, bang: false });
-  const tag = "mesh team2027 (remote) · on ssh:mini";
+  const tag = "mesh team2027 · on ssh:mini";
   const wide = hintWithTag(hint, tag, 120);
   assert(wide.left === hint && wide.tag === tag && displayWidthOf(wide.left) + wide.pad + displayWidthOf(tag) === 119, "where: at 120 cols the tag is right-aligned and the row never reaches the last column");
   const midRow = hintWithTag(hint, tag, 60);
@@ -205,6 +205,20 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
   const narrow = hintWithTag(hint, tag, 40);
   assert(narrow.tag === "" && displayWidthOf(narrow.left) <= 39, "where: too narrow for both → the hint keeps the row, nothing wraps");
   assert(hintWithTag(hint, "", 120).left === hint && hintWithTag(hint, "", 120).pad === 0, "where: no tag (picker / $ mode) → the plain hint");
+  // Cells by priority: at 80 cols the problem cell survives and the mesh goes first; the peer next.
+  const id = (x: string) => x;
+  const cells = [
+    { text: "✕ down 2m (connection refused)", paint: id },
+    { text: "✕ 1 not sent · /retry", paint: id },
+    { text: "kit ◌", paint: id },
+    { text: "mesh test-ux-main · on mini", paint: id },
+  ];
+  assert(hintWithTag(hint, cells, 140).tag === cells.map((x) => x.text).join(" · "), "footer cells: wide enough → every cell");
+  const at80 = hintWithTag(hint, cells, 80);
+  assert(at80.tag === "✕ down 2m (connection refused) · ✕ 1 not sent · /retry · kit ◌" && at80.left.length >= 14, `footer cells: at 80 cols the mesh cell goes, the problem stays (got "${at80.tag}")`);
+  const at60 = hintWithTag(hint, cells, 60);
+  assert(at60.tag === "✕ down 2m (connection refused)", `footer cells: at 60 cols only the problem cell is left (got "${at60.tag}")`);
+  assert(hintWithTag(hint, [{ text: "", paint: id }, { text: "mesh x", paint: id }], 100).tag === "mesh x", "footer cells: an empty cell (connected: no connection cell) is skipped");
 
   assert(JSON.stringify(pickerWindow(5, 2, 12)) === JSON.stringify({ start: 0, end: 5 }), "picker: a short list shows whole");
   assert(JSON.stringify(pickerWindow(118, 0, 12)) === JSON.stringify({ start: 0, end: 12 }), "picker: the top of a long list");
@@ -661,7 +675,8 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
   {
     const s = new ConnState(0);
     assert(s.phase(0) === "connecting" && s.label(0) === "◌ connecting…", "conn: starts connecting");
-    assert(up(s, 500).length === 0 && s.phase(500) === "connected" && s.label(500) === "● connected", "conn: bind → connected, nothing printed");
+    assert(up(s, 500).length === 0 && s.phase(500) === "connected" && s.label(500) === "", "conn: bind → connected, nothing printed, no footer cell (the peer's ● is the only dot)");
+    assert(s.report(93_000)[0] === "● connected 93s · no trouble this session", `conn: /conn while healthy is one line (got ${JSON.stringify(s.report(93_000))})`);
   }
 
   {
@@ -669,7 +684,7 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
     up(s, 0);
     const printed = s.feed({ kind: "error", error: timeout() }, 1000);
     assert(printed.length === 0, "conn: a transient timeout is NOT printed");
-    assert(s.phase(1000) === "degraded" && s.label(1000) === "◐ degraded (1 failed)", `conn: a timeout with the socket up → degraded (got ${s.label(1000)})`);
+    assert(s.phase(1000) === "degraded" && s.label(1000) === "⚠ shaky (1 hiccup)", `conn: a timeout with the socket up → shaky (got ${s.label(1000)})`);
     assert(s.tick(15_000).length === 0 && s.phase(15_000) === "degraded", "conn: still degraded inside the window");
     assert(s.tick(21_001).length === 0 && s.phase(21_001) === "connected", "conn: a quiet window → connected again, no recovery line for an unsustained blip");
   }
@@ -686,7 +701,7 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
     const rec = s.tick(600_000 + 20_001);
     assert(rec.length === 0 && s.phase(620_001) === "connected", `conn: … nor its recovery (got ${JSON.stringify(rec)})`);
     const report = s.report(620_001).join("\n");
-    assert(/transient warnings this session: 100/.test(report) && /last .*: timeout/.test(report) && /degraded spells over 2m .*: 1/.test(report), `conn: /conn keeps the counts, the spell and the last warnings — nothing swallowed (got ${report})`);
+    assert(/100 hiccups/.test(report) && /recent: .*no answer/.test(report) && /1 shaky spell/.test(report), `conn: /conn keeps the counts, the spell and the last warnings — nothing swallowed (got ${report})`);
   }
 
   {
@@ -705,10 +720,10 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
     const first = lines.map((l) => l.text);
     assert(lines.length === 2 && lines[0].level === "error" && lines[1].level === "recovered", `conn: three sustained episodes in 10 min → one problem + one recovery line (got ${JSON.stringify(first)})`);
     const mid = s.report(700_000).join("\n");
-    assert(/episodes over 2m this session: 3/.test(mid) && /2 since the last notice shown in the footer only/.test(mid), `conn: /conn counts the coalesced episodes (got ${mid})`);
+    assert(/3 outages/.test(mid), `conn: /conn counts the coalesced episodes (got ${mid})`);
     episode(720_000, 150_000); // 12m: the window has passed → prints again, naming the quiet ones
     const next = lines.slice(2);
-    assert(next.length === 2 && /\+2 earlier episodes/.test(next[0].text) && /footer only/.test(next[0].text) && next[1].level === "recovered", `conn: the next window's line names the coalesced episodes (got ${JSON.stringify(next.map((l) => l.text))})`);
+    assert(next.length === 2 && /2 earlier outages in \/conn/.test(next[0].text) && next[0].text.startsWith("⚠ mesh down 2m") && next[1].text === "✓ mesh back after 3m", `conn: the next window's line names the coalesced episodes (got ${JSON.stringify(next.map((l) => l.text))})`);
   }
 
   {
@@ -724,7 +739,7 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
     for (let t = 200_000; t <= 720_000; t += 1000) late.push(...s.tick(t).map((l) => l.text));
     assert(late.length === 0, `conn: a second outage inside the window waits (got ${JSON.stringify(late)})`);
     for (let t = 720_001; t <= 760_000; t += 1000) late.push(...s.tick(t).map((l) => l.text));
-    assert(late.length === 1 && /reconnecting for/.test(late[0]), `conn: a long outage inside the window prints once the window ends — never hidden (got ${JSON.stringify(late)})`);
+    assert(late.length === 1 && /^⚠ mesh down 9m — retrying · what you send is kept$/.test(late[0]), `conn: a long outage inside the window prints once the window ends — never hidden (got ${JSON.stringify(late)})`);
   }
 
   {
@@ -745,7 +760,7 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
     assert(s.feed({ kind: "warning", error: refused }, 2000).length === 1, "conn: presence-write-stuck with a NON-timeout refusal still prints (latched/damaged store)");
     const perm = Object.assign(new Error("presence writes … (last refusal: Permissions Violation for Publish)"), { code: "presence-write-stuck", transient: false, lastError: "Permissions Violation for Publish to $KV.x" });
     assert(classifyEndpointError(perm) === "loud", "conn: presence-write-stuck refused by permissions is loud");
-    assert(/presence writes to bucket/.test(s.report(3000).join("\n")), "conn: the folded stall is still in /conn's recent warnings");
+    assert(/recent: .*presence writes/.test(s.report(3000).join("\n")), `conn: the folded stall is still in /conn's recent warnings (got ${s.report(3000).join(" | ")})`);
   }
 
   {
@@ -753,26 +768,28 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
     const s = new ConnState(0);
     up(s, 0);
     s.feed({ kind: "transport", connected: false }, 1000);
-    assert(s.phase(1000) === "reconnecting" && s.label(1000) === "◌ reconnecting…", "conn: transport down → reconnecting");
+    assert(s.phase(1000) === "reconnecting" && s.label(1000) === "◌ reconnecting 0s", `conn: transport down → reconnecting (got ${s.label(1000)})`);
     s.feed({ kind: "connection", connected: false }, 5000);
     const closed = s.feed({ kind: "error", error: new Error("mesh connection closed: CONNECTION_REFUSED - re-establishing") }, 5000);
     assert(closed.length === 0 && s.phase(5000) === "disconnected", "conn: terminal close → disconnected, not printed yet");
     s.feed({ kind: "warning", error: new Error("connect ECONNREFUSED 1.2.3.4:4222") }, 8000);
-    assert(s.label(17_000) === "✕ disconnected 12s ECONNREFUSED", `conn: the label counts the outage and names the failed dial (got ${s.label(17_000)})`);
+    // The clock runs from the FIRST sign of trouble (transport down at 1s), not from cotal's terminal close.
+    assert(s.label(17_000) === "✕ down 16s (connection refused)", `conn: the label counts the outage from its start and names the failed dial in plain words (got ${s.label(17_000)})`);
     const all = [];
     for (let t = 6000; t <= 180_000; t += 1000) all.push(...s.tick(t));
-    assert(all.length === 1 && /mesh disconnected for 2m \(1 attempt\)/.test(all[0].text) && /ECONNREFUSED/.test(all[0].text), `conn: a sustained disconnect prints ONCE with the reason (got ${JSON.stringify(all.map((l) => l.text))})`);
+    assert(all.length === 1 && all[0].text === "⚠ mesh down 2m (connection refused) — retrying · what you send is kept", `conn: a sustained disconnect prints ONCE with the reason (got ${JSON.stringify(all.map((l) => l.text))})`);
+    assert(/1 try/.test(s.report(100_000)[0]!) && /1 outage, 2 hiccups/.test(s.report(100_000)[1]!), `conn: /conn during the outage: last try, tries, this session's counts (got ${s.report(100_000).join(" | ")})`);
     s.feed({ kind: "transport", connected: true }, 181_000);
     const back = s.feed({ kind: "connection", connected: true }, 181_000);
-    assert(back.length === 1 && back[0].level === "recovered" && /after 3m/.test(back[0].text), `conn: rebind → one recovery line (got ${JSON.stringify(back)})`);
-    assert(s.phase(181_000) === "connected", "conn: and connected");
+    assert(back.length === 1 && back[0].level === "recovered" && back[0].text === "✓ mesh back after 3m", `conn: rebind → one recovery line (got ${JSON.stringify(back)})`);
+    assert(s.phase(181_000) === "connected" && s.label(181_000) === "", "conn: and connected — never `shaky (0 hiccups)` right after an outage");
   }
 
   {
     const s = new ConnState(0);
     up(s, 0);
     const auth = s.feed({ kind: "error", error: new Error("mesh connection closed: Authorization Violation - re-establishing") }, 1000);
-    assert(auth.length === 1 && auth[0].level === "error" && /Authorization Violation/.test(auth[0].text), "conn: an auth refusal prints IMMEDIATELY, even inside a reconnect message");
+    assert(auth.length === 1 && auth[0].level === "error" && /^✕ the mesh rejected our credentials — .*paw mesh add.*Authorization Violation/.test(auth[0].text), `conn: an auth refusal prints IMMEDIATELY, as one plain line with the fix and the raw text (got ${auth[0]?.text})`);
     const perm = s.feed({ kind: "error", error: new Error('NATS permission denied: cannot publish "x.y" - check this endpoint\'s ACLs') }, 1000);
     assert(perm.length === 1 && /permission denied/.test(perm[0].text), "conn: a permission violation prints immediately");
     assert(s.feed({ kind: "error", error: new Error('NATS permission denied: cannot publish "x.y" - check this endpoint\'s ACLs') }, 2000).length === 0, "conn: the same loud text again within 10m is counted, not reprinted");
@@ -787,9 +804,9 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
     down.feed({ kind: "transport", connected: false }, 1000);
     assert(down.feed({ kind: "warning", error: stuckErr() }, 4000).length === 0, "conn: presence-write-stuck during an outage is the outage restated — folded, not printed");
     down.feed({ kind: "warning", error: timeout() }, 5000);
-    assert(down.label(5000) === "◌ reconnecting…", `conn: heartbeat timeouts while reconnecting are not counted as attempts (got ${down.label(5000)})`);
+    assert(down.label(5000) === "◌ reconnecting 4s", `conn: heartbeat timeouts while reconnecting are not counted as attempts (got ${down.label(5000)})`);
     assert(classifyEndpointError(new Error("creds refresh failed (timeout) - retrying")) === "loud", "conn: a creds refresh failure is loud (the connection dies at expiry)");
-    assert(/errors printed or repeated this session: 5/.test(s.report(3000).join("\n")), "conn: /conn counts the loud ones too");
+    assert(/5 errors/.test(s.report(3000).join("\n")), `conn: /conn counts the loud ones too (got ${s.report(3000).join(" | ")})`);
   }
 
   {
@@ -802,10 +819,10 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
       assert(classifyEndpointError(new Error(msg)) === "transient", `conn: ${code} is a transient connection signal`);
     const printed = [...s.feed({ kind: "error", error: dns() }, 1000), ...s.feed({ kind: "warning", error: dns() }, 3000)];
     assert(printed.length === 0, `conn: ENOTFOUND prints nothing (got ${JSON.stringify(printed)})`);
-    assert(s.phase(3000) === "reconnecting" && s.label(3000) === "◌ reconnecting (2) ENOTFOUND", `conn: a failed dial with no transport event → reconnecting, reason in the footer label (got ${s.label(3000)})`);
-    assert(/last failed dial: ENOTFOUND/.test(s.report(3000).join("\n")) && /getaddrinfo ENOTFOUND 2027-cotal\.fly\.dev/.test(s.report(3000).join("\n")), "conn: /conn names the failed dial and keeps the raw text");
+    assert(s.phase(3000) === "reconnecting" && s.label(3000) === "◌ reconnecting 2s (dns failed)", `conn: a failed dial with no transport event → reconnecting, reason word in the footer label (got ${s.label(3000)})`);
+    assert(/\(dns failed\) — last try 0s ago, 2 tries/.test(s.report(3000)[0]!) && /recent: 0s ago dns failed · 2s ago dns failed/.test(s.report(3000).join("\n")), `conn: /conn names the failed dial in plain words (got ${s.report(3000).join(" | ")})`);
     s.feed({ kind: "transport", connected: true }, 9000);
-    assert(s.phase(9000) === "degraded", `conn: the transport back clears the dial failure at once (got ${s.phase(9000)})`);
+    assert(s.phase(9000) === "connected", `conn: the transport back clears the dial failure at once, and the outage's own warnings are not a shaky link (got ${s.phase(9000)})`);
     const side = new ConnState(0);
     up(side, 0);
     side.feed({ kind: "warning", error: dns() }, 1000);
@@ -1109,15 +1126,17 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
     { card: { id: "k", name: "kit" }, status: "working" },
   ];
   const flips = ["idle", "working", "idle", "working", "idle"].map((st) => peerStatusTag("2027-intern", roster(st), "me")!.text);
-  assert(eq(flips, ["2027-intern ● idle", "2027-intern ● working", "2027-intern ● idle", "2027-intern ● working", "2027-intern ● idle"]), `footer: the target's live status, flip by flip, over a stale offline record (got ${JSON.stringify(flips)})`);
+  assert(eq(flips, ["2027-intern ● online", "2027-intern ● working", "2027-intern ● online", "2027-intern ● working", "2027-intern ● online"]), `footer: the target's live status, flip by flip, over a stale offline record (got ${JSON.stringify(flips)})`);
   assert(peerStatusTag("ghost", roster("idle"), "me")!.text === "ghost ○ offline", "footer: a target with no record reads offline");
+  assert(peerStatusTag("ghost", roster("idle"), "me", () => true, { connected: true, absent: true })!.text === "ghost ✕ not found", "footer: a name the roster never had is NOT FOUND, never offline");
+  assert(peerStatusTag("2027-intern", roster("idle"), "me", () => true, { connected: false })!.text === "2027-intern ◌", "footer: a roster read over a link that is down now says nothing about the agent — a loader, never a green dot");
   assert(peerStatusTag(undefined, roster("working"), "me")!.text === "2027-intern, kit working", "footer: all-chat mode summarises who is working");
   assert(peerStatusTag(undefined, roster("working"), "me", (n) => n === "kit")!.text === "kit working", "footer: … only peers the session's filter shows");
   assert(peerStatusTag(undefined, roster("idle").map((p) => ({ ...p, status: "idle" })), "me") === undefined, "footer: nobody working → nothing");
   const { readFileSync } = await import("node:fs");
   const src = readFileSync(new URL("../src/chat.ts", import.meta.url), "utf8");
   const handler = src.slice(src.indexOf('const onPresence = '), src.indexOf("// Tab-complete `@name` mentions"));
-  assert(handler.length > 0 && !/statusBadge\(ev\.presence\.status\)/.test(handler) && /picked it up/.test(handler), "footer: the presence handler prints only picked-it-up receipts — no line per status flip");
+  assert(handler.length > 0 && !/statusBadge\(ev\.presence\.status\)/.test(handler) && /setReceipt\(/.test(handler), "footer: the presence handler only updates the receipt slot — no line per status flip");
 }
 
 // Startup runs ensure() beside the inbox + endpoint; a failure anywhere releases what the others got.
@@ -1222,7 +1241,7 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
   }
   {
     const r = await run({ ensureFails: "after", releaseFails: true });
-    assert(r.error === "ensure boom" && r.log.includes("report:release boom"), "startup: a failed release is reported, never swallowed, never replaces the cause");
+    assert(r.error === "ensure boom" && r.log.some((l) => /^report:✕ couldn't retire this attempt's inbox: release boom/.test(l)), `startup: a failed release is reported, never swallowed, never replaces the cause (${r.log.join(" ")})`);
   }
   {
     const r = await run({ noSignal: true });
@@ -1248,7 +1267,7 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
   }
   {
     const r = await run({ abortAt: "midProvision", releaseFails: true });
-    assert(r.errorName === "AbortError" && r.log.includes("report:release boom"), "abort + a failing release → the failure is reported, the abort is what's thrown");
+    assert(r.errorName === "AbortError" && r.log.some((l) => /^report:✕ couldn't retire this attempt's inbox: release boom/.test(l)), "abort + a failing release → the failure is reported, the abort is what's thrown");
   }
   // The narrowed startup resolve must hold every command the wake gate sends on that handle.
   assert(eq([...CHAT_STARTUP_COMMANDS].sort(), ["despawn", "inspect", "ps", "spawn"]), "startup: the chat control resolves ps/spawn/inspect/despawn");
@@ -1314,8 +1333,12 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
   const st = { dim: (s: string) => `<d>${s}</d>`, red: (s: string) => `<r>${s}</r>` };
   assert(slotText(loading(), String, st) === "<d>◌</d>" && slotText(ok(5), (v) => `v${v}`, st) === "v5" && slotText(failed("down"), String, st) === "<r>✕ down</r>", "slotText: loader / value / red ✕");
   assert(bootLabel("mesh", 2300) === "◌ starting mesh 2s" && bootLabel("inbox", 0) === "◌ opening inbox 0s" && bootLabel("endpoint", 999) === "◌ connecting 0s", "bootLabel: what is loading, with seconds counting up");
-  assert(bootLabel("agent", 4000, "kit") === "◌ waking kit 4s" && bootLabel("roster", 1000, "kit") === "◌ waiting for kit 1s", "bootLabel: the agent steps name it");
+  assert(bootLabel("agent", 4000, "kit") === "◌ waking kit 4s" && bootLabel("roster", 1000, "kit") === "◌ looking for kit 1s", "bootLabel: the agent steps name it");
   assert(bootLabel("failed", 0).startsWith("✕ not connected") && bootLabel("ready", 0) === "", "bootLabel: failed says how out; ready says nothing");
+  const { failedLabel } = await import("../src/chat-boot.ts");
+  assert(failedLabel(35_000, { attempt: 3, inMs: 20_000 }) === "✕ unreachable 35s · retry 3 in 20s" && failedLabel(5_000) === "✕ unreachable 5s · /reconnect", "failedLabel: the footer counts the outage and the next self-retry; without one it names /reconnect");
+  assert(bootRetry("connect ECONNREFUSED 127.0.0.1:4222", 1) === 5_000 && bootRetry("paw: can't reach x at tls://h:1 — connection refused: nothing listens there", 1) === 5_000, "bootRetry: a refused connect (broker down) retries like a hung-up one — same situation, same behaviour");
+  assert(bootRetry("paw: the mesh x rejected our credentials — …", 1) === undefined, "bootRetry: rejected credentials never retry");
 }
 
 {
@@ -1331,19 +1354,24 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
   const { loading, ok, failed } = await import("../src/chat-boot.ts");
   const agent = (o: Record<string, unknown> = {}) => ({ mode: "agent" as const, space: "s", remote: true, agent: "kit", where: "", status: loading<string>(), machine: loading<string | undefined>(), info: loading<{ model: string; context: string } | undefined>(), only: false, bang: true, ...o });
   const loadingText = renderBanner(agent(), PLAIN);
-  assert(/status: ◌/.test(loadingText) && /on ◌/.test(loadingText) && /model:  ◌/.test(loadingText) && /context: ◌/.test(loadingText), "banner: every unknown field is a loader");
+  const rows = (t: string) => t.split("\n").filter((l) => l.trim());
+  assert(/kit ◌ · mesh s \(remote\)$/m.test(loadingText) && !/on ◌|model|context|status:/.test(loadingText), `banner: the one loader is on the agent row; nothing unknown gets a row of its own (got ${JSON.stringify(loadingText)})`);
+  assert(rows(loadingText).length === 3, `banner: 3 rows while loading — title, agent · mesh, keys hint (got ${rows(loadingText).length})`);
   assert(!/offline|this machine|reusing|not running|idle|working/.test(loadingText), "banner: a loading banner fabricates nothing (no offline / this machine / status words)");
-  const okText = renderBanner(agent({ status: ok("reusing live agent"), machine: ok("mini"), info: ok({ model: "opus", context: "12k" }) }), PLAIN);
-  assert(/status: reusing live agent/.test(okText) && /mesh s \(remote\) · on mini/.test(okText) && /model:  opus/.test(okText) && !okText.includes("◌"), "banner: loaded fields show their values, no loader left");
+  const okText = renderBanner(agent({ status: ok(undefined), machine: ok("mini"), info: ok({ model: "opus", context: "12k" }) }), PLAIN);
+  assert(/kit · mesh s \(remote\) · on mini/.test(okText) && /model opus · context 12k/.test(okText) && !okText.includes("◌"), `banner: loaded fields show their values, no loader left (got ${JSON.stringify(okText)})`);
   const noInfo = renderBanner(agent({ status: ok("x"), machine: ok(undefined), info: ok(undefined) }), PLAIN);
-  assert(!/model:|· on/.test(noInfo), "banner: ok(undefined) machine/info omit the row — nothing is not a loader");
-  const errText = renderBanner(agent({ status: failed("no live agent named kit"), machine: ok(undefined), info: failed("transcript unreadable") }), PLAIN);
-  assert(/status: ✕ no live agent named kit/.test(errText) && /model:  ✕ transcript unreadable/.test(errText), "banner: a failed field says ✕ and why");
+  assert(!/model|· on/.test(noInfo) && /^     x$/m.test(noInfo), "banner: ok(undefined) machine/info omit the row; a status note is one dim row");
+  const errText = renderBanner(agent({ status: failed("not in s"), machine: ok(undefined), info: failed("transcript unreadable") }), PLAIN);
+  assert(/kit ✕ not in s · mesh s/.test(errText) && /✕ model: transcript unreadable/.test(errText), `banner: a failed field says ✕ and why, on the agent row (got ${JSON.stringify(errText)})`);
   const all = renderBanner({ mode: "all", space: "s", remote: false, room: "general", roster: loading() }, PLAIN);
-  assert(/◌ loading who's live/.test(all) && !/no agents live yet/.test(all), "banner (--all): loading roster ≠ empty roster");
+  assert(/◌/.test(all) && !/no agents live yet/.test(all), "banner (--all): loading roster ≠ empty roster");
   assert(/2 live: a · b/.test(renderBanner({ mode: "all", space: "s", remote: false, room: "general", roster: ok(["a", "b"]) }, PLAIN)), "banner (--all): the live list once read");
-  assert(/channel: #ops/.test(renderBanner({ mode: "channel", space: "s", remote: false, room: "ops" }, PLAIN)), "banner (#channel): names the channel");
-  assert(/showing: this agent only/.test(renderBanner(agent({ only: true }), PLAIN)), "banner (@name): says it is filtered");
+  assert(/#ops · subscribed/.test(renderBanner({ mode: "channel", space: "s", remote: false, room: "ops" }, PLAIN)), "banner (#channel): names the channel");
+  assert(/only kit · other agents' DMs stay in paw inbox/.test(renderBanner(agent({ only: true }), PLAIN)), "banner (@name): says it is filtered, in one dim row");
+  assert(/\? keys · @name switches · \/quit/.test(okText) && !/drag an image|alt\+enter/.test(okText), "banner: the help block is behind `?`, not on every open");
+  const { HELP_LINES } = await import("../src/chat-banner.ts");
+  assert(HELP_LINES.some((l) => l.includes("end a line with \\)")) && !HELP_LINES.some((l) => l.includes("\\\\")), "help: a single `\\` continues a line, and the hint shows one backslash");
 
   assert(paintedRows("a\nb\n\n", 80) === 3, "paintedRows: lines + the blank one, cursor below");
   assert(paintedRows(`${"x".repeat(100)}\n`, 80) === 2 && paintedRows(`${"x".repeat(100)}\n`, 40) === 3 && paintedRows(`${"x".repeat(100)}\n`, 20) === 5, "paintedRows: a long line counts every row it wraps onto (80/40/20 cols)");
@@ -1398,7 +1426,7 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
 {
   const { mkdirSync, writeFileSync, mkdtempSync: mk } = await import("node:fs");
   const { checkChatTarget, localAgentFolder, otherSpaceHits, suggestNames, editDistance } = await import("../src/chat-lookup.ts");
-  const { notFoundChooser, unreachableChooser, chooserKey, renderChooser } = await import("../src/chat-chooser.ts");
+  const { notFoundChooser, unreachableChooser, folderGoneChooser, chooserKey, renderChooser } = await import("../src/chat-chooser.ts");
   const { PLAIN } = await import("../src/chat-banner.ts");
   const home = mk(join(tmpdir(), "paw-lookup-"));
   const work = mk(join(tmpdir(), "paw-lookup-cwd-"));
@@ -1421,7 +1449,7 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
   assert(eq(checkChatTarget(["@harbor"], work, home, "lk"), { kind: "known", name: "harbor" }), "lookup: @name registered here (folder exists) → known");
   assert(eq(checkChatTarget(["@harbr"], work, home, "lk"), { kind: "unknown", name: "harbr" }), "lookup: an unregistered @name → unknown (the frame says it is looking)");
   assert(eq(checkChatTarget(["harbr", "--space", "lk"], work, home, "lk"), { kind: "unknown", name: "harbr" }), "lookup: a bare unregistered name → unknown");
-  assert(checkChatTarget(["@gone"], work, home, "lk").kind === "unknown" && checkChatTarget(["@orphan"], work, home, "lk").kind === "unknown", "lookup: a persona with a missing folder or no cwd: is not 'known' (chat.ts can't wake it either)");
+  assert(eq(checkChatTarget(["@gone"], work, home, "lk"), { kind: "folder-gone", name: "gone", folder: join(work, "nowhere") }) && checkChatTarget(["@orphan"], work, home, "lk").kind === "unknown", "lookup: a persona with a missing folder is 'folder-gone' (named, never 'no agent'); no cwd: is unknown");
   assert(checkChatTarget(["afolder"], work, home, "lk").kind === "other" && checkChatTarget(["."], work, home, "lk").kind === "other" && checkChatTarget([], work, home, "lk").kind === "other", "lookup: a folder / . / no target is chat.ts's to resolve");
   for (const argv of [["--all"], ["#ops"], ["@x", "--fresh"], ["x", "--name", "y"], ["x", "--agent", "kit"], ["@getslash.co"], ["github:o/r"]])
     assert(checkChatTarget(argv, work, home, "lk").kind === "other", `lookup: ${argv.join(" ")} → painted as before`);
@@ -1460,19 +1488,22 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
 
   // the chooser
   const ch = notFoundChooser({ name: "harbr", space: "lk", suggestions: ["harbor"], elsewhere: [{ space: "other", how: "registered" }] });
-  assert(eq(ch.options.map((o) => o.choice.kind), ["switch", "space", "all", "quit"]), "chooser: suggestions, other space, show all, quit — in that order");
+  assert(eq(ch.options.map((o) => o.choice.kind), ["switch", "space", "quit"]), "chooser: suggestions, other space, quit — in that order (no mode switch inside a typo fix)");
   assert(ch.options.every((o) => !/fresh|create/i.test(o.label)), "chooser: no option creates an agent");
-  const rows = renderChooser(ch, PLAIN, "a new agent is `paw chat --fresh <folder>`");
-  assert(/✕ no agent @harbr in lk — did you mean:/.test(rows[0]!) && rows.some((r) => /▸ 1 @harbor/.test(r)) && rows.some((r) => /open @harbr in other/.test(r)) && /--fresh/.test(rows.at(-1)!), "chooser: says what is wrong, marks the selection, names --fresh as text only");
-  assert(chooserKey(ch, "\x1b[B").sel === 1 && chooserKey(ch, "\x1b[A").sel === 3 && chooserKey({ ...ch, sel: 3 }, "\x1b[B").sel === 0, "chooser keys: ↓/↑ move and wrap");
+  const rows = renderChooser(ch, PLAIN);
+  assert(/^✕ no agent harbr in lk — did you mean:$/.test(rows[0]!) && rows.some((r) => /▸ 1 harbor$/.test(r)) && rows.some((r) => /open harbr in other/.test(r)) && /^    ↑↓ enter · esc quits · paw chat --fresh <folder> makes a new agent$/.test(rows.at(-1)!), `chooser: says what is wrong once, marks the selection, one key line naming --fresh as text only (got ${JSON.stringify(rows)})`);
+  assert(!rows.some((r) => /any other key|@harbor/.test(r)), "chooser: bare names, and nothing about keys that just pass through");
+  assert(chooserKey(ch, "\x1b[B").sel === 1 && chooserKey(ch, "\x1b[A").sel === 2 && chooserKey({ ...ch, sel: 2 }, "\x1b[B").sel === 0, "chooser keys: ↓/↑ move and wrap");
   assert(eq(chooserKey(ch, "\r").pick, { kind: "switch", name: "harbor" }) && eq(chooserKey({ ...ch, sel: 1 }, "\r").pick, { kind: "space", name: "harbr", space: "other" }), "chooser keys: Enter picks the selection");
-  assert(eq(chooserKey(ch, "3").pick, { kind: "all" }) && chooserKey(ch, "9").pick === undefined, "chooser keys: a number picks that row; one past the end does nothing");
+  assert(eq(chooserKey(ch, "3").pick, { kind: "quit" }) && chooserKey(ch, "9").pick === undefined, "chooser keys: a number picks that row; one past the end does nothing");
   assert(eq(chooserKey(ch, "\x1b").pick, { kind: "quit" }) && eq(chooserKey(ch, "\x03").pick, { kind: "quit" }), "chooser keys: Esc and Ctrl-C quit");
   assert(chooserKey(ch, "@").pass === true && chooserKey(ch, "h").pass === true && chooserKey(ch, "\x15").pass === true, "chooser keys: anything else closes it and reaches the input");
   const none = notFoundChooser({ name: "zz9", space: "lk", suggestions: [], elsewhere: [] });
-  assert(!/did you mean/.test(none.title[0]!) && eq(none.options.map((o) => o.choice.kind), ["all", "quit"]), "chooser: nothing close → no invented suggestion");
-  const un = unreachableChooser({ name: "harbr", space: "lk", why: "roster didn't load in 5s" });
-  assert(/couldn't reach lk to check @harbr/.test(un.title[0]!) && !/no agent/.test(un.title[0]!) && eq(un.options.map((o) => o.choice.kind), ["retry", "quit"]), "chooser: an unread roster says it couldn't check — never 'not found'");
+  assert(!/did you mean/.test(none.title[0]!) && eq(none.options.map((o) => o.choice.kind), ["quit"]), "chooser: nothing close → no invented suggestion");
+  const un = unreachableChooser({ name: "harbr", space: "lk" });
+  assert(un.title[0] === "✕ not connected — can't check harbr in lk" && eq(un.options.map((o) => o.choice.kind), ["retry", "quit"]) && !/--fresh/.test(renderChooser(un, PLAIN).at(-1)!), "chooser: an unread roster says it couldn't check — never 'not found', no --fresh hint on a dead mesh");
+  const gone = folderGoneChooser({ name: "sleepy", folder: "/tmp/gone" });
+  assert(gone.title[0] === "✕ sleepy is registered here but its folder is gone: /tmp/gone" && /paw rm sleepy/.test(gone.title[1]!) && eq(gone.options.map((o) => o.choice.kind), ["quit"]), "chooser: a registered agent whose folder is gone names the folder and the fix");
   rmSync(home, { recursive: true, force: true });
   rmSync(work, { recursive: true, force: true });
 }
@@ -1543,7 +1574,7 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
   // predicate, the first-read latch and /conn (each checks `ep` first). A new one must be added here
   // on purpose.
   const direct = [...code.matchAll(/(?<![\w.])ep\.(getRoster|presenceView|presenceWriteFailure)\(/g)].length;
-  assert(direct === 7, `chat: direct endpoint reads stay inside the guarded helpers (7 expected, found ${direct})`);
+  assert(direct === 6, `chat: direct endpoint reads stay inside the guarded helpers (6 expected, found ${direct})`);
   // Listeners before the endpoint connects: every e.on/e.tap in startEndpoint precedes startResilient(e).
   const se = src.slice(src.indexOf("const startEndpoint = async"), src.indexOf("await startResilient(e);"));
   // An open restart question owns the prompt: every prompt goes through promptFor(), which shows it.

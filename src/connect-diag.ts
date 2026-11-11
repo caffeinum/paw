@@ -223,6 +223,32 @@ function hostHint(host: string): string {
 }
 
 /**
+ * The short verdict for a screen: a fixed reason word (src/ux.ts) and one plain hint, from the first
+ * step of the re-check that failed. {@link explainConnectFailure} is the long form behind --verbose.
+ */
+export function connectVerdict(reason: "timeout" | "unreachable", trace: ConnectTrace): { word: string; hint: string } {
+  const failed = trace.steps.find((s) => s.outcome !== "ok");
+  const host = trace.host;
+  if (!failed) return reason === "timeout" ? { word: "no answer", hint: "the mesh server is stalled (overloaded or out of memory), or it recovered since — retry" } : { word: "hung up", hint: "the mesh server dropped the session (restarting?) — retry" };
+  if (failed.step === "dns") return failed.outcome === "timeout" ? { word: "dns failed", hint: "this machine's network or resolver is down" } : { word: "dns failed", hint: `${host} doesn't resolve on this machine — a wrong address, or this machine's network` };
+  if (failed.step === "tcp") {
+    if (failed.outcome === "timeout") return { word: "no answer", hint: "the link or the server's host is down, or a firewall drops the traffic" };
+    if (failed.code === "ECONNREFUSED") return { word: "connection refused", hint: "nothing listens there (the mesh server is down, or the port in `paw mesh ls` is wrong)" };
+    return { word: "no route", hint: "no route from this machine to the server — check this machine's network" };
+  }
+  if (failed.step === "info") {
+    if (failed.outcome === "timeout") return { word: "no answer", hint: "something accepts connections there but the mesh server is not serving (overloaded or out of memory)" };
+    if (failed.outcome === "closed") return { word: "hung up", hint: "the mesh server is down or restarting" };
+    if (failed.outcome === "unexpected") return { word: "hung up", hint: `the address answers with something that is not a mesh server (${failed.detail})` };
+    return { word: "hung up", hint: "the connection failed before the server greeted us" };
+  }
+  if (failed.outcome === "not-offered") return { word: "rejected credentials", hint: "no TLS at that address — paw requires TLS for a remote mesh" };
+  if (failed.outcome === "timeout") return { word: "no answer", hint: "the TLS handshake stalled (server overloaded or out of memory)" };
+  if (failed.code && CERT_CODES.has(failed.code)) return { word: "rejected credentials", hint: "certificate rejected — set NODE_EXTRA_CA_CERTS=<ca.pem> for every paw command" };
+  return { word: "hung up", hint: "the TLS handshake failed" };
+}
+
+/**
  * Why a probeConnect `timeout`/`unreachable` happened, from a {@link diagnoseConnect} re-check:
  * the first failed step and what that step failing means. Says only what the trace shows.
  */
