@@ -14,14 +14,14 @@
  * loads for this space and is private to you (0600), and never prints it. Local only: no broker is
  * dialled here — the first command that needs the space (ensure()) proves the link.
  */
-import { statSync } from "node:fs";
-import { join, resolve } from "node:path";
 import { registry, type Command } from "@cotal-ai/core";
-import { authDir, loadSpaceAuth } from "@cotal-ai/workspace";
 import { HUMAN_PEER } from "../names.ts";
 import { DEFAULT_SPACE } from "../space.ts";
 import { checkHumanName, checkRemoteServer, checkSpaceName, listRemoteMeshes, readRemoteMesh, removeRemoteMesh, writeRemoteMesh } from "../remote-mesh.ts";
 import { writeJson } from "../stdout.ts";
+import { checkSignerRoot } from "../signer-root.ts";
+
+export { checkSignerRoot };
 
 const USAGE = "mesh [ls [--json]] | mesh add <space> --server tls://host:port --root <dir> [--as <name>] [--force] | mesh set <space> --as <name> | mesh rm <space>";
 
@@ -66,36 +66,6 @@ export function parseMeshArgs(argv: string[]): MeshArgs {
   if (out.human !== undefined && verb !== "add" && verb !== "set") throw new Error(`paw: --as belongs to \`paw mesh add\` / \`paw mesh set\` — ${USAGE}`);
   if (verb === "set" && out.human === undefined) throw new Error(`paw: \`paw mesh set\` needs --as <name> — ${USAGE}`);
   return out;
-}
-
-/** The signer under `root` must load for `space` and be readable by you alone. Never echoes it. */
-export function checkSignerRoot(space: string, rootArg: string): string {
-  const root = resolve(rootArg);
-  let st;
-  try {
-    st = statSync(root);
-  } catch {
-    throw new Error(`paw: --root ${root} does not exist`);
-  }
-  if (!st.isDirectory()) throw new Error(`paw: --root ${root} is not a directory`);
-  const dir = authDir(root);
-  const auth = loadSpaceAuth(dir, space);
-  if (!auth)
-    throw new Error(
-      `paw: no signer for space "${space}" under ${dir} — on the broker's box run \`cotal auth signer --out signer.json\` (\`cotal mint --signer --out signer.json\` before cotal 0.100), ` +
-        `copy it to ${join(dir, "auth.json")} (chmod 600)`,
-    );
-  if (!auth.account?.signingSeed) throw new Error(`paw: the auth under ${dir} for "${space}" carries no account signing seed — it cannot mint agent creds`);
-  for (const f of [join(dir, "auth.json")]) {
-    let mode: number;
-    try {
-      mode = statSync(f).mode;
-    } catch {
-      continue; // split-layout roots carry account.<hex>.json instead; loadSpaceAuth already proved them
-    }
-    if (mode & 0o077) throw new Error(`paw: ${f} is readable by other users (mode ${(mode & 0o777).toString(8)}) — it is a bearer secret: chmod 600 ${f}`);
-  }
-  return root;
 }
 
 async function mesh(argv: string[]): Promise<void> {

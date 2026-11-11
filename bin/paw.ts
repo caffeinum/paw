@@ -81,6 +81,9 @@ const NEEDS_MESH = new Set(["inbox", "msg", "ask", "who", "history", "watch", "f
  *  (`sessions`/`log` are local reads; `adopt` runs its own ensure once it decides to start;
  *  `mailbox` is the daemon ensure() itself spawns — gating it would recurse into the lock.) */
 const NEEDS_MANAGER = new Set(["dm", "tidy"]); // status, chat, open, attach, rename, rm and stop ensure() themselves — each shares ensure()'s probe rail (lifecycle.ts ensureManagerOn)
+/** Verbs that read EVERY space and so take no injected --space: `paw doctor` is a machine checkup, and the
+ *  shell's PAW_SPACE must not narrow it (an explicit --space still does). */
+const ALL_SPACE_VERBS = new Set(["doctor"]);
 /** Verbs that write agent state (personas, pins, folders) — they name the space when PAW_SPACE picked it. */
 const SPACE_WRITING_VERBS = new Set(["adopt", "rename", "rm", "move", "relocate", "nice", "sleep", "claude", "teleport", "cron"]);
 
@@ -245,7 +248,7 @@ try {
   else if (NEEDS_MANAGER.has(cmd)) await ensure({ needMesh: true, needManager: true, ...gate });
   else if (NEEDS_MESH.has(cmd)) await ensure({ needMesh: true, ...gate });
 
-  const argv = expandEqFlags(withDefaultSpace(args, space));
+  const argv = expandEqFlags(ALL_SPACE_VERBS.has(cmd) ? args : withDefaultSpace(args, space));
   await command.run({ values: {}, positionals: [], raw: argv });
 } catch (err) {
   // A `paw chat` that failed before its banner: the skeleton frame promised a chat — take it down first.

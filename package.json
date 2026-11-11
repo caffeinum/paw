@@ -84,7 +84,8 @@
     "check:release": "node scripts/check-release.ts",
     "check:cron": "node scripts/check-cron.ts",
     "check:kv-consumer-perms": "node scripts/check-kv-consumer-perms.ts",
-    "check:pgrep": "node scripts/check-pgrep-ancestors.ts"
+    "check:pgrep": "node scripts/check-pgrep-ancestors.ts",
+    "check:doctor": "node scripts/check-doctor.ts"
   },
   "dependencies": {
     "@cotal-ai/cli": "0.100.0",

@@ -53,6 +53,7 @@ const sandbox: Loader = () => import("./commands/sandbox.ts"); // "sandbox" (bui
 const mesh: Loader = () => import("./commands/mesh.ts"); // "mesh" (spaces on a remote broker)
 const office: Loader = () => import("./commands/office.ts"); // "office" (link a space to an agent-office)
 const spaces: Loader = () => import("./commands/spaces.ts"); // "spaces" (broker streams per space)
+const doctor: Loader = () => import("./doctor.ts"); // "doctor" (this machine's paw health; --fix = agent-safe repairs)
 const web: Loader = () => import("./web.ts"); // "web" (local http+ws UI)
 const complete: Loader = () => import("./commands/complete.ts"); // "completion" + hidden "__complete"
 
@@ -107,6 +108,7 @@ export const COMMAND_LOADERS: Readonly<Record<string, Loader>> = {
   mesh,
   office,
   spaces,
+  doctor,
   web,
   completion: complete,
   __complete: complete,

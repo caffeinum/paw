@@ -2346,3 +2346,50 @@ function killOwned(path: string, label: string): void {
   }
   rmSync(path, { force: true });
 }
+
+// ---- read-only views for `paw doctor` --------------------------------------------------------------
+// New declarations only: the ones they mirror sit in startManagerDaemon's launch closure (the manager
+// fingerprint, src/manager-fingerprint.ts), so editing those would make the next `paw restart` a full bounce.
+
+/** The NODE_OPTIONS preload targets {@link sanitizeNodeOptions} would drop (absolute and missing). Never prints. */
+export function stalePreloads(value: string | undefined): string[] {
+  if (!value?.trim()) return [];
+  const toks = value.split(/\s+/).filter(Boolean);
+  const out: string[] = [];
+  for (let i = 0; i < toks.length; i++) {
+    const tok = toks[i];
+    const eq = tok.indexOf("=");
+    const flag = eq === -1 ? tok : tok.slice(0, eq);
+    if (!PRELOAD_FLAGS.includes(flag)) continue;
+    const target = eq !== -1 ? tok.slice(eq + 1) : toks[++i];
+    if (target !== undefined && stalePreload(target)) out.push(target);
+  }
+  return out;
+}
+
+/** The path {@link daemonTmpDir} returns, without creating it. */
+export function durableTmpPath(): string {
+  const home = process.env.PAW_HOME?.trim() || join(homedir(), ".paw");
+  const dir = join(home, "tmp");
+  return Buffer.byteLength(dir) + SEAT_SOCKET_BYTES >= SUN_PATH_MAX ? join(`/tmp/paw-${userInfo().uid}`, createHash("sha256").update(home).digest("hex").slice(0, 8)) : dir;
+}
+
+/** cmux's socket-control settings, read the way {@link cmuxSocketPassword} reads the password (JSONC, `//` lines skipped). */
+export function cmuxAutomation(home = process.env.HOME ?? homedir()): { file: string; exists: boolean; mode?: string; password: boolean } {
+  const file = join(home, ".config", "cmux", "cmux.json");
+  if (!existsSync(file)) return { file, exists: false, password: false };
+  let mode: string | undefined;
+  let password = false;
+  for (const raw of readFileSync(file, "utf8").split("\n")) {
+    if (/^\s*\/\//.test(raw)) continue;
+    const m = raw.match(/"socketControlMode"\s*:\s*"([^"]+)"/);
+    if (m && mode === undefined) mode = m[1];
+    if (/"socketPassword"\s*:\s*"[^"]+"/.test(raw)) password = true;
+  }
+  return { file, exists: true, ...(mode !== undefined ? { mode } : {}), password };
+}
+
+/** The per-space lifecycle lock's path (ensure()'s lock). */
+export function lifecycleLockPath(space: string): string {
+  return lockPath(space);
+}

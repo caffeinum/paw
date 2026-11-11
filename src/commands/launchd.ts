@@ -48,19 +48,11 @@ import { withManagerControl } from "../control.ts";
 import { nodeBin, resolveSpace, toolDirs } from "../lifecycle.ts";
 import { REPO_ROOT } from "../release.ts";
 import { pawServer } from "../server.ts";
+import { FLEET_LABEL, fleetJobBoots, GLOBAL_INTERVAL_S, GLOBAL_LABEL, jobState, launchctl, launchdDomain, plistPath, readJobPlist, renameInFleetArgs, WEB_LABEL } from "../launchd-plist.ts";
 
-export const FLEET_LABEL = "dev.cotal.paw";
-export const WEB_LABEL = "dev.cotal.paw-web";
-/** The keeper for `global` — the one agent that must ALWAYS be up, because it is the wake authority
- *  (`cotal_dm("global", "wake <name>")`): when global itself is down the whole convention is dead
- *  and agents can only escalate to a human (2026-08-26: `personal` found vibeos-landing offline AND
- *  global offline, and had to shell out). Shaped as `paw global` on a StartInterval: idempotent
- *  (ensureAgentSpawned reuses a live one), so a healthy tick costs one ps round-trip and a dead
- *  global is back within the interval. NOT KeepAlive (the job exits by design) and NOT the fleet
- *  job's re-run (that would re-wake agents the operator deliberately stopped — only global is
- *  supposed to be un-stoppable). */
-export const GLOBAL_LABEL = "dev.cotal.paw-global";
-export const GLOBAL_INTERVAL_S = 60;
+// The read-only side lives in a leaf (src/launchd-plist.ts) so `paw doctor` reads the jobs without registering this verb.
+export { FLEET_LABEL, fleetJobBoots, GLOBAL_INTERVAL_S, GLOBAL_LABEL, jobState, plistPath, readJobPlist, renameInFleetArgs, WEB_LABEL };
+
 
 export interface LaunchdArgs {
   action: "install" | "uninstall" | "status";
@@ -239,47 +231,9 @@ export function globalJob(space: string, opts: { cli?: string[]; env?: Record<st
   };
 }
 
-export function plistPath(label: string): string {
-  return join(homedir(), "Library", "LaunchAgents", `${label}.plist`);
-}
-
-/**
- * The fleet job's argv with agent `from` renamed to `to`, or undefined when that job doesn't start
- * `from` in `space`. Only the names between `start` and `--space` are touched, so a rename to or from
- * a word that is also the space (`paw`) can't rewrite the flag's value.
- */
-export function renameInFleetArgs(args: string[], space: string, from: string, to: string): string[] | undefined {
-  const start = args.indexOf("start");
-  const flag = args.indexOf("--space", start + 1);
-  if (start < 0 || flag < 0 || args[flag + 1] !== space) return undefined;
-  const at = args.slice(start + 1, flag).indexOf(from);
-  if (at < 0) return undefined;
-  const out = [...args];
-  out[start + 1 + at] = to;
-  return out;
-}
-
-/** The installed fleet plist (path + its JSON), or undefined when there is none. A malformed one throws. */
-function readFleetJob(): { path: string; plist: Record<string, unknown> & { ProgramArguments: string[] } } | undefined {
-  const path = plistPath(FLEET_LABEL);
-  if (!existsSync(path)) return undefined;
-  const plist = JSON.parse(execFileSync("plutil", ["-convert", "json", "-o", "-", path], { encoding: "utf8" })) as Record<string, unknown>;
-  const args = plist.ProgramArguments;
-  if (!Array.isArray(args) || !args.every((a) => typeof a === "string")) {
-    throw new Error(`paw: ${path} has no string ProgramArguments — fix or reinstall it (\`paw launchd install\`)`);
-  }
-  return { path, plist: { ...plist, ProgramArguments: args } };
-}
-
-/** Does a fleet job's argv bring back every space (`paw start --boot`)? Older installs ran a plain `paw start`. */
-export function fleetJobBoots(args: string[]): boolean {
-  const start = args.indexOf("start");
-  return start >= 0 && args.slice(start + 1).includes("--boot");
-}
-
 /** The fleet plist's path when its login `paw start` names `name` in `space` (read-only), else undefined. */
 export function fleetJobStarts(space: string, name: string): string | undefined {
-  const job = readFleetJob();
+  const job = readJobPlist(FLEET_LABEL);
   return job && renameInFleetArgs(job.plist.ProgramArguments, space, name, name) ? job.path : undefined;
 }
 
@@ -291,7 +245,7 @@ export function fleetJobStarts(space: string, name: string): string | undefined 
  * rewrote, or undefined when there is no fleet job or it doesn't start `from`.
  */
 export function renameInFleetJob(space: string, from: string, to: string): string | undefined {
-  const job = readFleetJob();
+  const job = readJobPlist(FLEET_LABEL);
   if (!job) return undefined;
   const { path, plist } = job;
   const args = renameInFleetArgs(plist.ProgramArguments, space, from, to);
@@ -312,17 +266,6 @@ function logPath(space: string, name: string): string {
   return join(dir, `${name}.log`);
 }
 
-const domain = () => `gui/${process.getuid?.() ?? 501}`;
-
-function launchctl(args: string[]): { ok: boolean; out: string } {
-  try {
-    return { ok: true, out: execFileSync("launchctl", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }) };
-  } catch (e) {
-    const err = e as { stdout?: string; stderr?: string; message: string };
-    return { ok: false, out: (err.stderr || err.stdout || err.message).trim() };
-  }
-}
-
 /** Write + (re)load one job. bootout first so a re-install replaces the running definition.
  *  The bootstrap RETRIES once: launchd answers `Bootstrap failed: 5: Input/output error` when the
  *  bootout it just did hasn't finished tearing the old instance down (seen live 2026-09-01 on the
@@ -333,22 +276,22 @@ function launchctl(args: string[]): { ok: boolean; out: string } {
 function loadJob(job: JobSpec): string | undefined {
   const path = plistPath(job.label);
   mkdirSync(join(homedir(), "Library", "LaunchAgents"), { recursive: true });
-  launchctl(["bootout", `${domain()}/${job.label}`]); // absent is fine
+  launchctl(["bootout", `${launchdDomain()}/${job.label}`]); // absent is fine
   writeFileSync(path, renderPlist(job));
-  let r = launchctl(["bootstrap", domain(), path]);
+  let r = launchctl(["bootstrap", launchdDomain(), path]);
   if (!r.ok && /Input\/output error/.test(r.out)) {
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1500); // let the bootout settle (sync command path)
-    r = launchctl(["bootstrap", domain(), path]);
+    r = launchctl(["bootstrap", launchdDomain(), path]);
   }
   // launchd sometimes answers EIO for a bootstrap that nevertheless took (the job is listed, with a
   // pid, seconds later — seen live 2026-09-01). The truth is whether the label is loaded, so ask.
-  if (!r.ok && launchctl(["print", `${domain()}/${job.label}`]).ok) return undefined;
+  if (!r.ok && launchctl(["print", `${launchdDomain()}/${job.label}`]).ok) return undefined;
   return r.ok ? undefined : `paw: launchctl bootstrap ${job.label} failed: ${r.out}`;
 }
 
 function unloadJob(label: string): boolean {
   const path = plistPath(label);
-  launchctl(["bootout", `${domain()}/${label}`]);
+  launchctl(["bootout", `${launchdDomain()}/${label}`]);
   if (!existsSync(path)) return false;
   unlinkSync(path);
   return true;
@@ -366,15 +309,6 @@ async function liveNames(space: string): Promise<string[]> {
   }
 }
 
-function jobState(label: string): string {
-  if (!existsSync(plistPath(label))) return "not installed";
-  const r = launchctl(["print", `${domain()}/${label}`]);
-  if (!r.ok) return "installed, not loaded";
-  const pid = /\bpid = (\d+)/.exec(r.out)?.[1];
-  const exit = /last exit code = (\S+)/.exec(r.out)?.[1];
-  return pid ? `running (pid ${pid})` : `loaded, idle${exit ? ` (last exit ${exit})` : ""}`;
-}
-
 async function run(argv: string[]): Promise<void> {
   const a = parseLaunchdArgs(argv);
   const space = a.space ?? resolveSpace();
@@ -384,7 +318,7 @@ async function run(argv: string[]): Promise<void> {
     console.log(`${WEB_LABEL}  ${jobState(WEB_LABEL)}`);
     console.log(`${GLOBAL_LABEL}  ${jobState(GLOBAL_LABEL)}  (every ${GLOBAL_INTERVAL_S}s: \`paw global\`)`);
     console.log(`  plists: ${plistPath(FLEET_LABEL)} · ${plistPath(WEB_LABEL)} · ${plistPath(GLOBAL_LABEL)}`);
-    const job = readFleetJob();
+    const job = readJobPlist(FLEET_LABEL);
     if (job && !fleetJobBoots(job.plist.ProgramArguments))
       console.log(`  ⚠ the fleet job predates \`paw start --boot\`: after a reboot it brings back only its own space — re-run \`paw launchd install\` so every space this machine hosts comes back`);
     return;

@@ -483,3 +483,83 @@ renices the live tree; `--apply` renices the whole fleet to its configured value
 Gotchas: macOS `renice -n X` is an INCREMENT (the first --apply stacked +10 on already-niced builds → 20);
 use the absolute `renice X -p pid`. A non-root user can lower priority but never raise it back — `paw nice
 <name> 0` on a running agent only takes full effect at its next start (or `sudo renice`).
+
+## paw doctor
+
+(2026-11-11) `paw doctor [--fix] [--space <s> | --all] [--offline] [--verbose] [--json]` — paw's health on
+THIS machine: machine rows plus one section per space under `$PAW_HOME/spaces` (paw first, then the shell's
+`PAW_SPACE`, then the rest). One line per fact in ux.ts's vocabulary (`✓ ⚠ ✕`, reason words), a non-ok row
+gets ONE follow-up line: `--fix: <action>` (class A), `you: <command>` (class B) or `--fix: skipped — <why>`.
+Exit 0 iff no ✕ is left (after fixes); a failed fix exits 1. `--json` = `writeJson` only.
+
+**Gating.** `doctor` is in neither NEEDS_MESH nor NEEDS_MANAGER and is in bin/paw.ts's `ALL_SPACE_VERBS`: no
+`--space` is injected, so the shell's `PAW_SPACE=team2027` never narrows a machine checkup (an explicit
+`--space` still does; an unknown one fails loud listing the spaces). It starts nothing — the one exception is
+`ensureMailbox` as an explicit `--fix`.
+
+**Files.** `src/doctor.ts` (args, run, render, JSON, the verb), `src/doctor-checks.ts` (the `DoctorCtx` —
+ONE `ps -axww -o pid=,ppid=,command=` snapshot, every system call and network probe injectable — and one
+exported function per check id), `src/doctor-locks.ts` (lock inspection), `src/launchd-plist.ts` and
+`src/signer-root.ts` (leaves moved out of `commands/launchd.ts` / `commands/mesh.ts`, which re-export them:
+importing a command module would register its verb from doctor's and break check:dispatch).
+
+**Checks** (id → source):
+- machine: `disk` (statfs where $PAW_HOME lives; ✕ <2 GiB, ⚠ <10 GiB), `node` (`nodeBin`, brew = ⚠, no
+  native TS = ⚠), `node-options` (`stalePreloads`), `env.space` (empty = ✕), `tmpdir` (`durableTmpPath`, A:
+  mkdir/chmod 700), `release` / `release.staging` (A: `.staging-<id>-<pid>` dirs whose pid is dead — NOT
+  `cleanStaging()`, which would also delete a snapshot in progress) / `release.count` (>10 ⚠) /
+  `release.in-use` (a process on a release gone from disk; command by process kind), `launchd.fleet|web|global`
+  (`readJobPlist`, `jobState`; shim/nvm.sh/node/bin existence; old plist without `--boot`), `registry`
+  (`readMeshRegistry`; unusable record ✕), `registry.leftover` (A, gated), `daemons.orphan` (A, gated), `locks`
+  (`~/.claude.json.paw-lock`, settings `.paw-lock`; A), `pins` (two personas on one resume = ✕), `cmux` (only
+  when cmux is in use; `cmuxAutomation`), `container.root|apiserver|token` (only with a sandboxed persona or an
+  apiserver plist; `diagnoseInstallRoot`'s own command), `worktrees` (`git worktree list --porcelain` prunable).
+- per space: `broker` (`diagnoseConnect`; a local broker down with no manager is a ✓ fact), `signer` (A: chmod
+  600; else `checkSignerRoot`'s message) and `name` (remote only), `manager` (wrapper/child pairs count once;
+  duplicates, bun, no answer = ✕ with the log's cause), `manager.tmpdir`, `ui` (tmux only), `mailbox` (another
+  home's = ✕ B; none while a manager runs or agents sleep = ⚠ A `ensureMailbox`), `presence` (local, broker up,
+  manager running), `locks` (A), `agents.folder` (registry fact; live in the manager's ps = not gone),
+  `frozen`, `sleep`, `chat-inboxes` (remote, A `sweepOrphanInboxes` capped 8s), `empty` (B `rm -r`, never
+  auto).
+
+**Safety classes.** A (`--fix` runs it): touches no live agent, loses no data, is what paw would do itself on
+its next use, re-validates its precondition right before acting, idempotent. B (`you:` — printed, never run):
+anything that restarts/stops/despawns a manager, agent or hub; deletes operator data (personas, spaces,
+releases, broker streams, worktrees); edits operator config (shell rc, cmux.json, the apiserver plist, launchd
+plists); any `launchctl bootstrap|bootout|kickstart`. Every B command that would bounce agents carries
+` (bounces every agent in <s> — your go)`. C: a fact only. A check that throws is `✕ check failed: <message>`,
+never a skip; a row that doesn't apply is omitted. A capped probe (2.5s) says `no answer in <cap>`.
+
+**Gating machine-wide repairs.** `registry.leftover` (drops a `~/.cotal/meshes` record) runs only when
+`COTAL_HOME` is set or `PAW_HOME` is unset/`~/.paw`; `daemons.orphan` (SIGTERMs a mailbox whose `--home` dir is
+gone — the ONLY signal doctor ever sends, re-matched right before) only when `PAW_HOME` is unset/`~/.paw`.
+Otherwise `--fix: skipped — PAW_HOME is a test home; machine-wide repairs run from ~/.paw`: a test home's
+`--fix` must never edit the operator's registry or kill real daemons.
+
+**Restart-free.** Doctor is CLI-only and live the moment it merges. Nothing it adds is a manager-fingerprint
+input (src/manager-fingerprint.ts): the files of `bin/cotald.ts`'s import graph (lock.ts, sandbox.ts,
+remote-mesh.ts, session.ts, server.ts, space.ts, host-stamp.ts, gui-session.ts, cotal-root.ts, connector.ts,
+names.ts, hub/*, kit.ts, …) and the launch-closure declarations of lifecycle.ts/release.ts stay byte-identical.
+That is why `doctor-locks.ts` MIRRORS lock.ts's private `holderPid`/`breakIfStale` instead of exporting them
+(check:doctor runs the same fixtures through `withFileLock` to keep them agreeing — doctor is stricter only in
+keeping a live paw/cotal holder past the stale age), and why lifecycle.ts got NEW declarations only
+(`stalePreloads`, `durableTmpPath` — a 4-line twin of `daemonTmpDir` minus the mkdir —, `cmuxAutomation`,
+`lifecycleLockPath`). check:doctor's A1 test archives `git merge-base HEAD origin/main` and compares every
+graph file + closure declaration + the dependency manifest.
+
+**The frozen-copy rule (2026-11-11).** A teleported persona (`teleported:`) is a frozen copy; if its pinned
+transcript here was written AFTER `teleportedAt`, one session continued on two machines (the tracepaper
+incident) — `frozen` ⚠ offers `paw teleport <n>#<s> --back` or `paw adopt <folder>` (which makes
+`<n>-<machine>` here). Doctor never chooses.
+
+**Tests.** `check:doctor` (hermetic: fixture PAW_HOME/HOME/COTAL_HOME set before any import, fake ps/launchctl/
+plutil/statfs/probes; every check id ok + non-ok with exact facts; lock.ts parity; every class-A fault fixed
+then a second `--fix` = `fixed: []` and a byte-identical tree; the static guard — no stop/restart/despawn/prune/
+delete identifier, `ctl.` only `ps(`, one `process.kill` in the orphan fix; golden render; JSON; args; A1; a CLI
+smoke under `--offline` < 1.5s). `scripts/e2e-doctor.ts` (QA, the real wire): private nats-server + an isolated
+space; a SIGSTOPped manager reads ✕ `isn't answering`, the command is printed and the manager is left stopped.
+
+**Out of scope.** Stopping/restarting/despawning anything but a gone home's mailbox; deleting operator data;
+editing config; per-agent health (`paw status`); remote presence/broker memory; other machines; hub, office,
+telegram, kit/hermes/acp binaries, cron, foreground registry, live.json; pending-cutover detection; running
+`--fix` from any job; launchd/plutil/container/cmux rows off macOS.
