@@ -26,25 +26,26 @@ export const CLOSED_RECENT_MS = 24 * 3_600_000;
 export const CLOSED_MAX = 3;
 
 /** in_progress (it is ON it) → blocked (it is stuck) → open → deferred; unknown statuses last. */
-const RANK: Record<string, number> = { in_progress: 0, blocked: 1, open: 2, deferred: 3 };
 
 const time = (iso: string | undefined): number => (iso ? Date.parse(iso) : NaN);
+/** Natural id order: beads-x.2 before beads-x.10. */
+const byId = (a: Task, b: Task): number => a.id.localeCompare(b.id, "en", { numeric: true });
+
+/** When a bead last changed: `updatedAt`, else `createdAt`; -Infinity (sorts last) when bd gave neither. */
+const touched = (t: Task): number => {
+  const at = time(t.updatedAt ?? t.createdAt);
+  return Number.isNaN(at) ? -Infinity : at;
+};
 
 /**
- * The beads the view lists for `assignee`, in display order. Open work by status, then priority, then
- * most recently touched; closed beads only when closed within {@link CLOSED_RECENT_MS}, newest first,
- * at most {@link CLOSED_MAX}. Beads assigned to anyone else are dropped even if the read returned them.
+ * The beads the view lists for `assignee`, in display order. Open work most recently touched first
+ * (operator, 2026-11-10: "the latest beads on top"); closed beads only when closed within
+ * {@link CLOSED_RECENT_MS}, newest first, at most {@link CLOSED_MAX}. Beads assigned to anyone else are
+ * dropped even if the read returned them.
  */
 export function agentBeads(tasks: Task[], assignee: string, now: number): Task[] {
   const mine = tasks.filter((t) => t.assignee === assignee);
-  const open = mine
-    .filter((t) => t.status !== "closed")
-    .sort(
-      (a, b) =>
-        (RANK[a.status] ?? 9) - (RANK[b.status] ?? 9) ||
-        (a.priority ?? 9) - (b.priority ?? 9) ||
-        (time(b.updatedAt) || 0) - (time(a.updatedAt) || 0),
-    );
+  const open = mine.filter((t) => t.status !== "closed").sort((a, b) => touched(b) - touched(a) || byId(a, b));
   const closed = mine
     .filter((t) => t.status === "closed" && now - time(t.closedAt) <= CLOSED_RECENT_MS)
     .sort((a, b) => time(b.closedAt) - time(a.closedAt))
@@ -192,14 +193,13 @@ const GLYPH: Record<string, string> = { in_progress: "◐", blocked: "⊘", open
  *  hidden bead is no row at all, so the scroll only ever counts what is painted. */
 export type TreeRow = { t: Task; depth: number; kids?: number; folded?: boolean; hidden?: number };
 
-/** Natural id order: beads-x.2 before beads-x.10. */
-const byId = (a: Task, b: Task): number => a.id.localeCompare(b.id, "en", { numeric: true });
 
 /**
  * The open beads as a tree, in display order: a bead whose parent is also listed sits under it (the
- * parent first — never below its children), children in id order with the ones in flight first. A
- * branch ranks by its most urgent bead, so an epic with a child in progress sorts with the in-progress
- * work. Closed beads follow flat, as {@link agentBeads} ordered them. Pure.
+ * parent first — never below its children). Siblings, roots included, go newest first by their branch's
+ * latest change, so an epic whose child moved an hour ago sits above one untouched for weeks (operator,
+ * 2026-11-10: "the latest beads on top"); ties fall back to natural id order. Closed beads follow
+ * flat, as {@link agentBeads} ordered them. Pure.
  */
 export function beadTree(beads: Task[], folded: ReadonlySet<string> = new Set()): TreeRow[] {
   const open = beads.filter((t) => t.status !== "closed");
@@ -211,23 +211,23 @@ export function beadTree(beads: Task[], folded: ReadonlySet<string> = new Set())
     else roots.push(t);
   }
   const memo = new Map<string, number>();
-  const rank = (t: Task, seen = new Set<string>()): number => {
+  const latest = (t: Task, seen = new Set<string>()): number => {
     const hit = memo.get(t.id);
     if (hit !== undefined) return hit;
-    if (seen.has(t.id)) return RANK[t.status] ?? 9;
+    if (seen.has(t.id)) return touched(t);
     seen.add(t.id);
-    const r = Math.min(RANK[t.status] ?? 9, ...(kids.get(t.id) ?? []).map((k) => rank(k, seen)));
-    memo.set(t.id, r);
-    return r;
+    const at = Math.max(touched(t), ...(kids.get(t.id) ?? []).map((k) => latest(k, seen)));
+    memo.set(t.id, at);
+    return at;
   };
-  const order = new Map(open.map((t, i) => [t.id, i])); // agentBeads' order breaks ties among roots
-  roots.sort((a, b) => rank(a) - rank(b) || (order.get(a.id) ?? 0) - (order.get(b.id) ?? 0));
+  const newestFirst = (a: Task, b: Task): number => latest(b) - latest(a) || byId(a, b);
+  roots.sort(newestFirst);
   const rows: TreeRow[] = [];
   const placed = new Set<string>();
   const walk = (t: Task, depth: number): void => {
     if (placed.has(t.id)) return;
     placed.add(t.id);
-    const ch = (kids.get(t.id) ?? []).slice().sort((a, b) => rank(a) - rank(b) || byId(a, b));
+    const ch = (kids.get(t.id) ?? []).slice().sort(newestFirst);
     if (!ch.length) return void rows.push({ t, depth });
     if (!folded.has(t.id)) {
       rows.push({ t, depth, kids: ch.length });
