@@ -17,7 +17,7 @@ export async function fixtureReport(now: number, o: { queued?: number } = {}): P
   const P = await import("../../src/problems.ts");
   const here = { label: "aleks-macbook", via: "manager" as const, here: true };
   const row = (name: string, x: Partial<AgentStatus> = {}): AgentStatus => ({ name, space: "paw", folder: `/w/${name}`, mesh: "idle", live: true, durable: true, conflictPids: [], inbox: { kind: "none" }, busy: false, host: here, ...x });
-  const input = (space: string, rows: AgentStatus[]): SpaceInput => ({ space, machine: "aleks-macbook", rows, sleep: new Map(), wedges: new Map(), asks: [], gone: new Set(), ownedHere: () => space === "paw" });
+  const input = (space: string, rows: AgentStatus[]): SpaceInput => ({ space, machine: "aleks-macbook", managerDown: false, rows, sleep: new Map(), wedges: new Map(), asks: [], gone: new Set(), ownedHere: () => space === "paw" });
   const paw = input("paw", [
     row("canary", { live: false, mesh: "offline", host: undefined, seat: "exited", activeMs: now - 3 * H }),
     row("research", { inbox: { kind: "lag", queued: o.queued ?? 3, unread: 0 }, activeMs: now - 2 * H }),

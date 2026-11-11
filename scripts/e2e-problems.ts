@@ -8,11 +8,13 @@
  *   2 ghost1 (folder there) + ghost2 (folder removed) registered and named in live.json; sleeper asleep
  *     with no waiting DM; corrupt with an unreadable sleep record
  *   3 `--problems --json`: live-record ghost1 · folder-gone ghost2 · sleep-corrupt corrupt · nothing for sleeper
+ *   3b manager up + live.json naming unregistered agents → no manager-down; a malformed restart history →
+ *      exit 1, no ✓, the stderr line says why; a space with nothing to read → `nothing read on`, never ✓
  *   4 `paw down`, then `--problems`: one manager-down row whose s lists exactly ghost1 ghost2, and no daemon started
  *   5 teardown: `paw down` + purgeTestSpace
  */
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -55,6 +57,23 @@ try {
   const by = (n: string) => j.problems.find((p) => p.name === n)?.reason;
   ok(r.status === 0 && j.spaces[0]?.read === "ok" && j.errors.length === 0, `--problems --json read the space (${r.stderr.trim()})`);
   ok(by("ghost1") === "live-record" && by("ghost2") === "folder-gone" && by("corrupt") === "sleep-corrupt" && by("sleeper") === undefined, `rows: ${j.problems.map((p) => `${p.reason}:${p.name}`).join(" ")}`);
+
+  const liveFile = join(home, "spaces", space, "live.json");
+  const liveText = readFileSync(liveFile, "utf8");
+  writeFileSync(liveFile, JSON.stringify({ space, bootAt: 0, at: new Date().toISOString(), names: ["unregistered-a", "unregistered-b"] }));
+  const u = JSON.parse(paw("status", "--problems", "--json").stdout) as { spaces: Array<{ read: string }>; problems: Array<{ reason: string }> };
+  ok(u.spaces[0]?.read === "ok" && !u.problems.some((p) => p.reason === "manager-down"), "manager up + live.json naming unregistered agents → no manager-down row");
+  writeFileSync(liveFile, liveText);
+
+  const restarts = join(home, "spaces", space, "restarts");
+  mkdirSync(restarts, { recursive: true });
+  writeFileSync(join(restarts, "ghost1.json"), "{bad");
+  const bad = paw("status", "--problems");
+  ok(bad.status === 1 && !bad.stdout.includes("✓") && bad.stdout.startsWith("nothing read on"), `a failed read is never a ✓ (${bad.stdout.trim()})`);
+  ok(/couldn't read: restart history .* is not JSON — delete it to reset/.test(bad.stderr) && !/\(paw\)/.test(bad.stderr), `the failed read says why (${bad.stderr.trim()})`);
+  rmSync(join(restarts, "ghost1.json"));
+  const nosuch = paw("status", "--problems", "--space", `${space}-nosuch`);
+  ok(nosuch.status === 0 && nosuch.stdout.startsWith("nothing read on") && nosuch.stdout.includes(`not read: ${space}-nosuch`), `a space with nothing to read is never a ✓ (${nosuch.stdout.trim()})`);
 
   paw("down");
   const before = pgrepSpace();

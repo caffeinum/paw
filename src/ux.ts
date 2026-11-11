@@ -34,6 +34,11 @@ const REASONS: Array<[RegExp, ReasonWord]> = [
   [/reconnect/i, "reconnecting"],
 ];
 
+const WORDS: ReadonlySet<string> = new Set(REASONS.map(([, w]) => w));
+
+/** Is `text` already one of the fixed reason words (a stored verdict, not a raw error)? */
+export const isReasonWord = (text: string): text is ReasonWord => WORDS.has(text);
+
 /** The fixed word for a connection error's text, or undefined when it matches none (the caller keeps
  *  the raw text then — fail loud, never a guessed word). */
 export function reasonWord(text: string): ReasonWord | undefined {

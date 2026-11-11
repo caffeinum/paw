@@ -641,7 +641,7 @@ assert(!inferBusy("idle", true, BUSY_NOW + 5_000, BUSY_NOW), "an mtime in the FU
   const here = { label: "aleks-macbook", via: "manager" as const, here: true };
   const row = (name: string, o: Partial<AS> = {}): AS => ({ name, space: "paw", folder: join(home, "w", name), mesh: "idle", live: true, durable: true, conflictPids: [], inbox: { kind: "none" }, busy: false, host: here, ...o });
   const off = (name: string, o: Partial<AS> = {}): AS => row(name, { live: false, mesh: "offline", host: undefined, ...o });
-  const input = (rows: AS[], o: Partial<SI> = {}): SI => ({ space: "paw", machine: "aleks-macbook", rows, sleep: new Map(), wedges: new Map(), asks: [], gone: new Set(), ownedHere: () => true, ...o });
+  const input = (rows: AS[], o: Partial<SI> = {}): SI => ({ space: "paw", machine: "aleks-macbook", managerDown: false, rows, sleep: new Map(), wedges: new Map(), asks: [], gone: new Set(), ownedHere: () => true, ...o });
   const one = (r: AS, o: Partial<SI> = {}) => {
     const ps = P.classify(input([r], o), N);
     return ps.length === 1 ? ps[0]! : undefined;
@@ -651,14 +651,15 @@ assert(!inferBusy("idle", true, BUSY_NOW + 5_000, BUSY_NOW), "an mtime in the FU
 
   // manager-down: one space row, s lists exactly the recorded names
   {
-    const ps = P.classify(input([], { space: "team2027", live: { ...liveRec(["lizard", "mcpc", "paw", "evals-intern", "x"]), space: "team2027" } }), N);
+    const ps = P.classify(input([], { space: "team2027", managerDown: true, live: { ...liveRec(["lizard", "mcpc", "paw", "evals-intern", "x"]), space: "team2027" } }), N);
     const p = ps[0];
     assert(ps.length === 1 && p?.reason === "manager-down" && p.group === "dead" && p.name === "team2027", "manager-down: one space-level row");
     assert(p?.fact === "manager not running on this machine — live.json lists 5: lizard, mcpc, paw, evals-intern +1", `manager-down FACT (${p?.fact})`);
     assert(P.sinceText(p!, N) === "was live 12m", "manager-down FOR: was live <ago>");
     assert(JSON.stringify(p?.actions.find((a) => a.key === "s")?.argv) === JSON.stringify(["start", "lizard", "mcpc", "paw", "evals-intern", "x", "--space", "team2027"]), "manager-down: s argv lists exactly the recorded names");
     assert(p?.row === undefined && keys(p) === "s", "manager-down: no row, only s");
-    assert(P.classify(input([], { live: liveRec([]) }), N).length === 0, "manager-down: an empty record is no row");
+    assert(P.classify(input([], { managerDown: true, live: liveRec([]) }), N).length === 0, "manager-down: an empty record is no row");
+    assert(P.classify(input([], { live: liveRec(["a", "b"]) }), N).length === 0, "manager-down: a RUNNING manager with zero rows and a non-empty live.json is no row (only the pgrep verdict says down)");
   }
   // restart-stuck
   {
@@ -762,7 +763,7 @@ assert(!inferBusy("idle", true, BUSY_NOW + 5_000, BUSY_NOW), "an mtime in the FU
     assert(fg?.reason === "folder-gone" && fg.fact === "folder gone: ~/Github/sc" && P.sinceText(fg, N) === "last active 9d", "folder-gone: FACT and FOR");
     assert(fg?.primary?.cmd === "paw rm sc-entangled --space paw" && fg.primary.class === "shown" && !keys(fg).includes("r"), "folder-gone: rm shown, r never bound");
     const el = one(off("lizard", { space: "team2027", host: { label: "ssh:mini", via: "teleport", here: false }, elsewhere: { how: "teleported", where: "ssh:mini", cwd: "/x" } }), { space: "team2027" });
-    assert(el?.reason === "offline-elsewhere" && el.fact === "offline there — ssh:mini · /x (teleported)" && P.sinceText(el, N) === "—", `elsewhere: FACT (${el?.fact})`);
+    assert(el?.reason === "offline-elsewhere" && el.fact === "offline there — /x (teleported)" && P.sinceText(el, N) === "—", `elsewhere: FACT (${el?.fact})`);
     assert(keys(el) === "d" && P.doText(el!) === "on ssh:mini: paw start lizard --space team2027" && !el!.actions.some((a) => a.key === "r"), "elsewhere: only d bound, DO names the machine, no r");
     const items = [
       { pid: 1, kind: "task" as const, label: "pnpm dev", ageMs: 3 * H, mem: 1000, ports: [3000], pids: [1] },
@@ -804,7 +805,7 @@ assert(!inferBusy("idle", true, BUSY_NOW + 5_000, BUSY_NOW), "an mtime in the FU
       notRead: ["team2028"],
       problems: P.sortProblems([
         ...P.classify(input([off("vibeos-mcp", { seat: "exited", activeMs: N - 3 * H }), row("queue", { busy: true, tool: { id: "toolu_1", name: "Bash", summary: "fly ssh console -a q", startedMs: N - 47 * M } }), off("sc", { mesh: "sleep record corrupt" })]), N),
-        ...P.classify(input([], { space: "team2027", live: { ...liveRec(["lizard"]), space: "team2027" } }), N),
+        ...P.classify(input([], { space: "team2027", managerDown: true, live: { ...liveRec(["lizard"]), space: "team2027" } }), N),
       ]),
       errors: [] as string[],
     };
@@ -817,11 +818,18 @@ assert(!inferBusy("idle", true, BUSY_NOW + 5_000, BUSY_NOW), "an mtime in the FU
     assert(!wide.includes("↳") && !wide.includes("\x1b"), "render 160: no ↳ line, no escape codes off a tty");
     assert(lines.at(-1) === "not read: team2028 (no manager here, nothing recorded live)", "render: the not-read line");
     const narrow = P.renderProblems(report, { width: 90, now: N, tty: false }).split("\n");
-    assert(narrow.includes("  ↳ paw unstick queue --space paw") && narrow.every((l) => l.length <= 90 || l.startsWith("problems on") || l.startsWith("not read") || l.startsWith("  ↳")), `render 90: DO on a ↳ line, rows fit the width (${narrow.filter((l) => l.length > 90).join(" | ")})`);
+    assert(narrow[0] === "problems on aleks-macbook · paw · team2027 · 4 need attention", `render 90: the header drops the broker detail (${narrow[0]})`);
+    const n60 = P.renderProblems(report, { width: 60, now: N, tty: false }).split("\n");
+    assert(n60.every((l) => l.length <= 60 || l.startsWith("not read") || l.startsWith("  ↳")), `render 60: header and rows fit (${n60.filter((l) => l.length > 60).join(" | ")})`);
+    assert(narrow.includes("  ↳ paw unstick queue --space paw") && narrow.every((l) => l.length <= 90 || l.startsWith("not read") || l.startsWith("  ↳")), `render 90: DO on a ↳ line, rows fit the width (${narrow.filter((l) => l.length > 90).join(" | ")})`);
     assert(narrow.some((l) => l.includes("vibeos-mcp#paw")) && narrow.some((l) => l.includes("queue#paw")), "render 90: names never elided");
     assert(P.renderProblems(report, { width: 160, now: N, tty: true }).includes("\x1b[31m✕\x1b[0m"), "render tty: the glyph carries the colour");
     const none = P.renderProblems({ ...report, problems: [] }, { width: 160, now: N, tty: false });
     assert(none === "✓ nothing needs attention — paw, team2027 read on aleks-macbook\nnot read: team2028 (no manager here, nothing recorded live)", `render: the nothing line (${none})`);
+    const failedRead = P.renderProblems({ ...report, problems: [], spaces: [report.spaces[0]!, { ...report.spaces[1]!, read: "error" as const, error: "no answer" }], notRead: [] }, { width: 160, now: N, tty: false });
+    assert(failedRead === "nothing needs attention in paw · 1 couldn't be read", `render: a failed read is never a ✓ (${failedRead})`);
+    const nothing = P.renderProblems({ ...report, problems: [], spaces: [], notRead: ["nosuch"] }, { width: 160, now: N, tty: false });
+    assert(nothing === "nothing read on aleks-macbook\nnot read: nosuch (no manager here, nothing recorded live)", `render: nothing read is never a ✓ (${nothing})`);
     const j = JSON.parse(JSON.stringify(P.problemsJson(report))) as { spaces: Array<Record<string, unknown>>; problems: Array<Record<string, unknown>>; notRead: string[]; errors: string[] };
     const md = j.problems.find((p) => p.reason === "manager-down")!;
     const q = j.problems.find((p) => p.name === "queue")!;
@@ -866,6 +874,12 @@ assert(!inferBusy("idle", true, BUSY_NOW + 5_000, BUSY_NOW), "an mtime in the FU
     assert(r.spaces.find((s) => s.space === "x")?.read === "manager-down" && r.problems.some((p) => p.reason === "manager-down" && p.space === "x"), "collect: manager down + a record → manager-down");
     assert(JSON.stringify(r.notRead) === JSON.stringify(["y"]), "collect: no manager, no record → not read, never guessed at");
     assert(P.spaceErrorLine(r.spaces.find((s) => s.space === "paw")!) === "✕ paw — couldn't read (no answer)", "collect: the stderr line is a problemLine");
+    r = await P.collectProblems(["paw"], deps({ status: async () => { throw new Error(`paw: restart history /h/.paw/spaces/paw/restarts/a.json is not JSON (Unexpected token 'b', "{bad" is not valid JSON) — delete it to reset "a"'s restart budget`); } }));
+    assert(r.spaces[0]!.error === `restart history /h/.paw/spaces/paw/restarts/a.json is not JSON — delete it to reset "a"'s restart budget`, `collect: paw's own error keeps its sentence, drops "paw:" and the library detail (${r.spaces[0]!.error})`);
+    assert(P.spaceErrorLine(r.spaces[0]!) === `✕ paw — couldn't read: restart history /h/.paw/spaces/paw/restarts/a.json is not JSON — delete it to reset "a"'s restart budget`, "collect: a paw error reads after a colon, a reason word in parentheses");
+    assert(P.errorText("paw: x (a (nested) b) failed") === "x failed" && P.errorText("connect ECONNREFUSED 127.0.0.1:4222") === "connection refused", "errorText: nested parentheses dropped; connection errors are reason words");
+    r = await P.collectProblems(["paw"], deps({ managerUp: () => true, liveRecord: () => ({ ...liveRec(["a", "b"]), space: "paw" }), status: fakeStatus([]) }));
+    assert(r.problems.length === 0 && r.spaces[0]!.read === "ok", "collect: manager up, no rows, live.json lists names → no manager-down row");
     assert(JSON.stringify(P.problemSpaces("paw", "default", () => ["paw", "team2027"])) === JSON.stringify(["paw", "team2027"]) && JSON.stringify(P.problemSpaces("test-1", "env", () => ["paw"])) === JSON.stringify(["test-1"]), "problemSpaces: defaulted → every space dir; chosen → that one");
   }
   // arg parsing: --problems takes only [--json] [--space s]

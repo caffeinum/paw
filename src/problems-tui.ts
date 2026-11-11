@@ -11,6 +11,7 @@
 import { spawn } from "node:child_process";
 import {
   dismissKey,
+  errorText,
   inboxFact,
   problemId,
   problemLines,
@@ -20,9 +21,10 @@ import {
   type ProblemsReport,
 } from "./problems.ts";
 import { ago } from "./status.ts";
-import { FAIL, LOADER, OK, presenceWord, reasonOf } from "./ux.ts";
+import { FAIL, LOADER, OK, presenceWord } from "./ux.ts";
 
-export type Key = { k: string; chunk: number };
+/** One key. `pasted` = it arrived with others in one read — an Enter in a paste is a newline in the draft, never a send. */
+export type Key = { k: string; chunk: number; pasted?: boolean };
 
 export type Mode =
   | { kind: "list" }
@@ -128,6 +130,7 @@ export function problemsKey(state: TuiState, key: Key, now: number): { state: Tu
   if (mode.kind === "dm") {
     const back = { ...state, mode: { kind: "list" } as Mode };
     if (k === "esc" || k === "ctrl-c") return { state: back, effect: NONE };
+    if (k === "enter" && key.pasted) return { state: { ...state, mode: { ...mode, draft: `${mode.draft}\n` } }, effect: NONE };
     if (k === "enter") {
       const text = mode.draft.trim();
       return text ? { state: back, effect: { kind: "run", argv: ["dm", mode.target, text], waitKey: true } } : { state: back, effect: NONE };
@@ -212,7 +215,7 @@ const fit = (s: string, w: number) => (s.length <= w ? s : `${s.slice(0, Math.ma
 function footerOf(state: TuiState, p: Problem | undefined, width: number): string[] {
   const mode = state.mode;
   if (mode.kind === "confirm") return [mode.text];
-  if (mode.kind === "dm") return [`dm ${mode.target} › ${mode.draft}`];
+  if (mode.kind === "dm") return [`dm ${mode.target} › ${mode.draft.replace(/\n/g, "↵")}`, "Enter sends · Esc cancels"];
   const nav = "↑↓ move · R refresh · q quit";
   const lines: string[] = [];
   if (p) {
@@ -244,8 +247,8 @@ export function renderTui(state: TuiState, o: { width: number; height: number; n
   else {
     const read = r.spaces.map((s) => s.space).join(" · ");
     const when = state.reading ? `${LOADER} reading…` : state.refreshedAt !== undefined ? `refreshed ${ago(state.refreshedAt, o.now)} ago` : "";
-    head.push(`problems on ${r.machine}${read ? ` · ${read}` : ""} · ${rows.length} ${rows.length === 1 ? "needs" : "need"} attention${when ? ` · ${when}` : ""}`);
-    for (const s of r.spaces) if (s.read === "error") head.push(`${spaceErrorLine(s)} · R retries`);
+    head.push(fit(`problems on ${r.machine}${read ? ` · ${read}` : ""} · ${rows.length} ${rows.length === 1 ? "needs" : "need"} attention${when ? ` · ${when}` : ""}`, o.width));
+    for (const s of r.spaces) if (s.read === "error") head.push(fit(`${spaceErrorLine(s)} · R retries`, o.width));
     for (const e of r.errors) head.push(dim(fit(e, o.width)));
   }
   head.push("");
@@ -346,7 +349,7 @@ export function runProblemsTui(o: TuiOptions): Promise<number> {
           state = problemsRefreshed(state, report, Date.now());
         },
         (e: Error) => {
-          state = { ...state, reading: false, note: `${FAIL} couldn't read (${reasonOf(e.message)}) · R retries` };
+          state = { ...state, reading: false, note: `${FAIL} couldn't read: ${errorText(e.message)} · R retries` };
         },
       )
       .finally(() => {
@@ -402,8 +405,9 @@ export function runProblemsTui(o: TuiOptions): Promise<number> {
     function onData(data: Buffer | string) {
       if (busy || done) return;
       chunk++;
-      for (const k of parseKeys(data.toString())) {
-        const r = problemsKey(state, { k, chunk }, Date.now());
+      const keys = parseKeys(data.toString());
+      for (const k of keys) {
+        const r = problemsKey(state, { k, chunk, pasted: keys.length > 1 }, Date.now());
         state = r.state;
         const e = r.effect;
         if (e.kind === "quit") return quit();

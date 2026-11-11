@@ -170,11 +170,15 @@ nothing. `--problems` takes only `[--json] [--space s]`; anything else fails lou
 **Read-only.** It never calls `ensure()`: a down manager is a FINDING, never repaired as a side effect. Per
 space: manager-up (`managerProcs`) → `collectStatus` over `withManagerControl(…, { only: ["ps"] })` +
 `snapshotFleet(sampleMs: 0)` + four side reads (live.json, sleep records + backlog, sandbox launcher.log,
-tidy's asks). No manager here + a non-empty live.json → one `manager-down` row; no manager and no record →
-`not read` (never guessed at). Spaces: a chosen space (`--space`, `#space`, `PAW_SPACE`, the calling
+tidy's asks). No manager here (the pgrep verdict — never inferred from zero rows) + a non-empty live.json →
+one `manager-down` row; no manager and no record → `not read` (never guessed at). Spaces: a chosen space (`--space`, `#space`, `PAW_SPACE`, the calling
 agent's) is that one; a defaulted one means every `spaces/<s>` dir. Exit 0 whenever every space read
 answered (problems or not — a view, not a check); 1 when a space read failed (`✕ <s> — couldn't read
-(<reason>)` on stderr and in `spaces[].error`). A failed backlog count is an `errors` line, never a row.
+(<reason word>)` for a connection error, `✕ <s> — couldn't read: <paw's sentence>` otherwise — `paw: ` and
+parenthesised library detail dropped, `… — delete it to reset` kept (`errorText`) — on stderr and in
+`spaces[].error`). `✓ nothing needs attention` only when every space it set out to read WAS read; a failed
+read → `nothing needs attention in <ok spaces> · N couldn't be read`, nothing read → `nothing read on
+<machine>` (+ the `not read:` line). A failed backlog count is an `errors` line, never a row.
 The asleep agent's backlog read uses the stand-in identity already on disk — it never mints one.
 
 **live.json caveat.** The keeper rewrites `spaces/<s>/live.json` every tick from the running ps rows, so a
@@ -197,7 +201,7 @@ from ps) after live.json moved on is not detected (needs a `lastSeen` map — ke
 | | | quiet-turn | live, busy, no tool, transcript quiet ≥10m (not `waiting`) | `mid-turn, transcript quiet — no tool running` |
 | ASLEEP WITH MAIL | ○ | wake-failed / waking-slow (≥2m) / backlog (>0 DMs) / sleep-corrupt | sleep records | `asleep, 2 DMs waiting — not woken` … |
 | FOLDER GONE | ⚠ | folder-gone | `folderGone` | `folder gone: ~/…` |
-| OFFLINE ON ANOTHER MACHINE | ○ | offline-elsewhere | `elsewhere && !live` | `offline there — ssh:mini · /x (teleported)` |
+| OFFLINE ON ANOTHER MACHINE | ○ | offline-elsewhere | `elsewhere && !live` | `offline there — /x (teleported)` (the machine is WHERE) |
 | IDLE WITH BACKGROUND WORK | ● | idle-bg | live idle ≥1h + `tidyAsks` (1h, 20 MB) | `idle, holds 2 background procs 1.4G: pnpm dev :3000, ugrep` |
 
 One row per (name, space): the FIRST matching reason wins, the rest go to JSON `also`. Rows only for
@@ -220,8 +224,13 @@ release, PAW_HOME/PAW_SPACE/PAW_RELEASE; the tty handed over); paw's own guards 
   `edit sandboxMemory in <persona>, then r`.
 - Another machine's agent: every local key prints `on <machine>: paw … --space <s>` and runs nothing — paw
   never sshes. `x` dismisses (in memory, keyed `reason:name#space`, so a changed reason comes back), `X`
-  shows them. The one-shot's DO column is the row's primary action (reason-specific: a refused turn → log, a
+  shows them. In the `d` prompt an Enter that arrives in the same read as other keys (a paste) is a newline
+  in the draft; only an Enter on its own sends. The one-shot's DO column is the row's primary action (reason-specific: a refused turn → log, a
   quiet turn → attach, an inbox → restart as TEXT); `--json` and non-tty never act.
+
+**Width.** DO moves to a `↳` line under 120 cols (or when FACT would drop under 40); the header drops the
+`(local|remote broker …)` detail under 120 and is elided, never wrapped; FACT is elided down to 8 chars.
+Names and WHERE are never cut, so a terminal narrower than name + WHERE + FOR still wraps.
 
 A DM that landed in the last second can show as a backlog before the stand-in wakes the agent; the next
 refresh clears it. Tests: `check:status` (`---- problems: classify ----`), `check:top`

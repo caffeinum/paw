@@ -14,7 +14,7 @@ import { readLiveRecord, spaceDirs, type LiveRecord } from "./boot-live.ts";
 import { tidyAsks, type Ask } from "./commands/tidy.ts";
 import { withManagerControl } from "./control.ts";
 import { failureWord, fmtMb, snapshotFleet, type Fleet } from "./fleet.ts";
-import { elsewhereLabel, localManagerInstanceId, localMachine } from "./hosted.ts";
+import { localManagerInstanceId, localMachine } from "./hosted.ts";
 import { managerProcs } from "./lifecycle.ts";
 import { isLocalHere } from "./namespace.ts";
 import { personaFilePath } from "./addressing.ts";
@@ -24,7 +24,7 @@ import { DEFAULT_SPACE } from "./space.ts";
 import { readSleepRecord, readStandInIdentity, readWakingRecord, standInActor, type SleepRecord } from "./sleep-state.ts";
 import { ago, collectStatus, folderGone, hungTool, inboxStuck, inboxText, tilde, toolLabel, type AgentStatus, type InboxState } from "./status.ts";
 import { UNSTICK_TOOL_DEFAULT_MIN } from "./unstick.ts";
-import { FAIL, LIVE, OFF, OK, problemLine, reasonOf, WARN } from "./ux.ts";
+import { FAIL, isReasonWord, LIVE, OFF, OK, problemLine, reasonOf, reasonWord, WARN } from "./ux.ts";
 
 export const QUIET_TURN_MS = 10 * 60_000;
 export const IDLE_BG_MS = 60 * 60_000;
@@ -129,6 +129,8 @@ export interface SpaceInput {
   machine: string;
   /** live.json — undefined when there is none. */
   live?: LiveRecord;
+  /** No manager process for this space on this machine (pgrep) — the only source of the manager-down row. */
+  managerDown: boolean;
   rows: AgentStatus[];
   sleep: ReadonlyMap<string, SleepFacts>;
   wedges: ReadonlyMap<string, Wedge>;
@@ -144,6 +146,23 @@ export const dismissKey = (p: Pick<Problem, "reason" | "name" | "space">) => `${
 
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 const cmdOf = (argv: string[]) => `paw ${argv.map((a) => (/[\s"'$`\\]/.test(a) ? JSON.stringify(a) : a)).join(" ")}`;
+/** An error as the screens say it: a {@link reasonWord} for a connection error, else paw's own first
+ *  line without its `paw: ` prefix and without parenthesised library detail — the actionable text
+ *  (`… — delete it to reset`) stays; the raw library string never reaches a screen. */
+export function errorText(message: string): string {
+  if (reasonWord(message)) return reasonOf(message);
+  let first = message.split("\n")[0]!.replace(/^paw: /, "");
+  let out = "";
+  let depth = 0;
+  for (const ch of first) {
+    if (ch === "(") depth++;
+    else if (ch === ")" && depth > 0) depth--;
+    else if (depth === 0) out += ch;
+  }
+  first = out.replace(/\s+/g, " ").replace(/ ([,.:;])/g, "$1").trim();
+  return first || reasonOf(message);
+}
+
 const listNames = (names: string[], max = 4) => `${names.slice(0, max).join(", ")}${names.length > max ? ` +${names.length - max}` : ""}`;
 
 /** The WHERE cell, from evidence only (see docs/notes/status.md#problems). */
@@ -247,7 +266,7 @@ function factOf(reason: Reason, row: AgentStatus, input: SpaceInput, now: number
       return { fact: "mid-turn, transcript quiet — no tool running", since: row.activeMs, sinceWhat: "quiet" };
     case "wake-failed": {
       const n = sl?.failures !== undefined ? ` (${sl.failures}×)` : "";
-      const why = sl?.lastError !== undefined ? `: ${reasonOf(sl.lastError)}` : "";
+      const why = sl?.lastError !== undefined ? `: ${errorText(sl.lastError)}` : "";
       return { fact: `wake failed${n}${why}`, ...(sl?.since !== undefined ? { since: sl.since, sinceWhat: "asleep" as const } : {}) };
     }
     case "waking-slow":
@@ -258,8 +277,13 @@ function factOf(reason: Reason, row: AgentStatus, input: SpaceInput, now: number
       return { fact: `sleep record unreadable — spaces/${input.space}/sleep/${row.name}.json` };
     case "folder-gone":
       return { fact: `folder gone: ${tilde(row.folder)}`, ...lastActive };
-    case "offline-elsewhere":
-      return { fact: `offline there — ${elsewhereLabel(row.elsewhere!)}${row.elsewhere!.how === "teleported" ? " (teleported)" : ""}` };
+    case "offline-elsewhere": {
+      // The machine is already the WHERE cell — the FACT names it only when WHERE says something else.
+      const e = row.elsewhere!;
+      const where = whereOf(row, input)?.label === e.where ? "" : e.where;
+      const detail = [where, e.cwd].filter(Boolean).join(" · ");
+      return { fact: `offline there${detail ? ` — ${detail}` : ""}${e.how === "teleported" ? " (teleported)" : ""}` };
+    }
     case "idle-bg": {
       const items = input.asks.find((a) => a.agent === row.name)!.items;
       const mem = items.some((i) => i.mem === undefined) ? undefined : items.reduce((s, i) => s + i.mem!, 0);
@@ -315,15 +339,17 @@ function primaryOf(reason: Reason, actions: Action[]): Action | undefined {
 /** Pure: one space's problems. Rows only for registered agents (unregistered/roster-only peers are never problems here). */
 export function classify(input: SpaceInput, now: number): Problem[] {
   const { space } = input;
-  if (!input.rows.length && input.live && input.live.names.length) {
-    const names = input.live.names;
+  if (input.managerDown) {
+    const names = input.live?.names ?? [];
+    if (!names.length) return [];
+    const at = Date.parse(input.live!.at);
     const argv = ["start", ...names, "--space", space];
     const s: Action = { key: "s", argv, cmd: cmdOf(argv), here: true, class: "start" };
     return [{
       group: "dead", reason: "manager-down", name: space, space,
       where: { label: input.machine, here: true },
       fact: `manager not running on this machine — live.json lists ${names.length}: ${listNames(names)}`,
-      since: Date.parse(input.live.at), sinceWhat: "was live",
+      ...(Number.isFinite(at) ? { since: at, sinceWhat: "was live" as const } : {}),
       actions: [s], also: [], primary: s,
     }];
   }
@@ -450,10 +476,10 @@ async function readSpace(space: string, d: CollectDeps, errors: string[]): Promi
     const live = d.liveRecord(space);
     if (!d.managerUp(space)) {
       if (!live?.names.length) return { notRead: true };
-      return { read: { ...base, read: "manager-down" }, input: { space, machine, live, rows: [], sleep: new Map(), wedges: new Map(), asks: [], gone: new Set(), ownedHere: () => true } };
+      return { read: { ...base, read: "manager-down" }, input: { space, machine, live, managerDown: true, rows: [], sleep: new Map(), wedges: new Map(), asks: [], gone: new Set(), ownedHere: () => true } };
     }
     const fleet = d.fleet(space).catch((e: Error) => {
-      errors.push(`paw: couldn't read ${space}'s background processes (${reasonOf(e.message)})`);
+      errors.push(`paw: couldn't read ${space}'s background processes (${errorText(e.message)})`);
       return undefined;
     });
     const status = await d.status(space);
@@ -471,7 +497,7 @@ async function readSpace(space: string, d: CollectDeps, errors: string[]): Promi
               if (n !== "skip") facts.backlog = n;
             } catch (e) {
               facts.backlog = "error";
-              errors.push(`paw: couldn't count ${r.name}#${space}'s waiting DMs (${reasonOf((e as Error).message)})`);
+              errors.push(`paw: couldn't count ${r.name}#${space}'s waiting DMs (${errorText((e as Error).message)})`);
             }
           }
           sleep.set(r.name, facts);
@@ -488,9 +514,9 @@ async function readSpace(space: string, d: CollectDeps, errors: string[]): Promi
     const gone = new Set(status.rows.filter((r) => d.folderGone(r)).map((r) => r.name));
     const owned = new Map<string, boolean>();
     const ownedHere = (n: string) => owned.get(n) ?? (owned.set(n, d.ownedHere(space, n)), owned.get(n)!);
-    return { read: { ...base, read: "ok" }, input: { space, machine, live, rows: status.rows, sleep, wedges, asks, gone, ownedHere } };
+    return { read: { ...base, read: "ok" }, input: { space, machine, live, managerDown: false, rows: status.rows, sleep, wedges, asks, gone, ownedHere } };
   } catch (e) {
-    return { read: { ...base, read: "error", error: reasonOf((e as Error).message) } };
+    return { read: { ...base, read: "error", error: errorText((e as Error).message) } };
   }
 }
 
@@ -554,7 +580,7 @@ export function problemLines(problems: Problem[], o: { width: number; now: numbe
   // DO rides the row only when the FACT keeps a readable width beside it; else it gets a `↳` line.
   const inlineFact = Math.min(factMax, o.width - fixed - 2 - doW);
   const narrow = o.width < 120 || inlineFact < Math.min(factMax, 40);
-  const factW = Math.max(12, narrow ? Math.min(factMax, o.width - fixed) : inlineFact);
+  const factW = Math.max(8, narrow ? Math.min(factMax, o.width - fixed) : inlineFact);
   const lines: Line[] = [];
   for (const g of GROUPS) {
     const ps = problems.filter((p) => p.group === g.group);
@@ -584,21 +610,28 @@ export function renderProblems(report: ProblemsReport, o: { width: number; now: 
   const out: string[] = [];
   const notRead = report.notRead.length ? [`not read: ${report.notRead.join(", ")} (${NOT_READ_WHY})`] : [];
   const read = report.spaces.filter((s) => s.read !== "error").map((s) => s.space);
+  const failed = report.spaces.filter((s) => s.read === "error").length;
   if (!report.problems.length) {
-    const ok = paintWith(o.tty)("32")(OK);
-    out.push(`${ok} nothing needs attention — ${read.length ? `${read.join(", ")} read on ${report.machine}` : `no space read on ${report.machine}`}`);
+    // ✓ only when every space it set out to read WAS read; a failed or missing read never reads as all-clear.
+    if (!read.length) out.push(`nothing read on ${report.machine}`);
+    else if (failed) out.push(`nothing needs attention in ${read.join(", ")} · ${failed} couldn't be read`);
+    else out.push(`${paintWith(o.tty)("32")(OK)} nothing needs attention — ${read.join(", ")} read on ${report.machine}`);
     if (notRead.length) out.push(...notRead);
     return out.join("\n");
   }
-  const spaces = report.spaces.map((s) => `${s.space} (${brokerText(s)})`).join(" · ");
-  out.push(`problems on ${report.machine} · ${spaces} · ${needText(report.problems.length)}`, "");
+  // The broker detail is the first thing to go on a narrow terminal; what's left is elided, never wrapped.
+  const spaces = report.spaces.map((s) => (o.width < 120 ? s.space : `${s.space} (${brokerText(s)})`)).join(" · ");
+  out.push(elideRight(`problems on ${report.machine} · ${spaces} · ${needText(report.problems.length)}`, o.width), "");
   out.push(...problemLines(report.problems, o).map((l) => l.text));
   if (notRead.length) out.push("", ...notRead);
   return out.join("\n");
 }
 
 /** A failed space read, as the one line stderr (and the TUI) shows. */
-export const spaceErrorLine = (s: SpaceRead): string => problemLine(FAIL, `${s.space} — couldn't read (${s.error})`);
+export function spaceErrorLine(s: SpaceRead): string {
+  if (s.error === undefined) throw new Error(`paw: ${s.space} has no read error to show`);
+  return problemLine(FAIL, `${s.space} — couldn't read${isReasonWord(s.error) ? ` (${s.error})` : `: ${s.error}`}`);
+}
 
 /** The JSON payload: the report as-is (rows verbatim from collectStatus), `primary` folded into `actions`. */
 export function problemsJson(report: ProblemsReport): unknown {

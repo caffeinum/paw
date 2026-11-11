@@ -224,6 +224,10 @@ ok(f.parseVmStat("Mach Virtual Memory Statistics: (page size of 16384 bytes)\nPa
   for (const k of ["h", "i", "x", "backspace"]) press(k);
   ok(argvOf(press("enter")) === JSON.stringify(["dm", "lizard#team2027", "hi"]), "tui: Enter sends the draft (backspace edits)");
   press("d");
+  for (const k of ["a", "enter", "b"]) st = T.problemsKey(st, { k, chunk: 99, pasted: true }, N).state;
+  ok(st.mode.kind === "dm" && st.mode.draft === "a\nb", "tui: an Enter inside a paste is a newline in the draft, never a send");
+  ok(argvOf(press("enter")) === JSON.stringify(["dm", "lizard#team2027", "a\nb"]), "tui: a lone Enter sends every pasted line");
+  press("d");
   press("a");
   ok(press("esc").kind === "none" && st.mode.kind === "list", "tui: Esc cancels the dm");
   press("d");

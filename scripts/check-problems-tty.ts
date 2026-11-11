@@ -8,6 +8,8 @@
  *   ↓↓ r             → on the remote row: nothing runs, the footer names the other machine's command
  *   x / X            → the row hides, the dismissed count shows, X brings it back
  *   ry (one read)    → nothing runs (type-ahead never consents); n cancels
+ *   d + `line1⏎q`    → a pasted break stays in the draft; a lone Enter sends both lines
+ *   d, `line1⏎q` pasted → the break stays in the draft; a lone Enter sends both lines
  *   q                → exit 0, alt screen left and the cursor shown again
  *
  * Run: pnpm check:problems-tty
@@ -101,6 +103,13 @@ try {
   ok((await screen()).includes("[y/N]") && runs().length === 1, "`ry` in one write runs nothing — the confirm still waits");
   await send("n");
   ok((await until((s) => s.includes("✕ not restarted"))) && runs().length === 1, "n cancels it");
+  await send("d");
+  await send("line1\rq", 400);
+  ok((await screen()).includes("dm research#paw › line1↵q") && runs().length === 1, "a pasted line break is part of the dm draft — nothing sends, nothing is dropped");
+  await send("\r", 400);
+  ok((await until((s) => s.includes("press any key"))) && runs()[1] === JSON.stringify(["dm", "research#paw", "line1\nq"]), `an Enter on its own sends both lines (${runs()[1]})`);
+  await send(" ", 500);
+  await until((s) => s.includes("problems on aleks-macbook"));
   await send("q", 600);
   for (let i = 0; i < 20 && exitCode === undefined; i++) await sleep(100);
   ok(exitCode === 0 && raw.includes("TUI_EXIT 0"), `q exits 0 (${exitCode})`);
