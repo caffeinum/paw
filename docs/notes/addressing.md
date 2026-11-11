@@ -563,20 +563,37 @@ tracepaper#paw` then said "add --space team2027", which would have split the ide
   any write — adopt, rename, rm (`--frozen-copy` is the explicit "forget this machine's copy"), stop,
   restart/swap, nice, sleep, `mcp --to`. teleport itself never calls it.
 - Folder ownership: `lookupOwnedFolderName` skips teleported personas (used by folderToName, setFolderName,
-  bindNameToFolder, adopt); `lookupFolderName` / `agentNamesForFolder` rank this machine's agent before a
-  frozen copy, and still return the copy when it is all there is (talk verbs message it). `claimName` fails
-  loud on a name held by a teleported persona (never hash-suffixes around it).
-- adopt: Case A (folder's only default in the space is not this machine's, no `--name`) → refused, naming
-  space + provenance + state + `--name <name>-<machine> --space s` / `--space paw` + the session's age.
-  Case C: a bare adopt never swaps an existing pin to the newest transcript (`--resume <id> --replace`);
-  `pickSession` prefers a session a LIVE claude holds here. Case D: a session pinned by a teleported copy
-  (any space) → `frozenPinRefusal`. A new name another machine holds on a shared mesh (`heldOnMesh`, ledger)
-  → refused.
+  bindNameToFolder, adopt). A teleported default KEEPS the folder's default slot (`teleport --back` restores
+  it); this machine's agent beside it is an EXTRA — `setFolderName`/`folderToName` register one there, never a
+  second default. `lookupFolderName` / `resolveFolderAgent`: own default → beside a frozen default, the ONE
+  local extra → the frozen copy when it is all there is (talk verbs message it). `agentNamesForFolder`: own
+  default, extras, frozen copy last. `claimName` fails loud only on a teleported persona of the SAME folder;
+  another folder's frozen copy is just a taken name (hash-suffixed, `tracepaper-e2c5a7`).
+- adopt (operator, 2026-11-11: PAW_SPACE=team2027 is intended, "it should have never conflicted"): `paw adopt .`
+  beside a frozen default (no `--name`, no local agent on the session, session unnamed or named like the copy)
+  makes a NEW local EXTRA `<name>-<machine>` (`localNameFor`: the space's human name / PAW_MACHINE / hostname,
+  minus a `<user>-` prefix — `aleks-macbook` → `tracepaper-macbook`; taken → fail loud naming `--name`) and says
+  `✓ adopted "tracepaper-macbook" ← session 2ac38184 (new agent on this machine; "tracepaper" in team2027 runs on
+  ssh:mini)`. The frozen copy is never touched; `--name <its name>` is refused. Self-adopt runs the same guards in
+  the parent before the detached hand-off. Case C: a bare adopt never swaps an existing pin to the newest
+  transcript by mtime (`--resume <id> --replace`); a pick a LIVE claude holds (`pickSession`) is the take-over
+  flow and passes. A teleported persona's `resume:` owns NO local session (`pinOwnsSession`: its live session
+  runs on the other machine; `teleport --back` brings back that side's pin + chain) — the incident's stale pin
+  on the mac's 2ac38184 no longer blocks adopting it. A new name another HOST runs on a shared mesh is refused:
+  `heldOnMesh` = the peer ledger's newest host-carrying sighting (`peers.json` entries carry the card's
+  `meta.host` since 2026-11-11) is another host's; a sighting without a host is only a note (the ledger holds
+  this machine's own agents too — `paw rm foo; paw adopt <foo's folder>` works).
+- `paw rm --frozen-copy` on a LOCAL record fails loud before anything is stopped or deleted.
+- `paw chat` to a target hosted elsewhere (teleported copy here, or a remote space's agent with no persona
+  here — `bootNeedsManager`) boots on mesh + mailbox only; this machine's manager is ensured lazily by the
+  first wake / `/ps`. A hung local manager no longer holds such a chat on "isn't answering … retrying".
 - `ensureAgentSpawned`'s teleported branch returns `{spawned:false, id, elsewhere}`; adopt / restart print
   `runs on X — not started here`, never "already live".
-- `elsewhereHint` says where a non-local record runs (`paw chat @n#s` messages it) instead of "add --space".
+- `elsewhereHint` says where a non-local record runs (`paw chat @n#s` messages it) instead of "add --space";
+  a LOCAL record in another space still leads (`add --space lab`), a frozen copy is mentioned after it.
 - `paw move a b` → hint for `paw rename a b` / `--as b`. `paw chat .` on a folder whose agent isn't this
-  machine's adds `this folder has no agent on this machine — session X here (18d ago) isn't running …`.
+  machine's adds `this folder has no agent on this machine — session X here (18d ago) isn't running …` (reads
+  only the chosen space, and nothing when a local agent owns the folder).
 - Not migrated yet: dm/log gone-folder checks, open.ts's inline scan + chat-lookup `otherSpaceHits` (still
   their own walks), relocate's own yield, status cross-space rows, relocate's legacy folders.json writes,
   mesh-side pin reconciliation with the other machine's copy (out of scope).

@@ -17,7 +17,9 @@ import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSyn
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-export type LedgerEntry = { name: string; first: number; last: number };
+/** `host`: the raw hostname the id's presence card carried (`meta.host`, src/host-stamp.ts) — absent for
+ *  an id known only from a DM backlog, or a card that carried none. Never guessed. */
+export type LedgerEntry = { name: string; first: number; last: number; host?: string };
 export type Ledger = Record<string, LedgerEntry>;
 
 /** Entries unseen this long are dropped; a month of ids is plenty to name an old message. */
@@ -57,14 +59,18 @@ export function writeLedger(space: string, ledger: Ledger): void {
 /** Record that `id` is (or was) `name`, seen at `ts`. Returns whether the ledger changed. Pure. An id
  *  never changes name — a later card claiming a different name for a known id replaces it (the card is
  *  authoritative for its own id), but that is not expected to happen. */
-export function observe(ledger: Ledger, id: string, name: string, ts: number): boolean {
+export function observe(ledger: Ledger, id: string, name: string, ts: number, host?: string): boolean {
   if (!id || !name) return false;
   const cur = ledger[id];
   if (!cur) {
-    ledger[id] = { name, first: ts, last: ts };
+    ledger[id] = { name, first: ts, last: ts, ...(host ? { host } : {}) };
     return true;
   }
   let changed = false;
+  if (host && cur.host !== host) {
+    cur.host = host;
+    changed = true;
+  }
   if (cur.name !== name) {
     cur.name = name;
     changed = true;

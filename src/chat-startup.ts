@@ -34,6 +34,18 @@ export interface StartupSteps<I, E> {
   onPhase?(phase: "inbox" | "endpoint"): void;
 }
 
+/**
+ * Does chat's boot need THIS machine's manager? Not for a target another machine hosts — a teleported
+ * frozen copy here, or a remote space's agent with no persona here: chat reaches it over the broker
+ * (roster + DMs), and a slow or hung local manager must not hold the chat up (2026-11-11: `paw chat .`
+ * for tracepaper, which runs on the mini, sat on "team2027's manager … isn't answering … retrying").
+ * The manager is still ensured lazily the first time chat spawns or reads ps. Pure.
+ */
+export function bootNeedsManager(o: { name?: string; mutating: boolean; teleported: boolean; remote: boolean; personaHere: boolean }): boolean {
+  if (o.name === undefined || o.mutating) return true;
+  return !(o.teleported || (o.remote && !o.personaHere));
+}
+
 export class StartupCancelled extends Error {
   override name = "AbortError";
   constructor() {

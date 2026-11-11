@@ -21,6 +21,7 @@ export interface Sighting {
   id: string;
   name: string;
   ts: number;
+  host?: string; // the card's meta.host — which machine runs this id (absent from a DM-backlog seed)
 }
 
 /** Record every sighting into the on-disk ledger, flushing every `flushMs` when something changed.
@@ -37,8 +38,8 @@ export async function startLedgerRecorder(
   const note = (s: Sighting): void => {
     if (isStandIn(space, s.name, s.id)) return;
     const before = ledger[s.id] ? { ...ledger[s.id]! } : undefined;
-    if (!observe(ledger, s.id, s.name, s.ts)) return;
-    if (!before || before.name !== s.name || ledger[s.id]!.last - before.last >= 60_000) dirty = true;
+    if (!observe(ledger, s.id, s.name, s.ts, s.host)) return;
+    if (!before || before.name !== s.name || before.host !== ledger[s.id]!.host || ledger[s.id]!.last - before.last >= 60_000) dirty = true;
   };
   const flush = (): void => {
     if (!dirty) return;
@@ -47,7 +48,10 @@ export async function startLedgerRecorder(
   };
   const scan = (): void => {
     try {
-      for (const p of roster()) if (p.card.id && p.card.name) note({ id: p.card.id, name: p.card.name, ts: p.ts });
+      for (const p of roster()) {
+        const host = typeof p.card.meta?.host === "string" && p.card.meta.host ? p.card.meta.host : undefined;
+        if (p.card.id && p.card.name) note({ id: p.card.id, name: p.card.name, ts: p.ts, ...(host ? { host } : {}) });
+      }
       flush();
     } catch (e) {
       log(`peer ledger: ${(e as Error).message}`);

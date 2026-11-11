@@ -15,12 +15,12 @@
  * Liveness (ps / roster) stays with callers that already hold it. Core-free: node built-ins + leaf modules.
  */
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { homedir } from "node:os";
+import { homedir, userInfo } from "node:os";
 import { join } from "node:path";
 import { personaValue, readCwd, readResumeId } from "./session.ts";
 import { ORIGIN, readTeleported } from "./teleport-plan.ts";
 import { readRemoteMesh } from "./remote-mesh.ts";
-import { machineName } from "./host-stamp.ts";
+import { localHost, machineName } from "./host-stamp.ts";
 import { spaceProvenance, type SpaceChoice } from "./space.ts";
 
 const NAME_RE = /^[A-Za-z0-9_-]+$/;
@@ -43,6 +43,7 @@ export type PersonaFact = {
   teleported?: { to: string; at?: string; cwd?: string };
   folderExists: boolean;
 };
+/** `ledger`: the names a remote space's peer ledger evidences as ANOTHER machine's ({@link foreignLedgerNames}). */
 export type SpaceFacts = { space: string; remote: boolean; personas: PersonaFact[]; ledger: string[] };
 
 export type Target = { name: string } | { folder: string };
@@ -105,10 +106,12 @@ export function readPersonaFact(file: string, name: string): PersonaFact | undef
   };
 }
 
-/** The names a remote space's peer ledger (peers.json) has ever seen. Corrupt → loud. */
-export function readLedgerNames(spaceDirPath: string): string[] {
+/** A remote space's peer ledger (peers.json), name → the host its NEWEST host-carrying sighting ran on
+ *  (`undefined` when no sighting of that name carried a host). Corrupt → loud. */
+export function readLedgerHosts(spaceDirPath: string): Map<string, string | undefined> {
   const path = join(spaceDirPath, "peers.json");
-  if (!existsSync(path)) return [];
+  const out = new Map<string, string | undefined>();
+  if (!existsSync(path)) return out;
   let v: unknown;
   try {
     v = JSON.parse(readFileSync(path, "utf8"));
@@ -116,7 +119,27 @@ export function readLedgerNames(spaceDirPath: string): string[] {
     throw new Error(`paw: ${path} is corrupt (${(e as Error).message}); fix or delete it`);
   }
   if (typeof v !== "object" || v === null || Array.isArray(v)) throw new Error(`paw: ${path} is not a JSON object; fix or delete it`);
-  return [...new Set(Object.values(v as Record<string, unknown>).flatMap((e) => (typeof e === "object" && e !== null && typeof (e as { name?: unknown }).name === "string" ? [(e as { name: string }).name] : [])))];
+  const newest = new Map<string, number>();
+  for (const e of Object.values(v as Record<string, unknown>)) {
+    if (typeof e !== "object" || e === null) continue;
+    const { name, host, last } = e as { name?: unknown; host?: unknown; last?: unknown };
+    if (typeof name !== "string") continue;
+    if (!out.has(name)) out.set(name, undefined);
+    if (typeof host !== "string" || !host) continue;
+    const ts = typeof last === "number" ? last : 0;
+    if (ts >= (newest.get(name) ?? -1)) {
+      newest.set(name, ts);
+      out.set(name, host);
+    }
+  }
+  return out;
+}
+
+/** The names the ledger EVIDENCES as another machine's: their newest sighting's card named a host that
+ *  isn't this one. The ledger records this machine's own agents too (the whole roster), so a bare
+ *  sighting proves nothing about who runs a name. */
+export function foreignLedgerNames(spaceDirPath: string, here: string = localHost()): string[] {
+  return [...readLedgerHosts(spaceDirPath)].flatMap(([name, host]) => (host !== undefined && host !== here ? [name] : []));
 }
 
 /** Every local space dir under `$PAW_HOME/spaces`, read-only. */
@@ -144,13 +167,26 @@ export function loadFacts(target: Target, home: string = pawHomeRoot()): SpaceFa
         .filter((f) => f.endsWith(".md"))
         .flatMap((f) => readPersonaFact(join(personasDir, f), f.slice(0, -".md".length)) ?? []);
     }
-    return { space, remote, personas, ledger: "name" in target && remote ? readLedgerNames(dir) : [] };
+    return { space, remote, personas, ledger: "name" in target && remote ? foreignLedgerNames(dir) : [] };
   });
 }
 
 /** {@link resolvePure} over this machine's files. */
 export function resolve(target: Target, chosen: SpaceChoice, home: string = pawHomeRoot()): Resolution {
   return resolvePure(target, chosen, loadFacts(target, home));
+}
+
+/** Every identity at `folder` in ONE space (cheaper than {@link resolve} when only that space matters). */
+export function folderIdentitiesIn(space: string, folder: string, home: string = pawHomeRoot()): Identity[] {
+  const dir = join(home, "spaces", space, "personas");
+  if (!existsSync(dir)) return [];
+  return readdirSync(dir)
+    .filter((f) => f.endsWith(".md"))
+    .flatMap((f) => {
+      const p = readPersonaFact(join(dir, f), f.slice(0, -".md".length));
+      return p && p.cwd === folder ? [identity(space, p)] : [];
+    })
+    .sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name));
 }
 
 /** One identity's facts by (space, name), or undefined when there is no such persona. */
@@ -162,6 +198,12 @@ export function identityIn(space: string, name: string, home: string = pawHomeRo
 
 /** Is this identity this machine's to act on? (`local`, or `folder-gone` — still this machine's record.) */
 export const ownedHere = (id: Identity): boolean => id.where.kind === "local" || id.where.kind === "folder-gone";
+
+/** {@link ownedHere} by (space, name): one persona read. */
+export function isLocalHere(space: string, name: string, home: string = pawHomeRoot()): boolean {
+  const id = identityIn(space, name, home);
+  return id !== undefined && ownedHere(id);
+}
 
 const day = (iso?: string): string => (iso ? iso.slice(0, 10) : "");
 
@@ -218,18 +260,36 @@ export function assertMutableByName(space: string, name: string, verb: string, h
   if (id) assertMutableHere(id, verb);
 }
 
-/** A remote space's name another machine holds: no persona here, but the mesh's ledger has seen it. A
- *  CREATE of that name here would put two agents of one name on one mesh. */
-export function heldOnMesh(space: string, name: string, home: string = pawHomeRoot()): boolean {
-  if (!NAME_RE.test(name) || readRemoteMesh(space) === undefined) return false;
-  if (existsSync(join(home, "spaces", space, "personas", `${name}.md`))) return false;
-  return readLedgerNames(join(home, "spaces", space)).includes(name);
+/** Who holds `name` on a remote space's mesh, for a CREATE of it here (no persona here):
+ *  - `elsewhere`: the ledger's newest host-carrying sighting is another machine's — two agents of one
+ *    name on one mesh; refuse.
+ *  - `seen`: the mesh saw the name, but no sighting says which machine (the ledger records this machine's
+ *    own agents too — `paw rm foo; paw adopt <foo's folder>` must work) — at most a note.
+ *  - undefined: nothing to say. */
+export function heldOnMesh(space: string, name: string, home: string = pawHomeRoot(), here: string = localHost()): "elsewhere" | "seen" | undefined {
+  if (!NAME_RE.test(name) || readRemoteMesh(space) === undefined) return undefined;
+  if (existsSync(join(home, "spaces", space, "personas", `${name}.md`))) return undefined;
+  const hosts = readLedgerHosts(join(home, "spaces", space));
+  if (!hosts.has(name)) return undefined;
+  const host = hosts.get(name);
+  return host !== undefined && host !== here ? "elsewhere" : host === undefined ? "seen" : undefined;
 }
 
-/** A name to suggest for a NEW agent of this folder on this machine when `taken` belongs to another
- *  machine: on a remote space the mesh is shared, so the machine's name qualifies it. Only suggested. */
+/** Pure: the part of a machine's name that tells it apart — `aleks-macbook` → `macbook` for user `aleks`
+ *  (a shared broker's human names are `<user>-<machine>`, and the user part says nothing on its own mesh). */
+export function machineSuffix(machine: string, user: string): string {
+  const pre = `${user.toLowerCase()}-`;
+  const m = user && machine.toLowerCase().startsWith(pre) && machine.length > pre.length ? machine.slice(pre.length) : machine;
+  const clean = m.replace(/[^A-Za-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "");
+  if (!clean) throw new Error(`paw: machine name "${machine}" leaves no usable suffix — set PAW_MACHINE`);
+  return clean;
+}
+
+/** This machine's name for a LOCAL agent of a folder whose agent `taken` runs elsewhere (a teleported
+ *  frozen copy, another machine's on a shared mesh): `tracepaper` → `tracepaper-macbook`. On a remote
+ *  space the mesh is shared, so the machine's name keeps the two apart. */
 export function localNameFor(space: string, taken: string): string {
-  return `${taken}-${machineName(space)}`;
+  return `${taken}-${machineSuffix(machineName(space), userInfo().username)}`;
 }
 
 /** `18d ago` / `3h ago` / `5m ago` / `just now`. */
@@ -268,5 +328,5 @@ export function folderNotHereLine(o: { ids: Identity[]; newest?: FolderSession; 
   if (!o.ids.length || o.ids.some(ownedHere)) return undefined;
   const pinnedHere = o.newest && o.ids.some((i) => i.pin === o.newest!.id && i.where.kind !== "teleported");
   const session = o.newest && !pinnedHere ? ` — session ${o.newest.id.slice(0, 8)} here (${ago(o.newest.mtimeMs, o.now)}) isn't running as an agent` : "";
-  return `this folder has no agent on this machine${session} · \`paw adopt . --name ${o.suggest}\` makes one`;
+  return `this folder has no agent on this machine${session} · \`paw adopt .\` makes one ("${o.suggest}")`;
 }

@@ -101,6 +101,7 @@ async function rm(argv: string[]): Promise<void> {
   // deleting it here is only ever an explicit "forget this machine's frozen copy" (src/namespace.ts).
   const id = identityIn(space, name);
   const away = id ? mutableHereRefusal(id, "rm") : undefined;
+  if (frozenCopy && !away) throw new Error(`paw: "${name}" (space ${space}) is this machine's own agent, not a frozen copy — --frozen-copy only forgets a teleported record`);
   if (away && !frozenCopy) throw new Error(`${away} · \`paw rm ${name}#${space} --frozen-copy\` forgets only this machine's copy`);
   if (away && frozenCopy) {
     rmSync(personaFilePath(space, name), { force: true });

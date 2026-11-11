@@ -93,7 +93,7 @@ import { MAX_PEER_IDS, peerMsg, remoteNoPastIdsNote, readOwnConversation, readPe
 import { backlogSize, earlierDivider, moreCount, moreInsertAt, NOW_DIVIDER, nothingEarlier, pickBacklog } from "./chat-backlog.ts";
 import { dedupeRoster } from "./commands/who.ts";
 import { isContinueKey, joinLines, LEAKED_TAIL, leaksTail, peelContinuation } from "./multiline.ts";
-import { ensureManagerOn, ensureSpaceFor, resolveSpace } from "./lifecycle.ts";
+import { ensure, ensureManagerOn, ensureSpaceFor, resolveSpace } from "./lifecycle.ts";
 import { chatAgentInfo } from "./agent-summary.ts";
 import { renderMarkdown } from "./markdown.ts";
 import { HUMAN_PEER, humanPeer } from "./names.ts";
@@ -105,8 +105,8 @@ import { PendingConsent } from "./chat-consent.ts";
 import { takeFrame } from "./chat-preshell.ts";
 import { localAgentFolder, otherSpaceHits, pawHome, suggestNames } from "./chat-lookup.ts";
 import { chooserKey, folderGoneChooser, notFoundChooser, renderChooser, unreachableChooser, type Chooser, type Choice } from "./chat-chooser.ts";
-import { concurrentStartup } from "./chat-startup.ts";
-import { folderNotHereLine, folderSessions, localNameFor, resolve as resolveNamespace } from "./namespace.ts";
+import { bootNeedsManager, concurrentStartup } from "./chat-startup.ts";
+import { folderIdentitiesIn, folderNotHereLine, folderSessions, isLocalHere, localNameFor, ownedHere } from "./namespace.ts";
 import { spaceChoice } from "./space.ts";
 import { bangNoFolder, elsewhereBang, elsewhereBanner, elsewhereFiles, elsewhereLogs, elsewhereStatus, localMachine, machineOf, machineOfCard, runsElsewhere, type Elsewhere, type Machine } from "./hosted.ts";
 import { readTeleported } from "./teleport-plan.ts";
@@ -466,6 +466,17 @@ async function chat(argv: string[]): Promise<void> {
   const space = spaceArg ?? resolveSpace();
   const server = serverArg ?? pawServer(space);
   const remoteSpace = isRemoteSpace(space);
+  /** Boot skipped THIS machine's manager (the target runs on another machine — bootNeedsManager): the
+   *  first command that needs it (a wake, /ps) ensures it then. */
+  let managerDeferred = false;
+  const withManager = <T>(fn: (ctl: ManagerControl) => Promise<T>): Promise<T> =>
+    withManagerControl(space, server, async (ctl) => {
+      if (managerDeferred) {
+        await ensureManagerOn(ctl, ensureSpaceFor(space));
+        managerDeferred = false;
+      }
+      return fn(ctl);
+    });
   /** Both ends on a terminal: the instant REPL. Anything else (a pipe, a script) keeps the old order —
    *  connect and resolve first, then read lines — byte for byte. */
   const interactive = process.stdin.isTTY === true && process.stdout.isTTY === true;
@@ -566,9 +577,11 @@ async function chat(argv: string[]): Promise<void> {
           name = nameFlag ? registerInstance(space, folder, nameFlag) : resolveFolderAgent(space, folder);
           // The folder's agent here may be a teleported frozen copy: chat messages the real one over the mesh,
           // but the session the operator has in THIS folder is not that agent — say so once (2026-11-11).
-          if (!nameFlag) {
-            const ids = resolveNamespace({ folder }, spaceChoice(space)).inChosen;
-            folderNote = folderNotHereLine({ ids, ...(folderSessions(folder)[0] ? { newest: folderSessions(folder)[0] } : {}), suggest: localNameFor(space, name) });
+          // Cheap first: a local agent owning the folder (the common case) needs nothing more read.
+          if (!nameFlag && !isLocalHere(space, name)) {
+            const ids = folderIdentitiesIn(space, folder);
+            const newest = ids.length && !ids.some(ownedHere) ? folderSessions(folder)[0] : undefined;
+            folderNote = folderNotHereLine({ ids, ...(newest ? { newest } : {}), suggest: localNameFor(space, name) });
           }
         } else {
           // A bare NAME target. --name creates an EXTRA for a FOLDER, so it's meaningless here — fail loud.
@@ -3162,7 +3175,7 @@ async function chat(argv: string[]): Promise<void> {
         }
       } else if (text === "/ps") {
         // Same view as `paw ps`: ask the manager control plane for its managed agents + render rows.
-        const reply = await withManagerControl(space, server, (ctl) => ctl.ps());
+        const reply = await withManager((ctl) => ctl.ps());
         if (!reply.ok) emit(c.red(`/ps failed: ${reply.error ?? "no reply"}`));
         else {
           const rows =
@@ -3225,7 +3238,7 @@ async function chat(argv: string[]): Promise<void> {
             if (home && existsSync(home)) {
               emit(c.dim(`↻ ${to} is offline — respawning from ${home}…`));
               try {
-                const r = await withManagerControl(space, server, (ctl) => ensureAgentSpawned(ctl, { space, name: to, cwd: home, model, ...(restart ? { restartLive: "allow" as const } : {}) }));
+                const r = await withManager((ctl) => ensureAgentSpawned(ctl, { space, name: to, cwd: home, model, ...(restart ? { restartLive: "allow" as const } : {}) }));
                 if (r.stuck) {
                   emit(c.yellow(stuckWarning(to, r.stuck, !!body && !!r.id)));
                   stuckId = r.id;
@@ -3614,15 +3627,25 @@ async function chat(argv: string[]): Promise<void> {
     setPhase("mesh");
     if (!interactive && typedLabel !== undefined) process.stdout.write(c.dim(`  connecting to ${typedLabel}…\n`));
     const startup = new ManagerControl(space, server, undefined, CHAT_STARTUP_COMMANDS);
+    const targetPersona = name !== undefined && /^[A-Za-z0-9_-]+$/.test(name) ? personaFilePath(space, name) : undefined;
+    const needManager = bootNeedsManager({
+      ...(name !== undefined ? { name } : {}),
+      mutating,
+      teleported: targetPersona !== undefined && readTeleported(targetPersona) !== undefined,
+      remote: remoteSpace,
+      personaHere: targetPersona !== undefined && existsSync(targetPersona),
+    });
+    managerDeferred = !needManager;
     try {
+      const onMeshUp = (meshUp: () => void) => () => {
+        timing("meshUp");
+        meshUp();
+      };
       const r = await concurrentStartup<HumanInbox, { ep: CotalEndpoint; conn: ReturnType<typeof attachConn> }>({
         ensure: (meshUp) =>
-          ensureManagerOn(startup, ensureSpaceFor(space), {
-            onMeshUp: () => {
-              timing("meshUp");
-              meshUp();
-            },
-          }),
+          needManager
+            ? ensureManagerOn(startup, ensureSpaceFor(space), { onMeshUp: onMeshUp(meshUp) })
+            : ensure({ needMesh: true, space: ensureSpaceFor(space), onMeshUp: onMeshUp(meshUp) }).then(() => undefined),
         prepareInbox: async () => {
           const p = await prepareHumanInbox(space, server, addressed.mode === "channel" ? [room] : []);
           inboxUid = p.uid;

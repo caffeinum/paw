@@ -230,8 +230,9 @@ Each entry: what it is + the most load-bearing rule. Full notes behind the link.
 - `src/namespace.ts` — THE namespace owner: `resolve(target, SpaceChoice)` over every local space → identities
   with a file-derived state (`local`/`teleported`/`folder-gone`/`seen`); `assertMutableByName` refuses a
   teleported or another machine's record BEFORE any write (adopt, rename, rm `--frozen-copy`, stop, restart/swap,
-  nice, sleep, mcp --to); a teleported persona never owns its folder for a create; writers print `space X (from
-  PAW_SPACE)`. `check:namespace`. → [addressing.md#namespace-owner-2026-11-11](docs/notes/addressing.md#namespace-owner-2026-11-11)
+  nice, sleep, mcp --to); a teleported default keeps its folder slot and this machine's agent there is an EXTRA
+  `<name>-<machine>` (`paw adopt .` makes it, never refuses); a frozen copy's pin owns no local session; chat to a
+  target hosted elsewhere skips the local manager at boot; writers print `space X (from PAW_SPACE)`. `check:namespace`. → [addressing.md#namespace-owner-2026-11-11](docs/notes/addressing.md#namespace-owner-2026-11-11)
 - `src/addressing.ts` — folder→name registry (`folders.json` defaults + `agents.json` extras, never
   both); `ensureAgentSpawned` (wake gate: start/reuse/restart from ps liveness, starting-grace 15s,
   busy-guard 3min, persona channel grants `[">"]` + `subscribe: [general]`); `assertUnambiguousTarget`. → [addressing.md#srcaddressingts](docs/notes/addressing.md#srcaddressingts)

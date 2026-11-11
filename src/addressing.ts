@@ -41,7 +41,7 @@ import { presenceProbeCreds } from "./remote-creds.ts";
 import { withFileLock, withFileLockAsync, type LockOpts } from "./lock.ts";
 import { liveSessionProcs, meshAgentSession, meshIdentity, type LiveSessionProc } from "./named.ts";
 import { readTeleported, startThereCommand, teleportedRefusal } from "./teleport-plan.ts";
-import { elsewhereClause, resolve as resolveNamespace, stateWords } from "./namespace.ts";
+import { elsewhereClause, localNameFor, ownedHere, resolve as resolveNamespace, stateWords } from "./namespace.ts";
 import { spaceChoice } from "./space.ts";
 import type { Elsewhere } from "./hosted.ts";
 import { checkKitArgs, ensureKitBinary, isKitProvider, KIT_AGENT, preflightKitArgs, readKitPersona } from "./kit.ts";
@@ -158,11 +158,22 @@ export function isTeleportedHere(space: string, name: string): boolean {
 }
 
 /** Read-only: the folder's DEFAULT agent name, or undefined if it has none (never registers). This
- *  machine's own default wins over a teleported frozen copy that still names the folder; the frozen copy
- *  is returned only when it is all there is (talk verbs message it over the mesh). */
+ *  machine's own default wins over a teleported frozen copy that still names the folder; beside a frozen
+ *  default, this machine's ONE extra for the folder stands in for it (adopt registers a local agent as an
+ *  extra there — the frozen copy keeps its default slot for `teleport --back`); the frozen copy is returned
+ *  only when it is all there is (talk verbs message it over the mesh). */
 export function lookupFolderName(space: string, canonical: string): string | undefined {
-  const defaults = listAgents(space).filter((a) => a.folder === canonical && !a.extra);
-  return (defaults.find((a) => !isTeleportedHere(space, a.name)) ?? defaults[0])?.name;
+  const here = listAgents(space).filter((a) => a.folder === canonical);
+  const defaults = here.filter((a) => !a.extra);
+  const owned = defaults.find((a) => !isTeleportedHere(space, a.name));
+  if (owned || !defaults.length) return owned?.name;
+  const localExtras = here.filter((a) => a.extra && !isTeleportedHere(space, a.name));
+  return (localExtras.length === 1 ? localExtras[0]! : defaults[0]!).name;
+}
+
+/** Read-only: the TELEPORTED default persona that still names `canonical`, or undefined. */
+export function teleportedDefaultAt(space: string, canonical: string): string | undefined {
+  return listAgents(space).find((a) => a.folder === canonical && !a.extra && isTeleportedHere(space, a.name))?.name;
 }
 
 /** Read-only: the folder's default agent ON THIS MACHINE — a teleported persona never owns a folder here
@@ -204,10 +215,11 @@ export function registeredAgentFor(space: string, token: string): { name: string
 /** Every agent NAME at `canonical`: its default (if any) first, then its extras. Named
  *  `agentNamesForFolder` (NOT `namesForFolder`, which named.ts already uses for SESSIONS). */
 export function agentNamesForFolder(space: string, canonical: string): string[] {
-  const away = (n: string): number => Number(isTeleportedHere(space, n));
+  // this machine's default, then its extras, then a teleported frozen copy (it runs elsewhere)
+  const rank = (a: AgentRecord): number => (isTeleportedHere(space, a.name) ? 2 : Number(a.extra));
   return listAgents(space)
     .filter((a) => a.folder === canonical)
-    .sort((a, b) => Number(a.extra) - Number(b.extra) || away(a.name) - away(b.name))
+    .sort((a, b) => rank(a) - rank(b))
     .map((a) => a.name);
 }
 
@@ -262,14 +274,36 @@ export function withRegistryLock<T>(space: string, fn: () => T): T {
  * two concurrent paw processes can't both pick the same name for different folders.
  */
 export function folderToName(space: string, canonical: string): string {
-  return withRegistryLock(space, () => lookupOwnedFolderName(space, canonical) ?? claimName(space, canonical, sanitizeAgentName(canonical), false));
+  return withRegistryLock(space, () => {
+    const owned = lookupOwnedFolderName(space, canonical);
+    if (owned) return owned;
+    // A teleported frozen copy keeps the folder's default slot (`teleport --back` restores it): this
+    // machine's agent for the folder is an EXTRA beside it, named after this machine (src/namespace.ts).
+    const away = teleportedDefaultAt(space, canonical);
+    if (!away) return claimName(space, canonical, sanitizeAgentName(canonical), false);
+    const stand = lookupFolderName(space, canonical);
+    if (stand && stand !== away) return stand;
+    return claimLocalTwin(space, canonical, away);
+  });
+}
+
+/** Register `<away>-<machine>` as an EXTRA for `canonical` beside the teleported default `away`. Taken by
+ *  anything else → fail loud naming --name (never a hash suffix nobody asked for). Caller holds the lock. */
+function claimLocalTwin(space: string, canonical: string, away: string): string {
+  const twin = localNameFor(space, away);
+  if (!nameFree(space, twin, canonical, true)) {
+    throw new Error(`paw: "${away}" in space ${space} is a frozen copy and "${twin}" (this machine's name for the folder's agent) is already taken — pick a name with --name`);
+  }
+  setPersonaKeys(space, twin, { cwd: canonical, "paw-extra": "true" });
+  return twin;
 }
 
 /** Register `base` (or its hash-qualified form) for (folder, extra). Caller holds the registry lock. */
 function claimName(space: string, canonical: string, base: string, extra: boolean): string {
-  // A name held by a TELEPORTED persona is that agent's, running elsewhere: never hash-suffix around it
-  // silently (the operator would get "tracepaper-1a2b3c" without knowing why) — fail loud, naming it.
-  if (isTeleportedHere(space, base)) {
+  // A name held by a TELEPORTED persona of THIS folder is that agent's, running elsewhere: never
+  // hash-suffix around it silently — fail loud, naming it. Another folder's frozen copy is just a taken
+  // name: hash-suffixed like any other (tracepaper-e2c5a7), as before.
+  if (isTeleportedHere(space, base) && agentRecord(space, base)?.folder === canonical) {
     const id = resolveNamespace({ name: base }, spaceChoice(space)).inChosen[0];
     throw new Error(`paw: the name "${base}" in space ${space} belongs to an agent that ${id ? stateWords(id) : "was teleported"} — pick another name with --name`);
   }
@@ -289,7 +323,10 @@ export function setFolderName(space: string, canonical: string, desired: string)
     const previous = lookupOwnedFolderName(space, canonical);
     const cleaned = cleanAgentName(desired) || sanitizeAgentName(canonical);
     if (previous === cleaned) return { name: cleaned, previous };
-    const name = claimName(space, canonical, cleaned, false);
+    // Beside a teleported default the new agent is an EXTRA: two non-extra defaults would be left once
+    // `teleport --back` clears the marker, and lookups would pick between them alphabetically.
+    const extra = previous === undefined && teleportedDefaultAt(space, canonical) !== undefined;
+    const name = claimName(space, canonical, cleaned, extra);
     if (previous && previous !== name) setPersonaKeys(space, previous, { cwd: undefined });
     return { name, previous };
   });
@@ -357,10 +394,13 @@ export function elsewhereHint(space: string, name: string): string {
   const others = spacesHoldingAgent(name, space);
   if (!others.length) return "";
   const res = resolveNamespace({ name }, spaceChoice(space));
-  const away = res.elsewhere.filter((id) => others.includes(id.space) && (id.where.kind === "teleported" || id.where.kind === "seen"));
-  if (away.length) return elsewhereClause(name, res.chosen, away, "act on");
+  const away = res.elsewhere.filter((id) => others.includes(id.space) && !ownedHere(id));
+  const local = others.filter((s) => !away.some((id) => id.space === s));
+  if (!local.length) return elsewhereClause(name, res.chosen, away, "act on");
+  // A local record is the actionable one: lead with it, mention a frozen copy second.
   const env = res.chosen.how === "env" ? ` (${space} is from PAW_SPACE)` : "";
-  return `${env} — it's in ${others.map((s) => `"${s}"`).join(", ")}: add --space ${others[0]}`;
+  const frozen = away.length ? `; ${away.map((id) => `"${id.space}" holds a copy that ${stateWords(id)}`).join("; ")}` : "";
+  return `${env} — it's in ${local.map((s) => `"${s}"`).join(", ")}: add --space ${local[0]}${frozen}`;
 }
 
 /**
@@ -370,6 +410,8 @@ export function elsewhereHint(space: string, name: string): string {
  * registered → mint the default via {@link folderToName}.
  */
 export function resolveFolderAgent(space: string, canonical: string): string {
+  const known = lookupFolderName(space, canonical);
+  if (known) return known;
   const [first, ...rest] = agentNamesForFolder(space, canonical);
   if (first !== undefined && (!agentRecord(space, first)?.extra || rest.length === 0)) return first;
   if (first !== undefined) {
@@ -720,7 +762,17 @@ export async function controlCreds(space: string): Promise<string | undefined> {
   return auth ? await mintCreds(auth, newIdentity(), "control-caller-privileged", { lifecycleUid: mintLifecycleUid() }) : undefined;
 }
 
-/** Agents in OTHER spaces (under this PAW_HOME) whose persona pins `sessionId`. */
+/** A persona's pin OWNS its session on this machine — unless the persona is a teleported frozen copy:
+ *  that agent's live session runs on the other machine (teleport moved it there), every wake path here
+ *  refuses the copy, so the session file left on THIS machine is nobody's. Its stale `resume:` must not
+ *  block adopting that local session (2026-11-11: team2027's frozen tracepaper pinned the mac's own
+ *  2ac38184 — the incident's damage — and every adopt of it was refused). `teleport --back` brings back
+ *  the OTHER side's persona, pin and session chain, not this stale pin. */
+export function pinOwnsSession(personaFile: string, sessionId: string): boolean {
+  return readResumeId(personaFile) === sessionId && readTeleported(personaFile) === undefined;
+}
+
+/** Agents in OTHER spaces (under this PAW_HOME) whose persona pins `sessionId` (frozen copies excluded). */
 export function sessionPinnedInOtherSpaces(space: string, sessionId: string): Array<{ space: string; name: string }> {
   const spaces = dirname(spaceDir(space));
   const out: Array<{ space: string; name: string }> = [];
@@ -729,33 +781,10 @@ export function sessionPinnedInOtherSpaces(space: string, sessionId: string): Ar
     const dir = join(spaces, other, "personas");
     if (!existsSync(dir)) continue;
     for (const f of readdirSync(dir)) {
-      if (f.endsWith(".md") && readResumeId(join(dir, f)) === sessionId) out.push({ space: other, name: f.slice(0, -".md".length) });
+      if (f.endsWith(".md") && pinOwnsSession(join(dir, f), sessionId)) out.push({ space: other, name: f.slice(0, -".md".length) });
     }
   }
   return out;
-}
-
-/** The refusal when a TELEPORTED frozen copy (any local space, this one included) pins `sessionId`, or
- *  undefined. "use it there / forget it" would point at a record nobody here may act on, and adopting the
- *  session beside it is how the 2026-11-11 incident started — name the state; repairing the pin is the
- *  operator's call. `among` narrows the search to known pinners. */
-export function frozenPinRefusal(sessionId: string, among?: Array<{ space: string; name: string }>): string | undefined {
-  const root = join(process.env.PAW_HOME?.trim() || join(homedir(), ".paw"), "spaces"); // read-only: never spaceDir (it mkdirs)
-  const pinners = among ?? (existsSync(root) ? readdirSync(root) : []).flatMap((sp) => {
-    const dir = join(root, sp, "personas");
-    return existsSync(dir) ? readdirSync(dir).filter((f) => f.endsWith(".md") && readResumeId(join(dir, f)) === sessionId).map((f) => ({ space: sp, name: f.slice(0, -".md".length) })) : [];
-  });
-  for (const { space: s, name: n } of pinners) {
-    const file = join(root, s, "personas", `${n}.md`);
-    const mark = readTeleported(file);
-    if (!mark) continue;
-    return (
-      `paw: session ${sessionId} is pinned by "${n}" in space "${s}", which runs on ${mark.to}${mark.at ? ` (teleported ${mark.at.slice(0, 10)})` : ""} — that pin is this machine's frozen copy.\n` +
-      `  adopt another session here:  paw adopt . --resume <id>   (\`paw sessions .\` lists them)\n` +
-      `  or fix the frozen copy's pin by hand: resume: in ${file}`
-    );
-  }
-  return undefined;
 }
 
 /**
@@ -768,8 +797,6 @@ export function assertOneSpace(space: string, sessionId: string | undefined): vo
   const clash = sessionPinnedInOtherSpaces(space, sessionId).filter((o) => readRemoteMesh(space) || readRemoteMesh(o.space));
   if (!clash.length) return;
   const { space: s, name: n } = clash[0]!;
-  const frozen = frozenPinRefusal(sessionId, [clash[0]!]);
-  if (frozen) throw new Error(frozen);
   throw new Error(
     `paw: session ${sessionId} already belongs to "${n}" in space "${s}" — an agent lives in one space (two would resume one transcript from two managers).\n` +
       `  use it there:  paw chat ${n} --space ${s}\n` +
