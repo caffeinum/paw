@@ -1504,13 +1504,15 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
 
   // the chooser
   const ch = notFoundChooser({ name: "harbr", space: "lk", suggestions: ["harbor"], elsewhere: [{ space: "other", how: "registered" }] });
-  assert(eq(ch.options.map((o) => o.choice.kind), ["switch", "space", "quit"]), "chooser: suggestions, other space, quit — in that order (no mode switch inside a typo fix)");
+  assert(eq(ch.options.map((o) => o.choice.kind), ["space", "switch", "quit"]), "chooser: the same name in another space, then suggestions, then quit (no mode switch inside a typo fix)");
   assert(ch.options.every((o) => !/fresh|create/i.test(o.label)), "chooser: no option creates an agent");
   const rows = renderChooser(ch, PLAIN);
-  assert(/^✕ no agent harbr in lk — did you mean:$/.test(rows[0]!) && rows.some((r) => /▸ 1 harbor$/.test(r)) && rows.some((r) => /open harbr in other/.test(r)) && /^    ↑↓ enter · esc quits · paw chat --fresh <folder> makes a new agent$/.test(rows.at(-1)!), `chooser: says what is wrong once, marks the selection, one key line naming --fresh as text only (got ${JSON.stringify(rows)})`);
+  assert(/^✕ no agent harbr in lk — it's in other$/.test(rows[0]!) && rows.some((r) => /▸ 1 open harbr in other$/.test(r)) && rows.some((r) => /2 harbor$/.test(r)) && /^    ↑↓ enter · esc quits · paw chat --fresh <folder> makes a new agent$/.test(rows.at(-1)!), `chooser: says what is wrong once, marks the selection, one key line naming --fresh as text only (got ${JSON.stringify(rows)})`);
   assert(!rows.some((r) => /any other key|@harbor/.test(r)), "chooser: bare names, and nothing about keys that just pass through");
   assert(chooserKey(ch, "\x1b[B").sel === 1 && chooserKey(ch, "\x1b[A").sel === 2 && chooserKey({ ...ch, sel: 2 }, "\x1b[B").sel === 0, "chooser keys: ↓/↑ move and wrap");
-  assert(eq(chooserKey(ch, "\r").pick, { kind: "switch", name: "harbor" }) && eq(chooserKey({ ...ch, sel: 1 }, "\r").pick, { kind: "space", name: "harbr", space: "other" }), "chooser keys: Enter picks the selection");
+  assert(eq(chooserKey(ch, "\r").pick, { kind: "space", name: "harbr", space: "other" }) && eq(chooserKey({ ...ch, sel: 1 }, "\r").pick, { kind: "switch", name: "harbor" }), "chooser keys: Enter picks the selection");
+  const typo = notFoundChooser({ name: "harbr", space: "lk", suggestions: ["harbor"], elsewhere: [] });
+  assert(typo.title[0] === "✕ no agent harbr in lk — did you mean:" && typo.options[0]!.label === "harbor", "chooser: nothing elsewhere → the near-miss heads the list");
   assert(eq(chooserKey(ch, "3").pick, { kind: "quit" }) && chooserKey(ch, "9").pick === undefined, "chooser keys: a number picks that row; one past the end does nothing");
   assert(eq(chooserKey(ch, "\x1b").pick, { kind: "quit" }) && eq(chooserKey(ch, "\x03").pick, { kind: "quit" }), "chooser keys: Esc and Ctrl-C quit");
   assert(chooserKey(ch, "@").pass === true && chooserKey(ch, "h").pass === true && chooserKey(ch, "\x15").pass === true, "chooser keys: anything else closes it and reaches the input");

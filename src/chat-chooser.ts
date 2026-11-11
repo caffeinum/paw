@@ -27,16 +27,19 @@ export interface Chooser {
 /** No `name` on this space's live roster (nor registered here). The one way to make a new agent is
  *  named on the key line; `paw chat --all` stays a flag, not an option inside a typo fix. */
 export function notFoundChooser(o: { name: string; space: string; suggestions: string[]; elsewhere: SpaceHit[] }): Chooser {
+  // The SAME name in another space is the likelier intent than a near-miss here (`@tracepaper#paw`
+  // when tracepaper lives in team2027, 2026-11-11): it goes first, and the title says where.
   const options: Chooser["options"] = [
-    ...o.suggestions.map((n) => ({ label: n, choice: { kind: "switch", name: n } as Choice })),
     ...o.elsewhere.map((h) => ({
       label: `open ${o.name} in ${h.space}${h.how === "seen" ? " (seen on its mesh)" : ""}`,
       choice: { kind: "space", name: o.name, space: h.space } as Choice,
     })),
+    ...o.suggestions.map((n) => ({ label: n, choice: { kind: "switch", name: n } as Choice })),
     { label: "quit", choice: { kind: "quit" } },
   ];
+  const where = o.elsewhere.length ? ` — it's in ${o.elsewhere.map((h) => h.space).join(", ")}` : o.suggestions.length ? " — did you mean:" : "";
   return {
-    title: [`✕ no agent ${o.name} in ${o.space}${o.suggestions.length ? " — did you mean:" : ""}`],
+    title: [`✕ no agent ${o.name} in ${o.space}${where}`],
     options,
     sel: 0,
     createHint: "paw chat --fresh <folder> makes a new agent",

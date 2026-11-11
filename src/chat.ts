@@ -2829,6 +2829,7 @@ async function chat(argv: string[]): Promise<void> {
    *  folder, show the output here, then DM the agent the command AND its output so the answer becomes
    *  its context. Needs an agent target — a channel has no folder to run in. */
   async function runBangCommand(command: string): Promise<void> {
+    if (curName && targetLost) return void emit(c.red(`✕ not run — ${targetLost.reason}`));
     if (!curName || !curId) return void emit(c.red("! `!cmd` runs in an agent's folder — `@name` first (a channel has no folder)"));
     const away = awayOf(curName);
     if (away) return void emit(c.red(`✕ ${elsewhereBang(curName, away)}`));
