@@ -509,11 +509,11 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
   const iso = (hAgo: number) => new Date(now - hAgo * 3_600_000).toISOString();
   const bead = (id: string, status: string, extra: Partial<T> = {}): T => ({ id, title: `title ${id}`, status, assignee: "kit", updatedAt: iso(1), ...extra });
   const tasks: T[] = [
-    bead("o1", "open", { priority: 2 }),
-    bead("b1", "blocked"),
-    bead("ip1", "in_progress", { priority: 3 }),
-    bead("o0", "open", { priority: 1 }),
-    bead("ip0", "in_progress", { priority: 1 }),
+    bead("o1", "open", { priority: 2, updatedAt: iso(3) }),
+    bead("b1", "blocked", { updatedAt: iso(9) }),
+    bead("ip1", "in_progress", { priority: 3, updatedAt: iso(48) }),
+    bead("o0", "open", { priority: 1, updatedAt: iso(0.5) }),
+    bead("ip0", "in_progress", { priority: 1, updatedAt: iso(5) }),
     bead("x1", "open", { assignee: "someone-else" }),
     bead("c1", "closed", { closedAt: iso(2) }),
     bead("c2", "closed", { closedAt: iso(30) }),
@@ -522,7 +522,7 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
     bead("c5", "closed", { closedAt: iso(5) }),
   ];
   const order = agentBeads(tasks, "kit", now).map((t) => t.id);
-  assert(eq(order.slice(0, 5), ["ip0", "ip1", "b1", "o0", "o1"]), `beads: in_progress first, then blocked, then open; priority within (got ${order.join(",")})`);
+  assert(eq(order.slice(0, 5), ["o0", "o1", "ip0", "b1", "ip1"]), `beads: most recently touched first, whatever the status or priority (got ${order.join(",")})`);
   assert(!order.includes("x1"), "beads: only the agent's own (assignee) beads");
   assert(eq(order.slice(5), ["c3", "c1", "c4"]) && CLOSED_MAX === 3, "beads: closed within 24h only, newest first, at most 3");
   assert(!order.includes("c2"), "beads: a bead closed 30h ago is gone");
@@ -558,19 +558,21 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
   assert(withPr[3].includes("p2") && withPr[4].includes("pull/9") && withPr[5].includes("p3") && !withPr.some((r) => r.includes("issues/3")), "render: PR URLs in the description count; issue links don't");
   const tight = renderTasksView({ agent: "kit", operator: "op", beads: linked }, { width: 60, height: 5, now });
   assert(!tight.some((r) => r.includes("p2") && !tight.some((x) => x.includes("pull/9"))) && tight.some((r) => r.includes("… +")), "render: clipping keeps whole beads — never a bead without its PR row");
-  // the tree: parent above its children, in-flight first, then id order — nothing folded
+  // the tree: parent above its children, siblings newest first by their branch's latest change — nothing folded
   const epic = [
-    ...Array.from({ length: 12 }, (_, i) => bead(`e.${i + 1}`, "open", { parent: "e", updatedAt: iso(12 - i) })),
-    bead("e", "open"),
-    bead("e.7.1", "in_progress", { parent: "e.7" }),
-    bead("s", "open"),
-    bead("s.2", "open", { parent: "s" }),
-    bead("s.10", "open", { parent: "s" }),
+    ...Array.from({ length: 12 }, (_, i) => bead(`e.${i + 1}`, "open", { parent: "e", updatedAt: iso(30 - i) })),
+    bead("e", "open", { updatedAt: iso(60) }),
+    bead("e.7.1", "in_progress", { parent: "e.7", updatedAt: iso(2) }),
+    bead("s", "open", { updatedAt: iso(50) }),
+    bead("s.2", "open", { parent: "s", updatedAt: iso(35) }),
+    bead("s.10", "open", { parent: "s", updatedAt: iso(36) }),
   ];
   const tree = beadTree(agentBeads(epic, "kit", now));
   const label = (r: (typeof tree)[number]) => `${r.t.id}@${r.depth}`;
-  const want = ["e@0", "e.7@1", "e.7.1@2", ...[1, 2, 3, 4, 5, 6, 8, 9, 10, 11, 12].map((i) => `e.${i}@1`), "s@0", "s.2@1", "s.10@1"];
-  assert(eq(tree.map(label), want), `tree: parent first, in-flight branch first, the rest in natural id order, nothing folded (${tree.map(label).join(" ")})`);
+  const want = ["e@0", "e.7@1", "e.7.1@2", ...[12, 11, 10, 9, 8, 6, 5, 4, 3, 2, 1].map((i) => `e.${i}@1`), "s@0", "s.2@1", "s.10@1"];
+  assert(eq(tree.map(label), want), `tree: newest first by each branch's latest change — the older epic e rises above s on its fresh grandchild, e.7 above its newer siblings for the same reason (${tree.map(label).join(" ")})`);
+  const tie = beadTree([bead("t.10", "open", { parent: "t" }), bead("t", "open"), bead("t.2", "open", { parent: "t" })]);
+  assert(eq(tie.map(label), ["t@0", "t.2@1", "t.10@1"]), `tree: equal times fall back to natural id order (${tie.map(label).join(" ")})`);
   const treeRows = renderTasksView({ agent: "kit", operator: "op", beads: agentBeads(epic, "kit", now) }, { width: 60, height: 20, now });
   assert(treeRows.some((r) => r.startsWith("  ▾ ○ .7  ")) && treeRows.some((r) => r.startsWith("  ○ .12  ")) && !treeRows.some((r) => r.includes("more open")), "tree: a child shows its id suffix, indented; no fold rows; a parent leads with ▾");
   // folds (click mode, 2026-10-10): a folded parent hides EVERY descendant and says how many

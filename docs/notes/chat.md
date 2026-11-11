@@ -679,8 +679,12 @@ agent BEFORE the chat started … not start from an empty screen", on open AND o
 - **The beads view (`src/chat-tasks.ts`, pure; wired in chat.ts `paintTasks`; was `tasks`, fullscreen
   2026-11-06)** — title `beads · <agent>` + live status, the `paw status` info row, then the target's
   beads (`assignee` = the agent; with no target, the operator's own via `operatorName()` plus "pick an
-  agent with ↓ to see its beads"): in_progress ◐ → blocked ⊘ → open ○ → deferred ◌ (priority, then most
-  recently touched), then the last 24h's closed ✓ dimmed, at most 3; one row each — glyph, id, title, age.
+  agent with ↓ to see its beads"): NEWEST FIRST (operator, 2026-11-10: "the latest beads on top"). Open
+  beads sort by when they last changed (`updatedAt`, else `createdAt`); in the tree, siblings and roots
+  sort by their branch's latest change, so an old epic with a child touched today rises; ties fall back
+  to natural id order. Status shows in the glyph only (◐ ⊘ ○ ◌); until 2026-11-10 it ordered the list,
+  in_progress → blocked → open → deferred, then priority. Then the last 24h's closed ✓ dimmed, at most 3;
+  one row each — glyph, id, title, age.
   **Fullscreen** (operator: "NOT a split view anymore"): the last message each way that sat under the
   beads is gone, and with it the DM-stream seed (`seedConversation`/`lastSaid`/`lastExchange`) — the bead
   list gets every row between the head and the receipt line. **Reads:** `listAssigned` (src/tasks.ts) = two bd reads
