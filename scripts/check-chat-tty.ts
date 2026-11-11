@@ -330,7 +330,7 @@ try {
       io.write("/quit\r");
     });
     const first = strip(r.raw.slice(0, r.raw.indexOf("\x1b[0J")));
-    ok("11. the first frame shows the name with a loader, nothing guessed", /echoerr ◌ · mesh /.test(first) && /you → echoerr ◌> /.test(first) && !/offline|status:/.test(first), JSON.stringify(first.slice(-160)));
+    ok("11. the first frame shows the name with a loader, nothing guessed", /echoerr · mesh /.test(first) && /you → echoerr ◌> /.test(first) && !/offline|status:/.test(first), JSON.stringify(first.slice(-160)));
     ok("11. after picking @echoer + Enter the kept line reached echoer exactly once", dms.filter((d) => /for-echoer/.test(d)).length === 1, JSON.stringify(dms));
     ok("11. …#general heard nothing", general.length === 0);
   }
