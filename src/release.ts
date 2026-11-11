@@ -281,10 +281,7 @@ export function daemonRoot(): string {
   if (pin === "dev") {
     if (!devWarned) {
       devWarned = true;
-      console.error(
-        `paw: PAW_RELEASE=dev — daemons will run from the live checkout (${REPO_ROOT}). ` +
-          `Edits and installs there change what the next daemon starts.`,
-      );
+      console.error(`${process.stderr.isTTY ? "\x1b[2m" : ""}paw: PAW_RELEASE=dev — daemons start from the checkout ${REPO_ROOT}${process.stderr.isTTY ? "\x1b[0m" : ""}`);
     }
     return REPO_ROOT;
   }

@@ -154,22 +154,24 @@ const base = { sessionName: undefined as string | undefined, runtime: undefined 
 const out = formatStatus(
   [
     { ...base, name: "paw", host: { label: "aleks-macbook", via: "manager", here: true }, folder: "/home/u/p", mesh: "idle", live: true, runtime: "cmux", pin: "abcd1234-aaaa", durable: true, activeMs: NOW - 120_000, conflictPids: [] },
-    { ...base, name: "foo", folder: "/f", mesh: "offline", live: false, pin: undefined, durable: false, activeMs: undefined, conflictPids: [], inbox: { kind: "none" } },
+    { ...base, name: "foo", folder: tmpdir(), mesh: "offline", live: false, pin: undefined, durable: false, activeMs: undefined, conflictPids: [], inbox: { kind: "none" } },
+    { ...base, name: "lost", folder: "/definitely/gone/folder", mesh: "offline", live: false, pin: "ffff0000-aaaa", durable: true, activeMs: undefined, conflictPids: [], inbox: { kind: "none" } },
     { ...base, name: "new", folder: "/n", mesh: "starting", live: true, runtime: "cmux", pin: "11112222-bbbb", durable: false, activeMs: NOW - 5_000, conflictPids: [] },
     { ...base, name: "bar", host: { label: "ssh:mini", via: "teleport", here: false }, folder: "/b", mesh: "idle", live: true, runtime: "cmux", pin: "99998888-cccc", sessionName: "research", durable: true, activeMs: NOW - 3600_000, conflictPids: [50812] },
   ],
   NOW,
 );
 assert(/NAME\s+STATUS\s+MACHINE\s+RUNTIME\s+CWD\s+SESSION\s+INBOX\s+CTX\s+ACTIVE/.test(out), "header row present (incl. INBOX + CTX)");
-assert(/^paw\s+idle\s+aleks-macbook\s+cmux\s+\S+\s+abcd1234…\s+✓\s+—\s+2m$/m.test(out), "live durable agent → status + runtime + short id + ✓ inbox + unknown ctx + active, no note");
+assert(/^paw\s+online\s+aleks-macbook\s+cmux\s+\S+\s+abcd1234…\s+✓\s+—\s+2m$/m.test(out), "live durable agent → status (online, the one word every surface uses) + runtime + short id + ✓ inbox + unknown ctx + active, no note");
+assert(/^lost\s+offline\s+—\s+—\s+\S+\s+ffff0000…\s+—\s+—\s+—\s+⚠ folder gone: \/definitely\/gone\/folder — `paw rm lost`, or restore it$/m.test(out) && out.includes("1 folder(s) missing"), "a registered agent whose folder is gone says so (the one fact that matters), and the footer counts it");
 assert(/^foo\s+offline\s+—\s+—\s+\S+\s+—\s+—\s+—\s+—\s+⚠ no pin/m.test(out), "pinless offline → runtime — + inbox — + ctx — + no-pin warning");
 {
   const g = formatStatus([{ ...base, name: "g", folder: "/g", mesh: "idle", live: true, runtime: "tmux", durable: false, conflictPids: [], harness: "opencode" }], NOW);
   assert(g.indexOf("no pin") === -1 && !/fresh/.test(g), "pinless opencode → no claude-pin or claude-fresh note");
 }
 assert(/^new\s+starting\s+—\s+cmux\s+\S+\s+11112222…\s+✓\s+—\s+5s\s+fresh/m.test(out), "pinned-but-no-transcript live → starting + fresh");
-assert(/^bar\s+idle\s+ssh:mini\s+cmux\s+\S+\s+"research"\s+✓\s+—\s+1h\s+⚠ two writers \(pid 50812\)/m.test(out), "named session shown; conflict warns with pid");
-assert(out.includes("⚠ 1 two-writer conflict(s), 1 unpinned"), "footer summarizes conflicts + unpinned");
+assert(/^bar\s+online\s+ssh:mini\s+cmux\s+\S+\s+"research"\s+✓\s+—\s+1h\s+⚠ two writers \(pid 50812\)/m.test(out), "named session shown; conflict warns with pid");
+assert(out.includes("⚠ 1 two-writer conflict(s), 1 folder(s) missing, 1 unpinned"), "footer summarizes conflicts + missing folders + unpinned");
 assert(
   formatStatus([{ ...base, name: "ok", folder: "/o", mesh: "idle", live: true, runtime: "pty", pin: "x", durable: true, activeMs: NOW, conflictPids: [] }], NOW).indexOf("⚠") === -1,
   "all-healthy → no warning footer",
@@ -183,8 +185,8 @@ const zombieOut = formatStatus(
   ],
   NOW,
 );
-assert(/^research\s+idle\s+—\s+pty\s+\S+\s+aaaa1111…\s+1 queued, 1 unread\s+—\s+2h\s+⚠ inbox stuck — 1 queued, 1 unread, agent not consuming$/m.test(zombieOut), "idle zombie → lag in INBOX + stuck warning");
-assert(/^erragent\s+idle\s+—\s+pty\s+\S+\s+cccc2222…\s+\?\s+—\s+1m$/m.test(zombieOut), "query error → ? in INBOX, no fabricated health, no stuck claim");
+assert(/^research\s+online\s+—\s+pty\s+\S+\s+aaaa1111…\s+1 queued, 1 unread\s+—\s+2h\s+⚠ inbox stuck — 1 queued, 1 unread, agent not consuming$/m.test(zombieOut), "idle zombie → lag in INBOX + stuck warning");
+assert(/^erragent\s+online\s+—\s+pty\s+\S+\s+cccc2222…\s+\?\s+—\s+1m$/m.test(zombieOut), "query error → ? in INBOX, no fabricated health, no stuck claim");
 assert(zombieOut.includes("⚠ 1 stuck inbox(es)"), "footer counts stuck inboxes");
 
 // ---- foreignWriters: standalone (non-mesh) live procs holding a session ----
@@ -625,7 +627,7 @@ assert(!inferBusy("idle", true, BUSY_NOW + 5_000, BUSY_NOW), "an mtime in the FU
   assert([...localSpace.keys()].sort().join() === "canary,evals", "roster-only: on a local space every live unknown agent counts");
   const row = { name: "canary", host: { label: "aleks-mac-mini", via: "mesh" as const, here: true }, folder: "", mesh: "idle", live: true, durable: false, conflictPids: [], inbox: { kind: "none" as const }, busy: false, unmanaged: true, unregistered: { agent: "claude", via: "roster" as const }, harness: "claude" };
   const out = formatStatus([row as never], now);
-  assert(out.includes("canary") && out.includes("live (unmanaged)") && out.includes("unregistered claude seat — live on the mesh"), `roster-only: renders live with an honest note (${out.split("\n").find((l) => l.includes("canary"))?.trim()})`);
+  assert(out.includes("canary") && out.includes("online (not registered here)") && !/unregistered|seat|persona/.test(out) && /1 online agent isn't registered on this machine — `paw adopt <folder>` registers one/.test(out), `roster-only: one row saying online (not registered here), the fix once at the bottom (${out.split("\n").find((l) => l.includes("canary"))?.trim()})`);
 }
 
 if (failures > 0) {
@@ -660,8 +662,8 @@ console.log("\nall paw status checks passed 🐾");
     name: "gpt-6_2", host: { label: "aleks-macbook", via: "manager" as const, here: true }, folder: "", mesh: "idle", live: true, runtime: "tmux" as const, durable: false, conflictPids: [], inbox: { kind: "none" as const }, busy: false, unregistered: { agent: "codex" },
   };
   const out = formatStatus([unreg as never], Date.now());
-  assert(out.includes("gpt-6_2") && out.includes("unregistered codex peer"), "status: an unregistered manager-listed agent renders with its harness and a note");
-  assert(/gpt-6_2\s+idle\s+aleks-macbook\s+tmux\s+—/.test(out), "status: an unregistered agent shows — for CWD, never a fabricated folder");
+  assert(out.includes("gpt-6_2") && out.includes("not registered here (codex) — `paw restart` registers + revives it"), "status: an unregistered manager-listed agent renders with its harness and a note");
+  assert(/gpt-6_2\s+online\s+aleks-macbook\s+tmux\s+—/.test(out), "status: an unregistered agent shows — for CWD, never a fabricated folder");
 }
 
 console.log("✓ keeper unstickDecision");

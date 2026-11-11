@@ -341,11 +341,12 @@ export async function snapshotFleet(space: string, opts: { all?: boolean; sample
 
 // ---------- the view (pure) ----------
 
-export const fmtMb = (mb: number | undefined) => (mb === undefined ? "?" : mb >= 1024 ? `${(mb / 1024).toFixed(1)}G` : `${Math.round(mb)}M`);
+/** `640M`, `1G`, `2.3G` — one format on every screen; an unmeasured value is `—`, never `?` or 0. */
+export const fmtMb = (mb: number | undefined) => (mb === undefined ? "—" : mb >= 1024 ? `${Number((mb / 1024).toFixed(1))}G` : `${Math.round(mb)}M`);
 const dur = (ms: number) => ago(0, ms);
 const ports = (p: number[]) => p.map((x) => ` :${x}`).join("");
 
-/** `⧗ fly ssh (51m)` · `bg: pnpm dev :3000 3h 410M` · `mcp 80M` · `tp ×2 34M` — duplicates collapsed. */
+/** `◌ fly ssh (51m)` · `bg: pnpm dev :3000 3h 410M` · `mcp 80M` · `tp ×2 34M` — duplicates collapsed. */
 export function subprocsCell(items: Item[], toolPid: number | undefined, width: number): string {
   const groups = new Map<string, Item[]>();
   for (const it of items) {
@@ -360,7 +361,7 @@ export function subprocsCell(items: Item[], toolPid: number | undefined, width: 
       const it = g[0];
       const n = g.length > 1 ? ` ×${g.length}` : "";
       const mem = g.some((x) => x.mem !== undefined) ? ` ${fmtMb(g.reduce((s, x) => s + (x.mem ?? 0), 0))}` : "";
-      if (it.pid === toolPid) return `⧗ ${it.label} (${dur(it.ageMs)})`;
+      if (it.pid === toolPid) return `◌ ${it.label} (${dur(it.ageMs)})`;
       if (it.kind === "task" || it.kind === "bg") return `bg: ${it.label}${ports(it.ports)}${n} ${dur(Math.min(...g.map((x) => x.ageMs)))}${mem}`;
       return `${it.label}${it.stale ? "(npx)" : ""}${n}${mem}`;
     });
@@ -383,13 +384,26 @@ export function toolItem(row: Pick<AgentStatus, "tool">, items: Item[], now: num
 
 export function stateText(row: AgentStatus, procs: AgentProcs | undefined, now: number): string {
   const hung = hungTool(row, now);
-  if (hung !== undefined) return `⧗ ${row.tool!.name} ${dur(hung)}`;
-  if (row.failure) return `⚠ ${/limit/i.test(row.failure.text) ? "limit" : /login/i.test(row.failure.text) ? "login" : "api error"}`;
+  if (hung !== undefined) return `${hung >= UNSTICK_TOOL_DEFAULT_MIN * 60_000 ? "⚠ stuck in" : "◌ in"} ${row.tool!.name} ${dur(hung)}`;
+  if (row.failure) return failureWord(row.failure.text);
   if ((procs?.roots.length ?? 0) > 1) return `⚠ ${procs!.roots.length} procs`;
   if (mcpGone(procs)) return "⚠ no cotal mcp";
   if (row.conflictPids.length) return "⚠ 2 writers";
   if (!row.live && procs) return "⚠ off mesh";
-  return row.busy ? "busy" : row.mesh;
+  if (row.busy) return "busy";
+  return row.mesh === "idle" ? "online" : row.mesh;
+}
+
+/** ONE short form of a refused turn for status, top and chat: `⚠ limit — resets 1am` / `⚠ login
+ *  needed — paw attach <name>` / `⚠ api error 500`; the long text stays in `paw status <name>`. */
+export function failureWord(text: string, name?: string): string {
+  if (/limit/i.test(text)) {
+    const resets = /resets? (?:at )?([^\s(]+(?: ?[ap]m)?)/i.exec(text)?.[1];
+    return `⚠ limit${resets ? ` — resets ${resets}` : ""}`;
+  }
+  if (/login|log in|authenticat/i.test(text)) return `⚠ login needed${name ? ` — paw attach ${name}` : ""}`;
+  const code = /\b([45]\d\d)\b/.exec(text)?.[1];
+  return `⚠ api error${code ? ` ${code}` : ""}`;
 }
 
 /** Past claude's own MCP connect window (30s), so a seat that is still booting is never flagged. */
@@ -486,7 +500,7 @@ export function renderTable(rows: TopRow[], o: { width: number; now: number; not
   const lines = [color.dim(head.trimEnd())];
   rows.forEach((r, i) => {
     const st = fit(r.state, stateW);
-    const stc = /^[⚠⧗]/.test(r.state) ? color.yellow(st) : /idle|busy|working/.test(r.state) ? color.green(st) : color.dim(st);
+    const stc = /^[⚠◌]/.test(r.state) ? color.yellow(st) : /online|busy|working/.test(r.state) ? color.green(st) : color.dim(st);
     const cpu = r.cpu === undefined ? "?" : `${Math.round(r.cpu)}%`;
     const note = r.note ?? "";
     lines.push(
@@ -540,12 +554,22 @@ export function pawMb(f: Fleet): number | undefined {
   return f.measured ? [...Object.values(f.agents), ...f.orphans].reduce((s, x) => s + (x.mem ?? 0), 0) : undefined;
 }
 
+/** Memory coloured by how full it is: yellow from {@link MEM_WARN}, red from {@link MEM_CRIT}. */
+export const MEM_WARN = 0.85;
+export const MEM_CRIT = 0.95;
+export function memCell(usedMb: number | undefined, totalMb: number | undefined, warn = MEM_WARN): string {
+  const text = `${fmtMb(usedMb)}/${fmtMb(totalMb)}`;
+  if (usedMb === undefined || !totalMb) return text;
+  const share = usedMb / totalMb;
+  return share >= MEM_CRIT ? color.red(text) : share >= warn ? color.yellow(text) : text;
+}
+
 export function machineLine(m: Machine, pawMb: number | undefined): string {
-  const swap = m.swapUsedMb === undefined ? "swap ?" : `swap ${fmtMb(m.swapUsedMb)}`;
-  const load = `load ${m.load.toFixed(0)}/${m.cores} cores`;
+  const swap = `swap ${fmtMb(m.swapUsedMb)}`;
+  const load = `load ${m.load.toFixed(0)}/${m.cores}`;
   return [
-    `mem ${fmtMb(m.memUsedMb)}/${fmtMb(m.memTotalMb)} used (paw ${fmtMb(pawMb)})`,
-    m.load > m.cores * 2 ? color.yellow(load) : load,
+    `mem ${memCell(m.memUsedMb, m.memTotalMb)} · paw ${pawMb === undefined ? "— (not measured)" : fmtMb(pawMb)}`,
+    m.load > m.cores ? color.yellow(load) : load,
     (m.swapUsedMb ?? 0) > 2048 ? color.red(swap) : swap,
   ].join(" · ");
 }

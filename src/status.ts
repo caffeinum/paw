@@ -101,7 +101,8 @@ export interface AgentStatus {
   /** The manager lists this agent but paw's registry does NOT (a `cotal_spawn` / `paw cotal spawn`
    *  peer, 2026-09-09): shown so the dashboard agrees with the mesh, with the harness the manager
    *  reports. No folder, pin, transcript or revival — paw only ever knows what the ps row says. */
-  unregistered?: { agent: string; via?: "roster" };
+  /** Live but registered nowhere here; `agent` = its harness when the ps row or card names one. */
+  unregistered?: { agent?: string; via?: "roster" };
   /** Persona `agent:` pin (claude/opencode/codex/…). Absent = paw's default claude. The claude-only
    *  pin/transcript columns must not be judged against a non-claude harness. */
   harness?: string;
@@ -392,12 +393,16 @@ function stuckOf(space: string, name: string): { stuck?: { since: number; restar
   return h?.stuck !== undefined ? { stuck: { since: h.stuck, restarts: h.restarts.length } } : {};
 }
 
+/** A registered agent whose persona names a folder that no longer exists. */
+const folderGone = (r: AgentStatus): boolean => !!r.folder && !r.unregistered && !r.live && !existsSync(r.folder);
+
 /** A trailing durability/health note, or "" when the agent is quietly durable. */
 function note(r: AgentStatus, now: number): string {
   if (r.personalityError) return `⚠ ${r.personalityError.replace(/^paw: /, "")}`;
-  if (r.unregistered?.via === "roster")
-    return `unregistered ${r.unregistered.agent} seat — live on the mesh, but no persona here and not in this manager's ps`;
-  if (r.unregistered) return `unregistered ${r.unregistered.agent} peer (cotal_spawn) — paw restart registers + revives it`;
+  // A roster-only agent's row already says `online (not registered here)`; the summary line below the
+  // table names the fix once. A manager-listed one can be registered by a restart.
+  if (r.unregistered?.via === "roster") return "";
+  if (r.unregistered) return `not registered here${r.unregistered.agent ? ` (${r.unregistered.agent})` : ""} — \`paw restart\` registers + revives it`;
   if (r.elsewhere) return elsewhereStatus(r.elsewhere);
   // A hung tool outranks everything: it is WHY the inbox isn't draining, and `paw unstick` is the fix.
   const hung = hungTool(r, now);
@@ -412,6 +417,8 @@ function note(r: AgentStatus, now: number): string {
   if (r.terminalLost) return `⚠ terminal lost — live on the mesh, but the manager can't reach its tmux window (\`paw attach ${r.name}\` explains)`;
   if (r.conflictPids.length) return `⚠ two writers (pid ${r.conflictPids.join(", ")})`;
   if (inboxStuck(r)) return `⚠ inbox stuck — ${inboxText(r.inbox)}, agent not consuming`;
+  // A missing folder is the one fact that matters for a registered agent: it can never be woken.
+  if (folderGone(r)) return `⚠ folder gone: ${tilde(r.folder)} — \`paw rm ${r.name}\`, or restore it`;
   if (!r.pin && writesClaudeTranscript(r.harness)) return "⚠ no pin — resets on restart";
   if (!r.durable && writesClaudeTranscript(r.harness)) return "fresh (new session on first boot)";
   return "";
@@ -457,7 +464,7 @@ export function ago(ms: number | undefined, now: number): string {
 function statusColor(text: string): (s: string) => string {
   // `busy` is paw's inference and `working` is the agent's own claim — same colour, because to a
   // reader scanning the column they mean the same thing: this agent is doing something.
-  if (text === "idle" || text === "working" || text === "busy" || text === "live (unmanaged)") return c.green;
+  if (text === "online" || text === "working" || text === "busy" || text.startsWith("online (")) return c.green;
   if (text === "starting" || text === "waiting" || text.startsWith("in tool")) return c.yellow;
   return c.dim; // offline
 }
@@ -566,8 +573,10 @@ export function formatStatus(rows: AgentStatus[], now: number, width: number = t
   const statusText = (r: AgentStatus) => {
     const hung = hungTool(r, now);
     if (hung !== undefined) return `in tool ${ago(now - hung, now)}`;
-    if (r.unmanaged) return "live (unmanaged)";
-    return (r.busy ?? inferBusy(r.mesh, r.live, r.activeMs, now)) ? "busy" : r.mesh;
+    if (r.unregistered?.via === "roster") return "online (not registered here)";
+    if (r.unmanaged) return "online (unmanaged)";
+    if (r.busy ?? inferBusy(r.mesh, r.live, r.activeMs, now)) return "busy";
+    return r.mesh === "idle" ? "online" : r.mesh;
   };
   const cwd = (r: AgentStatus) => (r.folder ? tilde(r.folder) : "—");
   const rtText = (r: AgentStatus) => (r.live && r.runtime ? r.runtime : "—");
@@ -629,19 +638,23 @@ export function formatStatus(rows: AgentStatus[], now: number, width: number = t
     return n && !inline ? [row, "  " + paint(elideRight(n, Math.max(MIN_NOTE, width - 2)))] : [row];
   });
   const conflicts = rows.filter((r) => r.conflictPids.length).length;
-  const pinless = rows.filter((r) => !r.pin && writesClaudeTranscript(r.harness) && !r.unregistered).length;
+  const gone = rows.filter(folderGone).length;
+  const pinless = rows.filter((r) => !r.pin && writesClaudeTranscript(r.harness) && !r.unregistered && !folderGone(r)).length;
   const stuck = rows.filter(inboxStuck).length;
   const hung = rows.filter((r) => hungTool(r, now) !== undefined).length;
+  const unregistered = rows.filter((r) => r.unregistered?.via === "roster").length;
   const out = [header, ...lines];
-  if (conflicts || pinless || stuck || hung) {
+  if (conflicts || pinless || stuck || hung || gone) {
     const bits = [
       hung && `${hung} agent(s) inside a long-running tool`,
       conflicts && `${conflicts} two-writer conflict(s)`,
       stuck && `${stuck} stuck inbox(es)`,
+      gone && `${gone} folder(s) missing`,
       pinless && `${pinless} unpinned`,
     ].filter(Boolean);
     out.push("", c.yellow(`⚠ ${bits.join(", ")} — see above`));
   }
+  if (unregistered) out.push("", c.dim(`${unregistered} online agent${unregistered === 1 ? " isn't" : "s aren't"} registered on this machine — \`paw adopt <folder>\` registers one`));
   return out.join("\n");
 }
 
@@ -1142,7 +1155,7 @@ export async function collectStatus(space: string, ctl?: ManagerControl, opts: C
       conflictPids: [],
       inbox: inboxByName.get(name) ?? { kind: "none" },
       busy: false,
-      unregistered: { agent: psRow.agent ?? "?" },
+      unregistered: { ...(psRow.agent ? { agent: psRow.agent } : {}) },
       harness: psRow.agent,
     });
   }
@@ -1168,7 +1181,7 @@ export async function collectStatus(space: string, ctl?: ManagerControl, opts: C
       inbox: { kind: "none" },
       busy: false,
       unmanaged: true,
-      unregistered: { agent: ros.harness ?? "?", via: "roster" },
+      unregistered: { ...(ros.harness ? { agent: ros.harness } : {}), via: "roster" },
       ...(ros.harness ? { harness: ros.harness } : {}),
     });
   }

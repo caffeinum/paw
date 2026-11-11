@@ -94,7 +94,7 @@ async function top(argv: string[]): Promise<void> {
   const agentProcs = Object.values(fleet.agents);
   const pawTotal = pawMb(fleet);
   console.log(machineLine(fleet.machine, pawTotal));
-  if (!fleet.measured) console.log(color.yellow("footprint unavailable — memory shown as ?"));
+  if (!fleet.measured) console.log(color.yellow("memory not measured (shown as —)"));
   console.log("");
   console.log(renderTable(rows, { width, now, noteHeader: "HINT", verbose: args.verbose }));
 
@@ -117,7 +117,7 @@ async function top(argv: string[]): Promise<void> {
   console.log(
     "\n" +
       color.dim(
-        [`claude ×${agentProcs.length} ${fmtMb(claudeMb)}`, cls("mcp", of(["mcp"])), cls("tracepaper", of(["tp"])), cls("bg", of(["task", "bg"])), cls("orphans", fleet.orphans)]
+        [agentProcs.length ? `claude ×${agentProcs.length} ${fmtMb(claudeMb)}` : undefined, cls("mcp", of(["mcp"])), cls("tracepaper", of(["tp"])), cls("bg", of(["task", "bg"])), cls("orphans", fleet.orphans)]
           .filter(Boolean)
           .join(" · "),
       ),
@@ -128,12 +128,12 @@ async function top(argv: string[]): Promise<void> {
   const stops = [...hints].filter(([, h]) => h.cmd?.startsWith("paw stop")).map(([n]) => n);
   const optimize = [...hints].filter(([, h]) => h.cmd?.startsWith("paw optimize")).map(([n]) => n);
   const nowMb = sumMem([...abandoned.map((o) => o.mem), ...stops.map((n) => fleet.agents[n]?.mem)]);
-  const cmds = [
-    kills.length ? `kill ${kills.join(" ")}` : "",
-    ...stops.map((n) => hints.get(n)!.cmd!),
-    optimize.length ? `paw optimize --since 24h ${color.dim(`(${optimize.length} idle >24h, holding ${fmtMb(sumMem(optimize.map((n) => fleet.agents[n]?.mem)))})`)}` : "",
-  ].filter(Boolean);
-  if (cmds.length) console.log(`reclaimable now ≈ ${fmtMb(nowMb)}: ${cmds.join(" · ")}`);
+  const idleMb = fmtMb(sumMem(optimize.map((n) => fleet.agents[n]?.mem)));
+  const nowCmds = [kills.length ? `kill ${kills.join(" ")}` : "", ...stops.map((n) => hints.get(n)!.cmd!)].filter(Boolean);
+  const later = optimize.length ? `${idleMb} idle >24h: paw optimize --since 24h` : "";
+  // The headline number names what the commands beside it free — never "≈ 0M" next to "holding 635M".
+  if (nowCmds.length) console.log(`reclaimable now ${fmtMb(nowMb)}: ${nowCmds.join(" · ")}${later ? ` · ${later}` : ""}`);
+  else if (later) console.log(`nothing to reclaim now · ${later}`);
   for (const e of status.errors) console.error(color.dim(e));
 }
 

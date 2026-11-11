@@ -310,15 +310,34 @@ export interface SleepDecision {
   reason: string;
 }
 
+/**
+ * `--sweep --dry-run`'s report: who would sleep, and who stays awake grouped by WHY — 31 lines of
+ * `awake — …` buried the one that mattered. `-v` lists every agent with its full reason.
+ */
+export function dryRunLines(r: Pick<SweepResult, "would" | "skipped">, verbose: boolean): string[] {
+  const lines = [r.would.length ? `would sleep: ${r.would.map((w) => w.name).join(", ")}` : "would sleep: nobody"];
+  const groups = new Map<string, string[]>();
+  for (const s of r.skipped) {
+    const key = s.reason === "already asleep" || s.reason === "offline" || s.reason === "working" || s.reason === "waiting" ? s.reason : /^in #/.test(s.reason) ? "in #channels" : /^background task|process\(es\) running/.test(s.reason) ? "running background processes" : /^idle \d+m </.test(s.reason) ? "not idle long enough" : s.reason.replace(/\(.*$/, "").trim();
+    groups.set(key, [...(groups.get(key) ?? []), s.name]);
+  }
+  const named = ["running background processes", "in #channels"];
+  const parts = [...groups].map(([k, names]) => `${names.length} ${k}${named.includes(k) || names.length <= 3 ? ` (${names.join(", ")})` : ""}`);
+  if (parts.length) lines.push(`stays awake: ${parts.join(" · ")}`);
+  if (verbose) for (const s of r.skipped) lines.push(`  ${s.name}: ${s.reason}`);
+  lines.push("(dry run — nothing touched)");
+  return lines;
+}
+
 /** Pure: may this agent go to sleep now? Every refusal names its reason (the sweep logs them). */
 export function sleepDecision(row: AgentStatus, hibernateMs: number, now: number, activity: Activity, channels: string[]): SleepDecision {
   const no = (reason: string) => ({ sleep: false, reason });
   if (NEVER_SLEEP.has(row.name)) return no("the global agent never sleeps");
-  if (!row.live) return no("not live");
+  if (!row.live) return no("offline");
   if (row.runtime === "fg") return no("a foreground `paw claude` (not the manager's to despawn)");
   if (row.unregistered) return no("not registered with paw");
   if (row.harness && !SLEEPABLE_HARNESSES.has(row.harness)) return no(`harness ${row.harness} not supported yet (paw sleep reads claude and kit sessions)`);
-  if (row.mesh !== "idle") return no(`mesh ${row.mesh}`);
+  if (row.mesh !== "idle") return no(row.mesh);
   if (row.busy || row.tool) return no(`a turn is in flight${row.tool ? ` (${row.tool.name})` : ""}`);
   if (row.inbox.kind === "error") return no("inbox lag unknown");
   if (row.inbox.kind === "lag" && row.inbox.queued + row.inbox.unread > 0) return no(`inbox not drained (${row.inbox.queued} queued, ${row.inbox.unread} unread)`);
@@ -514,7 +533,7 @@ export async function sleepSweep(space: string, ctl: ManagerControl, deps: Sweep
     }
     if (hibernateMs === undefined) continue;
     if (!row.live) {
-      if (deps.dryRun) out.skipped.push({ name: row.name, reason: sleepState(space, row.name) ? `not live (${sleepState(space, row.name)})` : "not live" });
+      if (deps.dryRun) out.skipped.push({ name: row.name, reason: sleepState(space, row.name) === "asleep" ? "already asleep" : "offline" });
       continue;
     }
     const h = hosting(space, row.name, ps.get(row.name));
@@ -607,7 +626,7 @@ export async function sweepOtherSpaces(primary: string, deps: KeeperSleepDeps = 
   return out;
 }
 
-function parseArgs(argv: string[]): { space?: string; names: string[]; after?: string; off: boolean; now: boolean; sweep: boolean; force: boolean; dryRun: boolean } {
+function parseArgs(argv: string[]): { space?: string; names: string[]; after?: string; off: boolean; now: boolean; sweep: boolean; force: boolean; dryRun: boolean; verbose?: boolean } {
   const out = { names: [] as string[], off: false, now: false, sweep: false, force: false, dryRun: false } as ReturnType<typeof parseArgs>;
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -619,6 +638,7 @@ function parseArgs(argv: string[]): { space?: string; names: string[]; after?: s
     else if (a === "--sweep") out.sweep = true;
     else if (a === "--force") out.force = true;
     else if (a === "--dry-run" || a === "-n") out.dryRun = true;
+    else if (a === "-v" || a === "--verbose") out.verbose = true;
     else if (a.startsWith("-")) throw new Error(`paw sleep: unknown flag ${a}`);
     else out.names.push(a);
   }
@@ -648,9 +668,7 @@ async function sleepCmd(argv: string[]): Promise<void> {
     // Read-only: never starts a mesh or manager (withEnsuredManager would) — a space not running here says so.
     if (!managerProcs(space).length) throw new Error(`paw sleep: no manager of this machine runs space "${space}" — nothing to sweep`);
     const r = await withManagerControl(space, pawServer(space), (ctl) => sleepSweep(space, ctl, { dryRun: true }));
-    for (const s of r.would) console.log(`  ${s.name}: would sleep — ${s.reason}`);
-    for (const s of r.skipped) console.log(`  ${s.name}: awake — ${s.reason}`);
-    console.log(r.would.length ? `would sleep: ${r.would.map((w) => w.name).join(", ")} (dry run — nothing touched)` : "nobody would sleep (dry run — nothing touched)");
+    for (const l of dryRunLines(r, o.verbose === true)) console.log(l);
     return;
   }
   if (o.now || o.sweep) {
