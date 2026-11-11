@@ -242,7 +242,7 @@ export function connectVerdict(reason: "timeout" | "unreachable", trace: Connect
     if (failed.outcome === "unexpected") return { word: "hung up", hint: `the address answers with something that is not a mesh server (${failed.detail})` };
     return { word: "hung up", hint: "the connection failed before the server greeted us" };
   }
-  if (failed.outcome === "not-offered") return { word: "rejected credentials", hint: "no TLS at that address — paw requires TLS for a remote mesh" };
+  if (failed.outcome === "not-offered") return { word: "no tls", hint: "the mesh server there isn't using TLS — paw requires it for a remote mesh" };
   if (failed.outcome === "timeout") return { word: "no answer", hint: "the TLS handshake stalled (server overloaded or out of memory)" };
   if (failed.code && CERT_CODES.has(failed.code)) return { word: "rejected credentials", hint: "certificate rejected — set NODE_EXTRA_CA_CERTS=<ca.pem> for every paw command" };
   return { word: "hung up", hint: "the TLS handshake failed" };

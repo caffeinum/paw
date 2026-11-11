@@ -628,7 +628,7 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
   assert(seen.size === total, `fold scroll: PgDn reaches every painted row (${seen.size}/${total})`);
   const st = { dim: (x: string) => x, green: (x: string) => x, yellow: (x: string) => x, red: (x: string) => x };
   const info = agentInfo({ live: true, mesh: "working", ctx: "152k/1M 15%", ctxShare: 0.15, inbox: "2 queued", activeMs: now - 120_000, failure: { text: "session\nlimit" } }, now, st);
-  assert(info === "online · ctx 152k/1M 15% · inbox 2 queued · active 2m ago · ! session limit", `info: paw status's words in one row (${info})`);
+  assert(info === "online · ctx 152k/1M 15% · inbox 2 queued · active 2m ago · ⚠ session limit", `info: paw status's words in one row (${info})`);
   assert(agentInfo({ live: false, mesh: "offline", ctx: "—", inbox: "—" }, now, st).startsWith("offline"), "info: an agent off the mesh says offline");
   // scrolling: 30 flat beads in a 12-row budget
   const many = Array.from({ length: 30 }, (_, i) => bead(`m${String(i).padStart(2, "0")}`, "open", { updatedAt: iso(i) }));
@@ -654,7 +654,7 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
   assert(stripMouse("plain \x1b[A").rest === "plain \x1b[A" && stripMouse("plain").events.length === 0, "mouse: other input passes untouched");
   assert(MOUSE_ON === "\x1b[?1000h\x1b[?1006h" && MOUSE_OFF === "\x1b[?1000l\x1b[?1006l" && SELECT_MODE_KEY === "\x0f", "mouse: SGR clicks + wheel on/off; ctrl+o toggles select mode");
   const err = renderTasksView({ agent: "kit", operator: "op", beadsError: "bd list: boom" }, { width: 60, height: 20, now });
-  assert(err.some((r) => r.includes("! beads: bd list: boom")) && !err.some((r) => r.includes("no beads")), "render: a failed read is shown, never as 'no beads'");
+  assert(err.some((r) => r.includes("✕ beads: bd list: boom")) && !err.some((r) => r.includes("no beads")), "render: a failed read is shown, never as 'no beads'");
   const mine = renderTasksView({ operator: "op", beads: [] }, { width: 60, height: 20, now });
   assert(mine[0].includes("yours") && mine.some((r) => r.includes("no beads assigned to op")) && mine.some((r) => r.includes("pick an agent with ↓ to see its beads")), "render: no target → the operator's own beads + how to pick an agent");
   assert(renderTasksView({ agent: "kit", operator: "op" }, { width: 60, height: 20, now }).some((r) => r.includes("reading beads")), "render: before the first read it says so");
@@ -872,6 +872,19 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
     assert(eq(said(live), ["join:newbie"]), `presence: view live again → only NET changes: the flapping peer and the come-and-gone one print nothing, the new one joins (got ${JSON.stringify(said(live))})`);
     assert(eq(said(q.tick(false, 130_000 + OFFLINE_DEBOUNCE_MS)), ["offline:kit"]), "presence: the one really gone prints once, after the debounce on the live view");
     assert(q.tick(false, 200_000).length === 0, "presence: and nothing more");
+
+    // A restart: a new id under the same name joins while the old id's departure is still inside the
+    // debounce (or held) — the departure prints first, never `joined` above `went offline`.
+    const r = new PresenceHold<{ name: string }>(OFFLINE_DEBOUNCE_MS, (c) => c.name);
+    r.seed([{ id: "k1", card: { name: "kit" }, status: "idle" }]);
+    assert(r.feed({ type: "offline", id: "k1", card: { name: "kit" }, status: "offline" }, false, 1000).length === 0, "presence: restart — the old id's offline waits");
+    assert(eq(said(r.feed({ type: "join", id: "k2", card: { name: "kit" }, status: "idle" }, false, 5000)), ["offline:kit", "join:kit"]), "presence: restart — the old id leaves, THEN the new one joins");
+    assert(r.tick(false, 5000 + OFFLINE_DEBOUNCE_MS).length === 0, "presence: restart — the old id's debounce never prints a second offline");
+    const held = new PresenceHold<{ name: string }>(OFFLINE_DEBOUNCE_MS, (c) => c.name);
+    held.seed([{ id: "k1", card: { name: "kit" }, status: "idle" }]);
+    held.feed({ type: "offline", id: "k1", card: { name: "kit" }, status: "offline" }, true, 1000);
+    held.feed({ type: "join", id: "k2", card: { name: "kit" }, status: "idle" }, true, 2000);
+    assert(eq(said(held.tick(false, 3000)), ["offline:kit", "join:kit"]), "presence: a restart held while the view was quiet prints in order once live");
   }
 
   {
@@ -1129,6 +1142,7 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
   assert(eq(flips, ["2027-intern ● online", "2027-intern ● working", "2027-intern ● online", "2027-intern ● working", "2027-intern ● online"]), `footer: the target's live status, flip by flip, over a stale offline record (got ${JSON.stringify(flips)})`);
   assert(peerStatusTag("ghost", roster("idle"), "me")!.text === "ghost ○ offline", "footer: a target with no record reads offline");
   assert(peerStatusTag("ghost", roster("idle"), "me", () => true, { connected: true, absent: true })!.text === "ghost ✕ not found", "footer: a name the roster never had is NOT FOUND, never offline");
+  assert(peerStatusTag("sleepy", roster("idle"), "me", () => true, { connected: true, absent: "folder gone" })!.text === "sleepy ✕ folder gone", "footer: a registered agent whose folder is gone says that, not \"not found\"");
   assert(peerStatusTag("2027-intern", roster("idle"), "me", () => true, { connected: false })!.text === "2027-intern ◌", "footer: a roster read over a link that is down now says nothing about the agent — a loader, never a green dot");
   assert(peerStatusTag(undefined, roster("working"), "me")!.text === "2027-intern, kit working", "footer: all-chat mode summarises who is working");
   assert(peerStatusTag(undefined, roster("working"), "me", (n) => n === "kit")!.text === "kit working", "footer: … only peers the session's filter shows");

@@ -63,7 +63,7 @@ import { FAIL, LIVE, LOADER as GLYPH_LOADER, OFF, OK, RETRY, presenceWord, probl
 import { DEDUP_WINDOW_MS, draftDm, draftPost, publishDraft } from "./mesh-publish.ts";
 import { Outbox, type OutEvent } from "./outbox.ts";
 import { LinkProbe, PROBE_MS, isAckTimeout } from "./link-probe.ts";
-import { PresenceHold, type PresenceLine } from "./presence-hold.ts";
+import { OFFLINE_DEBOUNCE_MS, PresenceHold, type PresenceLine } from "./presence-hold.ts";
 import { AwaitTracker } from "./chat-awaiting.ts";
 import { arrowRun, CLEAR_ALL, displayWidth, fitWidth, entryVisible, hintFor, hintWithTag, whereTag, History, type FooterCell, LogFollower, navKey, scrollKey, Painter, type Entry, pickerWindow, showsChat, showsLogs, showsPeers, stepView, VIEW_LABEL, viewNeedsTarget, type ChatView } from "./chat-views.ts";
 import { classifyPeer, isPeerForwardOf, mergeByTs, peerRows, peerSummary, pickPeers, type PeerMsg, type RawMsg } from "./chat-peers.ts";
@@ -299,10 +299,11 @@ export function peerStatusTag(
   roster: { card: { id: string; name: string }; status: string }[] | undefined,
   me: string | undefined,
   visible: (name: string) => boolean = () => true,
-  link: { connected: boolean; absent?: boolean } = { connected: true },
+  link: { connected: boolean; absent?: boolean | "not found" | "folder gone" } = { connected: true },
 ): { text: string; status: string } | undefined {
-  // A name the roster never had (a typo) is NOT found — never `offline`, which is a state a real agent has.
-  if (target && link.absent) return { text: `${target} ${FAIL} not found`, status: "absent" };
+  // A name the roster never had (a typo) is NOT found — never `offline`, which is a state a real agent
+  // has; one registered here whose folder is gone says that, not "not found".
+  if (target && link.absent) return { text: `${target} ${FAIL} ${typeof link.absent === "string" ? link.absent : "not found"}`, status: "absent" };
   // Never read yet, or read over a link that is down now: the target shows a loader. An unread roster
   // is not an empty one, and a roster from before the socket died cannot say what the agent does now.
   if (roster === undefined || !link.connected) return target ? { text: `${target} ${LOADER}`, status: "loading" } : undefined;
@@ -822,7 +823,7 @@ async function chat(argv: string[]): Promise<void> {
     // A roster never read is NOT an empty one, and one read over a link that is down now says nothing
     // about the agent: the target shows a loader, never `offline`.
     const linkUp = ready && !!conn && conn.phase(now) === "connected";
-    const absent = lookup === "absent" || (!!targetLost && lookup === "folder-gone");
+    const absent = lookup === "absent" ? "not found" : targetLost && lookup === "folder-gone" ? "folder gone" : undefined;
     const peer = peerStatusTag(curName ?? pendingName(), roster(), me, (n) => presenceVisible(filter, n), { connected: linkUp, absent });
     if (peer) cell(peer.text, peer.status === "working" ? c.yellow : peer.status === "waiting" ? c.magenta : peer.status === "absent" ? c.red : c.dim);
     return cells;
@@ -1841,7 +1842,7 @@ async function chat(argv: string[]): Promise<void> {
   type Card = Presence["card"];
   const presenceQuiet = (now: number): boolean =>
     !ep || !conn || conn.phase(now) !== "connected" || !ep.presenceView().fresh || ep.presenceWriteFailure()?.stuck === true;
-  let peerHold = new PresenceHold<Card, PresenceStatus>();
+  let peerHold = new PresenceHold<Card, PresenceStatus>(OFFLINE_DEBOUNCE_MS, (card) => card.name);
   const printPeerLines = (lines: PresenceLine<Card, PresenceStatus>[]): void => {
     for (const l of lines) {
       if (!presenceVisible(filter, l.card.name)) continue;
@@ -3109,6 +3110,8 @@ async function chat(argv: string[]): Promise<void> {
       } else if (text === "/reconnect") {
         if (booting) emit(c.dim("(already connecting)"));
         else if (bootPhase === "failed") {
+          // Asked for: say so once (the same reason failing again only ticks the footer's clock).
+          emit(c.dim(`${RETRY} connecting to ${space} again…`));
           cancelBootRetry();
           bootAbort = new AbortController();
           bootSettled = boot().catch((e: Error) => emit(c.red(`${FAIL} ${e.message}`)));
@@ -3253,10 +3256,12 @@ async function chat(argv: string[]): Promise<void> {
             if (filter?.kind === "agent") filter = { kind: "agent", name: peer.card.name };
             if (switched) {
               // The banner is the new target's now: no stale "not found" from the name typed before.
+              // Repainted NOW, in place: `(now messaging …)` prints next, and a banner with a line under it
+              // can only append deltas — the agent row (`kitt ✕ not in …`) would stay as it was.
               lookup = "found";
               fields.status = okSlot(undefined);
               fields.info = loadingSlot();
-              updateBanner();
+              flushBanner();
               loadInfo();
             }
             rl!.setPrompt(promptFor());
@@ -3420,7 +3425,7 @@ async function chat(argv: string[]): Promise<void> {
     conn = undefined;
     me = undefined;
     rosterSeen = false;
-    peerHold = new PresenceHold<Card, PresenceStatus>();
+    peerHold = new PresenceHold<Card, PresenceStatus>(OFFLINE_DEBOUNCE_MS, (card) => card.name);
   };
   /** The endpoint, with every listener attached BEFORE it connects (no DM lands unheard). */
   const startEndpoint = async (i: HumanInbox): Promise<{ ep: CotalEndpoint; conn: ReturnType<typeof attachConn> }> => {

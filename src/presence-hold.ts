@@ -11,7 +11,9 @@
  *   NET change prints — a peer that left and came back prints nothing, one really gone prints once;
  * - even when healthy, an `offline` waits {@link OFFLINE_DEBOUNCE_MS} (two presence TTLs) before it
  *   prints, and a `join` inside that wait cancels it — one missed heartbeat prints nothing;
- * - a join prints at once when the view is live (fresh news, and a real arrival).
+ * - a join prints at once when the view is live (fresh news, and a real arrival);
+ * - a restart is a new id under the same name: its old id's departure (held, or still inside the
+ *   debounce) prints BEFORE the join, never `joined` above `went offline`.
  *
  * Nothing is fabricated: a line names a transition the endpoint reported and the transcript has not
  * yet said. A peer gone longer than the debounce with the view live always prints. Pure: time and the
@@ -43,9 +45,12 @@ export class PresenceHold<C, S extends string = string> {
   private held = 0;
 
   private readonly debounceMs: number;
+  /** The name two ids share across a restart; undefined = ids are never related. */
+  private readonly nameOf: (card: C) => string | undefined;
 
-  constructor(debounceMs = OFFLINE_DEBOUNCE_MS) {
+  constructor(debounceMs = OFFLINE_DEBOUNCE_MS, nameOf: (card: C) => string | undefined = () => undefined) {
     this.debounceMs = debounceMs;
+    this.nameOf = nameOf;
   }
 
   /** Peers already present before the listener attached: the transcript treats them as said-present,
@@ -88,6 +93,19 @@ export class PresenceHold<C, S extends string = string> {
     return [];
   }
 
+  /** The departures of this name's OTHER ids the transcript still shows as present: a restart. */
+  private departed(id: string, card: C): PresenceLine<C, S>[] {
+    const name = this.nameOf(card);
+    if (name === undefined) return [];
+    const out: PresenceLine<C, S>[] = [];
+    for (const [oid, o] of this.cur) {
+      if (oid === id || o.online || !this.said.has(oid) || this.nameOf(o.card) !== name) continue;
+      this.forget(oid);
+      out.push({ type: "offline", id: oid, card: o.card, status: o.status });
+    }
+    return out;
+  }
+
   private resolve(id: string, now: number): PresenceLine<C, S>[] {
     const p = this.cur.get(id)!;
     const said = this.said.has(id);
@@ -95,7 +113,7 @@ export class PresenceHold<C, S extends string = string> {
       p.offlineDueSince = undefined;
       if (said) return [];
       this.said.add(id);
-      return [{ type: "join", id, card: p.card, status: p.status }];
+      return [...this.departed(id, p.card), { type: "join", id, card: p.card, status: p.status }];
     }
     if (!said) return this.forget(id);
     p.offlineDueSince ??= now;
