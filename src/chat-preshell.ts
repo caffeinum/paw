@@ -39,8 +39,6 @@ export function lexChatArgs(argv: string[], cwd: string): { space?: string; labe
   return { ...(space ? { space } : {}), label: bare === "." ? basename(cwd) : bare, mode: "agent", only: only || raw.startsWith("@") };
 }
 
-/** The pending state's words — the pre-shell and chat.ts say the same thing. */
-export const lookingFor = (name: string, space: string): string => `${LOADER} looking for @${name} on ${space}…`;
 
 const tty = process.stdout.isTTY === true;
 const wrap = (code: string) => (s: string) => (tty ? `\x1b[${code}m${s}\x1b[0m` : s);
@@ -126,22 +124,21 @@ export function paintPreshell(argv: string[]): void {
     check = { kind: "other" };
   }
   const lookupMs = performance.now() - t0;
-  const looking = check.kind === "unknown" ? lookingFor(check.name, space) : undefined;
   const st: BannerState =
     lex.mode === "channel"
       ? { mode: "channel", space, remote, room: lex.label! }
       : lex.mode === "all"
         ? { mode: "all", space, remote, room: "general", roster: loading() }
-        : { mode: "agent", space, remote, agent: `${c.cyan(lex.label!)} ${c.dim(LOADER)}`, where: "", status: looking ? ok(c.dim(looking)) : loading(), machine: loading(), info: loading(), only: lex.only, bang: true };
+        : { mode: "agent", space, remote, agent: c.cyan(lex.label!), where: "", status: loading(), machine: loading(), info: loading(), only: lex.only, bang: true };
   const full = renderBanner(st, c);
   const cols = process.stdout.columns || 80;
   // A frame taller than the screen scrolls its top into the scrollback, where erase() can't reach it —
   // the real banner would then print under a stranded copy. A short screen gets a one-line frame.
   const tooTall = paintedRows(full, cols) + 2 >= (process.stdout.rows || 24);
   const text = tooTall ? `${c.bold("  🐾 paw chat")}  ${c.dim(`${LOADER} loading`)}\n` : full;
-  const prompt = looking
-    ? `${c.dim(looking)}${c.dim("> ")}`
-    : lex.mode === "agent" ? `${c.dim("you → ")}${c.dim(lex.label!)} ${c.dim(LOADER)}${c.dim("> ")}` : `${c.dim(`you → #${lex.mode === "channel" ? lex.label : "general"}`)} ${c.dim(LOADER)}${c.dim("> ")}`;
+  // A name registered nowhere here (check.kind "unknown") paints the same loader prompt: the footer
+  // phase says it is being looked for, and the roster settles it (src/chat-lookup.ts).
+  const prompt = lex.mode === "agent" ? `${c.dim("you → ")}${c.dim(lex.label!)} ${c.dim(LOADER)}${c.dim("> ")}` : `${c.dim(`you → #${lex.mode === "channel" ? lex.label : "general"}`)} ${c.dim(LOADER)}${c.dim("> ")}`;
   // The terminal goes back on EVERY way out of this window — exit or signal — before it is touched.
   holdTerminal();
   // Raw mode FIRST: from here a Ctrl-C is a byte waiting for readline, not a SIGINT that could kill us

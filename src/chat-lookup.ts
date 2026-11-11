@@ -92,10 +92,12 @@ export function scanChatArgs(argv: string[]): { space?: string; positional?: str
  *  - `known`: a name registered in this space (its folder exists) — the normal prompt;
  *  - `unknown`: a valid name nobody registered here — maybe a peer hosted on another machine, maybe a
  *    typo; only the live roster can say, so the frame shows it is looking;
+ *  - `folder-gone`: registered here, but the folder its persona names no longer exists — it can't be
+ *    woken; chat says so (never "no agent", the record is right there);
  *  - `other`: anything chat.ts resolves on its own (a folder, `.`, a URL, a channel, --all, and every
  *    creating flag: --fresh/--name/--agent) — painted as before.
  */
-export type TargetCheck = { kind: "known"; name: string } | { kind: "unknown"; name: string } | { kind: "other" };
+export type TargetCheck = { kind: "known"; name: string } | { kind: "unknown"; name: string } | { kind: "folder-gone"; name: string; folder: string } | { kind: "other" };
 
 export function checkChatTarget(argv: string[], cwd: string, home: string, space: string): TargetCheck {
   const { positional, flags } = scanChatArgs(argv);
@@ -111,7 +113,8 @@ export function checkChatTarget(argv: string[], cwd: string, home: string, space
     } catch {} // not a path → a name
   }
   const folder = localAgentFolder(home, space, name);
-  return folder && existsSync(folder) ? { kind: "known", name } : { kind: "unknown", name };
+  if (!folder) return { kind: "unknown", name };
+  return existsSync(folder) ? { kind: "known", name } : { kind: "folder-gone", name, folder };
 }
 
 /** Another space where `name` exists: a persona registered there, or a peer of that name on its mesh's

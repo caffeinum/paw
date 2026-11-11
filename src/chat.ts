@@ -59,12 +59,13 @@ import { bangPlace, bangWhere, runBang, type BangPlace } from "./sandbox-exec.ts
 import { ManagerControl, withManagerControl } from "./control.ts";
 import { advanceCursor } from "./cursor.ts";
 import { attachConn, shortReason, type ConnLine, type ConnPhase } from "./conn-state.ts";
+import { FAIL, LIVE, LOADER as GLYPH_LOADER, OFF, OK, RETRY, presenceWord, problemLine, reasonOf, secsText } from "./ux.ts";
 import { DEDUP_WINDOW_MS, draftDm, draftPost, publishDraft } from "./mesh-publish.ts";
 import { Outbox, type OutEvent } from "./outbox.ts";
 import { LinkProbe, PROBE_MS, isAckTimeout } from "./link-probe.ts";
 import { PresenceHold, type PresenceLine } from "./presence-hold.ts";
 import { AwaitTracker } from "./chat-awaiting.ts";
-import { arrowRun, CLEAR_ALL, displayWidth, fitWidth, entryVisible, hintFor, hintWithTag, whereTag, History, LogFollower, navKey, scrollKey, Painter, type Entry, pickerWindow, showsChat, showsLogs, showsPeers, stepView, VIEW_LABEL, viewNeedsTarget, type ChatView } from "./chat-views.ts";
+import { arrowRun, CLEAR_ALL, displayWidth, fitWidth, entryVisible, hintFor, hintWithTag, whereTag, History, type FooterCell, LogFollower, navKey, scrollKey, Painter, type Entry, pickerWindow, showsChat, showsLogs, showsPeers, stepView, VIEW_LABEL, viewNeedsTarget, type ChatView } from "./chat-views.ts";
 import { classifyPeer, isPeerForwardOf, mergeByTs, peerRows, peerSummary, pickPeers, type PeerMsg, type RawMsg } from "./chat-peers.ts";
 import { agentBeads, agentInfo, CLOSED_RECENT_MS, hitAt, renderTasksPanel, type InfoFacts, type TasksHit } from "./chat-tasks.ts";
 import { MOUSE_OFF, MOUSE_ON, SELECT_MODE_KEY, stripMouse, type MouseEvent } from "./mouse.ts";
@@ -98,12 +99,12 @@ import { renderMarkdown } from "./markdown.ts";
 import { HUMAN_PEER, humanPeer } from "./names.ts";
 import { sameSpaceAddress } from "./dispatch.ts";
 import { describeInboxBindFailure, inboxLedgerDir, prepareHumanInbox, sweepOrphanInboxes, type HumanInbox } from "./human-inbox.ts";
-import { bootLabel, bootRetry, DeferredQueue, failed as failedSlot, LOADER, lineNeedsMesh, loading as loadingSlot, ok as okSlot, slotText, type BootPhase, type Slot } from "./chat-boot.ts";
-import { canRepaintInPlace, paintedRows, renderBanner, type BannerState } from "./chat-banner.ts";
+import { bootLabel, bootRetry, DeferredQueue, failed as failedSlot, failedLabel, LOADER, lineNeedsMesh, loading as loadingSlot, ok as okSlot, slotText, type BootPhase, type Slot } from "./chat-boot.ts";
+import { canRepaintInPlace, HELP_LINES, paintedRows, renderBanner, type BannerState } from "./chat-banner.ts";
 import { PendingConsent } from "./chat-consent.ts";
-import { lookingFor, takeFrame } from "./chat-preshell.ts";
-import { otherSpaceHits, pawHome, suggestNames } from "./chat-lookup.ts";
-import { chooserKey, notFoundChooser, renderChooser, unreachableChooser, type Chooser, type Choice } from "./chat-chooser.ts";
+import { takeFrame } from "./chat-preshell.ts";
+import { localAgentFolder, otherSpaceHits, pawHome, suggestNames } from "./chat-lookup.ts";
+import { chooserKey, folderGoneChooser, notFoundChooser, renderChooser, unreachableChooser, type Chooser, type Choice } from "./chat-chooser.ts";
 import { concurrentStartup } from "./chat-startup.ts";
 import { bangNoFolder, elsewhereBang, elsewhereBanner, elsewhereFiles, elsewhereLogs, elsewhereStatus, localMachine, machineOf, machineOfCard, runsElsewhere, type Elsewhere, type Machine } from "./hosted.ts";
 import { readTeleported } from "./teleport-plan.ts";
@@ -139,6 +140,8 @@ const c = {
 /** The where-tag's colour: this machine is quiet, another machine stands out, `?` warns. */
 const connColor = (p: ConnPhase): ((s: string) => string) =>
   p === "connected" ? c.green : p === "disconnected" ? c.red : c.yellow;
+/** A transcript line's colour follows its first glyph: ✓ green, ⚠ yellow, ✕ red, else dim. */
+const byGlyph = (text: string): string => (text.startsWith(OK) ? c.green(text) : text.startsWith("⚠") ? c.yellow(text) : text.startsWith(FAIL) ? c.red(text) : c.dim(text));
 const machineColor = (m: Machine | undefined): ((s: string) => string) => (!m || m.here ? c.dim : m.via === "unknown" ? c.yellow : c.cyan);
 
 /** The channel a plain line broadcasts to when there's no sticky target yet (cotal's default room). */
@@ -296,16 +299,19 @@ export function peerStatusTag(
   roster: { card: { id: string; name: string }; status: string }[] | undefined,
   me: string | undefined,
   visible: (name: string) => boolean = () => true,
+  link: { connected: boolean; absent?: boolean } = { connected: true },
 ): { text: string; status: string } | undefined {
-  // Never read yet: the target shows a loader. An unread roster is not an empty one — `offline` here
-  // would call a live agent dead.
-  if (roster === undefined) return target ? { text: `${target} ${LOADER}`, status: "loading" } : undefined;
+  // A name the roster never had (a typo) is NOT found — never `offline`, which is a state a real agent has.
+  if (target && link.absent) return { text: `${target} ${FAIL} not found`, status: "absent" };
+  // Never read yet, or read over a link that is down now: the target shows a loader. An unread roster
+  // is not an empty one, and a roster from before the socket died cannot say what the agent does now.
+  if (roster === undefined || !link.connected) return target ? { text: `${target} ${LOADER}`, status: "loading" } : undefined;
   if (me === undefined) throw new Error("peerStatusTag: a read roster needs our own id to leave out");
   const others = roster.filter((p) => p.card.id !== me);
   if (target) {
     const same = others.filter((p) => p.card.name.toLowerCase() === target.toLowerCase());
     const st = (same.find((p) => p.status !== "offline") ?? same[0])?.status ?? "offline";
-    return { text: `${target} ${st === "offline" ? "○" : "●"} ${st}`, status: st };
+    return { text: `${target} ${st === "offline" ? OFF : LIVE} ${presenceWord(st)}`, status: st };
   }
   const names = [...new Set(others.filter((p) => p.status === "working" && visible(p.card.name)).map((p) => p.card.name))];
   if (!names.length) return undefined;
@@ -313,10 +319,10 @@ export function peerStatusTag(
 }
 
 function statusBadge(status: PresenceStatus): string {
-  if (status === "working") return c.yellow("● working");
-  if (status === "waiting") return c.magenta("● waiting");
-  if (status === "offline") return c.dim("○ offline");
-  return c.dim("● idle");
+  if (status === "working") return c.yellow(`${LIVE} working`);
+  if (status === "waiting") return c.magenta(`${LIVE} waiting`);
+  if (status === "offline") return c.dim(`${OFF} offline`);
+  return c.dim(`${LIVE} online`);
 }
 
 /**
@@ -617,8 +623,13 @@ async function chat(argv: string[]): Promise<void> {
    * place of a live prompt; the roster settles it: `found` → the normal prompt, `absent` → the chooser
    * (src/chat-chooser.ts), `unreachable` → said so, with retry. A pipe keeps today's behaviour.
    */
-  let lookup: "pending" | "found" | "absent" | "unreachable" | undefined =
+  let lookup: "pending" | "found" | "absent" | "unreachable" | "folder-gone" | undefined =
     interactive && !mutating && name !== undefined && folder === undefined ? "pending" : undefined;
+  /** Registered here but its folder is gone (src/chat-lookup.ts): said as such, never "no agent". */
+  const goneFolder = (nm: string): string | undefined => {
+    const f = localAgentFolder(pawHome(), space, nm);
+    return f && !existsSync(f) ? f : undefined;
+  };
 
   let rl: readline.Interface | undefined;
   let closing = false;
@@ -791,36 +802,41 @@ async function chat(argv: string[]): Promise<void> {
    * working), unsent messages, the connection state, the mesh and machine. Status flips live HERE, not
    * as transcript lines (src/chat.ts presence handler).
    */
-  function footerParts(): [string, (s: string) => string][] {
+  /** The footer cells in PRIORITY order — a narrow row drops them from the end, so the connection
+   *  problem outlives the peer, and the peer outlives the mesh name (src/chat-views.ts hintWithTag). */
+  function footerParts(): FooterCell[] {
     const now = Date.now();
-    const parts: [string, (s: string) => string][] = [];
+    const cells: FooterCell[] = [];
+    const cell = (text: string, paint: (s: string) => string) => text && cells.push({ text, paint });
+    if (bootPhase === "failed") cell(failedLabel(now - bootFailedAt, bootRetryAt !== undefined ? { attempt: bootRetries, inMs: bootRetryAt - now } : undefined), c.red);
+    else if (bootPhase !== "ready" || !conn) cell(bootLabel(bootPhase, now - bootStartedAt, curName ?? pendingName()), c.yellow);
+    else cell(conn.label(now), connColor(conn.phase(now)));
     const narrow = (process.stdout.columns || 80) < 40;
-    if (!narrow) {
-      // A roster never read is NOT an empty one: the target shows a loader, never `offline`.
-      const peer = peerStatusTag(curName ?? pendingName(), roster(), me, (n) => presenceVisible(filter, n));
-      if (peer) parts.push([peer.text, peer.status === "working" ? c.yellow : peer.status === "waiting" ? c.magenta : c.dim]);
-      if (deferred.count) parts.push([`◌ ${deferred.count} queued`, c.yellow]);
-      // Only a send that has hit trouble shows: a healthy one acks in milliseconds and would just flicker.
-      const pending = outboxRef?.pending() ?? [];
-      const failed = outboxRef?.failed().length ?? 0;
-      if (pending.some((i) => i.retried)) parts.push([`◌ sending ${pending.length}`, c.yellow]);
-      if (failed) parts.push([`✕ ${failed} not sent · /retry`, c.red]);
-    }
-    if (bootPhase !== "ready" || !conn) parts.push([bootLabel(bootPhase, now - bootStartedAt, curName ?? pendingName()), bootPhase === "failed" ? c.red : c.yellow]);
-    else parts.push([conn.label(now), connColor(conn.phase(now))]);
-    return parts;
+    if (narrow) return cells;
+    if (deferred.count) cell(`${LOADER} ${deferred.count} queued`, c.yellow);
+    // Only a send that has hit trouble shows: a healthy one acks in milliseconds and would just flicker.
+    const pending = outboxRef?.pending() ?? [];
+    const failed = outboxRef?.failed().length ?? 0;
+    if (pending.some((i) => i.retried)) cell(`${LOADER} sending ${pending.length}`, c.yellow);
+    if (failed) cell(`${FAIL} ${failed} not sent · /retry`, c.red);
+    // A roster never read is NOT an empty one, and one read over a link that is down now says nothing
+    // about the agent: the target shows a loader, never `offline`.
+    const linkUp = ready && !!conn && conn.phase(now) === "connected";
+    const absent = lookup === "absent" || (!!targetLost && lookup === "folder-gone");
+    const peer = peerStatusTag(curName ?? pendingName(), roster(), me, (n) => presenceVisible(filter, n), { connected: linkUp, absent });
+    if (peer) cell(peer.text, peer.status === "working" ? c.yellow : peer.status === "waiting" ? c.magenta : peer.status === "absent" ? c.red : c.dim);
+    return cells;
   }
-  const footerKey = (parts: [string, unknown][]): string => parts.map(([t]) => t).join(" · ");
-  function footerTag(): { plain: string; painted: string; key: string } {
-    const parts = footerParts();
-    const key = footerKey(parts);
-    if ((process.stdout.columns || 80) >= 40) {
+  const footerKey = (cells: FooterCell[]): string => cells.map((x) => x.text).join(" · ");
+  function footerTag(): { cells: FooterCell[]; key: string } {
+    const cells = footerParts();
+    const key = footerKey(cells);
+    if ((process.stdout.columns || 80) >= 40 && !(lookup === "absent" || lookup === "folder-gone")) {
       const known = curName && roster();
       const machine = known ? machineFor(curName!) : undefined;
-      const tag = whereTag({ space, remote: remoteSpace, ...(known ? { agent: { machine } } : {}) }) + (curName && !known ? ` · on ${LOADER}` : "");
-      parts.push([tag, machineColor(machine)]);
+      cells.push({ text: whereTag({ space, ...(known ? { agent: { machine } } : {}) }), paint: machineColor(machine) });
     }
-    return { plain: footerKey(parts), painted: parts.map(([t, f]) => f(t)).join(c.dim(" · ")), key };
+    return { cells, key };
   }
   /** Redraw the hint row when what its footer says changed (the mesh/machine part is read on redraw
    *  only — it reads the persona file, too much for a 1s tick). */
@@ -845,7 +861,7 @@ async function chat(argv: string[]): Promise<void> {
     const cols = process.stdout.columns || 80;
     // The RIGHT side — the picker and `$` mode keep the row.
     const foot = footerTag();
-    const row = hintWithTag(hint, picking || bang ? "" : foot.plain, cols);
+    const row = hintWithTag(hint, picking || bang ? [] : foot.cells, cols);
     const pos = rl.getCursorPos();
     const shown = displayWidth(stripVTControlCharacters(rl.getPrompt())) + displayWidth(rl.line);
     const lastRow = Math.floor(Math.max(0, shown - 1) / cols);
@@ -858,8 +874,7 @@ async function chat(argv: string[]): Promise<void> {
     readline.clearLine(process.stdout, 1);
     process.stdout.write("\n");
     readline.clearLine(process.stdout, 0);
-    const tag = row.tag ? foot.painted : "";
-    process.stdout.write(c.dim(row.left) + " ".repeat(row.pad) + tag);
+    process.stdout.write(c.dim(row.left) + " ".repeat(row.pad) + row.painted);
     hintState = foot.key;
     readline.moveCursor(process.stdout, 0, -(down + 1));
     readline.cursorTo(process.stdout, pos.cols);
@@ -868,7 +883,7 @@ async function chat(argv: string[]): Promise<void> {
   // `! timeout` per presence-watch rebind, dozens of them (src/conn-state.ts). They fold into one state
   // shown on the hint line; only sustained trouble, its recovery, and non-transient errors print.
   const emitConn = (lines: ConnLine[]): void => {
-    for (const l of lines) emit(l.level === "recovered" ? c.green(l.text) : c.red(l.text));
+    for (const l of lines) emit(byGlyph(l.text));
   };
 
   // ── the mesh side, filled in by boot() ─────────────────────────────────────────────────────────────
@@ -1032,11 +1047,16 @@ async function chat(argv: string[]): Promise<void> {
     if (bang && curName) return bangPrompt();
     if (held.length) return c.dim(RAIL); // mid-draft: the line being typed sits on the draft's rail
     const st = stage();
-    const badges = [deferred.count ? `${deferred.count} queued` : "", st.pending.length ? `${st.pending.length} img` : "", st.pastes.length ? `${st.pastes.length} pasted` : "", elsewhereBadge(hiddenCount)].filter(Boolean);
+    // The queued count lives in the footer cell (`◌ 1 queued`), not here as well.
+    const badges = [st.pending.length ? `${st.pending.length} img` : "", st.pastes.length ? `${st.pastes.length} pasted` : "", elsewhereBadge(hiddenCount)].filter(Boolean);
     const narrow = (process.stdout.columns || 80) < 40;
-    if (lookup === "pending" && curName) return c.dim(`${lookingFor(curName, space)}${badges.length ? ` [${badges.join(" · ")}]` : ""}> `);
-    const state = targetLost && curName && targetLost.name === curName ? ` ${c.red("✕")}` : !ready && bootPhase !== "failed" && (curName || pendingName()) ? ` ${c.dim(LOADER)}` : "";
-    const tail = c.dim(`${curName && filter?.kind === "agent" && !narrow ? " (only)" : ""}${badges.length ? ` [${badges.join(" · ")}]` : ""}`) + state + c.dim("> ");
+    const state =
+      targetLost && curName && targetLost.name === curName
+        ? ` ${c.red(FAIL)}`
+        : (lookup === "pending" || (!ready && bootPhase !== "failed")) && (curName || pendingName())
+          ? ` ${c.dim(LOADER)}`
+          : "";
+    const tail = c.dim(`${badges.length ? ` [${badges.join(" · ")}]` : ""}`) + state + c.dim("> ");
     const shown = curName ?? pendingName();
     if (shown && narrow) return `${agentTag(shown, c.dim)}${tail}`;
     return shown ? `${c.dim(`${HUMAN_PEER} → `)}${agentTag(shown, c.dim)}${tail}` : `${c.dim(`${HUMAN_PEER} → #${room}`)}${tail}`;
@@ -1129,7 +1149,7 @@ async function chat(argv: string[]): Promise<void> {
     stagedFor = undefined;
     const live = pending.filter((a) => {
       if (stillThere(a.path)) return true;
-      emit(c.red(`! ${a.placeholder} ${a.path} disappeared before sending — dropped`));
+      emit(c.red(`✕ ${a.placeholder} ${a.path} disappeared before sending — dropped`));
       return false;
     });
     // Pastes attach to the body first (the payload follows the text), THEN the image lines — so an
@@ -1146,11 +1166,26 @@ async function chat(argv: string[]): Promise<void> {
   // so when the agent is mid-turn (the line is queued, not lost), and lets each reply be stamped with
   // how long ITS message took — so a long-running agent doesn't feel like silence.
   const awaiting = new AwaitTracker();
-  const markWaiting = (to: string, m: CotalMessage, lead = ""): void => {
+  /**
+   * The ONE waiting receipt: a replaceable line under the prompt, never a transcript entry per state.
+   * `◌ waiting for kit…` → `◌ kit is on it` when a turn starts → gone when the reply lands. Replaced
+   * where it stands while it is the last thing painted; once something printed under it, the history
+   * is updated and the screen follows on the next redraw (the footer's peer cell says the state too).
+   */
+  let receiptSlot: Entry | undefined;
+  const setReceipt = (text: string | undefined): void => {
+    const next: Entry[] = text === undefined ? [] : [{ kind: "chat", text: c.dim(text), side: "you", tight: true }];
+    const slot = receiptSlot;
+    receiptSlot = next[0];
+    if (slot && history.entries.includes(slot)) {
+      if (slot === lastPainted) placeOver(slot, next);
+      else history.replace(slot, next);
+    } else if (next[0]) show(next[0]);
+  };
+  const markWaiting = (to: string, m: CotalMessage): void => {
     if (!m?.id) throw new Error(`send to ${to} returned no message id — cannot track the reply`);
     const { queued } = awaiting.sent(to, m.id, Date.now(), findPeer(to)?.status);
-    if (queued) emit(c.dim(`${lead}⏳ queued — ${to} is mid-turn`), "you");
-    else emit(c.dim(`${lead}⏳ waiting for ${to}…`), "you");
+    setReceipt(queued ? `${LOADER} queued — ${to} is mid-turn` : `${LOADER} waiting for ${to}…`);
   };
 
   // Banner. A LIVE entry (src/chat-banner.ts): painted at the first frame with loaders for what the
@@ -1158,8 +1193,8 @@ async function chat(argv: string[]): Promise<void> {
   // something has been printed under it, each change is appended as one dim line instead. The mesh
   // line names the space (a remote one marked) and, for an agent, the machine running it right now — a
   // just-spawned agent has no card yet, so it shows the mesh alone, never a guess.
-  const fields: { status: Slot<string>; info: Slot<{ model: string; context: string } | undefined> } = {
-    status: lookup === "pending" ? okSlot(c.dim(lookingFor(name!, space))) : loadingSlot(),
+  const fields: { status: Slot<string | undefined>; info: Slot<{ model: string; context: string } | undefined> } = {
+    status: loadingSlot(),
     info: loadingSlot(),
   };
   /** Has the endpoint's view of who is where been read? On a local space the machine is known from the
@@ -1182,9 +1217,9 @@ async function chat(argv: string[]): Promise<void> {
       mode: "agent",
       space,
       remote: remoteSpace,
-      agent: c.cyan(shown) + (curName ? "" : ` ${c.dim(LOADER)}`),
+      agent: c.cyan(shown),
       where,
-      status: fields.status,
+      status: curName ? fields.status : loadingSlot(),
       machine: curName && whereKnown() ? okSlot(m ? machineColor(m)(m.label) : undefined) : loadingSlot(),
       info: away ? okSlot(undefined) : fields.info,
       ...(away ? { away: elsewhereBanner(away) } : {}),
@@ -1196,12 +1231,12 @@ async function chat(argv: string[]): Promise<void> {
   const fieldLines = (st: BannerState): Map<string, string> => {
     const out = new Map<string, string>();
     if (st.mode === "agent") {
-      if (st.status.s !== "loading") out.set("status", `status: ${slotText(st.status, (s) => s, c)}`);
-      // A field that loaded to NOTHING still gets its line: the banner on screen shows a loader for it,
-      // and without a line saying it resolved that loader would read as loading forever.
-      if (st.machine.s === "ok") out.set("machine", st.machine.v ? `on ${st.machine.v}` : "on: no machine known");
-      if (st.info.s === "ok") out.set("info", st.info.v ? `model: ${st.info.v.model} · context: ${st.info.v.context}` : "model: no reading here");
-      if (st.info.s === "err") out.set("info", `model: ${c.red(`✕ ${st.info.msg}`)}`);
+      // Only what the banner would SAY gets a line: a field that resolved to nothing says nothing.
+      if (st.status.s === "err") out.set("status", `${stripVTControlCharacters(st.agent)} ${c.red(`${FAIL} ${st.status.msg}`)}`);
+      else if (st.status.s === "ok" && st.status.v) out.set("status", st.status.v);
+      if (st.machine.s === "ok" && st.machine.v) out.set("machine", `on ${st.machine.v}`);
+      if (st.info.s === "ok" && st.info.v) out.set("info", `model ${st.info.v.model} · context ${st.info.v.context}`);
+      if (st.info.s === "err") out.set("info", c.red(`${FAIL} model: ${st.info.msg}`));
     } else if (st.mode === "all" && st.roster.s === "ok") {
       out.set("roster", st.roster.v.length ? `${st.roster.v.length} live: ${st.roster.v.map((n) => c.cyan(n)).join(c.dim(" · "))}` : "no agents live yet");
     }
@@ -1339,7 +1374,8 @@ async function chat(argv: string[]): Promise<void> {
       if (!meta.historical) {
         const { answered, remaining } = awaiting.reply(from, m.replyTo);
         if (answered) {
-          took = c.dim(` (${Math.max(1, Math.round((Date.now() - answered.at) / 1000))}s)`);
+          const ms = Date.now() - answered.at;
+          if (ms >= 10_000) took = c.dim(` (${secsText(ms)})`);
           stillPending = remaining;
         }
       }
@@ -1350,8 +1386,8 @@ async function chat(argv: string[]): Promise<void> {
       // `from` tags it as inbound mail: the logs view keeps another agent's DM visible, and shows the
       // target's as the transcript's `↩ you` block instead (entryVisible).
       if (curName && from.toLowerCase() === curName.toLowerCase()) emit(said(`${tag}${agentTag(from)}${fwdMark}${age}${took}${c.dim(":")}`, text), "peer", false, from);
-      else emit(said(`${tag}${c.magenta("(DM)")} ${agentTag(from, c.bold)}${fwdMark}${age}${took}${c.dim(":")}`, text), "peer", false, from);
-      if (stillPending) emit(c.dim(`⏳ still waiting for ${from} on ${stillPending} more message${stillPending === 1 ? "" : "s"}`), "you");
+      else emit(said(`${tag}${agentTag(from, c.bold)} ${c.dim("→ you")}${fwdMark}${age}${took}${c.dim(":")}`, text), "peer", false, from);
+      if (!meta.historical && curName && from.toLowerCase() === curName.toLowerCase()) setReceipt(stillPending ? `${LOADER} waiting for ${from} (${stillPending} more)` : undefined);
       advanceCursor(space, m.ts); // shown here = seen, so `paw inbox` won't re-surface it as new
       // Follow the conversation: an empty input means you have not started a reply to anyone else, so
       // the next thing you type is almost certainly for whoever just spoke. Announced, never silent —
@@ -1449,7 +1485,7 @@ async function chat(argv: string[]): Promise<void> {
         noteShownSend(msg);
         shownIds.add(msg.id);
         const fwdMark = forwardOf !== undefined ? " · forwarded from an old id" : "";
-        const header = `${c.dim("↗ you →")} ${label}${c.dim(` (other session${fwdMark}):`)}`;
+        const header = `${c.dim(`${HUMAN_PEER} (elsewhere) →`)} ${label}${c.dim(`${fwdMark}:`)}`;
         // As the agent got it, readable: on the rail, blank runs folded, each paste inline at its
         // placeholder (not as raw `--- [Pasted text #1] ---` fences). The painter indents rows 2+.
         const sent = parseComposed(body);
@@ -1561,7 +1597,7 @@ async function chat(argv: string[]): Promise<void> {
         try {
           pick = pickBacklog(conv, agent, { ...(more !== undefined ? { limit: more } : historySize), now: Date.now(), shown, ids, ...(more !== undefined && first ? { before: first.oldest } : {}) });
         } catch (e) {
-          return placeOver(slot, [sysLine(c.red(`! couldn't show earlier messages with ${agent}: ${(e as Error).message}`), false)]);
+          return placeOver(slot, [sysLine(c.red(`✕ couldn't show earlier messages with ${agent}: ${(e as Error).message}`), false)]);
         }
         for (const e of pick.entries) shownIds.add(e.id!);
         const rows = pick.entries.map((e) => historyEntry(agent, e));
@@ -1588,7 +1624,7 @@ async function chat(argv: string[]): Promise<void> {
       },
       (e: Error) => {
         if (closing || !history.entries.includes(slot)) return;
-        placeOver(slot, [sysLine(c.red(`! couldn't load earlier messages with ${agent}: ${e.message} — /more retries`), false)]);
+        placeOver(slot, [sysLine(c.red(`✕ couldn't load earlier messages with ${agent}: ${e.message} — /more retries`), false)]);
       },
     );
   }
@@ -1657,7 +1693,7 @@ async function chat(argv: string[]): Promise<void> {
     const tap: { key: string; stop?: () => Promise<void> } = { key };
     peerTap = tap;
     const offAt = peerTapOffAt.get(key);
-    tapAgentTraffic(space, server, agent, () => agentIdsFor(agent), onPeerTraffic, (e) => emit(c.red(`! messages view: ${e.message}`)), onPeerTransport, { onOmitted: onPeerOmitted(agent) }).then(
+    tapAgentTraffic(space, server, agent, () => agentIdsFor(agent), onPeerTraffic, (e) => emit(c.red(`✕ messages view: ${e.message}`)), onPeerTransport, { onOmitted: onPeerOmitted(agent) }).then(
       (stop) => {
         if (peerTap !== tap || closing) return void stop();
         tap.stop = stop;
@@ -1668,7 +1704,7 @@ async function chat(argv: string[]): Promise<void> {
       },
       (e: Error) => {
         if (peerTap === tap) peerTap = undefined;
-        emit(c.red(`! messages view: couldn't tap ${agent}'s messages with other peers: ${e.message}`));
+        emit(c.red(`✕ messages view: couldn't tap ${agent}'s messages with other peers: ${e.message}`));
       },
     );
   }
@@ -1702,7 +1738,7 @@ async function chat(argv: string[]): Promise<void> {
           show(peerEntry(agent, p, false));
         }, msg.channel ? 300 : 0).unref();
       } catch (e) {
-        emit(c.red(`! messages view: couldn't show a message between ${agent} and another peer: ${(e as Error).message}`));
+        emit(c.red(`✕ messages view: couldn't show a message between ${agent} and another peer: ${(e as Error).message}`));
       }
     }
   };
@@ -1759,7 +1795,7 @@ async function chat(argv: string[]): Promise<void> {
       },
       (e: Error) => {
         if (closing || !history.entries.includes(slot)) return;
-        placeOver(slot, [peerNote(c.red(`! couldn't load ${agent}'s messages with other peers: ${e.message}`))]);
+        placeOver(slot, [peerNote(c.red(`✕ couldn't load ${agent}'s messages with other peers: ${e.message}`))]);
       },
     );
   }
@@ -1784,7 +1820,7 @@ async function chat(argv: string[]): Promise<void> {
             show(peerEntry(agent, p, false));
           }
         },
-        (err: Error) => emit(c.red(`! messages view: couldn't read back ${agent}'s messages with other peers after the connection came back: ${err.message}`)),
+        (err: Error) => emit(c.red(`✕ messages view: couldn't read back ${agent}'s messages with other peers after the connection came back: ${err.message}`)),
       );
     }
   }
@@ -1807,8 +1843,8 @@ async function chat(argv: string[]): Promise<void> {
   const printPeerLines = (lines: PresenceLine<Card, PresenceStatus>[]): void => {
     for (const l of lines) {
       if (!presenceVisible(filter, l.card.name)) continue;
-      if (l.type === "join") emit(`${c.green("→")} ${who(l.card)} joined ${statusBadge(l.status)}`);
-      else emit(c.dim(`← ${who(l.card)} went offline`));
+      if (l.type === "join") emit(`${c.green(LIVE)} ${who(l.card)} joined ${c.dim(`(${presenceWord(l.status)})`)}`);
+      else emit(c.dim(`${OFF} ${who(l.card)} went offline`));
     }
   };
   /**
@@ -1841,8 +1877,8 @@ async function chat(argv: string[]): Promise<void> {
         closeChooser();
       }
       if (curName?.toLowerCase() === card.name.toLowerCase()) curId = card.id;
-      fields.status = okSlot(c.green("live on the mesh"));
-      emit(c.green(`→ ${card.name} is on the mesh now — lines to it send again`));
+      fields.status = okSlot(undefined);
+      emit(c.green(`${LIVE} ${card.name} is on the mesh now — lines to it send again`));
       rl?.setPrompt(promptFor());
       updateBanner();
     }
@@ -1855,10 +1891,9 @@ async function chat(argv: string[]): Promise<void> {
     const picked = awaiting.presence(card.name, ev.type === "offline" ? "offline" : ev.presence.status);
     if (ev.type === "join" || ev.type === "offline") return;
     if (picked.length) {
-      // A NEW turn began on an agent we're waiting on — an explicit "got it, on it" receipt for the
-      // messages sent before it (otherwise the only feedback is the final reply, minutes away).
-      const what = picked.length === 1 ? "picked it up" : `picked up your ${picked.length} messages`;
-      emit(`${c.green("✓")} ${card.name} ${what}${ev.presence.activity ? c.dim(" — " + activityLine(ev.presence.activity)) : c.dim(" — working…")}`, "you");
+      // A NEW turn began on an agent we're waiting on: the receipt under the prompt says so (otherwise
+      // the only feedback is the final reply, minutes away).
+      setReceipt(`${LOADER} ${card.name} is on it${picked.length > 1 ? ` (${picked.length} messages)` : ""}${ev.presence.activity ? ` — ${activityLine(ev.presence.activity)}` : ""}`);
     }
     // A plain status flip (idle ↔ working, activity updates) is NOT a transcript line any more — a
     // line per flip buried the conversation (team2027, 2026-10-27). The footer shows the target's live
@@ -2002,15 +2037,17 @@ async function chat(argv: string[]): Promise<void> {
   const onOutEvent = (e: OutEvent<Outgoing>): void => {
     const { item } = e;
     const o = item.msg;
+    // The message text is on the echo line above — never repeated here.
+    const meshDown = !!conn && conn.phase(Date.now()) !== "connected";
     if (e.kind === "pending") {
-      emit(c.dim(`◌ sending… ${HUMAN_PEER} → ${item.label}: ${preview(o.msg)}   (${shortReason(e.error)} — retrying)`), "you");
+      emit(c.dim(`${LOADER} sending to ${item.label}… (${meshDown ? "mesh down" : shortReason(e.error)} — retrying)`), "you");
     } else if (e.kind === "sent") {
-      const lead = item.retried ? `✓ sent after ${secsOf(Date.now() - item.firstAt)} · ` : "";
-      if (o.awaitFrom) markWaiting(o.awaitFrom, o.msg, lead);
-      else if (lead) emit(c.dim(`✓ sent to ${item.label} after ${secsOf(Date.now() - item.firstAt)}`), "you");
+      if (item.retried) emit(c.dim(`${OK} sent to ${item.label} after ${secsOf(Date.now() - item.firstAt)}`), "you");
+      if (o.awaitFrom) markWaiting(o.awaitFrom, o.msg);
+    } else if (e.transient) {
+      emit(c.red(problemLine(FAIL, `not sent to ${item.label} after ${secsOf(Date.now() - item.firstAt)} (${meshDown ? "mesh down" : shortReason(e.error)})`, undefined, "/retry sends it again")), "you");
     } else {
-      const why = e.transient ? `${shortReason(e.error)} — no ack in ${secsOf(Date.now() - item.firstAt)}, ${item.attempts} tries` : e.error;
-      emit(c.red(`✕ not sent to ${item.label}: ${why} — /retry to send again`) + c.dim(`   (${preview(o.msg)})`), "you");
+      emit(c.red(problemLine(FAIL, `not sent to ${item.label} (${shortReason(e.error)})`, undefined, "/retry after fixing it")), "you");
     }
     refreshFooter();
   };
@@ -2019,7 +2056,7 @@ async function chat(argv: string[]): Promise<void> {
     try {
       return await publishDraft(needEp(), o.msg);
     } catch (err) {
-      if (isAckTimeout(err)) void linkProbe.check().catch((e: Error) => emit(c.red(`! ${e.message}`)));
+      if (isAckTimeout(err)) void linkProbe.check().catch((e: Error) => emit(c.red(`✕ ${e.message}`)));
       throw err;
     }
   };
@@ -2258,7 +2295,7 @@ async function chat(argv: string[]): Promise<void> {
   const drawChooser = (): void => {
     if (!chooser || !rl || closing) return;
     eraseChooser();
-    const rows = renderChooser(chooser, c, "a new agent is `paw chat --fresh <folder>`");
+    const rows = renderChooser(chooser, c);
     readline.cursorTo(process.stdout, 0);
     readline.clearLine(process.stdout, 0);
     const text = rows.join("\n") + "\n";
@@ -2290,7 +2327,7 @@ async function chat(argv: string[]): Promise<void> {
     }
     chooser.sel = r.sel;
     const pick = r.pick;
-    if (pick) setImmediate(() => void onChoice(pick).catch((e: Error) => emit(c.red(`! ${e.message}`))));
+    if (pick) setImmediate(() => void onChoice(pick).catch((e: Error) => emit(c.red(`✕ ${e.message}`))));
     else drawChooser();
     return true;
   };
@@ -2497,7 +2534,7 @@ async function chat(argv: string[]): Promise<void> {
         ...(tasksNotice ? { notice: tasksNotice } : {}),
         ...(curName ? liveStatus(curName) : {}),
         ...(tasksInfo && tasksInfo.for === curName
-          ? { info: tasksInfo.facts ? agentInfo(tasksInfo.facts, now, c) : tasksInfo.note ? c.dim(tasksInfo.note) : c.red(`! status: ${tasksInfo.error}`) }
+          ? { info: tasksInfo.facts ? agentInfo(tasksInfo.facts, now, c) : tasksInfo.note ? c.dim(tasksInfo.note) : c.red(`✕ status: ${tasksInfo.error}`) }
           : {}),
         selectMode,
       },
@@ -2791,17 +2828,17 @@ async function chat(argv: string[]): Promise<void> {
   async function runBangCommand(command: string): Promise<void> {
     if (!curName || !curId) return void emit(c.red("! `!cmd` runs in an agent's folder — `@name` first (a channel has no folder)"));
     const away = awayOf(curName);
-    if (away) return void emit(c.red(`! ${elsewhereBang(curName, away)}`));
+    if (away) return void emit(c.red(`✕ ${elsewhereBang(curName, away)}`));
     const cwd = folderForName(space, curName);
-    if (!cwd) return void emit(c.red(`! ${bangNoFolder(space, curName, (roster() ?? []).find((p) => p.card.id === curId)?.card)}`));
-    if (!existsSync(cwd)) return void emit(c.red(`! "${curName}" is registered at ${cwd}, which no longer exists`));
+    if (!cwd) return void emit(c.red(`✕ ${bangNoFolder(space, curName, (roster() ?? []).find((p) => p.card.id === curId)?.card)}`));
+    if (!existsSync(cwd)) return void emit(c.red(`✕ "${curName}" is registered at ${cwd}, which no longer exists`));
     // A sandboxed agent's command runs in ITS VM (its tools, ~/.env, PATH live only there); its VM not
     // running is an error here — never a silent run on this machine (src/sandbox-exec.ts).
     let place: BangPlace;
     try {
       place = bangPlace(space, curName);
     } catch (e) {
-      return void emit(c.red(`! ${(e as Error).message}`));
+      return void emit(c.red(`✕ ${(e as Error).message}`));
     }
     emit(c.dim(`$ ${command}  (${bangWhere(curName, cwd, place)})`), "you", true);
     // Output STREAMS while the command runs (a login prints its URL, then waits for the browser), batched
@@ -3038,37 +3075,46 @@ async function chat(argv: string[]): Promise<void> {
         const again = outbox.retry();
         const inFlight = outbox.pending().length - again.length;
         if (!again.length) emit(c.dim(inFlight ? `(nothing failed — ${inFlight} still sending, retried on its own)` : "(nothing to retry — every message went out)"));
+        // A copy can only have landed if an attempt reached a publish; one refused before that cannot
+        // arrive twice, so the dedup warning is for messages that DID go out, past the 2m window.
         for (const it of again) {
-          const old = Date.now() - it.createdAt > DEDUP_WINDOW_MS;
-          emit(
-            c.dim(`↻ sending again → ${it.label}: ${preview(it.msg.msg)}`) +
-              (old ? c.yellow(`   (first tried ${secsOf(Date.now() - it.createdAt)} ago, past the broker's 2m dedup window — if that copy did land, it arrives twice)`) : ""),
-            "you",
-          );
+          const twice = it.published && Date.now() - it.createdAt > DEDUP_WINDOW_MS;
+          emit(c.dim(`${RETRY} sending to ${it.label} again`) + (twice ? c.yellow(` (first try ${secsText(Date.now() - it.createdAt)} ago — if it did land, ${it.label} gets it twice)`) : ""), "you");
         }
+        // Waiting out a backoff while the link is back serves nobody: try the head now.
+        if (again.length && ep && conn && conn.phase(Date.now()) !== "connected") void needEp().reconnect().catch((e: Error) => emit(c.red(`${FAIL} ${e.message}`)));
         refreshFooter();
       } else if (text === "/conn") {
-        const since = `${((Date.now() - bootStartedAt) / 1000).toFixed(1)}s`;
-        emit(c.dim(`startup: ${bootPhase}${ready ? "" : ` (${since})`}${targetLost ? ` · target lost: ${targetLost.reason}` : ""}${deferred.count ? ` · ${deferred.count} queued` : ""}`));
+        // Plain words, nothing lost: every count the state keeps is here under its plain name.
+        const now = Date.now();
+        if (bootPhase === "failed") emit(c.red(`${failedLabel(now - bootFailedAt, bootRetryAt !== undefined ? { attempt: bootRetries, inMs: bootRetryAt - now } : undefined)}${bootFailWhy ? ` — ${bootFailWhy}` : ""}`));
+        else if (!ready) emit(c.dim(bootLabel(bootPhase, now - bootStartedAt, curName ?? pendingName())));
         if (conn && ep) {
-          for (const l of conn.report(Date.now())) emit(c.dim(l));
-          emit(c.dim(`reconnects forced by a send's probe (ack timed out, then no PONG in ${PROBE_MS / 1000}s): ${linkProbe.forced}`));
-          const view = ep.presenceView();
+          for (const l of conn.report(now)) emit(byGlyph(l));
           const stuck = ep.presenceWriteFailure();
-          emit(
-            c.dim(
-              `presence view: ${view.state}${stuck ? ` · our presence writes failing ×${stuck.consecutiveFailures}${stuck.error ? ` (${stuck.error})` : ""}` : ""}` +
-                (presenceQuiet(Date.now()) ? ` · joins/departures held (${peerHold.heldCount()} so far); net changes print when live` : ""),
-            ),
-          );
-        } else emit(c.dim("no endpoint yet"));
+          const notes = [
+            linkProbe.forced ? `${linkProbe.forced} reconnect${linkProbe.forced === 1 ? "" : "s"} forced by a stalled send` : "",
+            outbox.failed().length ? `${outbox.failed().length} message${outbox.failed().length === 1 ? "" : "s"} not sent (/retry)` : "",
+            deferred.count ? `${deferred.count} line${deferred.count === 1 ? "" : "s"} queued` : "",
+            stuck ? `our presence writes failing ×${stuck.consecutiveFailures}${stuck.error ? ` (${stuck.error})` : ""}` : "",
+            presenceQuiet(now) ? `presence frozen — joins and leaves print when the link is back${peerHold.heldCount() ? ` (${peerHold.heldCount()} held)` : ""}` : "",
+          ].filter(Boolean);
+          if (notes.length) emit(c.dim(notes.join(" · ")));
+          if (bootFailTrace) emit(c.dim(bootFailTrace));
+        }
+        emit(c.dim(`mesh ${space} · ${remoteSpace ? "remote" : "local"} · ${server}`));
+        emit(c.dim("PAW_CONN_DEBUG=1 logs every signal"));
       } else if (text === "/reconnect") {
-        if (bootPhase !== "failed" || booting) emit(c.dim(booting ? "(already connecting)" : "(connected — nothing to reconnect)"));
-        else {
+        if (booting) emit(c.dim("(already connecting)"));
+        else if (bootPhase === "failed") {
           cancelBootRetry();
           bootAbort = new AbortController();
-          bootSettled = boot().catch((e: Error) => emit(c.red(`! ${e.message}`)));
-        }
+          bootSettled = boot().catch((e: Error) => emit(c.red(`${FAIL} ${e.message}`)));
+        } else if (ep && conn && conn.phase(Date.now()) !== "connected") {
+          // Mid-session outage: cut cotal's reestablish backoff (it doubles to 60s) and dial now.
+          emit(c.dim(`${RETRY} reconnecting now…`));
+          void needEp().reconnect().catch((e: Error) => emit(c.red(`${FAIL} ${e.message}`)));
+        } else emit(c.dim("(connected — nothing to reconnect)"));
       } else if (text === "/more" || text.startsWith("/more ")) {
         // Older messages with the target, above the earlier block (src/chat-backlog.ts).
         if (!curName) emit(c.dim("/more loads older messages with the agent you're talking to — pick one with ↓ or @name"));
@@ -3084,8 +3130,8 @@ async function chat(argv: string[]): Promise<void> {
             loadBacklog(curName, n);
           }
         }
-      } else if (text === "/help") {
-        emit(c.dim("@name [msg] switches target · #channel msg broadcasts · !cmd runs in the agent's folder · /more [N] older messages · /who · /ps · /conn · /retry · /reconnect · /imgs · /noimg · /paste · /nopaste · /quit"));
+      } else if (text === "/help" || text === "?") {
+        for (const l of HELP_LINES) emit(c.dim(l));
       } else if (text === "/who") {
         const fresh = await rosterReady();
         emit(c.dim(fresh ? "Roster:" : "Roster (presence still loading — this may be partial):"));
@@ -3203,6 +3249,14 @@ async function chat(argv: string[]): Promise<void> {
             // In a filtered session the view must keep matching who you're addressing — otherwise
             // `@other` sends somewhere you cannot see, which is the misdirection this mode prevents.
             if (filter?.kind === "agent") filter = { kind: "agent", name: peer.card.name };
+            if (switched) {
+              // The banner is the new target's now: no stale "not found" from the name typed before.
+              lookup = "found";
+              fields.status = okSlot(undefined);
+              fields.info = loadingSlot();
+              updateBanner();
+              loadInfo();
+            }
             rl!.setPrompt(promptFor());
             if (!body) emit(c.dim(`(now messaging ${curName})`));
             // A new target's earlier conversation, above what you are about to say to it.
@@ -3323,10 +3377,17 @@ async function chat(argv: string[]): Promise<void> {
   /** Self-retries of a failed connect since the last success, and the pending one (src/chat-boot.ts bootRetry). */
   let bootRetries = 0;
   let bootRetryTimer: ReturnType<typeof setTimeout> | undefined;
+  /** When the connect failed, when the self-retry fires (footer countdown), the reason word printed
+   *  (a NEW reason prints a new line; the same one only ticks the footer) and the trace for /conn. */
+  let bootFailedAt = 0;
+  let bootRetryAt: number | undefined;
+  let bootFailWhy: string | undefined;
+  let bootFailTrace: string | undefined;
   /** A connect that starts now (/reconnect, a new lookup) replaces any self-retry still waiting. */
   const cancelBootRetry = (): void => {
     if (bootRetryTimer) clearTimeout(bootRetryTimer);
     bootRetryTimer = undefined;
+    bootRetryAt = undefined;
   };
   /** Retires this run's remote inbox (registered before provisioning; src/human-inbox.ts). */
   let inboxRelease: (() => Promise<void>) | undefined;
@@ -3410,8 +3471,6 @@ async function chat(argv: string[]): Promise<void> {
     inboxRelease = undefined;
   }
 
-  /** Why the roster could not be read, for the unreachable chooser. */
-  let lookupWhy = "";
   /**
    * Settle a `pending` lookup against the live roster: wait (≤5s) for its first read, then the name is
    * on it (found — the normal path from here, an offline one included), or not (absent), or the roster
@@ -3426,9 +3485,8 @@ async function chat(argv: string[]): Promise<void> {
     if (signal?.aborted) return;
     if (!rosterSeen) {
       lookup = "unreachable";
-      lookupWhy = `${space}'s roster didn't load in 5s`;
-      targetLost = { name: nm, reason: `couldn't reach ${space} to check @${nm}` };
-      fields.status = failedSlot(`couldn't reach ${space} to check`);
+      targetLost = { name: nm, reason: `${space}'s roster didn't load in 5s — can't check ${nm}` };
+      fields.status = failedSlot("roster didn't load");
       return;
     }
     const peer = findPeer(nm);
@@ -3436,19 +3494,30 @@ async function chat(argv: string[]): Promise<void> {
       lookup = "found";
       targetLost = undefined;
       curId = peer.status !== "offline" ? peer.card.id : await waitForPeerId(ep!, nm, 5000, signal);
-      fields.status = curId ? okSlot(c.green("live on the mesh")) : failedSlot("offline");
+      fields.status = curId ? okSlot(undefined) : failedSlot("offline");
+      return;
+    }
+    const gone = goneFolder(nm);
+    if (gone) {
+      lookup = "folder-gone";
+      targetLost = { name: nm, reason: `${nm} is registered here but its folder is gone: ${gone}` };
+      fields.status = failedSlot("folder gone");
       return;
     }
     lookup = "absent";
-    targetLost = { name: nm, reason: `no agent @${nm} in ${space}` };
-    fields.status = failedSlot(`no agent @${nm} in ${space}`);
+    targetLost = { name: nm, reason: `no agent ${nm} in ${space}` };
+    fields.status = failedSlot(`not in ${space}`);
   }
 
   /** The chooser for a lookup that did not find its agent (no-op otherwise). */
   function presentLookup(): void {
     const nm = curName;
     if (!nm || !rl || closing) return;
-    if (lookup === "unreachable") return openChooser(unreachableChooser({ name: nm, space, why: lookupWhy }));
+    flushBanner(); // the agent row says the verdict first (in place); a chooser under it would force a delta line
+    // While a self-retry is armed the footer already says when paw tries again: no chooser offering
+    // a second "retry" beside it. Only a failure that will NOT retry by itself asks.
+    if (lookup === "unreachable") return void (bootRetryAt === undefined && openChooser(unreachableChooser({ name: nm, space })));
+    if (lookup === "folder-gone") return openChooser(folderGoneChooser({ name: nm, folder: goneFolder(nm) ?? targetLost?.reason ?? "" }));
     if (lookup !== "absent") return;
     const live = (roster() ?? []).filter((p) => p.card.id !== me).map((p) => p.card.name);
     const suggestions = suggestNames(nm, [...live, ...listAgents(space).map((a) => a.name)]).filter((n) => n.toLowerCase() !== nm.toLowerCase());
@@ -3456,7 +3525,7 @@ async function chat(argv: string[]): Promise<void> {
     try {
       elsewhere = otherSpaceHits(pawHome(), nm, space);
     } catch (e) {
-      emit(c.red(`! couldn't check the other spaces: ${(e as Error).message}`));
+      emit(c.red(`✕ couldn't check the other spaces: ${(e as Error).message}`));
     }
     openChooser(notFoundChooser({ name: nm, space, suggestions, elsewhere }));
   }
@@ -3470,18 +3539,6 @@ async function chat(argv: string[]): Promise<void> {
       writeOut(c.dim(`\n→ opening @${ch.name} in ${ch.space}…\n`));
       return void (await shutdown());
     }
-    if (ch.kind === "all") {
-      curName = undefined;
-      curId = undefined;
-      targetLost = undefined;
-      lookup = undefined;
-      bang = false;
-      if (filter?.kind === "agent") filter = undefined;
-      emit(c.dim(`(showing all conversations — plain lines go to #${room} · @name starts a DM)`));
-      rl?.setPrompt(promptFor());
-      updateBanner();
-      return;
-    }
     if (ch.kind === "switch") {
       await handleLine(`@${ch.name}`, {});
       if (curName === ch.name) lookup = undefined;
@@ -3494,14 +3551,14 @@ async function chat(argv: string[]): Promise<void> {
     if (!nm) return;
     lookup = "pending";
     targetLost = undefined;
-    fields.status = okSlot(c.dim(lookingFor(nm, space)));
+    fields.status = loadingSlot();
     rl?.setPrompt(promptFor());
     updateBanner();
     if (bootPhase === "failed") {
       if (booting) return;
       cancelBootRetry();
       bootAbort = new AbortController();
-      bootSettled = boot().catch((e: Error) => emit(c.red(`! ${e.message}`)));
+      bootSettled = boot().catch((e: Error) => emit(c.red(`${FAIL} ${e.message}`)));
       return;
     }
     await settleLookup(nm);
@@ -3584,10 +3641,10 @@ async function chat(argv: string[]): Promise<void> {
               r.stuck
                 ? c.yellow(stuckWarning(name, r.stuck, true))
                 : r.starting
-                  ? c.yellow("still starting — messages will be delivered by its durable inbox")
+                  ? c.yellow(`${LOADER} still starting — messages wait in its inbox`)
                   : r.spawned
-                    ? c.green("spawned a new agent · starting up") + c.dim(` — a cold start can take up to ${Math.round(FRESH_SPAWN_MS / 1000)}s`)
-                    : c.green("reusing live agent"),
+                    ? c.green(`${LOADER} new agent starting up`) + c.dim(` — a cold start can take up to ${Math.round(FRESH_SPAWN_MS / 1000)}s`)
+                    : undefined,
             );
             updateBanner();
             setPhase("roster");
@@ -3598,7 +3655,7 @@ async function chat(argv: string[]): Promise<void> {
           } else {
             setPhase("roster");
             curId = await waitForPeerId(ep!, name, 5000, signal);
-            if (curId) fields.status = okSlot(c.green("reusing live agent"));
+            if (curId) fields.status = okSlot(undefined);
           }
         } catch (e) {
           targetLost = { name, reason: (e as Error).message };
@@ -3606,18 +3663,20 @@ async function chat(argv: string[]): Promise<void> {
         if (signal.aborted) return;
         if (!curId && !targetLost)
           targetLost = { name, reason: folder ? unreachableHint(name, space, busy) : `paw: no live agent named "${name}" — start one with \`paw chat <folder>\`` };
-        if (targetLost && lookup !== "absent" && lookup !== "unreachable") {
+        if (targetLost && lookup !== "absent" && lookup !== "unreachable" && lookup !== "folder-gone") {
           if (!interactive) throw new Error(targetLost.reason);
-          fields.status = failedSlot(curId ? "not reachable" : "not on the mesh — see below");
+          fields.status = failedSlot(curId ? "not reachable" : "not on the mesh");
           flushBanner(); // repaint before the reason prints under it, so the banner can still change in place
-          emit(c.red(`✕ ${targetLost.reason}`));
-          emit(c.dim("  lines to it are kept, not sent · @name talks to another agent · /quit"));
+          emit(c.red(problemLine(FAIL, targetLost.reason.replace(/^paw: /, ""), "lines to it are kept, not sent", "@name talks to another agent · /quit")));
         }
         timing("agent");
       }
       ready = true;
       everReady = true;
+      if (bootFailWhy !== undefined) emit(c.green(`${OK} connected to ${space} after ${secsText(Date.now() - bootFailedAt)}`));
       bootRetries = 0;
+      bootFailWhy = undefined;
+      bootFailTrace = undefined;
       setPhase("ready");
       timing("ready");
       rl?.setPrompt(promptFor());
@@ -3650,22 +3709,30 @@ async function chat(argv: string[]): Promise<void> {
       await teardown();
       bootPhase = "failed";
       fields.status = failedSlot("not connected");
-      emit(c.red(`✕ ${(e as Error).message}`));
-      const wait = bootRetry((e as Error).message, ++bootRetries);
-      if (wait === undefined) emit(c.dim("  /reconnect tries again · what you type is kept until then"));
-      else {
-        emit(c.dim(`  retrying by itself in ${Math.round(wait / 1000)}s (attempt ${bootRetries}) · /reconnect tries now · what you type is kept until then`));
+      // ONE line per reason: the first failure prints, later attempts with the same reason only tick
+      // the footer (`✕ unreachable 35s · retry 3 in 20s`), a new reason prints again. The full trace
+      // stays reachable in /conn (and PAW_CONN_DEBUG=1).
+      const err = e as Error & { diag?: { at: string; word: string; hint: string; trace: string } };
+      const wait = bootRetry(err.message, ++bootRetries);
+      if (bootRetries === 1) bootFailedAt = Date.now();
+      bootRetryAt = wait === undefined ? undefined : Date.now() + wait;
+      const why = err.diag ? `can't reach ${space} at ${err.diag.at} (${err.diag.word})` : err.message.replace(/^paw: /, "").split("\n")[0]!;
+      if (why !== bootFailWhy) {
+        bootFailWhy = why;
+        bootFailTrace = err.diag ? `${err.diag.hint} · ${err.diag.trace}` : err.message.includes("\n") ? err.message.split("\n").slice(1).join(" ").trim() : undefined;
+        const doing = wait === undefined ? "won't retry by itself" : `retrying in ${secsText(wait)}`;
+        emit(c.red(problemLine(FAIL, why, doing, `${wait === undefined ? "/reconnect retries" : "/reconnect now"} · /conn explains · what you type is kept`)));
+      }
+      if (wait !== undefined) {
         bootRetryTimer = setTimeout(() => {
           bootRetryTimer = undefined;
+          bootRetryAt = undefined;
           if (closing || booting || bootPhase !== "failed") return;
           bootAbort = new AbortController();
-          bootSettled = boot().catch((err: Error) => emit(c.red(`! ${err.message}`)));
+          bootSettled = boot().catch((err2: Error) => emit(c.red(`${FAIL} ${err2.message}`)));
         }, wait);
       }
-      if (lookup === "pending") {
-        lookup = "unreachable";
-        lookupWhy = "not connected (why is above)";
-      }
+      if (lookup === "pending") lookup = "unreachable";
       rl?.setPrompt(promptFor());
       updateBanner();
       refreshFooter();
@@ -3771,7 +3838,7 @@ async function chat(argv: string[]): Promise<void> {
     booting = true;
     bootSettled = new Promise((r) => setTimeout(r, 15))
       .then(() => boot())
-      .catch((e: Error) => emit(c.red(`! ${e.message}`)));
+      .catch((e: Error) => emit(c.red(`✕ ${e.message}`)));
     if (!remoteSpace && !mutating) setTimeout(loadInfo, 30);
   } else {
     // A pipe or a script: today's order — connect, resolve, THEN read lines.

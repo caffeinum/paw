@@ -253,7 +253,7 @@ try {
     child.stdin.end();
     await new Promise((r) => child.on("exit", r));
     ok("6. pipe mode delivers once", dms.filter((d) => d === "piped-line").length === 1, JSON.stringify(dms));
-    ok("6. …banner after the connect (today's order)", strip(out).indexOf("connecting to echoer") < strip(out).indexOf("paw chat") && /status: reusing live agent/.test(strip(out)), strip(out).slice(0, 200));
+    ok("6. …banner after the connect (today's order)", strip(out).indexOf("connecting to echoer") < strip(out).indexOf("paw chat") && /echoer[^\n]*· mesh /.test(strip(out)) && !/status:|reusing/.test(strip(out)), strip(out).slice(0, 300));
   }
 
   // 7. a multi-line paste in the first ~60ms arrives bracketed (the pre-shell turned 2004 on) → ONE DM.
@@ -302,12 +302,12 @@ try {
   // 10. a short terminal: the first frame is one line, so erasing it can reach every row.
   {
     const r = await chat(["echoer"], async (io) => {
-      await io.waitFor(/status: reusing live agent|status: ✕/, 20_000);
+      await io.waitFor(/you → echoer> /, 20_000);
       await sleep(200);
       io.write("/quit\r");
-    }, 30_000, 14);
+    }, 30_000, 7);
     const first = strip(r.raw.slice(0, r.raw.indexOf("\x1b[0J")));
-    ok("10. a 14-row terminal gets a one-line skeleton", /◌ loading/.test(first) && !/agent:/.test(first), JSON.stringify(first.slice(0, 160)));
+    ok("10. a 7-row terminal gets a one-line skeleton", /◌ loading/.test(first) && !/keys/.test(first), JSON.stringify(first.slice(0, 160)));
   }
   // 11. a typo'd name: an honest pending frame, then the chooser; nothing sent until the operator picks.
   {
@@ -315,8 +315,9 @@ try {
     general.length = 0;
     const r = await chat(["@echoerr"], async (io) => {
       setTimeout(() => io.write("for-echoer\r"), 30);
-      const shown = await io.waitFor(/no agent @echoerr in [\s\S]*did you mean[\s\S]*1 @echoer/, 20_000);
-      ok("11. the chooser says there's no @echoerr and offers @echoer", shown, io.out().split("\n").slice(-10).join(" | "));
+      const shown = await io.waitFor(/✕ no agent echoerr in [\s\S]*did you mean[\s\S]*1 echoer/, 20_000);
+      ok("11. the chooser says there's no echoerr and offers echoer", shown, io.out().split("\n").slice(-10).join(" | "));
+      ok("11. …once: no status row, no second copy, the footer says not found, the prompt ✕", (strip(io.out()).match(/no agent echoerr/g) ?? []).length === 1 && /echoerr ✕ not found/.test(strip(io.out())) && /you → echoerr ✕> /.test(strip(io.out())) && !/status:|offline|not running|any other key/.test(strip(io.out())), io.out().split("\n").slice(-10).join(" | "));
       await sleep(300);
       ok("11. …and the line typed meanwhile was not sent", !dms.some((d) => /for-echoer/.test(d)) && general.length === 0, JSON.stringify(dms));
       io.write("1");
@@ -329,7 +330,7 @@ try {
       io.write("/quit\r");
     });
     const first = strip(r.raw.slice(0, r.raw.indexOf("\x1b[0J")));
-    ok("11. the first frame said it was looking, not a live prompt", /looking for @echoerr on /.test(first) && !/you → /.test(first), JSON.stringify(first.slice(-160)));
+    ok("11. the first frame shows the name with a loader, nothing guessed", /echoerr ◌ · mesh /.test(first) && /you → echoerr ◌> /.test(first) && !/offline|status:/.test(first), JSON.stringify(first.slice(-160)));
     ok("11. after picking @echoer + Enter the kept line reached echoer exactly once", dms.filter((d) => /for-echoer/.test(d)).length === 1, JSON.stringify(dms));
     ok("11. …#general heard nothing", general.length === 0);
   }
@@ -340,7 +341,7 @@ try {
     mkdirSync(join(home, "spaces", otherSpace, "personas"), { recursive: true });
     writeFileSync(join(home, "spaces", otherSpace, "personas", "only-there.md"), `---\nname: only-there\n---\n`);
     const r = await chat(["@only-there"], async (io) => {
-      const shown = await io.waitFor(new RegExp(`no agent @only-there in ${space}[\\s\\S]*open @only-there in ${otherSpace}`), 20_000);
+      const shown = await io.waitFor(new RegExp(`no agent only-there in ${space}[\\s\\S]*open only-there in ${otherSpace}`), 20_000);
       ok("12. the chooser offers to open it in the other space", shown, io.out().split("\n").slice(-8).join(" | "));
       io.write("\x1b");
     }, 15_000);
@@ -400,7 +401,9 @@ try {
     ok("14. the earlier block shows on open (── earlier with echoer … ── now ──)", /── earlier with echoer · \d+ messages? in the last 24h[^\n]*──[\s\S]*── now ──/.test(screen), screen.split("\n").slice(-30).join(" | "));
     ok("14. …both directions: your earlier lines to echoer are in it", /you → echoer[^\n]*: (one-early|two-at-prompt|m-first)/.test(screen));
     ok("14. …a DM that also arrived live is on screen exactly once", count(screen, `hist-in-${nonce}`) === 1, `${count(screen, `hist-in-${nonce}`)}×`);
-    ok("14. …the loader was replaced, not left behind", !/◌ loading earlier messages with echoer/.test(screen));
+    // Replaced in place (the loader's rows cleared down, `\x1b[0J`, after it) or by a full redraw.
+    const loaderAt = r.raw.indexOf("◌ loading earlier messages with echoer");
+    ok("14. …the loader was replaced, not left behind", !/◌ loading earlier messages with echoer/.test(screen) || (loaderAt >= 0 && r.raw.indexOf("\x1b[0J", loaderAt) > loaderAt), screen.split("\n").slice(-14).join(" | "));
   }
 
   // 15. history on an @switch; never read, never a retarget.
@@ -626,7 +629,7 @@ try {
       const afterNoimg = r.plain.slice(Math.max(0, r.plain.indexOf("your text is back in the input without")));
       ok("22. an image to an agent on another machine is refused, and the hint says the text is kept", refusedSeen, r.plain.split("\n").filter((l) => /not sent|⚠/.test(l)).join(" | "));
       ok("22. …nothing reached farcat while the image was staged", !farDms.some((d) => /\[Image|shot\.png/.test(d)), JSON.stringify(farDms));
-      ok("22. …/noimg puts the typed words back into the input", restoredSeen && /i added cc to betterstack account[\s\S]*⏳ waiting for farcat/.test(afterNoimg), JSON.stringify(afterNoimg.slice(0, 600)));
+      ok("22. …/noimg puts the typed words back into the input", restoredSeen && /i added cc to betterstack account[\s\S]*◌ waiting for farcat/.test(afterNoimg), JSON.stringify(afterNoimg.slice(0, 600)));
       ok("22. …and Enter sends exactly those words, without the image", JSON.stringify(farDms) === JSON.stringify(["i added cc to betterstack account"]), JSON.stringify(farDms));
     } finally {
       await far.stop().catch(() => {});
