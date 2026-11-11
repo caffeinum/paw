@@ -25,6 +25,7 @@ import { readSandbox } from "../session.ts";
 import { readForeground, unregisterForeground } from "../foreground.ts";
 import { ensureSpaceFor, resolveSpace, withEnsuredManager } from "../lifecycle.ts";
 import { sleepState } from "../sleep-state.ts";
+import { identityIn, mutableHereRefusal } from "../namespace.ts";
 
 /** The success line for `paw stop`, or undefined when nothing was stopped. A sleeping agent has no seat
  *  to stop, but stopping it is real — it no longer wakes on a DM — so say that, not "isn't running". */
@@ -97,6 +98,11 @@ async function stop(argv: string[]): Promise<void> {
     assertUnambiguousTarget(space, target!); // a bare token that's BOTH a known name and a folder here → fail loud
     name = resolveStopName(space, target!);
   }
+
+  // A teleported agent runs on another machine: this machine's manager would no-op and say "isn't running".
+  const id = rawName === undefined ? identityIn(space, name) : undefined;
+  const away = id ? mutableHereRefusal(id, "stop") : undefined;
+  if (away) throw new Error(away);
 
   // A FOREGROUND `paw claude` agent isn't a manager agent (stopAgent would no-op it) — SIGTERM its own
   // process and drop its registry entry so it stops for real.

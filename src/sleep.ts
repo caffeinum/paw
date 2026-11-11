@@ -42,6 +42,7 @@ import { collectStatus, readManagerPs, type AgentStatus } from "./status.ts";
 import { COTAL_RECLAIM_WATCHER, inProcess, markerLines, scanActivity, shellDescendants, type TaskKind } from "./background-scan.ts";
 export { COTAL_RECLAIM_WATCHER, inProcess, markerLines, openBackgroundTasks, scanActivity, shellDescendants, type TaskKind } from "./background-scan.ts";
 import { isRemoteSpace, pawServer } from "./server.ts";
+import { assertMutableByName } from "./namespace.ts";
 
 /** The prompt cache TTL: below it a sleep would make the wake pay a cold cache. */
 export const MIN_HIBERNATE_MS = 60 * 60_000;
@@ -657,6 +658,7 @@ async function sleepCmd(argv: string[]): Promise<void> {
         await assertNotHostedElsewhere(space, name, undefined);
         throw new Error(`paw sleep: "${name}" is not a registered agent`);
       }
+      assertMutableByName(space, name, "sleep"); // a teleported frozen copy: the agent sleeps (or not) where it runs
       setPersonaKeys(space, name, { hibernate: v === "off" ? undefined : o.after });
       sleepLog(space, v === "off" ? `opt-out ${name}` : `opt-in ${name} after ${o.after} idle`);
       console.log(v === "off" ? `${name}: will not sleep` : `${name}: sleeps after ${o.after} idle with nothing running; a DM wakes it`);

@@ -26,6 +26,7 @@ import { personaFilePath } from "./addressing.ts";
 import { readCwd, readSandbox, sandboxClaudeDir } from "./session.ts";
 import { SANDBOX_CLAUDE_BIN, containerBin, listSandboxContainers } from "./sandbox.ts";
 import { sandboxBashArgv } from "./sandbox-exec.ts";
+import { assertMutableByName } from "./namespace.ts";
 
 /** Names a sandboxed agent's own servers may not take: the launch passes cotal's server as `cotal`
  *  through `--mcp-config`, and a user-scope entry of the same name would shadow or clash with it. */
@@ -48,6 +49,7 @@ export function sandboxTarget(space: string, name: string): SandboxTarget {
   const persona = personaFilePath(space, name);
   const cwd = existsSync(persona) ? readCwd(persona) : undefined;
   if (!cwd) throw new Error(`paw: no agent "${name}" in space "${space}" (\`paw status --space ${space}\` lists them)`);
+  assertMutableByName(space, name, "configure MCP servers for");
   if (!readSandbox(persona))
     throw new Error(
       `paw: "${name}" is not sandboxed — host agents get MCP servers from the shared config, chosen per persona (shareTools:/mcpOptIn:). ` +

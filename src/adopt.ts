@@ -22,9 +22,11 @@ import {
   assertUnambiguousTarget,
   ensureAgentSpawned,
   folderForName,
+  elsewhereOutcome,
   folderToName,
-  lookupFolderName,
+  lookupOwnedFolderName,
   registerInstance,
+  sanitizeAgentName,
   personaFilePath,
   restartAgent,
   setFolderName,
@@ -32,10 +34,13 @@ import {
   stopAgent,
   waitForMeshLive,
   assertOneSpace,
+  frozenPinRefusal,
 } from "./addressing.ts";
 import { readResumeId } from "./session.ts";
+import { ago, assertMutableByName, claudeProjectDir, heldOnMesh, localNameFor, ownedHere, resolve as resolveNamespace, stateWords, type Identity } from "./namespace.ts";
+import { DEFAULT_SPACE, spaceChoice, spaceProvenance, type SpaceHow } from "./space.ts";
 import { adoptInFlight, adoptLogPath, finishDetachedAdopt, resolveSpace, spawnDetachedAdopt, withEnsuredManager } from "./lifecycle.ts";
-import { isSelfAncestor, liveSessionProcs, namesForFolder, resolveNamedSession, selfSessionProc } from "./named.ts";
+import { isSelfAncestor, liveSessionProcs, namesForFolder, readIndex, resolveNamedSession, selfSessionProc } from "./named.ts";
 import { tailRead } from "./transcript.ts";
 import { resolveExistingFolderArg } from "./address.ts";
 import { gitToplevel, listWorktrees } from "./worktree.ts";
@@ -55,11 +60,7 @@ function locateSession(sessionId: string): { dir: string; cwd: string | undefine
   return undefined;
 }
 
-/** claude stores a folder's sessions under `~/.claude/projects/<encoded-cwd>/`, where the cwd is
- *  encoded by replacing every non-`[A-Za-z0-9_]` char with `-` (underscores kept). */
-export function claudeProjectDir(canonical: string): string {
-  return join(homedir(), ".claude", "projects", canonical.replace(/[^A-Za-z0-9_]/g, "-"));
-}
+export { claudeProjectDir };
 
 /** The most-recently-modified session id (jsonl basename) in a project dir, or undefined. */
 export function latestSession(dir: string): string | undefined {
@@ -71,6 +72,59 @@ export function latestSession(dir: string): string | undefined {
     if (!best || mtime > best.mtime) best = { id: f.slice(0, -".jsonl".length), mtime };
   }
   return best?.id;
+}
+
+/**
+ * The session a bare `paw adopt` picks in `dir`, with what the operator needs to judge it: a session a
+ * LIVE claude holds at `folder` (claude's session index, newest first) beats a newer-by-mtime dead one —
+ * the newest file is not "the session I have open" (2026-11-11: adopt picked an 18-day-old transcript).
+ */
+export function pickSession(dir: string, folder: string, alive: (pid: number) => boolean = pidAlive): { id: string; mtimeMs: number; holderPid?: number; count: number } | undefined {
+  if (!existsSync(dir)) return undefined;
+  const files = readdirSync(dir)
+    .filter((f) => f.endsWith(".jsonl"))
+    .map((f) => ({ id: f.slice(0, -".jsonl".length), mtimeMs: statSync(join(dir, f)).mtimeMs }))
+    .sort((a, b) => b.mtimeMs - a.mtimeMs);
+  if (!files.length) return undefined;
+  const held = readIndex()
+    .filter((e) => e.pid !== undefined && (existsSync(e.cwd) ? realpathSync(e.cwd) : e.cwd) === folder && alive(e.pid))
+    .sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0))
+    .map((e) => ({ e, f: files.find((f) => f.id === e.sessionId) }))
+    .find((x) => x.f);
+  if (held) return { ...held.f!, holderPid: held.e.pid, count: files.length };
+  return { ...files[0]!, count: files.length };
+}
+
+function pidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return (e as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
+/** `2ac38184 (last written 18d ago; 12 sessions here — `paw sessions .`)` */
+export function sessionAgeLine(s: { id: string; mtimeMs: number; holderPid?: number; count: number }, target: string, now = Date.now()): string {
+  const held = s.holderPid !== undefined ? `open in pid ${s.holderPid}, ` : "";
+  return `${s.id.slice(0, 8)} (${held}last written ${ago(s.mtimeMs, now)}; ${s.count} session${s.count === 1 ? "" : "s"} here — \`paw sessions ${target}\`)`;
+}
+
+/**
+ * Pure: the refusal when the folder's only agent in the chosen space is NOT this machine's (teleported
+ * away, or another machine's on a shared mesh) and no name was given — the 2026-11-11 tracepaper
+ * incident, where adopt re-pinned team2027's frozen copy and called the mini's seat "already live".
+ * Names the state, where the space came from, and the exact commands that make a LOCAL agent.
+ */
+export function notThisMachineRefusal(o: { away: Identity; how: SpaceHow; target: string; suggest: string; altSpace?: string; session?: string }): string {
+  const where = `space ${o.away.space}${o.how === "env" ? `, ${spaceProvenance(o.how)}` : ""}`;
+  const lines = [
+    `paw: this folder's agent "${o.away.name}" (${where}) ${stateWords(o.away)} — adopt won't re-pin another machine's agent`,
+    `  a new agent here, in ${o.away.space}:  paw adopt ${o.target} --name ${o.suggest} --space ${o.away.space}`,
+  ];
+  if (o.altSpace) lines.push(`  a new agent here, in ${o.altSpace}:  paw adopt ${o.target} --space ${o.altSpace}`);
+  if (o.session) lines.push(`  session it would adopt: ${o.session}`);
+  return lines.join("\n");
 }
 
 /** The `cwd` a transcript was recorded at (first record that carries one), for the verify step. */
@@ -204,6 +258,8 @@ export function assertSafeRepin(o: {
   replace: boolean;
   target: string;
   pinnedBy: string[]; // OTHER agents in the space whose persona pins sessionId
+  /** a bare adopt's auto-pick (no --resume, not inside the session's claude): never swaps a pin silently */
+  autoPicked?: string; // the picked session's age line (sessionAgeLine)
 }): void {
   if (o.pinnedBy.length) {
     throw new Error(
@@ -214,6 +270,15 @@ export function assertSafeRepin(o: {
     );
   }
   const repinsDefault = o.planKind === "folder-default" || o.planKind === "repin-default";
+  // A bare `paw adopt .` used to re-pin the folder's agent to the NEWEST transcript by mtime, silently
+  // (2026-11-11: an 18-day-old one). Swapping an existing pin now needs the operator to name it.
+  if (o.autoPicked !== undefined && !o.explicitResume && repinsDefault && o.prevPin !== undefined && o.prevPin !== o.sessionId && !o.replace) {
+    throw new Error(
+      `paw: "${o.name}" already runs session ${o.prevPin} — the newest session here is ${o.autoPicked}; adopt won't swap it silently.\n` +
+        `  re-pin it to that session:  paw adopt ${o.target} --resume ${o.sessionId} --replace\n` +
+        `  add it alongside:           paw adopt ${o.target} --resume ${o.sessionId} --name <new-name>`,
+    );
+  }
   if (o.explicitResume && repinsDefault && o.prevPin !== undefined && o.prevPin !== o.sessionId && !o.replace) {
     throw new Error(
       `paw: "${o.name}" already runs session ${o.prevPin} — adopting ${o.sessionId} would replace it.\n` +
@@ -230,6 +295,12 @@ export function sameRepoWorktree(folder: string, cwd: string, list: typeof listW
   if (!root) return false;
   const canon = (p: string) => (existsSync(p) ? realpathSync(p) : p);
   return list(root).some((w) => canon(w.path) === canon(cwd));
+}
+
+/** A teleported frozen copy pinning the session: refused before anything is registered (src/addressing.ts). */
+function assertNoFrozenPin(sessionId: string): void {
+  const why = frozenPinRefusal(sessionId);
+  if (why) throw new Error(why);
 }
 
 /** Names of agents in `space` (other than `except`) whose persona pins `sessionId`. */
@@ -281,6 +352,7 @@ async function adopt(argv: string[]): Promise<void> {
     throw new Error(`paw: no claude sessions found for ${folder} (looked in ${dir})`);
   }
   let sessionId: string;
+  let autoPicked: string | undefined; // set when a bare adopt picked the session itself (not --resume, not self)
   let resolvedSessionName: string | undefined; // --resume <name> that resolved by NAME — the name the user typed IS the session's name
   if (session) {
     // Explicit --resume: a transcript id (`<id>.jsonl` exists) OR a named session resolved via the
@@ -318,9 +390,11 @@ async function adopt(argv: string[]): Promise<void> {
     // rather than silently grabbing an OLDER session and leaving the running claude behind. The detached
     // child always got its id via --resume, so it never reaches this branch (inFlightChild → skip self).
     const self = inFlightChild ? undefined : selfSessionProc(folder);
-    const latest = self?.sessionId ?? latestSession(dir);
+    const picked = self ? undefined : pickSession(dir, folder);
+    const latest = self?.sessionId ?? picked?.id;
     if (!latest) throw new Error(`paw: no sessions in ${dir} to adopt`);
     sessionId = latest;
+    if (picked) autoPicked = sessionAgeLine(picked, target ?? ".");
   }
 
   // Verify the transcript was recorded at this folder — the project-dir encoding is lossy, so this
@@ -336,6 +410,29 @@ async function adopt(argv: string[]): Promise<void> {
   } else {
     console.error(`paw: couldn't read a cwd from session ${sessionId} — adopting unverified`);
   }
+
+  // ── THE NAMESPACE: is this folder's agent in this space THIS machine's? A teleported frozen copy (or
+  //    another machine's agent) still names the folder; adopting "the folder's agent" must never re-pin it.
+  //    Checked before ANY write — the self-adopt hand-off below included (src/namespace.ts).
+  const choice = spaceChoice(space);
+  const ns = resolveNamespace({ folder }, choice);
+  const recordedName = nameFlag === undefined ? namesForFolder(folder).get(sessionId) : undefined;
+  const awayDefault = ns.inChosen.find((i) => !i.extra && !ownedHere(i));
+  if (nameFlag === undefined && recordedName === undefined && awayDefault && !ns.inChosen.some((i) => !i.extra && ownedHere(i))) {
+    const base = sanitizeAgentName(folder);
+    const altFree = space !== DEFAULT_SPACE && !resolveNamespace({ folder }, { space: DEFAULT_SPACE, how: "flag" }).inChosen.some((i) => !i.extra) && !heldOnMesh(DEFAULT_SPACE, base);
+    throw new Error(
+      notThisMachineRefusal({
+        away: awayDefault,
+        how: choice.how,
+        target: target ?? ".",
+        suggest: localNameFor(space, awayDefault.name),
+        ...(altFree ? { altSpace: DEFAULT_SPACE } : {}),
+        session: autoPicked ?? sessionId.slice(0, 8),
+      }),
+    );
+  }
+  if (nameFlag !== undefined) assertMutableByName(space, sanitizeAdoptName(nameFlag), "adopt");
 
   // Live standalone claudes holding this session — the two-writer hazard, and what a takeover kills.
   const foreign = liveSessionProcs(sessionId).filter((p) => !p.mesh);
@@ -360,6 +457,7 @@ async function adopt(argv: string[]): Promise<void> {
     const pinnedElsewhere = agentsPinnedTo(space, sessionId, desiredName ?? "").filter(
       (n) => !(nameFlag === undefined && folderForName(space, n) === folder),
     );
+    assertNoFrozenPin(sessionId);
     assertOneSpace(space, sessionId);
     assertSafeRepin({
       sessionId,
@@ -393,11 +491,21 @@ async function adopt(argv: string[]): Promise<void> {
   // session's recorded name mints a second agent onto the same transcript (refused below as two writers).
   const runningOwner = nameFlag === undefined ? agentsPinnedTo(space, sessionId, "").find((n) => folderForName(space, n) === folder) : undefined;
   const desired = nameFlag ?? runningOwner ?? sessionName; // --name wins, else the agent already on it, else the session's name
-  const oldName = lookupFolderName(space, folder);
+  const oldName = lookupOwnedFolderName(space, folder); // a teleported frozen copy is not this folder's agent here
   const plan = planAdoptName(desired, oldName);
   // Checked BEFORE the name is registered, so a refusal leaves no half-made agent behind.
   const prospective = plan.kind === "folder-default" ? oldName : plan.name;
   const prospectiveFile = prospective !== undefined ? personaFilePath(space, prospective) : undefined;
+  if (prospective !== undefined) assertMutableByName(space, prospective, "adopt");
+  // A NEW name on a shared (remote) mesh another machine already uses would put two agents of one name there.
+  const created = plan.kind === "folder-default" ? (oldName === undefined ? sanitizeAgentName(folder) : undefined) : plan.kind === "repin-default" ? undefined : plan.name;
+  if (created !== undefined && heldOnMesh(space, created)) {
+    throw new Error(
+      `paw: "${created}" is another machine's agent on the ${space} mesh (its peer ledger has it, this machine has no persona for it) — ` +
+        `pick a name for this machine's agent: \`paw adopt ${target ?? "."} --name ${localNameFor(space, created)}\``,
+    );
+  }
+  assertNoFrozenPin(sessionId);
   assertOneSpace(space, sessionId);
   assertSafeRepin({
     sessionId,
@@ -408,6 +516,7 @@ async function adopt(argv: string[]): Promise<void> {
     replace: replace === true,
     target: target ?? ".",
     pinnedBy: agentsPinnedTo(space, sessionId, prospective ?? ""),
+    ...(autoPicked !== undefined ? { autoPicked } : {}),
   });
   const name =
     plan.kind === "folder-default" ? folderToName(space, folder)
@@ -432,6 +541,7 @@ async function adopt(argv: string[]): Promise<void> {
   const file = personaFilePath(space, name);
   const prevPin = existsSync(file) ? readResumeId(file) : undefined;
   const pinChanged = prevPin !== sessionId; // re-adopting the same session?
+  if (prevPin === undefined && autoPicked !== undefined) console.error(`paw: picked session ${autoPicked}`);
   if (prevPin !== undefined && pinChanged) {
     console.error(`paw: note — "${name}" was pinned to ${prevPin}; undo with \`paw adopt ${target ?? "."} --resume ${prevPin} --replace\``);
   }
@@ -442,7 +552,7 @@ async function adopt(argv: string[]): Promise<void> {
     if (foreign.length) {
       console.error(`paw: note — session ${sessionId} is open in pid ${foreignPids}; kill it before bringing this agent live.`);
     }
-    console.log(`✓ adopted "${name}" ← session ${sessionId} (pinned, not started)`);
+    console.log(`✓ adopted "${name}" (space ${space}) ← session ${sessionId} (pinned, not started)`);
     console.log(`  run \`paw chat ${name}\` (or \`paw open ${name}\`) to resume it on the mesh`);
     return;
   }
@@ -503,7 +613,9 @@ async function adopt(argv: string[]): Promise<void> {
     }
   }
 
-  const how = plan.kind === "extra"
+  const how = r.elsewhere
+    ? ` — ${elsewhereOutcome(r.elsewhere)}`
+    : plan.kind === "extra"
     ? ` — new agent beside "${oldName}" (its session untouched), resumed & live`
     : takeover
       ? " — took over the running session, resumed & live on the mesh"
@@ -512,7 +624,7 @@ async function adopt(argv: string[]): Promise<void> {
         : r.spawned
           ? " — resumed & live on the mesh"
           : " — already live, left it running";
-  console.log(`✓ adopted "${name}" ← session ${sessionId}${how}`);
+  console.log(`${r.elsewhere ? "⚠" : "✓"} adopted "${name}" (space ${space}) ← session ${sessionId}${how}`);
 
   // Auto-attach in place after a takeover when we own a real terminal (the Case-B operator flow: adopt a
   // running claude from a plain shell and drop into it here). The detached child passes --no-attach.

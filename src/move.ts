@@ -20,6 +20,7 @@ import { registry, type Command } from "@cotal-ai/core";
 import {
   agentRecord,
   cleanAgentName,
+  elsewhereHint,
   ensureAgentSpawned,
   findUnmanagedAgent,
   listAgents,
@@ -52,7 +53,22 @@ export const MOVE_BUSY_MS = 10 * 60_000;
 
 export type MoveArgs = { name: string; space?: string; to: string; as?: string; keepBeads: boolean; dryRun: boolean; yes: boolean };
 
+/** A second bare word after `paw move <agent>` is almost always a NEW NAME (`paw move tracepaper#paw
+ *  tracepaper-macbook`, 2026-11-11): move changes the space — say what each intent's command is. */
+export function moveExtraArgHint(name: string, space: string | undefined, extra: string[]): string {
+  const at = space ? `${name}#${space}` : name;
+  const word = extra[0]!;
+  if (extra.length === 1 && /^[A-Za-z0-9_-]+$/.test(word))
+    return (
+      `paw: move changes an agent's SPACE and takes one agent — "${word}" reads like a new name.\n` +
+      `  rename it:            paw rename ${at} ${word}\n` +
+      `  move it and rename:   paw move ${at} --to-space <space> --as ${word}`
+    );
+  return `paw: unexpected argument "${word}" — move takes one agent: ${MOVE_USAGE}`;
+}
+
 export function parseMoveArgs(argv: string[]): MoveArgs {
+  const extra: string[] = [];
   const out: Partial<MoveArgs> & { keepBeads: boolean; dryRun: boolean; yes: boolean } = { keepBeads: false, dryRun: false, yes: false };
   const value = (i: number, flag: string): string => {
     const v = argv[i];
@@ -71,8 +87,9 @@ export function parseMoveArgs(argv: string[]): MoveArgs {
     else if (a === "--yes" || a === "-y") out.yes = true;
     else if (a.startsWith("-")) throw new Error(`paw: unknown flag "${a}" — ${MOVE_USAGE}`);
     else if (out.name === undefined) out.name = a;
-    else throw new Error(`paw: unexpected argument "${a}" — move takes one agent`);
+    else extra.push(a);
   }
+  if (extra.length) throw new Error(moveExtraArgHint(out.name!, out.space, extra));
   if (!out.name) throw new Error(`paw: which agent? — ${MOVE_USAGE}`);
   if (!/^[A-Za-z0-9_-]+$/.test(out.name)) throw new Error(`paw: "${out.name}" is not an agent name — move addresses an agent by name`);
   if (!out.to) throw new Error(`paw: which space? — ${MOVE_USAGE}`);
@@ -445,7 +462,7 @@ export function moveStartLine(d: MoveDisk, started: boolean, hasTranscript: (pin
 export async function move(a: MoveArgs): Promise<void> {
   const from = a.space?.trim() || resolveSpace();
   const d = moveDisk({ from, to: a.to, name: a.name, ...(a.as ? { newName: a.as } : {}) });
-  if (!d.personaExists) throw new Error(`paw: no agent "${a.name}" in space "${from}" (\`paw status --space ${from}\` lists them)`);
+  if (!d.personaExists) throw new Error(`paw: no agent "${a.name}" in space "${from}"${elsewhereHint(from, a.name) || ` (\`paw status --space ${from}\` lists them)`}`);
   // v1: its transcript lives in spaces/<from>/sandbox/<name>, which move does not carry (docs/notes/sandbox.md).
   if (readSandbox(d.personaFrom)) throw new Error(`paw: "${a.name}" is sandboxed (sandbox: container) — paw move does not carry a sandboxed agent's own claude store yet`);
   const early = moveBlockers(d, undefined, { yes: a.yes, now: Date.now() });

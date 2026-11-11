@@ -10,10 +10,11 @@
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { registry, type Command } from "@cotal-ai/core";
-import { personaFilePath, setPersonaKeys } from "../addressing.ts";
+import { elsewhereHint, personaFilePath, setPersonaKeys } from "../addressing.ts";
 import { snapshotFleet, type AgentProcs } from "../fleet.ts";
 import { resolveSpace } from "../lifecycle.ts";
 import { parseNice, readNice } from "../session.ts";
+import { assertMutableByName } from "../namespace.ts";
 
 const USAGE = "nice [<name> <0-20>] [--apply]";
 
@@ -73,7 +74,8 @@ async function nice(argv: string[]): Promise<void> {
   const fleet = await snapshotFleet(space);
 
   if (args.name !== undefined) {
-    if (!existsSync(personaFilePath(space, args.name))) throw new Error(`paw: no agent "${args.name}" in space ${space}`);
+    if (!existsSync(personaFilePath(space, args.name))) throw new Error(`paw: no agent "${args.name}" in space ${space}${elsewhereHint(space, args.name)}`);
+    assertMutableByName(space, args.name, "nice");
     setPersonaKeys(space, args.name, { nice: String(args.value) });
     const procs = fleet.agents[args.name];
     if (!procs) return console.log(`✓ ${args.name}: nice ${args.value} — not running; applies at its next start`);

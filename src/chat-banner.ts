@@ -23,7 +23,7 @@ export interface BannerStyle {
 export const PLAIN: BannerStyle = { dim: (s) => s, bold: (s) => s, cyan: (s) => s, green: (s) => s, yellow: (s) => s, red: (s) => s };
 
 /** What the banner shows. Painted strings (`where`, `status`, `machine`) carry their own colour. */
-export type BannerState =
+export type BannerState = (
   | {
       mode: "agent";
       space: string;
@@ -41,11 +41,17 @@ export type BannerState =
       info: Slot<{ model: string; context: string } | undefined>;
       /** One line about running elsewhere, when it does. */
       away?: string;
+      /** `paw chat .` reached an agent that isn't this machine's: the folder's own session here is not it. */
+      folderNote?: string;
       only: boolean;
       bang: boolean;
     }
   | { mode: "channel"; space: string; remote: boolean; room: string }
-  | { mode: "all"; space: string; remote: boolean; room: string; roster: Slot<string[]> };
+  | { mode: "all"; space: string; remote: boolean; room: string; roster: Slot<string[]> }
+) & {
+  /** Why this space: `from PAW_SPACE` when the shell's env picked it (src/space.ts spaceProvenance). */
+  spaceFrom?: string;
+};
 
 /** The full key list — `/help` and a bare `?` print it; the banner only points at it. */
 export const HELP_LINES = [
@@ -59,7 +65,7 @@ export const HELP_LINES = [
 const KEYS_HINT = "? keys · @name switches · /quit";
 
 export function renderBanner(st: BannerState, c: BannerStyle): string {
-  const mesh = c.dim(`${whereTag({ space: st.space })}${st.remote ? " (remote)" : ""}`);
+  const mesh = c.dim(`${whereTag({ space: st.space })}${st.remote ? " (remote)" : ""}${st.spaceFrom ? ` · ${st.spaceFrom}` : ""}`);
   if (st.mode === "channel") {
     return (
       `\n${c.bold("  🐾 paw chat")}\n\n` +
@@ -97,6 +103,7 @@ export function renderBanner(st: BannerState, c: BannerStyle): string {
     note +
     info +
     (st.away ? `     ${c.dim(st.away)}\n` : "") +
+    (st.folderNote ? `     ${c.yellow(st.folderNote)}\n` : "") +
     (st.only ? `     ${c.dim(`only ${st.agent} · other agents' DMs stay in paw inbox`)}\n` : "") +
     `     ${c.dim(KEYS_HINT)}\n\n`
   );

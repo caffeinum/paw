@@ -106,6 +106,8 @@ import { takeFrame } from "./chat-preshell.ts";
 import { localAgentFolder, otherSpaceHits, pawHome, suggestNames } from "./chat-lookup.ts";
 import { chooserKey, folderGoneChooser, notFoundChooser, renderChooser, unreachableChooser, type Chooser, type Choice } from "./chat-chooser.ts";
 import { concurrentStartup } from "./chat-startup.ts";
+import { folderNotHereLine, folderSessions, localNameFor, resolve as resolveNamespace } from "./namespace.ts";
+import { spaceChoice } from "./space.ts";
 import { bangNoFolder, elsewhereBang, elsewhereBanner, elsewhereFiles, elsewhereLogs, elsewhereStatus, localMachine, machineOf, machineOfCard, runsElsewhere, type Elsewhere, type Machine } from "./hosted.ts";
 import { readTeleported } from "./teleport-plan.ts";
 import { cachedLedger, ledgerName } from "./peer-ledger.ts";
@@ -476,6 +478,8 @@ async function chat(argv: string[]): Promise<void> {
   // front: a <repo>@<branch> ref or a real directory => folder mode (spawn if absent); else a live
   // agent's name to focus.
   let folder: string | undefined;
+  /** `paw chat .` resolved to an agent that isn't this machine's (src/namespace.ts folderNotHereLine). */
+  let folderNote: string | undefined;
   let name: string | undefined; // the initial sticky target; undefined = broadcast mode
   let brief: string | undefined; // per-kind persona body (web/pr); undefined ⇒ generic
   let kind: Kind | undefined; // persona kind marker (folder/worktree/repo/pr/web)
@@ -560,6 +564,12 @@ async function chat(argv: string[]): Promise<void> {
           if (!nameFlag && agentFlag === undefined) requireExistingAgent(space, folder, target); // --agent is an explicit ask to create
           // --name → register a 2nd+ EXTRA agent at this folder (its own persona); no --name → the folder default.
           name = nameFlag ? registerInstance(space, folder, nameFlag) : resolveFolderAgent(space, folder);
+          // The folder's agent here may be a teleported frozen copy: chat messages the real one over the mesh,
+          // but the session the operator has in THIS folder is not that agent — say so once (2026-11-11).
+          if (!nameFlag) {
+            const ids = resolveNamespace({ folder }, spaceChoice(space)).inChosen;
+            folderNote = folderNotHereLine({ ids, ...(folderSessions(folder)[0] ? { newest: folderSessions(folder)[0] } : {}), suggest: localNameFor(space, name) });
+          }
         } else {
           // A bare NAME target. --name creates an EXTRA for a FOLDER, so it's meaningless here — fail loud.
           if (nameFlag !== undefined) {
@@ -1201,13 +1211,14 @@ async function chat(argv: string[]): Promise<void> {
   /** Has the endpoint's view of who is where been read? On a local space the machine is known from the
    *  persona alone; on a remote one only a card says, so it loads with the roster. */
   const whereKnown = (): boolean => roster() !== undefined;
+  const spaceFrom = spaceChoice(space).how === "env" ? { spaceFrom: "from PAW_SPACE" } : {};
   const bannerState = (): BannerState => {
-    if (filter?.kind === "channel") return { mode: "channel", space, remote: remoteSpace, room };
+    if (filter?.kind === "channel") return { mode: "channel", space, remote: remoteSpace, room, ...spaceFrom };
     const shown = curName ?? pendingName();
     if (!shown) {
       const r = roster();
       const names = r ? [...new Set(r.filter((p) => p.card.id !== me && p.status !== "offline").map((p) => p.card.name))] : undefined;
-      return { mode: "all", space, remote: remoteSpace, room: ROOM, roster: names ? okSlot(names) : loadingSlot() };
+      return { mode: "all", space, remote: remoteSpace, room: ROOM, roster: names ? okSlot(names) : loadingSlot(), ...spaceFrom };
     }
     // Running on another machine: this machine's folder, transcript and model/ctx readings are the
     // frozen copy from before it left (or don't exist) — show where it runs instead, and no stale numbers.
@@ -1221,9 +1232,12 @@ async function chat(argv: string[]): Promise<void> {
       agent: c.cyan(shown),
       where,
       status: curName ? fields.status : loadingSlot(),
-      machine: curName && whereKnown() ? okSlot(m && m.label !== "?" ? machineColor(m)(m.label) : undefined) : loadingSlot(),
+      // `runs on ssh:mini` already says where an away agent runs — never repeat it as `· on ssh:mini`.
+      machine: curName && whereKnown() ? okSlot(m && m.label !== "?" && !(away && m.label === away.where) ? machineColor(m)(m.label) : undefined) : loadingSlot(),
       info: away ? okSlot(undefined) : fields.info,
       ...(away ? { away: elsewhereBanner(away) } : {}),
+      ...(folderNote && curName === name ? { folderNote } : {}),
+      ...spaceFrom,
       only: filter?.kind === "agent",
       bang: !away,
     };

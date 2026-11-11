@@ -11,7 +11,7 @@
  */
 import { existsSync, rmSync } from "node:fs";
 import { registry, type Command } from "@cotal-ai/core";
-import { agentNamesForFolder, assertUnambiguousTarget, canonicalDir, folderForName, listAgents, lookupFolderName, personaFilePath, stopAgent } from "./addressing.ts";
+import { agentNamesForFolder, assertUnambiguousTarget, canonicalDir, elsewhereHint, folderForName, listAgents, lookupFolderName, personaFilePath, stopAgent } from "./addressing.ts";
 import { readForeground, unregisterForeground } from "./foreground.ts";
 import { parseGithubBranchRef, parseGithubHandle, repoDir } from "./github.ts";
 import { branchWorktreeDir } from "./repo-layout.ts";
@@ -19,13 +19,15 @@ import { ensureSpaceFor, resolveSpace, withEnsuredManager } from "./lifecycle.ts
 import { readResumeId, readSandbox } from "./session.ts";
 import { readSandboxHomeOwner, sandboxHomeDir, sandboxHomeOwnerFile } from "./sandbox.ts";
 import { parseWorktreeRef, resolveWorktreeFolder } from "./worktree.ts";
+import { identityIn, mutableHereRefusal, stateWords } from "./namespace.ts";
 
-function parseArgs(argv: string[]): { space?: string; target?: string } {
-  const out: { space?: string; target?: string } = {};
+function parseArgs(argv: string[]): { space?: string; target?: string; frozenCopy?: boolean } {
+  const out: { space?: string; target?: string; frozenCopy?: boolean } = {};
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--space") out.space = argv[++i];
-    else if (a.startsWith("-")) throw new Error(`paw: unknown flag "${a}" — rm takes <name|folder|repo@branch|github:owner/repo>`);
+    else if (a === "--frozen-copy") out.frozenCopy = true; // forget THIS machine's copy of a teleported agent
+    else if (a.startsWith("-")) throw new Error(`paw: unknown flag "${a}" — rm takes <name|folder|repo@branch|github:owner/repo> [--frozen-copy]`);
     else if (out.target === undefined) out.target = a;
     else throw new Error(`paw: unexpected argument "${a}" — rm takes a single target`);
   }
@@ -74,7 +76,7 @@ export function resolveRemoval(space: string, target: string): { name: string; f
   // under a different name). Remove it by name.
   if (/^[A-Za-z0-9_-]+$/.test(target) && existsSync(personaFilePath(space, target))) return { name: target };
 
-  throw new Error(`paw: no agent "${target}" in the registry (\`paw status\` to list)`);
+  throw new Error(`paw: no agent "${target}" in the registry${elsewhereHint(space, target) || " (`paw status` to list)"}`);
 }
 
 /** A sandboxed agent's home (src/sandbox.ts) holds its secrets (~/.env) and installs: `paw rm` never deletes it
@@ -89,12 +91,22 @@ export function sandboxHomeKept(space: string, name: string, persona: string): s
 }
 
 async function rm(argv: string[]): Promise<void> {
-  const { space: spaceArg, target } = parseArgs(argv);
+  const { space: spaceArg, target, frozenCopy } = parseArgs(argv);
   if (!target) throw new Error("paw: usage — rm <name|folder|repo@branch|github:owner/repo>");
   const space = spaceArg ?? resolveSpace();
   assertUnambiguousTarget(space, target); // a bare token that's BOTH a known name and a folder here → fail loud
 
   const { name, folder } = resolveRemoval(space, target);
+  // A teleported persona is the marker `paw teleport --back` needs, and the agent still runs elsewhere:
+  // deleting it here is only ever an explicit "forget this machine's frozen copy" (src/namespace.ts).
+  const id = identityIn(space, name);
+  const away = id ? mutableHereRefusal(id, "rm") : undefined;
+  if (away && !frozenCopy) throw new Error(`${away} · \`paw rm ${name}#${space} --frozen-copy\` forgets only this machine's copy`);
+  if (away && frozenCopy) {
+    rmSync(personaFilePath(space, name), { force: true });
+    console.log(`✓ forgot this machine's frozen copy of "${name}" (space ${space}) — the agent keeps running: ${stateWords(id!)}`);
+    return;
+  }
   const persona = personaFilePath(space, name);
   const pin = existsSync(persona) ? readResumeId(persona) : undefined;
   const homeKept = sandboxHomeKept(space, name, persona);

@@ -35,14 +35,38 @@ export function defaultSpaceFor(verb: string): string {
   return CALLER_SPACE_VERBS.has(verb) ? callerSpace() : resolveSpace();
 }
 
-/** Whether the space this invocation acts on was CHOSEN (`--space`, `<agent>#<space>`, `PAW_SPACE`) or only
- *  defaulted (the caller agent's COTAL_SPACE / the machine default). bin/paw.ts records it before dispatch;
- *  anything that never ran through it (tests, other entry points) reads "chosen" — the safe answer, since
- *  only a defaulted space may be swapped for the one space that actually holds the agent. */
-let spaceChosen = true;
-export function noteSpaceChosen(chosen: boolean): void {
-  spaceChosen = chosen;
+/** HOW the space this invocation acts on was picked — every verb's namespace starts here:
+ *  `flag` (`--space`), `address` (`<agent>#<space>`), `env` (`PAW_SPACE`, often from a shell rc the operator
+ *  forgot — the 2026-11-11 tracepaper incident: `PAW_SPACE=team2027` in ~/.zshrc routed `paw adopt .` into
+ *  team2027 silently), `caller` (the calling agent's COTAL_SPACE) or `default` (`paw`). */
+export type SpaceHow = "flag" | "address" | "env" | "caller" | "default";
+export type SpaceChoice = { space: string; how: SpaceHow };
+
+/** Pure: how `space` was picked, from what bin/paw.ts saw. */
+export function spaceChoiceOf(o: { space: string; flag: boolean; address: boolean; verb: string; env: NodeJS.ProcessEnv }): SpaceChoice {
+  if (o.flag) return { space: o.space, how: "flag" };
+  if (o.address) return { space: o.space, how: "address" };
+  if (o.env.PAW_SPACE !== undefined) return { space: o.space, how: "env" };
+  if (CALLER_SPACE_VERBS.has(o.verb) && o.env.COTAL_SPACE?.trim()) return { space: o.space, how: "caller" };
+  return { space: o.space, how: "default" };
 }
+
+/** Where a space came from, as a short phrase for a line (`from PAW_SPACE`), or "" when it is plain. */
+export function spaceProvenance(how: SpaceHow): string {
+  return how === "env" ? "from PAW_SPACE" : how === "caller" ? "the calling agent's space" : how === "default" ? "the default space" : "";
+}
+
+/** The choice bin/paw.ts recorded before dispatch. Anything that never ran through it (tests, other entry
+ *  points) reads a `flag` choice of the resolved space — "chosen", the safe answer, since only a defaulted
+ *  space may be swapped for the one space that actually holds the agent. */
+let choice: SpaceChoice | undefined;
+export function noteSpaceChoice(c: SpaceChoice): void {
+  choice = c;
+}
+export function spaceChoice(space: string): SpaceChoice {
+  return choice && choice.space === space ? choice : { space, how: "flag" };
+}
+/** Whether the space was CHOSEN (`--space`, `#space`, `PAW_SPACE`) rather than only defaulted. */
 export function spaceWasChosen(): boolean {
-  return spaceChosen;
+  return !choice || !(choice.how === "default" || choice.how === "caller");
 }

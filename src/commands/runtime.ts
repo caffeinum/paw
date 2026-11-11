@@ -16,6 +16,7 @@ import {
   agentRecord,
   assertUnambiguousTarget,
   elsewhereHint,
+  elsewhereOutcome,
   personaFilePath,
   psRowRunning,
   registerLivePeer,
@@ -65,6 +66,7 @@ import {
   withReviveLock,
   type Skipped,
 } from "../revive.ts";
+import { assertMutableByName } from "../namespace.ts";
 
 const tty = process.stdout.isTTY === true;
 const wrap = (code: string) => (s: string) => (tty ? `\x1b[${code}m${s}\x1b[0m` : s);
@@ -241,6 +243,9 @@ async function restart(argv: string[]): Promise<void> {
   if (target !== undefined) {
     assertUnambiguousTarget(space, target);
     agent = resolveStopName(space, target);
+    // A teleported frozen copy: this machine's manager doesn't run it — restarting or swapping it here
+    // used to print "✓ started X (it wasn't running)" for a seat on another machine (src/namespace.ts).
+    assertMutableByName(space, agent, swap !== undefined ? "swap" : "restart");
   }
 
   // `paw restart <agent> --agent kit|claude …` — switch its harness in the persona FIRST (printed, with
@@ -293,6 +298,8 @@ async function restart(argv: string[]): Promise<void> {
       console.log(
         res.starting
           ? `${c.yellow("…")} ${agent}'s process runs but it hasn't reached the mesh yet ${c.dim("— messages wait in its durable inbox; `paw status` shows when it's up")}`
+          : res.elsewhere
+          ? `${c.yellow("⚠")} ${agent} ${elsewhereOutcome(res.elsewhere)}`
           : res.restarted
           ? `${c.green("✓")} restarted ${agent} ${c.dim(warm ? "— it resumes its pinned session, so it keeps its context" : "— on a FRESH session (no transcript at its pin yet)")}`
           : `${c.green("✓")} started ${agent} ${c.dim("(it wasn't running)")}`,

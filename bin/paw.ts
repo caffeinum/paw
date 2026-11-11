@@ -20,7 +20,7 @@ import type { Command } from "@cotal-ai/core";
 import { downSpace, explicitSpace, expandEqFlags, expandShortForm, failureLine, helpRequested, hoistAddressSpace, oneShotReplyNote, remoteCotalArgv, SHORT_FORMS, stripCotalNamespace, verbHelp, withDefaultSpace } from "../src/dispatch.ts";
 import { readRemoteMesh } from "../src/remote-mesh.ts";
 import { runCotalPassthrough } from "../src/cotal-tee.ts";
-import { defaultSpaceFor, noteSpaceChosen } from "../src/space.ts";
+import { defaultSpaceFor, noteSpaceChoice, spaceChoiceOf } from "../src/space.ts";
 
 // A short form (`paw a` = `paw attach`) is expanded HERE, before anything reads the verb, so the
 // mesh/manager gating, --space injection and the command lookup all see the real name.
@@ -81,6 +81,8 @@ const NEEDS_MESH = new Set(["inbox", "msg", "ask", "who", "history", "watch", "f
  *  (`sessions`/`log` are local reads; `adopt` runs its own ensure once it decides to start;
  *  `mailbox` is the daemon ensure() itself spawns — gating it would recurse into the lock.) */
 const NEEDS_MANAGER = new Set(["dm", "tidy"]); // status, chat, open, attach, rename, rm and stop ensure() themselves — each shares ensure()'s probe rail (lifecycle.ts ensureManagerOn)
+/** Verbs that write agent state (personas, pins, folders) — they name the space when PAW_SPACE picked it. */
+const SPACE_WRITING_VERBS = new Set(["adopt", "rename", "rm", "move", "relocate", "nice", "sleep", "claude", "teleport", "cron"]);
 
 /** Raw cotal verbs that drive the control plane — the passthrough must bring the manager up too,
  *  or a cold-machine `paw cotal ps`/`start` dead-ends on a mesh with no manager answering. */
@@ -232,7 +234,12 @@ try {
   const args = hoistAddressSpace(cmd, raw.slice(1));
   // Unnamed, a spawning verb run inside an agent defaults to THAT agent's space (src/space.ts).
   const space = explicitSpace(args) ?? defaultSpaceFor(cmd);
-  noteSpaceChosen(explicitSpace(args) !== undefined || process.env.PAW_SPACE !== undefined);
+  const flagged = explicitSpace(raw.slice(1)) !== undefined;
+  const choice = spaceChoiceOf({ space, flag: flagged, address: !flagged && explicitSpace(args) !== undefined, verb: cmd, env: process.env });
+  noteSpaceChoice(choice);
+  // A verb that WRITES agent state names the space when PAW_SPACE picked it: an `export PAW_SPACE=…` in a
+  // shell rc is invisible, and it routed `paw adopt .` into another machine's space (2026-11-11).
+  if (choice.how === "env" && SPACE_WRITING_VERBS.has(cmd)) process.stderr.write(`paw: space ${space} (from PAW_SPACE)\n`);
   const gate = isRemoteSpace(space) ? { space } : {};
   if (cmd === "dm") await gateDm(() => ensure({ needMesh: true, needManager: true, ...gate }), args, space);
   else if (NEEDS_MANAGER.has(cmd)) await ensure({ needMesh: true, needManager: true, ...gate });

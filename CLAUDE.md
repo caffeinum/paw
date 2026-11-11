@@ -227,6 +227,11 @@ Each entry: what it is + the most load-bearing rule. Full notes behind the link.
   schedules block, and a sleep is refused unless the wake can `--resume` the pin. → [sleep.md](docs/notes/sleep.md)
 
 ### Addressing → [addressing.md](docs/notes/addressing.md)
+- `src/namespace.ts` — THE namespace owner: `resolve(target, SpaceChoice)` over every local space → identities
+  with a file-derived state (`local`/`teleported`/`folder-gone`/`seen`); `assertMutableByName` refuses a
+  teleported or another machine's record BEFORE any write (adopt, rename, rm `--frozen-copy`, stop, restart/swap,
+  nice, sleep, mcp --to); a teleported persona never owns its folder for a create; writers print `space X (from
+  PAW_SPACE)`. `check:namespace`. → [addressing.md#namespace-owner-2026-11-11](docs/notes/addressing.md#namespace-owner-2026-11-11)
 - `src/addressing.ts` — folder→name registry (`folders.json` defaults + `agents.json` extras, never
   both); `ensureAgentSpawned` (wake gate: start/reuse/restart from ps liveness, starting-grace 15s,
   busy-guard 3min, persona channel grants `[">"]` + `subscribe: [general]`); `assertUnambiguousTarget`. → [addressing.md#srcaddressingts](docs/notes/addressing.md#srcaddressingts)

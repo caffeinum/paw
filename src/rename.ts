@@ -22,7 +22,8 @@ import {
   stopAgent,
   withRegistryLock,
 } from "./addressing.ts";
-import { resolveSpace, withEnsuredManager } from "./lifecycle.ts";
+import { ensureSpaceFor, resolveSpace, withEnsuredManager } from "./lifecycle.ts";
+import { assertMutableByName } from "./namespace.ts";
 import { resolveExistingFolderArg } from "./address.ts";
 import { renameInFleetJob } from "./commands/launchd.ts";
 import { reassignOpenTasks } from "./tasks.ts";
@@ -88,6 +89,9 @@ export function renameAgentOnDisk(
     if (!from) {
       throw new Error(`paw: no agent is mapped for ${canonical} — nothing to rename (\`paw chat --fresh "${canonical}"\` first)`);
     }
+    // A teleported frozen copy (or another machine's agent) is not this machine's to relabel: renaming the
+    // file here would split one identity in two (the seat elsewhere keeps the old name) — 2026-11-11.
+    assertMutableByName(space, from, "rename");
     const to = cleanAgentName(desired);
     if (!to) throw new Error(`paw: "${desired}" has no usable name characters (allowed: letters, digits, _ and -)`);
     if (to === from) throw new Error(`paw: "${from}" already has that name — nothing to rename`);
@@ -122,6 +126,9 @@ async function rename(argv: string[]): Promise<void> {
   const space = spaceArg ?? resolveSpace();
   assertUnambiguousTarget(space, target); // a bare token that's BOTH a known name and a folder here → fail loud
   const canonical = resolveTarget(space, target);
+  // Refused before the mesh is even touched: nothing moves for a record that isn't this machine's.
+  const current = agentRecord(space, target)?.folder === canonical ? target : lookupFolderName(space, canonical);
+  if (current) assertMutableByName(space, current, "rename");
   // Mesh + manager up BEFORE anything moves on disk (as the bin/paw.ts gate had it), on ONE control
   // handle that also serves ensure()'s probe — see ensureManagerOn.
   const { from, to, restarted } = await withEnsuredManager(
@@ -135,7 +142,7 @@ async function rename(argv: string[]): Promise<void> {
       if (wasLive) await ensureAgentSpawned(ctl, { space, name: to, cwd: canonical });
       return { from, to, restarted: wasLive };
     },
-    { ensureSpace: resolveSpace() },
+    { ensureSpace: ensureSpaceFor(space) },
   );
 
   const fleetPlist = renameInFleetJob(space, from, to);

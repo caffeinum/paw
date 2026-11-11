@@ -41,6 +41,9 @@ import { presenceProbeCreds } from "./remote-creds.ts";
 import { withFileLock, withFileLockAsync, type LockOpts } from "./lock.ts";
 import { liveSessionProcs, meshAgentSession, meshIdentity, type LiveSessionProc } from "./named.ts";
 import { readTeleported, startThereCommand, teleportedRefusal } from "./teleport-plan.ts";
+import { elsewhereClause, resolve as resolveNamespace, stateWords } from "./namespace.ts";
+import { spaceChoice } from "./space.ts";
+import type { Elsewhere } from "./hosted.ts";
 import { checkKitArgs, ensureKitBinary, isKitProvider, KIT_AGENT, preflightKitArgs, readKitPersona } from "./kit.ts";
 import { HERMES_AGENT } from "./hermes-profile.ts";
 import { ACP_AGENT } from "./acp-agent.ts";
@@ -148,9 +151,24 @@ export function listAgents(space: string): AgentRecord[] {
     .flatMap((f) => agentRecord(space, f.slice(0, -".md".length)) ?? []);
 }
 
-/** Read-only: the folder's DEFAULT agent name, or undefined if it has none (never registers). */
+/** Does `name`'s persona carry the `teleported:` marker — this machine's FROZEN copy of an agent that
+ *  runs elsewhere (src/namespace.ts)? */
+export function isTeleportedHere(space: string, name: string): boolean {
+  return readTeleported(personaFilePath(space, name)) !== undefined;
+}
+
+/** Read-only: the folder's DEFAULT agent name, or undefined if it has none (never registers). This
+ *  machine's own default wins over a teleported frozen copy that still names the folder; the frozen copy
+ *  is returned only when it is all there is (talk verbs message it over the mesh). */
 export function lookupFolderName(space: string, canonical: string): string | undefined {
-  return listAgents(space).find((a) => a.folder === canonical && !a.extra)?.name;
+  const defaults = listAgents(space).filter((a) => a.folder === canonical && !a.extra);
+  return (defaults.find((a) => !isTeleportedHere(space, a.name)) ?? defaults[0])?.name;
+}
+
+/** Read-only: the folder's default agent ON THIS MACHINE — a teleported persona never owns a folder here
+ *  (it runs elsewhere; adopting or registering "the folder's agent" must not touch it — 2026-11-11). */
+export function lookupOwnedFolderName(space: string, canonical: string): string | undefined {
+  return listAgents(space).find((a) => a.folder === canonical && !a.extra && !isTeleportedHere(space, a.name))?.name;
 }
 
 /** Reverse lookup: the folder of agent `name` (default or extra), or undefined if unregistered. */
@@ -186,9 +204,10 @@ export function registeredAgentFor(space: string, token: string): { name: string
 /** Every agent NAME at `canonical`: its default (if any) first, then its extras. Named
  *  `agentNamesForFolder` (NOT `namesForFolder`, which named.ts already uses for SESSIONS). */
 export function agentNamesForFolder(space: string, canonical: string): string[] {
+  const away = (n: string): number => Number(isTeleportedHere(space, n));
   return listAgents(space)
     .filter((a) => a.folder === canonical)
-    .sort((a, b) => Number(a.extra) - Number(b.extra))
+    .sort((a, b) => Number(a.extra) - Number(b.extra) || away(a.name) - away(b.name))
     .map((a) => a.name);
 }
 
@@ -226,6 +245,7 @@ function claudeShareSelection(space: string, name: string, config: string): stri
 /** Is `name` free to give to (folder, extra)? Free = no persona, an orphan persona (no folder), or
  *  already exactly this registration. */
 function nameFree(space: string, name: string, folder: string, extra: boolean): boolean {
+  if (isTeleportedHere(space, name)) return false; // a frozen copy of an agent running elsewhere is never reused
   const rec = agentRecord(space, name);
   return !rec || (rec.folder === folder && rec.extra === extra);
 }
@@ -242,11 +262,17 @@ export function withRegistryLock<T>(space: string, fn: () => T): T {
  * two concurrent paw processes can't both pick the same name for different folders.
  */
 export function folderToName(space: string, canonical: string): string {
-  return withRegistryLock(space, () => lookupFolderName(space, canonical) ?? claimName(space, canonical, sanitizeAgentName(canonical), false));
+  return withRegistryLock(space, () => lookupOwnedFolderName(space, canonical) ?? claimName(space, canonical, sanitizeAgentName(canonical), false));
 }
 
 /** Register `base` (or its hash-qualified form) for (folder, extra). Caller holds the registry lock. */
 function claimName(space: string, canonical: string, base: string, extra: boolean): string {
+  // A name held by a TELEPORTED persona is that agent's, running elsewhere: never hash-suffix around it
+  // silently (the operator would get "tracepaper-1a2b3c" without knowing why) — fail loud, naming it.
+  if (isTeleportedHere(space, base)) {
+    const id = resolveNamespace({ name: base }, spaceChoice(space)).inChosen[0];
+    throw new Error(`paw: the name "${base}" in space ${space} belongs to an agent that ${id ? stateWords(id) : "was teleported"} — pick another name with --name`);
+  }
   const name = nameFree(space, base, canonical, extra) ? base : `${base}-${shortHash(canonical)}`;
   if (!nameFree(space, name, canonical, extra)) {
     throw new Error(`paw: could not derive a unique agent name for ${canonical} ("${name}" already in use)`);
@@ -260,7 +286,7 @@ function claimName(space: string, canonical: string, base: string, extra: boolea
  *  another agent holds the name. Returns `{ name, previous }` so the caller can retire the old name. */
 export function setFolderName(space: string, canonical: string, desired: string): { name: string; previous?: string } {
   return withRegistryLock(space, () => {
-    const previous = lookupFolderName(space, canonical);
+    const previous = lookupOwnedFolderName(space, canonical);
     const cleaned = cleanAgentName(desired) || sanitizeAgentName(canonical);
     if (previous === cleaned) return { name: cleaned, previous };
     const name = claimName(space, canonical, cleaned, false);
@@ -307,7 +333,7 @@ export function bindNameToFolder(space: string, canonical: string, name: string)
         throw new Error(`paw: agent name "${name}" is already bound to ${rec.folder}, not ${canonical} — run it from there, or pick a different --name`);
       return;
     }
-    const extra = name !== (lookupFolderName(space, canonical) ?? sanitizeAgentName(canonical));
+    const extra = name !== (lookupOwnedFolderName(space, canonical) ?? sanitizeAgentName(canonical));
     setPersonaKeys(space, name, { cwd: canonical, "paw-extra": extra ? "true" : undefined });
   });
 }
@@ -323,11 +349,18 @@ export function spacesHoldingAgent(name: string, except: string): string[] {
     .sort();
 }
 
-/** ` — it's in "team2027": add --space team2027` when `name` is registered in another local space, else "". */
+/** ` — it's in "team2027": add --space team2027` when `name` is registered in another local space, else "".
+ *  When that record is NOT this machine's to act on (teleported away, another machine's on a shared mesh)
+ *  the hint says so instead — "add --space" would have led `paw rename` into splitting a teleported
+ *  identity (2026-11-11). Every state wording comes from src/namespace.ts. */
 export function elsewhereHint(space: string, name: string): string {
   const others = spacesHoldingAgent(name, space);
   if (!others.length) return "";
-  return ` — it's in ${others.map((s) => `"${s}"`).join(", ")}: add --space ${others[0]}`;
+  const res = resolveNamespace({ name }, spaceChoice(space));
+  const away = res.elsewhere.filter((id) => others.includes(id.space) && (id.where.kind === "teleported" || id.where.kind === "seen"));
+  if (away.length) return elsewhereClause(name, res.chosen, away, "act on");
+  const env = res.chosen.how === "env" ? ` (${space} is from PAW_SPACE)` : "";
+  return `${env} — it's in ${others.map((s) => `"${s}"`).join(", ")}: add --space ${others[0]}`;
 }
 
 /**
@@ -702,6 +735,29 @@ export function sessionPinnedInOtherSpaces(space: string, sessionId: string): Ar
   return out;
 }
 
+/** The refusal when a TELEPORTED frozen copy (any local space, this one included) pins `sessionId`, or
+ *  undefined. "use it there / forget it" would point at a record nobody here may act on, and adopting the
+ *  session beside it is how the 2026-11-11 incident started — name the state; repairing the pin is the
+ *  operator's call. `among` narrows the search to known pinners. */
+export function frozenPinRefusal(sessionId: string, among?: Array<{ space: string; name: string }>): string | undefined {
+  const root = join(process.env.PAW_HOME?.trim() || join(homedir(), ".paw"), "spaces"); // read-only: never spaceDir (it mkdirs)
+  const pinners = among ?? (existsSync(root) ? readdirSync(root) : []).flatMap((sp) => {
+    const dir = join(root, sp, "personas");
+    return existsSync(dir) ? readdirSync(dir).filter((f) => f.endsWith(".md") && readResumeId(join(dir, f)) === sessionId).map((f) => ({ space: sp, name: f.slice(0, -".md".length) })) : [];
+  });
+  for (const { space: s, name: n } of pinners) {
+    const file = join(root, s, "personas", `${n}.md`);
+    const mark = readTeleported(file);
+    if (!mark) continue;
+    return (
+      `paw: session ${sessionId} is pinned by "${n}" in space "${s}", which runs on ${mark.to}${mark.at ? ` (teleported ${mark.at.slice(0, 10)})` : ""} — that pin is this machine's frozen copy.\n` +
+      `  adopt another session here:  paw adopt . --resume <id>   (\`paw sessions .\` lists them)\n` +
+      `  or fix the frozen copy's pin by hand: resume: in ${file}`
+    );
+  }
+  return undefined;
+}
+
 /**
  * An agent belongs to ONE space. A claude session pinned by agents in two spaces would get two
  * managers — on two brokers, when one is remote — each resuming it: two writers on one transcript.
@@ -712,6 +768,8 @@ export function assertOneSpace(space: string, sessionId: string | undefined): vo
   const clash = sessionPinnedInOtherSpaces(space, sessionId).filter((o) => readRemoteMesh(space) || readRemoteMesh(o.space));
   if (!clash.length) return;
   const { space: s, name: n } = clash[0]!;
+  const frozen = frozenPinRefusal(sessionId, [clash[0]!]);
+  if (frozen) throw new Error(frozen);
   throw new Error(
     `paw: session ${sessionId} already belongs to "${n}" in space "${s}" — an agent lives in one space (two would resume one transcript from two managers).\n` +
       `  use it there:  paw chat ${n} --space ${s}\n` +
@@ -1011,7 +1069,9 @@ export async function ensureAgentSpawned(
   const teleported = readTeleported(ownPersona);
   if (teleported) {
     const id = await presentPeerId(opts.space, opts.name);
-    if (id) return { spawned: false, id };
+    // NOT "already running here": the seat is another machine's. `elsewhere` lets every caller say so
+    // (adopt printed "already live, left it running" for the mini's seat — 2026-11-11).
+    if (id) return { spawned: false, id, elsewhere: { how: "teleported", where: teleported.to, ...(teleported.cwd ? { cwd: teleported.cwd } : {}) } };
     const there = startThereCommand(opts.name, opts.space, teleported.to);
     throw new Error(`${teleportedRefusal(opts.name, teleported)} — and it isn't on the mesh right now (start it there${there ? `: \`${there}\`` : ""})`);
   }
@@ -1519,7 +1579,10 @@ function healSleep(space: string, name: string, say: (line: string) => void = (l
  *  (src/restart-history.ts), or nobody approved restarting its live process (`restartLive`). The "⚠ …"
  *  headline; `starting` is set too, so messages still go to its durable inbox. `busy`: offline on the
  *  mesh but its transcript is fresh — left alone, it will drain its inbox when its turn ends. */
-export type SpawnOutcome = { spawned: boolean; id?: string; unmanaged?: true; starting?: true; stuck?: string; busy?: true };
+export type SpawnOutcome = { spawned: boolean; id?: string; unmanaged?: true; starting?: true; stuck?: string; busy?: true; elsewhere?: Elsewhere };
+
+/** The words a caller prints for an outcome whose seat runs on another machine (never "already live"). */
+export const elsewhereOutcome = (e: Elsewhere): string => `runs on ${e.where} — not started here; that seat is another machine's`;
 
 /** Who may approve the wake gate restarting a seat whose process is alive: `allow` (an explicit operator
  *  verb or `--restart`), or a question asked on a tty. Absent ⇒ nobody (daemons, web, scripts) ⇒ refuse. */

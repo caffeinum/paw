@@ -542,3 +542,42 @@ CLI-side only (ensureAgentSpawned runs in the caller) — live without a release
   operator (`x#` = zero or more x) — quote the address then: `paw dm 'intern#team2027' hi`.
 - Test: `check:hash-space` (parser precedence, each family's hoisted argv through its own exported
   parser, and every address verb through the real CLI failing loud before any mesh).
+
+## namespace owner (2026-11-11)
+
+`src/namespace.ts` is the one answer to "which agent is this, in which space, and does it run HERE?".
+Incident: `PAW_SPACE=team2027` in `~/.zshrc` routed `paw adopt .` (tracepaper folder on the MacBook) into
+team2027, whose TELEPORTED persona still had `cwd:` = that folder. adopt re-pinned the frozen copy to an
+18-day-old local transcript (newest by mtime) and printed "already live" for the mini's seat; `paw rename
+tracepaper#paw` then said "add --space team2027", which would have split the identity.
+
+- State model, files only (sync, read-only, never `personaFilePath` which mkdirs): `Where` = `local` |
+  `teleported{to,at,cwd}` | `folder-gone` | `seen` (remote space, ledger name, no persona here = another
+  machine's). `resolve(target, SpaceChoice)` walks EVERY local space; `moved-to-*` copies and orphan
+  personas are never identities.
+- `SpaceChoice{space, how}` (src/space.ts): `flag` | `address` (`#space`) | `env` (`PAW_SPACE`) | `caller` |
+  `default`. bin/paw.ts records it (`noteSpaceChoice`); writing verbs print `paw: space X (from PAW_SPACE)`
+  when the env picked it; chat's banner appends `· from PAW_SPACE`. `spaceWasChosen()` = not default/caller
+  (PAW_SPACE never auto-yields — keeps test isolation).
+- `assertMutableHere` / `assertMutableByName`: every writing verb refuses a teleported / seen identity BEFORE
+  any write — adopt, rename, rm (`--frozen-copy` is the explicit "forget this machine's copy"), stop,
+  restart/swap, nice, sleep, `mcp --to`. teleport itself never calls it.
+- Folder ownership: `lookupOwnedFolderName` skips teleported personas (used by folderToName, setFolderName,
+  bindNameToFolder, adopt); `lookupFolderName` / `agentNamesForFolder` rank this machine's agent before a
+  frozen copy, and still return the copy when it is all there is (talk verbs message it). `claimName` fails
+  loud on a name held by a teleported persona (never hash-suffixes around it).
+- adopt: Case A (folder's only default in the space is not this machine's, no `--name`) → refused, naming
+  space + provenance + state + `--name <name>-<machine> --space s` / `--space paw` + the session's age.
+  Case C: a bare adopt never swaps an existing pin to the newest transcript (`--resume <id> --replace`);
+  `pickSession` prefers a session a LIVE claude holds here. Case D: a session pinned by a teleported copy
+  (any space) → `frozenPinRefusal`. A new name another machine holds on a shared mesh (`heldOnMesh`, ledger)
+  → refused.
+- `ensureAgentSpawned`'s teleported branch returns `{spawned:false, id, elsewhere}`; adopt / restart print
+  `runs on X — not started here`, never "already live".
+- `elsewhereHint` says where a non-local record runs (`paw chat @n#s` messages it) instead of "add --space".
+- `paw move a b` → hint for `paw rename a b` / `--as b`. `paw chat .` on a folder whose agent isn't this
+  machine's adds `this folder has no agent on this machine — session X here (18d ago) isn't running …`.
+- Not migrated yet: dm/log gone-folder checks, open.ts's inline scan + chat-lookup `otherSpaceHits` (still
+  their own walks), relocate's own yield, status cross-space rows, relocate's legacy folders.json writes,
+  mesh-side pin reconciliation with the other machine's copy (out of scope).
+- `check:namespace` (fixture replica of the incident; persona bytes unchanged on every refusal).

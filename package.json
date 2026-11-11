@@ -21,6 +21,7 @@
     "check:office": "node scripts/check-office.ts",
     "check:transcript": "node scripts/check-transcript.ts",
     "check:adopt": "node scripts/check-adopt.ts",
+    "check:namespace": "node scripts/check-namespace.ts",
     "check:chat": "node scripts/check-chat.ts",
     "check:chat-tty": "node scripts/check-chat-tty.ts",
     "measure:chat": "node scripts/measure-chat-ttp.ts",
