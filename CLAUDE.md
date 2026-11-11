@@ -251,7 +251,9 @@ Each entry: what it is + the most load-bearing rule. Full notes behind the link.
 - `src/status.ts` — `paw status`: one row per agent (registered + unregistered ps peers + live roster-only
   agents hosted here, #96; inside an agent it reads that agent's space); INBOX lag is
   the zombie detector (`?` on query failure, never a fabricated 0); `failure` from synthetic API-error
-  turns; `busy` = paw's inference, distinct from the mesh's `working`; `--json`. → [status.md#srcstatusts](docs/notes/status.md#srcstatusts)
+  turns; `busy` = paw's inference, distinct from the mesh's `working`; STATUS words = chat's (`online`, never `idle`;
+  a roster-only peer is `online (not registered here)` with the fix once under the table, never a `?` seat); a
+  registered agent whose folder is gone gets `⚠ folder gone: … — paw rm`, not a pin note; `--json`. → [status.md#srcstatusts](docs/notes/status.md#srcstatusts)
 
 ### Transcripts & log → [transcript-log.md](docs/notes/transcript-log.md)
 - `src/sessions.ts`, `src/log.ts`, `src/transcript.ts` — `paw sessions`, `paw log` (dispatches on persona
@@ -282,9 +284,11 @@ Each entry: what it is + the most load-bearing rule. Full notes behind the link.
   unread roster); lines typed early queue + replay in order; a lost target REFUSES plain lines (never
   #general); restart consent only from a y/n line typed after the question; remote inbox LEDGERED before
   provisioning (`chat-inboxes/<uid>.json`, swept by the next chat). `chat-lookup.ts` + `chat-chooser.ts`: a name
-  registered nowhere here paints `◌ looking for @x on <space>…` (files-only check, <1ms), the roster settles it —
-  not there → a chooser (suggestions · open in another space · show all · quit), never a dead prompt, never a
-  guessed "not found" from an unread roster. → [chat.md#instant-ui](docs/notes/chat.md#instant-ui)
+  registered nowhere here paints `kit ◌` + `you → kit ◌>` (files-only check, <1ms; the footer phase says `looking for`),
+  the roster settles it — not there → ONE chooser (suggestions · open in another space · quit; `--fresh` named as text),
+  a registered name whose folder is gone → `folder-gone` (named, never "no agent"), never a dead prompt, never a guessed
+  "not found" from an unread roster; a boot failure self-retries (`refused` included) with the footer counting down, and
+  opens the unreachable chooser only when it will NOT retry by itself. → [chat.md#instant-ui](docs/notes/chat.md#instant-ui)
 - `src/chat-own.ts` — chat's echo tap + earlier block's read + the messages view's other-peer reads; remote: narrow creds
   only, never the space wildcard — `chat-echo`/`chat-history` for "you"'s own subjects, operator-only `chat-peers` (5 min,
   per read + one renewed live tap) for the TARGET's own DM subjects (every id) + its channel posts.
@@ -295,9 +299,14 @@ Each entry: what it is + the most load-bearing rule. Full notes behind the link.
 - `src/chat-backlog.ts` — the earlier block: `paw chat @x` (and every `@name` switch) opens on the last 20 messages
   with x from 24h (`--history N`, 0 = off, `/more [N]` older), between `── earlier ──`/`── now ──`, dimmed, behind a
   `◌` loader; never news (no follow/await/cursor), deduped by id against live. → [chat.md#earlier-block](docs/notes/chat.md#earlier-block) → [remote-mesh.md#paw-chat--paw-web-taps](docs/notes/remote-mesh.md#paw-chat--paw-web-taps)
+- `src/ux.ts` — THE terminal vocabulary: glyphs `◌ ● ○ ✓ ✕ ⚠ ↻`, `reasonWord` (connection refused · no answer · hung up ·
+  no route · dns failed · rejected credentials · reconnecting — never a raw library string on a screen), `problemLine`
+  (`<glyph> <what> — <doing> · <you can>`), `presenceWord` (online · working · waiting · offline). One fact in ONE place:
+  footer = current state, transcript = verdict changes, `/conn` = history. → [chat.md#vocabulary-2026-11-10](docs/notes/chat.md#vocabulary-2026-11-10)
 - `src/conn-state.ts` — mesh connection state for chat / inbox --watch / web: cotal's per-event `warning`/`error`
-  (e.g. a raw `timeout` per presence-watch rebind) fold into one state on the hint row; ONE line per sustained
-  (30s) streak + one on recovery; auth/permission/unknown print at once; `/conn`, `PAW_CONN_DEBUG=1`. → [chat.md#connection-state](docs/notes/chat.md#connection-state)
+  (e.g. a raw `timeout` per presence-watch rebind) fold into one state on the hint row (empty while connected; timed from
+  the first sign of trouble); ONE line per sustained (2m) streak + one on recovery; auth/permission/unknown print at
+  once; `/conn`, `PAW_CONN_DEBUG=1`. → [chat.md#connection-state](docs/notes/chat.md#connection-state)
 - `src/outbox.ts` + `src/mesh-publish.ts` — every chat send: paw-owned msg id (`msgID` dedup; reads cotal's
   private `js`, loud if renamed), transient → `◌ sending…` + backoff ≤90s, then ONE `✕ not sent … /retry`;
   degraded never prints, DNS errors are conn state, status flips live in the footer. → [chat.md#connection-state](docs/notes/chat.md#connection-state)

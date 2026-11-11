@@ -97,7 +97,10 @@ const hint = (r: never, p: typeof q | undefined = q) => f.hintFor(r, p, verdict(
 const stuckTool = { id: "t", name: "Bash", summary: "fly ssh", startedMs: now - 51 * 60_000 };
 const stuck = row({ tool: stuckTool });
 
-ok(f.stateText(stuck, q, now) === "⧗ Bash 51m", "stuck tool wins the state cell");
+ok(f.stateText(stuck, q, now) === "⚠ stuck in Bash 51m", `stuck tool wins the state cell (got ${f.stateText(stuck, q, now)})`);
+ok(f.stateText(row({ failure: { text: "You've hit your session limit · resets 1am (America/Los_Angeles)", ts: 0 } }), q, now) === "⚠ limit — resets 1am", `limit names when it resets (got ${f.stateText(row({ failure: { text: "You've hit your session limit · resets 1am (America/Los_Angeles)", ts: 0 } }), q, now)})`);
+ok(f.failureWord("API Error: 500 Internal Server Error") === "⚠ api error 500" && f.failureWord("Please log in again", "intern") === "⚠ login needed — paw attach intern", "one failure word for status, top and chat");
+ok(f.fmtMb(1024) === "1G" && f.fmtMb(807) === "807M" && f.fmtMb(2355) === "2.3G" && f.fmtMb(undefined) === "—", "one memory format everywhere: 1G, not 1024M nor 1.0G; unmeasured is —");
 ok(f.stateText(row({ failure: { text: "You've reached your limit", ts: 0 } }), q, now) === "⚠ limit", "a runtime failure shows as limit/login");
 ok(f.stateText(row(), fleet.agents.dup, now) === "⚠ 2 procs", "two roots → duplicate state");
 ok(f.stateText(row({ busy: true }), q, now) === "busy", "otherwise busy/idle");
@@ -127,7 +130,7 @@ ok(f.hasCotalMcp([P(1, 0, "/u/.local/bin/claude --resume a")], [P(2, 1, "/u/.loc
 ok(f.hasCotalMcp([P(1, 0, "/u/.paw/bin/kit run --name k")], []) === undefined, "a kit seat has no cotal MCP child to miss");
 const deaf = { ...q, cotalMcp: false };
 ok(f.stateText(row(), deaf, now) === "⚠ no cotal mcp", "claude alive, cotal mcp gone → flagged in STATE");
-ok(f.stateText(row(), { ...deaf, ageMs: f.MCP_GRACE_MS - 1 }, now) === "idle", "…but not while the seat is still booting its MCP");
+ok(f.stateText(row(), { ...deaf, ageMs: f.MCP_GRACE_MS - 1 }, now) === "online", "…but not while the seat is still booting its MCP (and idle reads `online`, chat's word)");
 ok(hint(row(), deaf)?.cmd === "paw restart queue" && /can't send/.test(hint(row(), deaf)!.text), "…and the hint is a restart (printed for the operator, never run)");
 ok(hint(row({ unregistered: { agent: "claude" } }), deaf)?.cmd === undefined, "…an unregistered peer gets the note only");
 
@@ -136,11 +139,11 @@ const older = row({ tool: { id: "t", name: "Bash", summary: "fly", startedMs: no
 ok(f.toolItem(older, q.items, now) === undefined, "a tool is matched only to a task that started when the tool_use did");
 ok(f.toolItem(stuck, q.items, now)?.pid === 610, "…and found when it did");
 const cell = f.subprocsCell(q.items, 610, 200);
-ok(cell.startsWith("⧗ fly ssh console (51m)") && cell.includes("bg: pnpm dev :3000 3h 200M") && cell.includes("tp(npx) 200M") && !cell.includes("hook"), `subprocs cell: tool first, bg with port/age/mem, hooks hidden — ${cell}`);
+ok(cell.startsWith("◌ fly ssh console (51m)") && cell.includes("bg: pnpm dev :3000 3h 200M") && cell.includes("tp(npx) 200M") && !cell.includes("hook"), `subprocs cell: tool first, bg with port/age/mem, hooks hidden — ${cell}`);
 ok(f.subprocsCell([...q.items, { ...kind(601), pid: 1 }], undefined, 200).includes("mcp ×2 200M"), "duplicates collapse ×N with summed memory");
 ok(/ \+\d$/.test(f.subprocsCell(q.items, 610, 30)), "overflow truncates with +N, never mid-part");
 const rows = f.topRows([stuck], { ...fleet, agents: { queue: { ...q, items: q.items.map((i) => (i.pid === 610 ? { ...i, ageMs: 51 * 60_000 } : i)) } } }, now, () => "paw unstick queue");
-ok(rows.length === 1 && rows[0].toolPid === 610 && rows[0].state === "⧗ Bash 51m", "topRows wires state + tool");
+ok(rows.length === 1 && rows[0].toolPid === 610 && rows[0].state === "⚠ stuck in Bash 51m", "topRows wires state + tool");
 const wide = f.renderTable(rows, { width: 200, now, noteHeader: "HINT" }).split("\n");
 ok(wide[0].includes("HINT") && wide.length === 2 && wide[1].endsWith("paw unstick queue"), "wide: HINT is a column");
 const narrow = f.renderTable(rows, { width: 100, now, noteHeader: "HINT" }).split("\n");

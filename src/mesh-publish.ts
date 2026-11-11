@@ -34,11 +34,16 @@ export interface PublishAck {
   duplicate: boolean;
 }
 
+/** Refused BEFORE any publish was issued: no copy can have landed (the outbox's dedup warning skips it). */
+export class NotPublishedError extends Error {
+  override name = "NotPublishedError";
+}
+
 function jsOf(ep: PublishingEndpoint): JsPublisher {
   if (!("js" in ep)) throw new Error("paw: cotal's Endpoint has no `js` field — paw's retry-safe publish (src/mesh-publish.ts) needs a new hook");
   const js = (ep as unknown as { js?: JsPublisher }).js;
   // cotal nulls it in its rebuild window; its own wording for that is "reconnecting - try again shortly".
-  if (!js) throw new Error("reconnecting - try again shortly");
+  if (!js) throw new NotPublishedError("reconnecting - try again shortly");
   return js;
 }
 

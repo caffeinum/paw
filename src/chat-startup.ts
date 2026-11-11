@@ -17,6 +17,8 @@
  * inbox's release is registered BEFORE its provisioning starts (`prepareInbox` → `provision`), so a
  * quit mid-provision still retires whatever provisioning made.
  */
+import { FAIL, reasonWord } from "./ux.ts";
+
 export interface StartupSteps<I, E> {
   /** ensure(); calls `meshUp` once the broker can be dialled (it may never call it on a failure). */
   ensure(meshUp: () => void): Promise<void>;
@@ -71,6 +73,13 @@ export async function concurrentStartup<I, E>(steps: StartupSteps<I, E>): Promis
   const failed = ensureError ?? chainError ?? (aborted() ? { e: new StartupCancelled() } : undefined);
   if (!failed) return { inbox: inbox as I, endpoint: endpoint as E, release: release! };
   if (endpoint !== undefined) await steps.stopEndpoint(endpoint).catch((e: Error) => steps.report(`paw: chat endpoint didn't stop cleanly: ${e.message}`));
-  if (release !== undefined) await release().catch((e: Error) => steps.report(e.message));
+  // The release dials the same broker: when that fails for the SAME reason as the startup did, it is
+  // the outage restated (the ledger entry it leaves is retired by the next chat's sweep) — not a second
+  // error line above the real one. A different failure is still reported.
+  const primary = failed.e instanceof Error ? reasonWord(failed.e.message) : undefined;
+  if (release !== undefined)
+    await release().catch((e: Error) => {
+      if (primary === undefined || reasonWord(e.message) !== primary) steps.report(`${FAIL} couldn't retire this attempt's inbox: ${e.message} — retired on the next connect`);
+    });
   throw failed.e;
 }

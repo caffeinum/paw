@@ -21,6 +21,8 @@
  * kept, and {@link ConnState.report} hands both to `/conn`. Pure: time is passed in.
  */
 
+import { FAIL, LOADER, OK, WARN, reasonOf, reasonWord, secsText } from "./ux.ts";
+
 export type ConnPhase = "connecting" | "connected" | "degraded" | "reconnecting" | "disconnected";
 
 export type ConnSignal =
@@ -63,13 +65,10 @@ const CONNECT_FAILURE_RE = new RegExp(`ConnectionError|error connecting|connecti
  *  `reconnecting` this long unless the transport reports up (self-heals if it came from a side dial). */
 export const DIAL_FAIL_MS = 20_000;
 
-/** The short reason for the footer: a net error code, else `timeout`, else the first words. */
+/** The reason for a screen: one of the fixed words (src/ux.ts), else the error's first clause — the
+ *  raw text stays in `/conn`'s recent list. */
 export function shortReason(text: string): string {
-  const code = new RegExp(NET_CODES).exec(text)?.[0];
-  if (code) return code;
-  if (TIMEOUT_RE.test(text)) return "timeout";
-  const first = text.split(/[:\n]/)[0].trim();
-  return first.length > 28 ? `${first.slice(0, 27)}…` : first;
+  return reasonOf(text);
 }
 
 /**
@@ -89,10 +88,7 @@ export function classifyEndpointError(e: Error): Severity {
   return TRANSIENT_RE.test(e.message ?? "") ? "transient" : "loud";
 }
 
-const secs = (ms: number): string => {
-  const s = Math.max(0, Math.round(ms / 1000));
-  return s < 120 ? `${s}s` : `${Math.round(s / 60)}m`;
-};
+const secs = secsText;
 
 /** A loud text repeated within this window is counted, not reprinted (digits ignored). */
 const LOUD_REPEAT_MS = 10 * 60_000;
@@ -158,6 +154,7 @@ export class ConnState {
       if (sig.connected) {
         this.closedAt = undefined;
         this.dialFailAt = undefined;
+        this.lastTransientAt = undefined; // an outage's own dial warnings are not evidence of a shaky link
       }
     } else if (sig.kind === "connection") {
       this.bound = sig.connected;
@@ -165,6 +162,7 @@ export class ConnState {
         this.everBound = true;
         this.closedAt = undefined;
         this.dialFailAt = undefined;
+        this.lastTransientAt = undefined;
         // A bound connection is up by definition; cotal emits `transport` first, but don't depend on it.
         this.transportUp = true;
       }
@@ -180,7 +178,7 @@ export class ConnState {
         const seen = this.loudSeen.get(key);
         if (seen === undefined || now - seen >= LOUD_REPEAT_MS) {
           this.loudSeen.set(key, now);
-          out.push({ level: "error", text: `! ${text}` });
+          out.push({ level: "error", text: loudLine(text) });
         }
       } else {
         this.totalTransients++;
@@ -223,31 +221,51 @@ export class ConnState {
     return "connected";
   }
 
-  /** The status-line text, uncoloured. Changes only when what it says changes. */
+  /** The footer cell, uncoloured: nothing while connected (the peer's ● is the only dot on the row),
+   *  else what is wrong, for how long, and the fixed reason word. Changes only when what it says changes. */
   label(now: number): string {
     const p = this.phase(now);
-    if (p === "connected") return "● connected";
-    if (p === "connecting") return "◌ connecting…";
-    if (p === "degraded") return `◐ degraded (${this.streakTransients} failed)`;
-    const why = this.dialReason && this.dialFailAt !== undefined ? ` ${this.dialReason}` : "";
-    if (p === "reconnecting") return (this.attempts ? `◌ reconnecting (${this.attempts})` : "◌ reconnecting…") + why;
-    return `✕ disconnected ${secs(now - (this.closedAt ?? now))}${why}`;
+    if (p === "connected") return "";
+    if (p === "connecting") return `${LOADER} connecting…`;
+    if (p === "degraded") return `${WARN} shaky (${plural(this.streakTransients, "hiccup")})`;
+    const why = this.dialReason && this.dialFailAt !== undefined ? ` (${this.dialReason})` : "";
+    const since = secs(now - (this.downSince ?? this.problemSince ?? now));
+    if (p === "reconnecting") return `${LOADER} reconnecting ${since}${why}`;
+    return `${FAIL} down ${since}${why}`;
   }
 
-  /** What `/conn` prints: the state, the counts, the last signals of each kind. */
+  /** How long the current outage (any phase but connected) has lasted, or undefined when connected. */
+  downFor(now: number): number | undefined {
+    return this.problemSince === undefined ? undefined : now - this.problemSince;
+  }
+
+  /** The reason word of the last failed dial, while it still stands. */
+  reason(): string | undefined {
+    return this.dialFailAt !== undefined ? this.dialReason : undefined;
+  }
+
+  /** What `/conn` prints, in plain words: the state, this session's counts, the recent signals. */
   report(now: number): string[] {
     const ago = (at: number) => `${secs(now - at)} ago`;
-    const lines = [`connection: ${this.label(now)}${this.problemSince !== undefined ? ` — for ${secs(now - this.problemSince)}` : ""}`];
-    lines.push(`transient warnings this session: ${this.totalTransients}${this.lastTransient ? ` — last ${ago(this.lastTransient.at)}: ${this.lastTransient.text}` : ""}`);
-    lines.push(`errors printed or repeated this session: ${this.totalLoud}${this.lastLoud ? ` — last ${ago(this.lastLoud.at)}: ${this.lastLoud.text}` : ""}`);
-    lines.push(
-      `episodes over ${secs(this.sustainMs)} this session: ${this.episodes}` +
-        (this.quietEpisodes ? ` — ${this.quietEpisodes} since the last notice shown in the footer only (${this.quietWarnings} warnings)` : ""),
-    );
-    lines.push(`degraded spells over ${secs(this.sustainMs)} (socket up, footer only, never printed): ${this.degradedSpells}`);
-    if (this.dialReason) lines.push(`last failed dial: ${this.dialReason}${this.dialFailAt !== undefined ? ` — ${ago(this.dialFailAt)}` : " (since recovered)"}`);
-    for (const r of this.recent.slice().reverse()) lines.push(`  ${r.loud ? "!" : "·"} ${ago(r.at)}: ${r.text}`);
-    lines.push(`session up ${secs(now - this.startedAt)} · PAW_CONN_DEBUG=1 prints every raw signal`);
+    const p = this.phase(now);
+    const up = secs(now - this.startedAt);
+    const lines: string[] = [];
+    if (p === "connected" || p === "degraded") {
+      const trouble = this.episodes || this.totalTransients || this.totalLoud;
+      lines.push(`● connected ${up}${trouble ? "" : " · no trouble this session"}${p === "degraded" ? ` · ${this.label(now)}` : ""}`);
+    } else {
+      const lastTry = this.dialFailAt !== undefined ? ` — last try ${ago(this.dialFailAt)}${this.attempts ? `, ${plural(this.attempts, "try")}` : ""}` : "";
+      lines.push(`${this.label(now)}${lastTry}`);
+    }
+    const counts = [plural(this.episodes, "outage"), plural(this.totalTransients, "hiccup")];
+    if (this.degradedSpells) counts.push(plural(this.degradedSpells, "shaky spell"));
+    if (this.totalLoud) counts.push(plural(this.totalLoud, "error"));
+    if (this.episodes || this.totalTransients || this.totalLoud) lines.push(`this session: ${counts.join(", ")}`);
+    const recent = this.recent.slice().reverse();
+    const words = recent.map((r) => (r.loud ? r.text : reasonOf(r.text)));
+    // Five copies of one reason collapse to a count; mixed signals list newest first.
+    if (recent.length > 1 && words.every((w) => w === words[0])) lines.push(`recent: ${words[0]} ×${recent.length}, last ${ago(recent[0]!.at)}`);
+    else if (recent.length) lines.push(`recent: ${recent.map((r, i) => `${ago(r.at)} ${words[i]}`).join(" · ")}`);
     return lines;
   }
 
@@ -265,23 +283,20 @@ export class ConnState {
       if (now - this.degradedSince >= this.sustainMs) this.degradedSpells++;
       this.degradedSince = undefined;
     }
-    if (p === "connected") {
-      this.problemSince = undefined;
-      this.streakTransients = 0;
-    } else this.problemSince ??= p === "connecting" ? this.startedAt : now;
+    if (p === "connected") this.problemSince = undefined;
+    else this.problemSince ??= p === "connecting" ? this.startedAt : now;
     const down = p === "connecting" || p === "reconnecting" || p === "disconnected";
     if (!down) {
       const lines: ConnLine[] = [];
       if (this.downSince !== undefined && this.sustainedPrinted) {
-        lines.push({ level: "recovered", text: `● mesh connected again after ${secs(now - this.downSince)} (${plural(this.streakTransients, "transient warning")} meanwhile)` });
+        lines.push({ level: "recovered", text: `${OK} mesh back after ${secs(now - this.downSince)}` });
       } else if (this.streakSustained) {
         this.quietEpisodes++;
         this.quietWarnings += this.streakTransients;
       }
-      if (this.downSince !== undefined) {
-        this.attempts = 0;
-        if (p === "degraded") this.streakTransients = 0;
-      }
+      // A down streak that just ended takes its warnings with it: they were the outage, not a shaky link.
+      if (this.downSince !== undefined || p === "connected") this.streakTransients = 0;
+      if (this.downSince !== undefined) this.attempts = 0;
       this.downSince = undefined;
       this.streakSustained = false;
       this.sustainedPrinted = false;
@@ -297,21 +312,23 @@ export class ConnState {
     if (this.lastNoticeAt !== undefined && now - this.lastNoticeAt < this.coalesceMs) return [];
     this.sustainedPrinted = true;
     this.lastNoticeAt = now;
-    const why = this.lastTransient ? ` — last: ${this.lastTransient.text}` : "";
-    const what =
-      p === "connecting"
-        ? `still connecting to the mesh after ${secs(now - this.downSince)}`
-        : `mesh ${p} for ${secs(now - this.downSince)}${this.attempts ? ` (${plural(this.attempts, "attempt")})` : ""}`;
-    const before = this.quietEpisodes
-      ? ` (+${plural(this.quietEpisodes, "earlier episode")}, ${plural(this.quietWarnings, "warning")}, shown in the footer only — /conn)`
-      : "";
+    const why = this.lastTransient ? ` (${reasonOf(this.lastTransient.text)})` : "";
+    const what = p === "connecting" ? `still connecting after ${secs(now - this.downSince)}${why}` : `mesh down ${secs(now - this.downSince)}${why}`;
+    const before = this.quietEpisodes ? ` · ${plural(this.quietEpisodes, "earlier outage")} in /conn` : "";
     this.quietEpisodes = 0;
     this.quietWarnings = 0;
-    return [{ level: "error", text: `! ${what}${why}${before}` }];
+    return [{ level: "error", text: `${WARN} ${what} — retrying · what you send is kept${before}` }];
   }
 }
 
-const plural = (n: number, what: string): string => `${n} ${what}${n === 1 ? "" : "s"}`;
+const plural = (n: number, what: string): string => `${n} ${n === 1 ? what : what === "try" ? "tries" : `${what}s`}`;
+
+/** A loud error as one line: the fixed reason word with its fix, the raw text kept for /conn. */
+export function loudLine(text: string): string {
+  if (reasonWord(text) === "rejected credentials")
+    return `${FAIL} the mesh rejected our credentials — it can't recover by itself · quit, then \`paw mesh add <space> --force\` with the right --root (${text})`;
+  return `${FAIL} ${text}`;
+}
 
 interface SignalSource {
   on(event: "transport" | "connection", fn: (s: { connected: boolean }) => void): unknown;

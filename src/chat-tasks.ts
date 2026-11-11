@@ -182,7 +182,7 @@ export function agentInfo(f: InfoFacts, now: number, st: Pick<TasksStyle, "dim" 
   bits.push(f.ctxShare === undefined ? st.dim(ctx) : f.ctxShare >= 0.9 ? st.red(ctx) : f.ctxShare >= 0.75 ? st.yellow(ctx) : st.dim(ctx));
   bits.push(f.inbox === "✓" || f.inbox === "—" ? st.dim(`inbox ${f.inbox}`) : st.yellow(`inbox ${f.inbox}`));
   if (f.activeMs !== undefined) bits.push(st.dim(`active ${ago(f.activeMs, now)}`));
-  if (f.failure) bits.push(st.red(`! ${f.failure.text.replace(/\s+/g, " ")}`));
+  if (f.failure) bits.push(st.red(`⚠ ${f.failure.text.replace(/\s+/g, " ")}`));
   return bits.join(st.dim(" · "));
 }
 
@@ -339,7 +339,7 @@ export function renderTasksPanel(m: TasksModel, opts: TasksViewOpts): { rows: st
 
   const note = (row: string): Group[] => [{ rows: [row], hits: [undefined] }];
   let groups: Group[];
-  if (m.beadsError) groups = note(st.red(fitWidth(`! beads: ${m.beadsError}`, width)));
+  if (m.beadsError) groups = note(st.red(fitWidth(`✕ beads: ${m.beadsError}`, width)));
   else if (!m.beads) groups = note(st.dim("reading beads…"));
   else if (!m.beads.length) groups = note(st.dim(`no beads assigned to ${who}`));
   else groups = beadTree(m.beads, opts.folded).map((r) => beadGroup(r, now, width, st));

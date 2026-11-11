@@ -28,7 +28,7 @@ import {
   writeFileSync,
   readdirSync,
 } from "node:fs";
-import { homedir, loadavg, userInfo } from "node:os";
+import { cpus, homedir, loadavg, userInfo } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -60,7 +60,7 @@ import { customServer, isRemoteSpace, pawServer } from "./server.ts";
 import { readRemoteMesh } from "./remote-mesh.ts";
 import { ensureShim, hubEnabled, hubModeFile, hubSocketPath } from "./hub/paths.ts";
 import { STAMP_ENV } from "./log-stamp.ts";
-import { diagnoseConnect, explainConnectFailure } from "./connect-diag.ts";
+import { connectVerdict, diagnoseConnect, explainConnectFailure, serverHostPort } from "./connect-diag.ts";
 import { logOffset } from "./manager-log.ts";
 
 export interface EnsureOpts {
@@ -276,8 +276,7 @@ export const LIFECYCLE_LOCK_OPTS: LockOpts = { maxWaitMs: LIFECYCLE_LOCK_HOLD_MS
 async function withLock<T>(space: string, fn: () => Promise<T>): Promise<T> {
   return withFileLockAsync(lockPath(space), fn, {
     ...LIFECYCLE_LOCK_OPTS,
-    onWait: (holder) =>
-      console.error(`paw: waiting for ${holder !== undefined ? `pid ${holder}` : "another paw command"} to finish bringing up space "${space}"'s daemons…`),
+    onWait: (holder) => console.error(`◌ another paw command${holder !== undefined ? ` (pid ${holder})` : ""} is starting ${space}…`),
   });
 }
 
@@ -921,7 +920,12 @@ async function ensureMesh(space: string, server: string): Promise<void> {
  *  or broker-restart condition, never auth. Typed so `paw dm` can wait it out (src/dm-wait.ts). */
 export class MeshUnreachableError extends Error {
   override name = "MeshUnreachableError";
+  /** Set by a remote-mesh probe: the parts a screen composes its one line from. */
+  diag?: { space: string; server: string; at: string; word: string; hint: string; trace: string };
 }
+
+/** `--verbose` or PAW_CONN_DEBUG=1: a one-shot command prints the connect trace under its error. */
+const verboseConnect = (): boolean => process.argv.includes("--verbose") || process.env.PAW_CONN_DEBUG === "1";
 
 /** `cotal up` is a short-lived bootstrapper; past this it is killed and the boot reported failed. */
 export const MESH_UP_TIMEOUT_MS = 60_000;
@@ -1017,14 +1021,20 @@ async function ensureRemoteMesh(space: string, server: string): Promise<void> {
   // cause. On failure the diagnosis below names the step that stalled instead.
   const r = await probeConnect(server, { creds, tls: true, timeoutMs: REMOTE_CONNECT_MS });
   if (r.ok) return;
-  const why =
-    r.reason === "auth-required"
-      ? `the broker rejected creds minted from the signer under ${rec.root} — it is not this mesh's account signer (re-run \`cotal auth signer --out …\` — \`cotal mint --signer\` before cotal 0.100 — on the box and copy it again)`
-      : r.reason === "stale-auth"
-        ? `the minted creds read as expired — check this machine's clock`
-        : explainConnectFailure(r.reason, await diagnoseConnect(server), REMOTE_CONNECT_MS);
-  const msg = `paw: remote mesh "${space}" at ${server}: ${why}. paw never starts a remote broker.`;
-  throw r.reason === "timeout" || r.reason === "unreachable" ? new MeshUnreachableError(msg) : new Error(msg);
+  if (r.reason === "auth-required")
+    throw new Error(
+      `paw: the mesh ${space} at ${server} rejected our credentials — the signer under ${rec.root} is not this mesh's account signer (re-run \`cotal auth signer --out …\` — \`cotal mint --signer\` before cotal 0.100 — on the box and copy it again)`,
+    );
+  if (r.reason === "stale-auth") throw new Error(`paw: the mesh ${space} at ${server} read our credentials as expired — check this machine's clock`);
+  const trace = await diagnoseConnect(server);
+  const v = connectVerdict(r.reason, trace);
+  const { host, port } = serverHostPort(server);
+  const e = new MeshUnreachableError(
+    `paw: can't reach ${space} at ${server} — ${v.word}: ${v.hint}\n  paw doesn't start remote mesh servers · --verbose shows the connect trace` +
+      (verboseConnect() ? `\n  ${explainConnectFailure(r.reason, trace, REMOTE_CONNECT_MS)}` : ""),
+  );
+  e.diag = { space, server, at: `${host}:${port}`, word: v.word, hint: v.hint, trace: explainConnectFailure(r.reason, trace, REMOTE_CONNECT_MS) };
+  throw e;
 }
 
 /** The mesh step of ensure()/restartManager: prove a remote broker, or start/adopt the local one. */
@@ -1838,10 +1848,12 @@ async function ensureManagerUp(space: string, server: string, switchRuntime = fa
     const running = managerProcs(space);
     if (running.length) {
       if (await managerReady(space, server)) return undefined;
+      // Load is named only when it IS high: "load 3" on 18 cores offered as a cause was a guess.
+      const load = loadavg()[0];
+      const cores = cpus().length;
       throw new Error(
-        `paw: a manager for space "${space}" is running (pid ${running.join(", ")}) but not answering — NOT starting a ` +
-          `second one (two managers on one instance fight over its lease). The host may be starved (load ${loadavg()[0].toFixed(0)}). ` +
-          `\`paw restart\` replaces it if it's truly hung.`,
+        `paw: ${space}'s manager (pid ${running.join(", ")}) isn't answering — paw won't start a second one · wait a bit, or \`paw restart\` if it's hung` +
+          (load > cores ? ` (host load ${load.toFixed(0)}/${cores})` : ""),
       );
     }
     // No manager running → we're about to START one fresh under `runtime`; cmux needs a surface.

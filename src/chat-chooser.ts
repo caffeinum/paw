@@ -12,7 +12,6 @@ import type { SpaceHit } from "./chat-lookup.ts";
 export type Choice =
   | { kind: "switch"; name: string }
   | { kind: "space"; name: string; space: string }
-  | { kind: "all" }
   | { kind: "retry" }
   | { kind: "quit" };
 
@@ -21,34 +20,47 @@ export interface Chooser {
   title: string[];
   options: Array<{ label: string; choice: Choice }>;
   sel: number;
+  /** Named on the key line when it applies (not under a connection failure). */
+  createHint?: string;
 }
 
-/** No `@name` on this space's live roster (nor registered here). */
+/** No `name` on this space's live roster (nor registered here). The one way to make a new agent is
+ *  named on the key line; `paw chat --all` stays a flag, not an option inside a typo fix. */
 export function notFoundChooser(o: { name: string; space: string; suggestions: string[]; elsewhere: SpaceHit[] }): Chooser {
   const options: Chooser["options"] = [
-    ...o.suggestions.map((n) => ({ label: `@${n}`, choice: { kind: "switch", name: n } as Choice })),
+    ...o.suggestions.map((n) => ({ label: n, choice: { kind: "switch", name: n } as Choice })),
     ...o.elsewhere.map((h) => ({
-      label: `open @${o.name} in ${h.space}${h.how === "seen" ? " (seen on its mesh)" : ""}`,
+      label: `open ${o.name} in ${h.space}${h.how === "seen" ? " (seen on its mesh)" : ""}`,
       choice: { kind: "space", name: o.name, space: h.space } as Choice,
     })),
-    { label: "show all conversations", choice: { kind: "all" } },
     { label: "quit", choice: { kind: "quit" } },
   ];
   return {
-    title: [`✕ no agent @${o.name} in ${o.space}${o.suggestions.length ? " — did you mean:" : ""}`],
+    title: [`✕ no agent ${o.name} in ${o.space}${o.suggestions.length ? " — did you mean:" : ""}`],
     options,
+    sel: 0,
+    createHint: "paw chat --fresh <folder> makes a new agent",
+  };
+}
+
+/** The roster could not be read and paw is NOT retrying by itself: say so — never a guessed "not found". */
+export function unreachableChooser(o: { name: string; space: string }): Chooser {
+  return {
+    title: [`✕ not connected — can't check ${o.name} in ${o.space}`],
+    options: [
+      { label: "try again", choice: { kind: "retry" } },
+      { label: "quit", choice: { kind: "quit" } },
+    ],
     sel: 0,
   };
 }
 
-/** The roster could not be read: say so — never a guessed "not found". */
-export function unreachableChooser(o: { name: string; space: string; why: string }): Chooser {
+/** Registered here, but its folder is gone: it can never be woken until the folder is back or the
+ *  record removed. Nothing to switch to — the fix is outside the chat. */
+export function folderGoneChooser(o: { name: string; folder: string }): Chooser {
   return {
-    title: [`✕ couldn't reach ${o.space} to check @${o.name} — ${o.why}`],
-    options: [
-      { label: "retry", choice: { kind: "retry" } },
-      { label: "quit", choice: { kind: "quit" } },
-    ],
+    title: [`✕ ${o.name} is registered here but its folder is gone: ${o.folder}`, `  restore it, or \`paw rm ${o.name}\``],
+    options: [{ label: "quit", choice: { kind: "quit" } }],
     sel: 0,
   };
 }
@@ -71,8 +83,9 @@ export function chooserKey(ch: Chooser, raw: string): { sel: number; pick?: Choi
   return { sel: ch.sel, pass: true };
 }
 
-/** The rows, selection marked; a closing hint names the keys and the one way to create an agent. */
-export function renderChooser(ch: Chooser, s: { dim(x: string): string; red(x: string): string; cyan(x: string): string; green(x: string): string; bold(x: string): string }, createHint?: string): string[] {
+/** The rows, selection marked; one closing key line. Any other key closes the chooser and goes to
+ *  the input — that is not said (it is what every key does). */
+export function renderChooser(ch: Chooser, s: { dim(x: string): string; red(x: string): string; cyan(x: string): string; green(x: string): string; bold(x: string): string }): string[] {
   return [
     s.red(ch.title[0]!),
     ...ch.title.slice(1).map((t) => s.dim(t)),
@@ -81,6 +94,6 @@ export function renderChooser(ch: Chooser, s: { dim(x: string): string; red(x: s
       const label = o.choice.kind === "switch" ? s.cyan(o.label) : o.label;
       return `  ${mark} ${s.dim(`${i + 1}`)} ${i === ch.sel ? s.bold(label) : label}`;
     }),
-    s.dim(`  ↑↓ + enter or 1-${Math.min(9, ch.options.length)} · esc quits · any other key closes this${createHint ? ` · ${createHint}` : ""}`),
+    s.dim(`    ↑↓ enter · esc quits${ch.createHint ? ` · ${ch.createHint}` : ""}`),
   ];
 }

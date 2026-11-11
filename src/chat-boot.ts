@@ -18,8 +18,10 @@ export type BootPhase = "mesh" | "inbox" | "endpoint" | "agent" | "roster" | "re
  * change the answer. Operator, 2026-11-10: a chat opened during a network outage showed "× timeout"
  * and sat there until /reconnect, with lines queued behind it.
  */
-const TRANSIENT_CONNECT = /timeout|timed out|deadline-exceeded|ECONNRESET|ECONNREFUSED|ECONNABORTED|EPIPE|ENOTFOUND|EAI_AGAIN|ENETUNREACH|EHOSTUNREACH|socket hang up|closed connection|connection closed|peer closed|connect failed|error connecting|disconnect|isn't answering|unreachable/i;
-const NEVER_RETRY = /authori[sz]ation|permission|denied|forbidden|not registered|ambiguous|invalid|refus/i;
+const TRANSIENT_CONNECT = /timeout|timed out|deadline-exceeded|ECONNRESET|ECONNREFUSED|ECONNABORTED|EPIPE|ENOTFOUND|EAI_AGAIN|ENETUNREACH|EHOSTUNREACH|socket hang up|closed connection|connection closed|connection refused|can't reach|peer closed|connect failed|error connecting|disconnect|isn't answering|unreachable|hung up|no answer|no route|dns failed/i;
+// `refused` is NOT here: a refused TCP connect (ECONNREFUSED — the broker is down, the port closed) is
+// the same user situation as a broker that accepts and hangs up, and both retry by themselves.
+const NEVER_RETRY = /authori[sz]ation|permission|denied|forbidden|not registered|ambiguous|invalid|rejected credentials/i;
 
 /** The wait before self-retry `attempt` (1-based) of a failed connect, or undefined: don't retry. */
 export function bootRetry(message: string, attempt: number): number | undefined {
@@ -36,7 +38,8 @@ export const loading = <T>(): Slot<T> => ({ s: "loading" });
 export const ok = <T>(v: T): Slot<T> => ({ s: "ok", v });
 export const failed = <T>(msg: string): Slot<T> => ({ s: "err", msg });
 
-export const LOADER = "◌";
+export { LOADER } from "./ux.ts";
+import { FAIL, LOADER, secsText } from "./ux.ts";
 
 /** A slot as text: a dim `◌` while loading, the value once known, a red `✕ <why>` on failure. */
 export function slotText<T>(slot: Slot<T>, fmt: (v: T) => string, style: { dim(s: string): string; red(s: string): string }): string {
@@ -58,12 +61,19 @@ export function bootLabel(phase: BootPhase, elapsedMs: number, name?: string): s
     case "agent":
       return name ? `${LOADER} waking ${name} ${s}` : `${LOADER} connecting ${s}`;
     case "roster":
-      return name ? `${LOADER} waiting for ${name} ${s}` : `${LOADER} loading who's live ${s}`;
+      return name ? `${LOADER} looking for ${name} ${s}` : `${LOADER} loading who's live ${s}`;
     case "ready":
       return "";
     case "failed":
-      return "✕ not connected — /reconnect · /quit";
+      return `${FAIL} not connected · /reconnect`;
   }
+}
+
+/** The footer cell after a failed connect: how long it has been unreachable and when paw tries again
+ *  (`retry` = the armed self-retry), or that only `/reconnect` will. Seconds tick; words don't. */
+export function failedLabel(downMs: number, retry?: { attempt: number; inMs: number }): string {
+  const since = `${FAIL} unreachable ${secsText(downMs)}`;
+  return retry ? `${since} · retry ${retry.attempt} in ${secsText(retry.inMs)}` : `${since} · /reconnect`;
 }
 
 /** Lines that work with no mesh at all: they read or clear local state, or leave. */

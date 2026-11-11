@@ -32,10 +32,12 @@ export type BannerState =
       agent: string;
       /** The folder, `(by name)`, or where it runs; "" while unknown. */
       where: string;
-      status: Slot<string>;
-      /** The machine running it; ok(undefined) = nothing names one (shown as nothing, not a loader). */
+      /** loading / ok(undefined) = nothing to add (the prompt carries the loader); ok(text) = one dim
+       *  note under the agent row (a spawn, a slow start); err = `kit ✕ <why>` on the agent row. */
+      status: Slot<string | undefined>;
+      /** The machine running it; ok(undefined) = nothing names one (then nothing is said, never `?`). */
       machine: Slot<string | undefined>;
-      /** model + context; ok(undefined) = no reading here (agent away, no persona) → rows omitted. */
+      /** model + context; ok(undefined) = no reading here (agent away, no persona) → row omitted. */
       info: Slot<{ model: string; context: string } | undefined>;
       /** One line about running elsewhere, when it does. */
       away?: string;
@@ -45,20 +47,25 @@ export type BannerState =
   | { mode: "channel"; space: string; remote: boolean; room: string }
   | { mode: "all"; space: string; remote: boolean; room: string; roster: Slot<string[]> };
 
-const HINTS = [
-  "drag an image in for [Image #1] · paste multiple lines for [Pasted text #1]",
-  "alt+enter (or end a line with \\\\) for a new line, not a send",
+/** The full key list — `/help` and a bare `?` print it; the banner only points at it. */
+export const HELP_LINES = [
+  "type to message it · @name switches target · #channel msg broadcasts · !cmd runs in its folder",
+  "drag an image in for [Image #1] · paste multiple lines for [Pasted text #1] · /imgs · /noimg · /paste · /nopaste",
+  "alt+enter (or end a line with \\) for a new line, not a send",
+  "on an empty line: ← → switch logs · chat · messages · beads   ↓ picks an agent",
+  "/more [N] older messages · /who · /ps · /conn · /retry · /reconnect · /quit",
 ];
 
+const KEYS_HINT = "? keys · @name switches · /quit";
+
 export function renderBanner(st: BannerState, c: BannerStyle): string {
-  const mesh = c.dim(whereTag({ space: st.space, remote: st.remote }));
+  const mesh = c.dim(`${whereTag({ space: st.space })}${st.remote ? " (remote)" : ""}`);
   if (st.mode === "channel") {
     return (
       `\n${c.bold("  🐾 paw chat")}\n\n` +
-      `     channel: ${c.cyan("#" + st.room)}  ${c.dim("(subscribed)")}\n` +
-      `     ${mesh}\n` +
-      `     showing: ${c.dim("this channel only — DMs stay in `paw inbox`")}\n\n` +
-      `     ${c.dim(`type to post to #${st.room} · @name DMs someone · /who · /ps · /quit`)}\n\n`
+      `     ${c.cyan("#" + st.room)} ${c.dim("· subscribed ·")} ${mesh}\n` +
+      `     ${c.dim(`only #${st.room} · DMs stay in paw inbox`)}\n` +
+      `     ${c.dim(`type to post to #${st.room} · @name DMs someone · /who · /quit`)}\n\n`
     );
   }
   if (st.mode === "all") {
@@ -69,36 +76,29 @@ export function renderBanner(st: BannerState, c: BannerStyle): string {
     );
     return (
       `\n${c.bold("  🐾 paw chat")}  ${c.dim('— joined the mesh as "you"')}\n\n` +
-      `     ${st.roster.s === "loading" ? `${roster} ${c.dim("loading who's live")}` : roster}\n` +
-      `     ${mesh}\n\n` +
-      `     ${c.dim(`type to broadcast to #${st.room} · @name starts a sticky DM · !cmd runs in its folder · #channel · /who · /ps · /quit`)}\n` +
-      HINTS.map((h) => `     ${c.dim(h)}\n`).join("") +
-      `     ${c.dim("on an empty line: → messages · your beads   ↓ picks an agent")}\n` +
-      `     ${c.dim("/imgs · /noimg · /paste · /nopaste")}\n\n`
+      `     ${roster} ${c.dim("·")} ${mesh}\n` +
+      `     ${c.dim(`type to broadcast to #${st.room} · @name starts a DM · ${KEYS_HINT}`)}\n\n`
     );
   }
-  const machine = st.machine.s === "ok" && st.machine.v === undefined ? "" : `${c.dim(" · on ")}${slotText(st.machine, (m) => m ?? "", c)}`;
+  // No loader on the agent row: the prompt (`you → kit ◌>`) and the footer phase carry it, and a banner
+  // with anything printed under it can't be repainted in place — a loader there would never resolve.
+  const agent = st.status.s === "err" ? `${st.agent} ${c.red(`✕ ${st.status.msg}`)}` : st.agent;
+  const machine = st.machine.s === "ok" && st.machine.v ? `${c.dim(" · on ")}${st.machine.v}` : "";
+  const note = st.status.s === "ok" && st.status.v ? `     ${st.status.v}\n` : "";
   const info =
-    st.info.s === "ok"
-      ? st.info.v
-        ? `     model:  ${st.info.v.model}\n     context: ${st.info.v.context}\n`
-        : ""
-      : st.info.s === "loading"
-        ? `     model:  ${c.dim("◌")}\n     context: ${c.dim("◌")}\n`
-        : `     model:  ${c.red(`✕ ${st.info.msg}`)}\n`;
+    st.info.s === "ok" && st.info.v
+      ? `     ${c.dim(`model ${st.info.v.model} · context ${st.info.v.context}`)}\n`
+      : st.info.s === "err"
+        ? `     ${c.red(`✕ model: ${st.info.msg}`)}\n`
+        : "";
   return (
     `\n${c.bold("  🐾 paw chat")}\n\n` +
-    `     agent:  ${st.agent}${st.where ? `  ${st.where}` : ""}\n` +
-    `     status: ${slotText(st.status, (s) => s, c)}\n` +
-    `     ${mesh}${machine}\n` +
+    `     ${agent}${st.where ? `  ${st.where}` : ""} ${c.dim("·")} ${mesh}${machine}\n` +
+    note +
     info +
     (st.away ? `     ${c.dim(st.away)}\n` : "") +
-    `\n` +
-    (st.only ? `     showing: ${c.dim("this agent only — other DMs stay in `paw inbox`")}\n\n` : "") +
-    `     ${c.dim(`type to message it · ${st.bang ? "!cmd runs in its folder · " : ""}@name switches target · #channel broadcasts · /who · /ps · /quit`)}\n` +
-    HINTS.map((h) => `     ${c.dim(h)}\n`).join("") +
-    `     ${c.dim("on an empty line: ← → switch logs · chat · messages · beads   ↓ picks an agent")}\n` +
-    `     ${c.dim("/imgs · /noimg · /paste · /nopaste")}\n\n`
+    (st.only ? `     ${c.dim(`only ${st.agent} · other agents' DMs stay in paw inbox`)}\n` : "") +
+    `     ${c.dim(KEYS_HINT)}\n\n`
   );
 }
 

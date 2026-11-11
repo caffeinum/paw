@@ -480,7 +480,7 @@ const kOk = await S.sleepSweep("kt", sweepCtl, sweepDeps([kRow], kitInspect(), k
 ok("G6 the inspector is told the agent runs on kit", seen.join() === "k1:kit", seen.join());
 ok("G6 a kit agent idle 4h ≥ 3h with nothing under its seat sleeps", kSlept.join() === "k1" && !kOk.skipped.length, JSON.stringify(kOk));
 const kStillBusy = await S.sleepSweep("kt", sweepCtl, sweepDeps([{ ...kRow, mesh: "working", busy: true }], kitInspect()));
-ok("G6 a kit agent mid-turn (presence working) stays awake", !kStillBusy.slept.length && /mesh working|turn is in flight/.test(kStillBusy.skipped[0]?.reason ?? ""), JSON.stringify(kStillBusy));
+ok("G6 a kit agent mid-turn (presence working) stays awake", !kStillBusy.slept.length && /^working$|turn is in flight/.test(kStillBusy.skipped[0]?.reason ?? ""), JSON.stringify(kStillBusy));
 const kShell = await S.sleepSweep("kt", sweepCtl, sweepDeps([kRow], kitInspect(["  702   701   701 00:30:00 0:00.10 sleep 9999 COTAL_NAME=k1 COTAL_SPACE=kt"])));
 ok("G6 a busy kit seat (work under its shell) stays awake", !kShell.slept.length && /running under kit: 702 sleep 9999/.test(kShell.skipped[0]?.reason ?? ""), JSON.stringify(kShell));
 const { kitAgentDir } = await import("../src/kit.ts");

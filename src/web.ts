@@ -202,7 +202,7 @@ const SOCKET_BACKLOG_CAP = 4 * 1024 * 1024;
 
 const tty = process.stdout.isTTY === true;
 const wrap = (code: string) => (s: string) => (tty ? `\x1b[${code}m${s}\x1b[0m` : s);
-const c = { dim: wrap("2"), bold: wrap("1"), cyan: wrap("36"), red: wrap("31") };
+const c = { dim: wrap("2"), bold: wrap("1"), cyan: wrap("36"), red: wrap("31"), yellow: wrap("33") };
 
 /* ── args ─────────────────────────────────────────────────────────────────────────────────────── */
 
@@ -1684,7 +1684,7 @@ async function web(argv: string[]): Promise<void> {
   logConn(ep, (l) => console.error(l.level === "recovered" ? l.text : c.red(l.text)));
   await ep.start();
   // The roster tick reads this endpoint's presence view; the first tick must not read it unhydrated.
-  if ((await ep.waitForPresenceSnapshot(5000)) === "timeout") console.error(c.red("! presence snapshot not loaded within 5s — the first roster may be partial"));
+  if ((await ep.waitForPresenceSnapshot(5000)) === "timeout") console.error(c.yellow("⚠ presence not loaded in 5s — the first roster may be incomplete"));
 
   const convo = new Conversation(ep);
   const channels = new Channels();
@@ -1965,9 +1965,10 @@ async function web(argv: string[]): Promise<void> {
     },
     STATUS_MS,
     (e) => {
-      const note = `paw: roster refresh failed (${e.message})${collectedAt ? ` — rows are from ${new Date(collectedAt).toLocaleTimeString()}` : ""}`;
+      const why = /did not answer within (\d+)s/.exec(e.message);
+      const note = `⚠ ${why ? `${space}'s manager didn't answer in ${why[1]}s` : `roster refresh failed: ${e.message}`}${collectedAt ? ` — showing rows from ${new Date(collectedAt).toLocaleTimeString([], { hour12: false })}` : ""}`;
       staleNote = note;
-      console.error(c.red("! " + note));
+      console.error(c.yellow(note));
       push.broadcast({ type: "status", rows, errors: [...errors, note] });
     },
   );

@@ -17,11 +17,12 @@ import { registry, type Command } from "@cotal-ai/core";
 import { pawHomeDir } from "../lifecycle.ts";
 import { CONTAINERFILE, containerBin, defaultSandboxImage, listSandboxContainers, readSandboxHomeOwner, sandboxHomeDir, type SandboxContainer } from "../sandbox.ts";
 import { writeJson, writeOut } from "../stdout.ts";
+import { fmtMb, memCell } from "../fleet.ts";
 import { personaFilePath } from "../addressing.ts";
 import { liveSandboxContainer, sandboxShellArgv } from "../sandbox-exec.ts";
 import { readCwd, readSandbox } from "../session.ts";
 
-const USAGE = "sandbox build | sandbox ls [--json] | sandbox shell <agent>[#space]";
+const USAGE = "sandbox build | sandbox ls [--json] [-v] | sandbox shell <agent>[#space]";
 
 /** Drop the `--space <s>` bin/paw.ts appends to every verb (withDefaultSpace): both subcommands are per machine. */
 function dropSpace(argv: string[]): string[] {
@@ -94,12 +95,14 @@ const skillCell = (s: ReturnType<typeof readSkillsState>) => {
   return `${n("skill")} skills, ${n("plugin")} plugins`;
 };
 
-const mb = (b: number | undefined) => (b === undefined ? "?" : `${Math.round(b / (1024 * 1024))}M`);
+const toMb = (b: number | undefined) => (b === undefined ? undefined : b / (1024 * 1024));
 
 function ls(argv: string[]): void {
   let json = false;
+  let verbose = false;
   for (const a of argv) {
     if (a === "--json") json = true;
+    else if (a === "-v" || a === "--verbose") verbose = true;
     else throw new Error(`paw: unknown argument "${a}" — ${USAGE}`);
   }
   const bin = containerBin();
@@ -116,11 +119,20 @@ function ls(argv: string[]): void {
   }));
   if (json) return writeJson(rows);
   if (!rows.length) return writeOut("no sandboxed agents on this machine (no paw sandbox containers)\n");
-  const table = [["AGENT", "STATE", "MEM USED/LIMIT", "LAUNCHER", "IP", "PORTS", "SKILLS", "CONTAINER", "HOME"], ...rows.map((r) => [`${r.agent}#${r.space}`, r.state, `${mb(r.memoryUsedBytes)}/${mb(r.memoryBytes)}`, r.launcher, r.ip ?? "-", portList(r.forwards), skillCell(r.skills), r.id, r.home ?? "-"])];
+  // MEM = the VM's used/limit (one format with `paw top`: `807M/1G`), yellow from 80 %, red from 95 %
+  // — a VM at its cap is the out-of-memory wedge before it happens. CONTAINER/HOME/LAUNCHER under -v.
+  const head = verbose ? ["AGENT", "STATE", "MEM", "IP", "PORTS", "SKILLS", "LAUNCHER", "CONTAINER", "HOME"] : ["AGENT", "STATE", "MEM", "IP", "PORTS", "SKILLS"];
+  const plain = rows.map((r) => {
+    const mem = `${fmtMb(toMb(r.memoryUsedBytes))}/${fmtMb(toMb(r.memoryBytes))}`;
+    const cells = [`${r.agent}#${r.space}`, r.state, mem, r.ip ?? "-", portList(r.forwards), skillCell(r.skills)];
+    return verbose ? [...cells, r.launcher, r.id, r.home ?? "-"] : cells;
+  });
+  const table = [head, ...plain];
   const w = table[0].map((_, i) => Math.max(...table.map((row) => row[i].length)));
-  writeOut(table.map((row) => row.map((v, i) => v.padEnd(w[i])).join("  ").trimEnd()).join("\n") + "\n");
+  const painted = plain.map((row, ri) => row.map((v, i) => (i === 2 ? memCell(toMb(rows[ri].memoryUsedBytes), toMb(rows[ri].memoryBytes), 0.8) + " ".repeat(w[i] - v.length) : v.padEnd(w[i]))));
+  writeOut([head.map((v, i) => v.padEnd(w[i])), ...painted].map((row) => row.join("  ").trimEnd()).join("\n") + "\n");
   const notMounted = [...new Set(rows.flatMap((r) => (r.skills?.skipped ?? []).filter((x) => x.kind === "plugin").map((x) => `${x.name} (${x.reason})`)))];
-  if (notMounted.length) writeOut(`\nplugins NOT mounted in the VMs: ${notMounted.join("; ")} — docs/notes/sandbox.md#skills\n`);
+  if (notMounted.length) writeOut(verbose ? `\n⚠ plugins not mounted in the VMs: ${notMounted.join("; ")} — docs/notes/sandbox.md#skills\n` : `\n⚠ ${notMounted.length} plugin${notMounted.length === 1 ? "" : "s"} not mounted in the VMs (-v lists them)\n`);
   const orphans = rows.filter((r) => r.launcher === "orphan");
   if (orphans.length) writeOut(`\n${orphans.length} orphan(s): no paw launcher owns them — the agent's next launch removes them, or now: container delete --force ${orphans.map((o) => o.id).join(" ")}\n`);
 }

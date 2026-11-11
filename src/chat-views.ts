@@ -131,30 +131,46 @@ export function hintFor(s: { view: ChatView; picking: boolean; hasTarget: boolea
 }
 
 /**
- * The hint line's RIGHT side: which mesh this session is on and, with an agent targeted, which machine
- * runs it (src/hosted.ts machineOf — evidence only, `?` when nothing says). A remote space is marked,
- * since its agents can run on any machine that joins it. Pure.
+ * The hint line's RIGHT side: which mesh this session is on and, when something says so, which
+ * machine runs the target (src/hosted.ts machineOf — evidence only). Nothing is said about a machine
+ * nobody named: no `?`, no loader — the peer cell already says whether the agent is there. A remote
+ * space is marked on the banner, not here (the row is short). Pure.
  */
-export function whereTag(o: { space: string; remote: boolean; agent?: { machine?: Machine } }): string {
-  const mesh = `mesh ${o.space}${o.remote ? " (remote)" : ""}`;
-  if (!o.agent) return mesh;
-  return `${mesh} · ${o.agent.machine ? `on ${o.agent.machine.label}` : "not running"}`;
+export function whereTag(o: { space: string; agent?: { machine?: Machine } }): string {
+  const mesh = `mesh ${o.space}`;
+  const m = o.agent?.machine;
+  return m && m.label !== "?" ? `${mesh} · on ${m.label}` : mesh;
 }
 
 /** Below this the hint stops saying anything ("chat │ ← l…"), so the tag gives way instead. */
 const MIN_HINT = 14;
 
+/** One cell of the footer's right side, most important first: a connection problem, unsent messages,
+ *  the peer, the mesh. A narrow row drops cells from the END — the problem cell is never dropped. */
+export interface FooterCell {
+  text: string;
+  paint: (s: string) => string;
+}
+
+const SEP = " · ";
+
 /**
- * Lay the hint (left) and the where-tag (right-aligned) into one row of `cols` columns. The hint is
- * elided before the tag is dropped, down to {@link MIN_HINT}; narrower than that the tag goes and
- * the hint keeps the row. Never wraps — the row is redrawn on every keystroke. Pure.
+ * Lay the hint (left) and the footer cells (right-aligned) into one row of `cols` columns. Cells are
+ * fitted from the first (the problem) down: the hint is elided to {@link MIN_HINT} before a cell is
+ * dropped, and the last cells go first. Never wraps — the row is redrawn on every keystroke. Pure.
  */
-export function hintWithTag(hint: string, tag: string, cols: number): { left: string; pad: number; tag: string } {
+export function hintWithTag(hint: string, cells: FooterCell[] | string, cols: number): { left: string; pad: number; tag: string; painted: string } {
   const avail = Math.max(0, cols - 1);
-  const tw = displayWidth(tag);
-  if (!tag || tw + 2 + MIN_HINT > avail) return { left: fitWidth(hint, avail), pad: 0, tag: "" };
-  const left = fitWidth(hint, avail - tw - 2);
-  return { left, pad: avail - displayWidth(left) - tw, tag };
+  const list = typeof cells === "string" ? (cells ? [{ text: cells, paint: (s: string) => s }] : []) : cells.filter((x) => x.text);
+  for (let n = list.length; n > 0; n--) {
+    const kept = list.slice(0, n);
+    const tag = kept.map((x) => x.text).join(SEP);
+    const tw = displayWidth(tag);
+    if (tw + 2 + MIN_HINT > avail) continue;
+    const left = fitWidth(hint, avail - tw - 2);
+    return { left, pad: avail - displayWidth(left) - tw, tag, painted: kept.map((x) => x.paint(x.text)).join(SEP) };
+  }
+  return { left: fitWidth(hint, avail), pad: 0, tag: "", painted: "" };
 }
 
 /**
