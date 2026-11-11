@@ -3536,7 +3536,10 @@ async function chat(argv: string[]): Promise<void> {
     if (lookup === "folder-gone") return openChooser(folderGoneChooser({ name: nm, folder: goneFolder(nm) ?? targetLost?.reason ?? "" }));
     if (lookup !== "absent") return;
     const live = (roster() ?? []).filter((p) => p.card.id !== me).map((p) => p.card.name);
-    const suggestions = suggestNames(nm, [...live, ...listAgents(space).map((a) => a.name)]).filter((n) => n.toLowerCase() !== nm.toLowerCase());
+    // A registered agent whose folder is gone can't be woken: offering it made a pick fail and the
+    // same chooser reopen with it on top (tracepaper → tracepaper-fx, 2026-11-11). Live names stay.
+    const wakeable = listAgents(space).map((a) => a.name).filter((n) => !goneFolder(n));
+    const suggestions = suggestNames(nm, [...live, ...wakeable]).filter((n) => n.toLowerCase() !== nm.toLowerCase());
     let elsewhere: ReturnType<typeof otherSpaceHits> = [];
     try {
       elsewhere = otherSpaceHits(pawHome(), nm, space);
