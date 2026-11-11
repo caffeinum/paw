@@ -46,7 +46,8 @@ export function reasonOf(text: string): string {
   const word = reasonWord(text);
   if (word) return word;
   const first = text.split(/[:\n(—]/)[0]!.trim().split(/\s+/).slice(0, 3).join(" ");
-  return first || "unknown error";
+  // An error with no text says exactly that — never a made-up cause.
+  return first || "no reason given";
 }
 
 /** `<glyph> <what> — <doing> · <can>`; empty slots are dropped with their separator. */
