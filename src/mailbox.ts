@@ -21,6 +21,8 @@ import { startSleepHost } from "./sleep-host.ts";
 import { startStaleForwarder } from "./stale-forward.ts";
 import { startLedgerRecorder } from "./ledger-recorder.ts";
 import { observerEndpoint } from "./feed.ts";
+import { startHandoffRelay } from "./handoff-relay.ts";
+import { machineName } from "./host-stamp.ts";
 import { startOfficeBridge } from "./office-daemon.ts";
 import { pawServer } from "./server.ts";
 
@@ -111,7 +113,11 @@ async function mailbox(argv: string[]): Promise<void> {
     console.error(`[mailbox] office bridge failed to start — the agent office is NOT mirrored: ${e.message}`);
     return async () => {};
   });
+  // Secret handoff FROM sandboxed agents (src/handoff-relay.ts): their VMs can't see other agents'
+  // folders, so `handoff --to` inside a VM drops a request in its own folder and this relays it.
+  const stopHandoffRelay = startHandoffRelay(space, machineName(space), (line) => console.error(`[mailbox] ${line}`));
   const leave = async () => {
+    stopHandoffRelay();
     await stopOffice().catch(() => {});
     await stopForwarder().catch(() => {});
     await stopSleepHost().catch(() => {});

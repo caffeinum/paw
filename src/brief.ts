@@ -189,4 +189,6 @@ export const SANDBOX_BRIEF: readonly string[] = [
     `MCP servers: the operator's host \`paw mcp\` servers are NOT shared with you. You may add your own with`,
     `\`claude mcp add -s user <name> -- <command…>\` (or a .mcp.json in your folder); they load on your next`,
     `restart (ask the operator for \`paw restart\`) — unless the operator set \`sandboxOwnMcp: false\`.`,
+    `To give another agent a secret: \`/paw/claude/skills/handoff/handoff --to <agent>[#space] NAME < file\` (or pipe it in).`,
+    `paw on the host stores it in that agent's folder and answers with a receipt; never put a secret in a DM.`,
 ];

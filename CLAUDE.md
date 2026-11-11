@@ -191,6 +191,9 @@ Each entry: what it is + the most load-bearing rule. Full notes behind the link.
   An apiserver merely NOT REGISTERED (every reboot) is started by the CLI-side preflight itself, once per process, with that
   same command (+ `--disable-kernel-install`, 90s bound), then re-probed; never over ssh, never under a root other than the
   plist's. → [sandbox.md#after-a-reboot](docs/notes/sandbox.md#after-a-reboot)
+  Secret handoff FROM a VM (`src/handoff-relay.ts`, in the mailbox): `handoff --to` in a VM drops a request in its own
+  folder's `.handoff/.outbox/`; the mailbox resolves the recipient on the host, stores it 0600, answers with a receipt;
+  value never on the mesh or in logs. `check:handoff-relay`. → [sandbox.md#handoff](docs/notes/sandbox.md#handoff)
 - `src/session.ts` — `readResumeId`, `transcriptExists`; leaf module. → [agents.md#srcsessionts](docs/notes/agents.md#srcsessionts)
 - **Two-writer guard** — never start an agent whose pinned session a standalone claude holds. → [agents.md#two-writer-guard](docs/notes/agents.md#two-writer-guard)
 - `src/open.ts` — `paw open`/`paw attach`: runtime-aware; tmux → real window, cmux → names the tab, pty

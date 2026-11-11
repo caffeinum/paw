@@ -238,6 +238,38 @@ agent runs as the same macOS user: any of them can `cat ~/.paw/containers/neon/.
 the VM. Keychain-gating was rejected (prompts). Real isolation from other agents = a separate macOS user (or
 machine) for the sandboxed agent's paw.
 
+## Handoff from a sandboxed agent (src/handoff-relay.ts, 2026-11-10) {#handoff}
+
+The `handoff` skill script stores a one-time secret in `<recipient folder>/.handoff/NAME` (0600), found
+through `~/.paw/spaces/<s>/personas/<agent>.md`. A VM sees neither the personas nor other agents' folders
+(on purpose, see "How it launches"), so a sandboxed SENDER could never deliver. betterstack (team2027)
+read a Better Stack token, got `handoff: no persona 'vercel#team2027'`, and the operator had to copy it by
+hand. Host → sandboxed already worked: the recipient's folder is mounted at the same path.
+
+- **The sender's own folder is the outbox.** In a VM (`IS_SANDBOX=1`), `handoff --to <agent>[#space] NAME`
+  finds its folder as `/proc/1/cwd` (the init's cwd = the `-w` folder, mounted read-write at the same
+  host path). It writes `.handoff/.outbox/.tmp-<id>/{to,name,value[,force]}`, commits it by renaming to
+  `<id>`, and waits for `<id>.ok` / `<id>.err`.
+- **The mailbox relays** (`startHandoffRelay`, one pass a second). For each sandboxed agent hosted on this
+  machine (persona `sandbox:` set, `machine:` absent or this machine, not teleported), it claims each
+  committed request by renaming it to `.claimed-<id>`. It resolves the recipient from the HOST's personas
+  (default space = the sender's), stores it as the script would (0700 dir, 0600 file, no overwrite without
+  `force`, `.handoff/` into the repo's local git exclude), writes a one-line receipt and deletes the
+  request. Receipts nobody collected go after 10 minutes.
+- **Who sent it** = whose folder holds the outbox; no other VM can write there. A folder shared by two
+  sandboxed agents is refused with a receipt.
+- **Refused, never guessed:** unknown agent, bad NAME, a recipient whose `machine:` is another machine
+  (cross-machine handoff isn't supported), teleported, folder missing.
+- **The value never leaves the filesystem.** Not on the mesh, in a DM or on argv. The mailbox log gets
+  `[handoff] betterstack → vercel#team2027 NAME (24 bytes)`.
+- **The script fails loud** in a VM: no receipt in 15s → the request is withdrawn ("its mailbox may
+  predate the handoff relay"); `pop/ls/env/rm --to` refuse (another agent's store isn't readable from a
+  VM). Before this, a VM `--to` whose lookup had succeeded would have written into the wiped rootfs and
+  printed "stored": the secret silently lost.
+- **Rollout:** the script lives in `~/.claude/skills/handoff` (mounted read-only into every VM, so an edit
+  is live at once); the relay needs a release + `paw restart --mailbox --space <s>`. No agent restarts.
+  `check:handoff-relay` (hermetic); verified end to end in a throwaway `paw-sandbox` container.
+
 ## `!cmd` and a shell in the VM (src/sandbox-exec.ts)
 
 Seen live: `!neon auth login` in `paw chat @neon` ran on the HOST (`zsh:1: command not found: neon`, exit 127) —
