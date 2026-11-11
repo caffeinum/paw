@@ -232,6 +232,11 @@ release, PAW_HOME/PAW_SPACE/PAW_RELEASE; the tty handed over); paw's own guards 
 `(local|remote broker …)` detail under 120 and is elided, never wrapped; FACT is elided down to 8 chars.
 Names and WHERE are never cut, so a terminal narrower than name + WHERE + FOR still wraps.
 
+**Shared with `paw doctor`.** Doctor detects no agent problem of its own: its `agents` row is
+`collectProblems([s])` (a count by group + one item per problem with its command), and its `manager` row with
+no manager here uses `classify()`'s manager-down rule over `live.json` — so the two never disagree.
+docs/notes/cli.md#paw-doctor.
+
 A DM that landed in the last second can show as a backlog before the stand-in wakes the agent; the next
 refresh clears it. Tests: `check:status` (`---- problems: classify ----`), `check:top`
 (`---- problems TUI reducer ----`), `check:problems-tty` (pty + @xterm/headless, fixture harness

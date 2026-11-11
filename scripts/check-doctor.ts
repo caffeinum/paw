@@ -104,12 +104,26 @@ const okTrace = (steps: Array<[string, string, number, string?]>) => ({
   stepMs: 800,
   steps: steps.map(([step, outcome, ms, code]) => ({ step, outcome, ms, ...(code ? { code } : {}) })),
 }) as unknown as import("../src/connect-diag.ts").ConnectTrace;
+type Problem = import("../src/problems.ts").Problem;
+const problemsReport = (s: string, problems: Problem[], o: { errors?: string[]; read?: "ok" | "error"; error?: string } = {}): import("../src/problems.ts").ProblemsReport => ({
+  now: Date.now(),
+  machine: "testhost",
+  spaces: [{ space: s, remote: false, server: "nats://127.0.0.1:4222", read: o.read ?? "ok", ...(o.error ? { error: o.error } : {}) }],
+  notRead: [],
+  problems,
+  errors: o.errors ?? [],
+});
+const problem = (group: Problem["group"], reason: Problem["reason"], name: string, fact: string, cmd?: string): Problem => ({
+  group, reason, name, space: "test-pa", fact, actions: [], also: [],
+  ...(cmd ? { primary: { cmd, here: true, class: "start" as const } } : {}),
+});
 function fakeNet(over: Partial<DoctorNet> = {}): DoctorNet {
   return {
     diagnose: async () => okTrace([["tcp", "ok", 1], ["info", "ok", 2], ["tls", "not-offered", 0]]),
     managerPs: async () => [],
     presence: async () => ({ kind: "ok" }),
     sweep: async () => ({ retired: [], skipped: [] }),
+    problems: async (s) => problemsReport(s, []),
     ...over,
   };
 }
@@ -510,6 +524,41 @@ console.log("remote");
   mkdirSync(join(sp("test-local-ci"), "chat-inboxes"));
   writeFileSync(join(sp("test-local-ci"), "chat-inboxes", "u.json"), entry(dead));
   assert(dc.checkChatInboxes(ctx(), "test-local-ci").length === 0, "a local space has no chat-inboxes row (paw chat provisions inboxes on remote spaces only)");
+}
+
+// ── agents (the problems view's read) + the manager-down rule shared with it ───────────────────────
+console.log("agents (problems view)");
+{
+  wipe();
+  space("test-pa");
+  const mgr = `100 1 /n/node ${PAW}/releases/abc123/bin/cotald.ts supervise --space test-pa --server nats://127.0.0.1:4222`;
+  listing = [];
+  assert((await dc.checkAgents(ctx(), "test-pa")).length === 0, "agents: no row without this home's manager");
+  writeFileSync(join(sp("test-pa"), "live.json"), JSON.stringify({ space: "test-pa", bootAt: 1, at: "2026-11-11T10:00:00.000Z", names: ["alpha", "beta"] }));
+  const down = expectRow(await dc.checkManager(ctx(), "test-pa"), "manager", "fail", "manager not running on this machine — live.json lists 2: alpha, beta", "command", "no manager but live.json names agents: the problems view's manager-down rule");
+  assert(down?.command === "paw start alpha beta --space test-pa", "manager-down's command is the problems view's start", down?.command);
+  rmSync(join(sp("test-pa"), "live.json"));
+  listing = [mgr];
+  assert((await dc.checkAgents(ctx({ offline: true }), "test-pa")).length === 0, "agents: no row --offline");
+  assert((await dc.checkAgents(ctx({ net: fakeNet({ managerPs: async () => { throw new Error("request timeout"); } }) }), "test-pa")).length === 0, "agents: no row when the manager doesn't answer (the manager row says why)");
+  expectRow(await dc.checkAgents(ctx(), "test-pa"), "agents", "ok", "none dead, stuck or holding mail", "none", "nothing needs you");
+  const r = expectRow(
+    await dc.checkAgents(ctx({ net: fakeNet({ problems: async (s) => problemsReport(s, [
+      problem("dead", "seat-exited", "canary", "seat exited — the manager lists it, nothing runs", "paw start canary --space test-pa"),
+      problem("stuck", "inbox", "research", "inbox stuck — 3 queued, not consuming", "paw restart research --space test-pa"),
+      problem("folder-gone", "folder-gone", "old", "folder gone"),
+      problem("asleep", "wake-failed", "sleepy", "wake failed"),
+    ]) }) }), "test-pa"),
+    "agents", "fail", "2 need you — 1 dead: canary · 1 stuck: research", "command", "dead + stuck; folder-gone and wake-failed stay in their own rows",
+  );
+  assert(r?.items?.[0] === "canary: seat exited — the manager lists it, nothing runs → paw start canary --space test-pa" && r.items.length === 2, "agents: one item per problem with its command", r?.items);
+  assert(r?.command === "paw top --problems --space test-pa  (runs an action only on your key and y/N)", "agents: the command opens the problems view", r?.command);
+  expectRow(await dc.checkAgents(ctx({ net: fakeNet({ problems: async (s) => problemsReport(s, [problem("stuck", "hung-tool", "q", "tool running — Bash: x")]) }) }), "test-pa"), "agents", "warn", "1 needs you — 1 stuck: q", "command", "stuck only is ⚠");
+  expectRow(await dc.checkAgents(ctx({ net: fakeNet({ problems: async (s) => problemsReport(s, [], { read: "error", error: "restart history is not JSON" }) }) }), "test-pa"), "agents", "warn", "couldn't read its agents: restart history is not JSON", "command", "a failed space read is ⚠, never ✓");
+  expectRow(await dc.checkAgents(ctx({ net: fakeNet({ problems: async (s) => problemsReport(s, [], { errors: ["paw: couldn't count x#test-pa's waiting DMs (no answer)"] }) }) }), "test-pa"), "agents", "warn", "none dead, stuck or holding mail — but 1 read failed", "command", "a failed side read is never ✓");
+  expectRow(await dc.checkAgents(ctx({ capMs: 50, net: fakeNet({ problems: () => new Promise(() => {}) }) }), "test-pa"), "agents", "warn", "couldn't read its agents (no answer in 0.2s)", "command", "a hung read is capped");
+  expectRow(await dc.checkAgents(ctx({ net: fakeNet({ problems: async () => { throw new Error("paw: connect ECONNREFUSED 127.0.0.1:4222"); } }) }), "test-pa"), "agents", "warn", "couldn't read its agents: connection refused", "command", "a thrown read gets its reason word");
+  listing = [];
 }
 
 // ── agents.folder / frozen / pins ─────────────────────────────────────────────────────────────────

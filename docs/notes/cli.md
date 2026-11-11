@@ -538,10 +538,14 @@ importing a command module would register its verb from doctor's and break check
   apiserver plist; `diagnoseInstallRoot`'s own command), `worktrees` (`git worktree list --porcelain` prunable).
 - per space: `broker` (`diagnoseConnect`; a local broker down with no manager is a ✓ fact), `signer` (A: chmod
   600; else `checkSignerRoot`'s message) and `name` (remote only), `manager` (wrapper/child pairs count once;
-  duplicates, bun, no answer = ✕ with the log's cause), `manager.tmpdir`, `ui` (tmux only), `mailbox` (another
+  duplicates, bun, no answer = ✕ with the log's cause; none of this home's while `live.json` names agents = ✕
+  with `paw start <names>` — the problems view's own manager-down rule, `classify()` from src/problems.ts), `manager.tmpdir`, `ui` (tmux only), `mailbox` (another
   home's = ⚠ fact, or ✕ B `kill <pid>` when both homes run there; none while this home's manager runs or
   agents sleep = ⚠ A `ensureMailbox`), `presence` (local, broker up,
-  manager running), `locks` (A), `agents.folder` (registry fact; live in the manager's ps = not gone),
+  manager running), `agents` (online, this home's manager answering: the problems view's own read,
+  `collectProblems([s])` capped at 4× the probe cap — dead/stuck/asleep-with-mail/elsewhere/idle-bg, ✕ when any
+  is dead, command `paw top --problems`; folder-gone/wake-failed/sleep-corrupt are left to `agents.folder` and
+  `sleep`, which also work `--offline`; a failed read is ⚠, never ✓), `locks` (A), `agents.folder` (registry fact; live in the manager's ps = not gone),
   `frozen`, `sleep`, `chat-inboxes` (remote spaces only — a local one has none; A `sweepOrphanInboxes` capped
   8s, re-reads the ledger after: a dead chat's inbox still there = a failed fix, never a ✓), `empty` (B `rm -r`,
   never auto).

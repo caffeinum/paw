@@ -56,6 +56,7 @@ import { claudeUserSettingsPath } from "./bypass-consent.ts";
 import { outsideGuiSession } from "./gui-session.ts";
 import { apiserverPlistPath, diagnoseInstallRoot, installRootOf, readApiserverInstallRoot, systemStartCommand } from "../bin/paw-container-root.mjs";
 import type { PresenceHealth } from "./presence-health.ts";
+import type { ProblemsReport } from "./problems.ts";
 
 // ---- the row model ---------------------------------------------------------------------------------
 
@@ -119,6 +120,8 @@ export interface DoctorNet {
   managerPs(space: string, server: string): Promise<string[]>;
   presence(space: string, server: string, ms: number): Promise<PresenceHealth>;
   sweep(space: string): Promise<{ retired: string[]; skipped: string[] }>;
+  /** The problems view's read of one space (src/problems.ts collectProblems) — the `agents` row. */
+  problems(space: string): Promise<ProblemsReport>;
 }
 
 export interface DoctorCtx {
@@ -265,6 +268,10 @@ export function realNet(): DoctorNet {
     async sweep(space) {
       const { sweepOrphanInboxes } = await import("./human-inbox.ts");
       return sweepOrphanInboxes(space);
+    },
+    async problems(space) {
+      const { collectProblems } = await import("./problems.ts");
+      return collectProblems([space]);
     },
   };
 }
@@ -1170,8 +1177,24 @@ export async function checkManager(ctx: DoctorCtx, s: string): Promise<Row[]> {
   const { ours: procs, others } = splitManagers(ctx, s);
   const base = { id: "manager", space: s };
   const foreign = others.map((p) => foreignManagerRow(ctx, s, p, procs.length > 0));
-  if (!procs.length) return foreign.length ? foreign : [{ ...base, status: "ok", fact: "not running here — starts on the next paw command" }];
+  if (!procs.length) return foreign.length ? foreign : [await noManagerRow(ctx, s)];
   return [...(await checkOwnManager(ctx, s, procs)), ...foreign];
+}
+
+/**
+ * No manager of this home: the problems view's own manager-down rule (src/problems.ts classify over
+ * live.json), so `paw doctor` and `paw status --problems` never disagree about a space whose agents were live.
+ */
+async function noManagerRow(ctx: DoctorCtx, s: string): Promise<Row> {
+  const base = { id: "manager", space: s };
+  const [{ classify: classifyProblems }, { readLiveRecord }] = await Promise.all([import("./problems.ts"), import("./boot-live.ts")]);
+  const live = readLiveRecord(s);
+  const [p] = classifyProblems(
+    { space: s, machine: ctx.host, ...(live ? { live } : {}), managerDown: true, rows: [], sleep: new Map(), wedges: new Map(), asks: [], gone: new Set(), ownedHere: () => true },
+    ctx.now,
+  );
+  if (!p) return { ...base, status: "ok", fact: "not running here — starts on the next paw command" };
+  return { ...base, status: "fail", fact: p.fact, items: live!.names, ...(p.primary ? { command: p.primary.cmd } : {}) };
 }
 
 async function checkOwnManager(ctx: DoctorCtx, s: string, procs: Proc[]): Promise<Row[]> {
@@ -1306,6 +1329,47 @@ export async function checkPresence(ctx: DoctorCtx, s: string): Promise<Row[]> {
   if (h.kind === "no-bucket") return [{ id: "presence", space: s, status: "warn", fact: "presence probe: no presence bucket on the broker yet" }];
   return [{ id: "presence", space: s, status: "warn", fact: `presence probe: ${reasonOf(h.message)}` }];
 }
+
+/** Reasons doctor shows in its own rows (agents.folder, sleep — they work --offline), left out of `agents`. */
+const OWN_ROW_REASONS = new Set<string>(["manager-down", "folder-gone", "wake-failed", "sleep-corrupt"]);
+
+/**
+ * The agents of a space with an answering manager, read by the problems view itself (src/problems.ts):
+ * dead, stuck, asleep with mail, offline on another machine, idle with background work. Doctor detects
+ * none of these on its own; the operator acts on them in `paw top --problems`.
+ */
+export async function checkAgents(ctx: DoctorCtx, s: string): Promise<Row[]> {
+  if (ctx.offline || !ownManagers(ctx, s).length) return [];
+  const a = await managerAnswer(ctx, s, spaceServer(s).server);
+  if (!a.ok) return []; // the manager row says why
+  const base = { id: "agents", space: s };
+  const view = `paw status --problems --space ${s}`;
+  const ms = ctx.capMs * 4;
+  const r = await capped(ctx.net.problems(s), ms).catch((e: Error) => ({ done: true as const, error: e }));
+  if (!r.done) return [{ ...base, status: "warn", fact: `couldn't read its agents (no answer in ${capWord(ms)})`, command: view }];
+  if ("error" in r) return [{ ...base, status: "warn", fact: `couldn't read its agents: ${await problemError(r.error.message)}`, command: view }];
+  const read = r.value.spaces.find((x) => x.space === s);
+  if (!read) return []; // the manager went away between the probes: the manager row tells
+  if (read.read === "error") return [{ ...base, status: "warn", fact: `couldn't read its agents: ${read.error}`, command: view }];
+  const ps = r.value.problems.filter((p) => !OWN_ROW_REASONS.has(p.reason));
+  const notRead = r.value.errors.map((e) => `not read: ${strip(e)}`);
+  if (!ps.length) {
+    if (notRead.length) return [{ ...base, status: "warn", fact: `none dead, stuck or holding mail — but ${notRead.length} ${plural(notRead.length, "read", "reads")} failed`, items: notRead, command: view }];
+    return [{ ...base, status: "ok", fact: "none dead, stuck or holding mail" }];
+  }
+  const { GROUPS } = await import("./problems.ts");
+  const groups = GROUPS.map((g) => [g.title.toLowerCase(), ps.filter((p) => p.group === g.group).map((p) => p.name)] as const).filter(([, ns]) => ns.length > 0);
+  const names = (ns: readonly string[]): string => `${ns.slice(0, 3).join(", ")}${ns.length > 3 ? ` +${ns.length - 3}` : ""}`;
+  return [{
+    ...base,
+    status: ps.some((p) => p.group === "dead") ? "fail" : "warn",
+    fact: `${ps.length} ${plural(ps.length, "needs", "need")} you — ${groups.map(([t, ns]) => `${ns.length} ${t}: ${names(ns)}`).join(" · ")}`,
+    items: [...ps.map((p) => `${p.name}: ${p.fact}${p.primary ? ` → ${p.primary.cmd}` : ""}`), ...notRead],
+    command: `paw top --problems --space ${s}  (runs an action only on your key and y/N)`,
+  }];
+}
+
+const problemError = async (msg: string): Promise<string> => (await import("./problems.ts")).errorText(msg);
 
 export async function checkAgentsFolder(ctx: DoctorCtx, s: string): Promise<Row[]> {
   const files = personaFiles(ctx, s);
@@ -1469,6 +1533,7 @@ export async function spaceChecks(ctx: DoctorCtx, s: string): Promise<Row[]> {
     ["ui", () => checkUi(ctx, s)],
     ["mailbox", () => checkMailbox(ctx, s)],
     ["presence", () => checkPresence(ctx, s)],
+    ["agents", () => checkAgents(ctx, s)],
     ["locks", () => checkSpaceLocks(ctx, s)],
     ["agents.folder", () => checkAgentsFolder(ctx, s)],
     ["frozen", () => checkFrozen(ctx, s)],
