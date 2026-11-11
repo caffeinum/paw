@@ -1220,7 +1220,7 @@ async function chat(argv: string[]): Promise<void> {
       agent: c.cyan(shown),
       where,
       status: curName ? fields.status : loadingSlot(),
-      machine: curName && whereKnown() ? okSlot(m ? machineColor(m)(m.label) : undefined) : loadingSlot(),
+      machine: curName && whereKnown() ? okSlot(m && m.label !== "?" ? machineColor(m)(m.label) : undefined) : loadingSlot(),
       info: away ? okSlot(undefined) : fields.info,
       ...(away ? { away: elsewhereBanner(away) } : {}),
       only: filter?.kind === "agent",
@@ -1385,9 +1385,11 @@ async function chat(argv: string[]): Promise<void> {
       pumpLogs();
       // `from` tags it as inbound mail: the logs view keeps another agent's DM visible, and shows the
       // target's as the transcript's `↩ you` block instead (entryVisible).
+      // The receipt under the prompt is answered BEFORE the reply is painted, so it is replaced where it
+      // stands (once the reply sits under it, it could only be dropped from the history).
+      if (!meta.historical && curName && from.toLowerCase() === curName.toLowerCase()) setReceipt(stillPending ? `${LOADER} waiting for ${from} (${stillPending} more)` : undefined);
       if (curName && from.toLowerCase() === curName.toLowerCase()) emit(said(`${tag}${agentTag(from)}${fwdMark}${age}${took}${c.dim(":")}`, text), "peer", false, from);
       else emit(said(`${tag}${agentTag(from, c.bold)} ${c.dim("→ you")}${fwdMark}${age}${took}${c.dim(":")}`, text), "peer", false, from);
-      if (!meta.historical && curName && from.toLowerCase() === curName.toLowerCase()) setReceipt(stillPending ? `${LOADER} waiting for ${from} (${stillPending} more)` : undefined);
       advanceCursor(space, m.ts); // shown here = seen, so `paw inbox` won't re-surface it as new
       // Follow the conversation: an empty input means you have not started a reply to anyone else, so
       // the next thing you type is almost certainly for whoever just spoke. Announced, never silent —
@@ -2045,9 +2047,9 @@ async function chat(argv: string[]): Promise<void> {
       if (item.retried) emit(c.dim(`${OK} sent to ${item.label} after ${secsOf(Date.now() - item.firstAt)}`), "you");
       if (o.awaitFrom) markWaiting(o.awaitFrom, o.msg);
     } else if (e.transient) {
-      emit(c.red(problemLine(FAIL, `not sent to ${item.label} after ${secsOf(Date.now() - item.firstAt)} (${meshDown ? "mesh down" : shortReason(e.error)})`, undefined, "/retry sends it again")), "you");
+      emit(c.red(problemLine(FAIL, `not sent to ${item.label} after ${secsOf(Date.now() - item.firstAt)} (${meshDown ? "mesh down" : shortReason(e.error)})`, "/retry sends it again")), "you");
     } else {
-      emit(c.red(problemLine(FAIL, `not sent to ${item.label} (${shortReason(e.error)})`, undefined, "/retry after fixing it")), "you");
+      emit(c.red(problemLine(FAIL, `not sent to ${item.label} (${shortReason(e.error)})`, "/retry after fixing it")), "you");
     }
     refreshFooter();
   };
@@ -2297,7 +2299,7 @@ async function chat(argv: string[]): Promise<void> {
     eraseChooser();
     const rows = renderChooser(chooser, c);
     readline.cursorTo(process.stdout, 0);
-    readline.clearLine(process.stdout, 0);
+    readline.clearScreenDown(process.stdout); // the hint row under the prompt too, or it bleeds into row 1
     const text = rows.join("\n") + "\n";
     process.stdout.write(text);
     chooserDrawn = paintedRows(text, process.stdout.columns || 80); // a wrapped row is erased whole
@@ -3100,8 +3102,8 @@ async function chat(argv: string[]): Promise<void> {
             presenceQuiet(now) ? `presence frozen — joins and leaves print when the link is back${peerHold.heldCount() ? ` (${peerHold.heldCount()} held)` : ""}` : "",
           ].filter(Boolean);
           if (notes.length) emit(c.dim(notes.join(" · ")));
-          if (bootFailTrace) emit(c.dim(bootFailTrace));
         }
+        if (bootFailTrace) emit(c.dim(bootFailTrace));
         emit(c.dim(`mesh ${space} · ${remoteSpace ? "remote" : "local"} · ${server}`));
         emit(c.dim("PAW_CONN_DEBUG=1 logs every signal"));
       } else if (text === "/reconnect") {
@@ -3393,9 +3395,18 @@ async function chat(argv: string[]): Promise<void> {
   let inboxRelease: (() => Promise<void>) | undefined;
   let inboxUid: string | undefined;
   let everReady = false;
+  /** Put the current prompt on screen when it changed. setPrompt alone leaves the OLD prompt painted
+   *  while readline positions by the NEW one's width — a phase flip mid-typing (`kit ◌>` → `kit>`) then
+   *  wrote the typed text over the stale `> `. */
+  const syncPrompt = (): void => {
+    if (!rl || closing) return;
+    if (promptFor() === rl.getPrompt()) return;
+    rl.setPrompt(promptFor());
+    if (!picking && !chooserHooks?.open() && !scanner.pasting) rl.prompt(true);
+  };
   const setPhase = (p: BootPhase): void => {
     bootPhase = p;
-    if (rl && !closing) rl.setPrompt(promptFor());
+    syncPrompt();
     refreshFooter();
   };
   /**
@@ -3708,7 +3719,7 @@ async function chat(argv: string[]): Promise<void> {
       // `/reconnect` starts clean instead of leaking the first inbox behind a second.
       await teardown();
       bootPhase = "failed";
-      fields.status = failedSlot("not connected");
+      fields.status = loadingSlot();
       // ONE line per reason: the first failure prints, later attempts with the same reason only tick
       // the footer (`✕ unreachable 35s · retry 3 in 20s`), a new reason prints again. The full trace
       // stays reachable in /conn (and PAW_CONN_DEBUG=1).
@@ -3733,7 +3744,7 @@ async function chat(argv: string[]): Promise<void> {
         }, wait);
       }
       if (lookup === "pending") lookup = "unreachable";
-      rl?.setPrompt(promptFor());
+      syncPrompt();
       updateBanner();
       refreshFooter();
       presentLookup();

@@ -7,7 +7,7 @@
  * banner may say less than it will, never something it does not know. CORE-FREE by contract (the
  * pre-shell imports it before @cotal-ai/core is loaded) — `check:chat` walks its import graph.
  */
-import { LOADER, slotText, type Slot } from "./chat-boot.ts";
+import { slotText, type Slot } from "./chat-boot.ts";
 import { whereTag } from "./chat-views.ts";
 import { displayWidth } from "./width.ts";
 
@@ -32,7 +32,7 @@ export type BannerState =
       agent: string;
       /** The folder, `(by name)`, or where it runs; "" while unknown. */
       where: string;
-      /** loading = still looking (`kit ◌`); ok(undefined) = found, nothing to add; ok(text) = one dim
+      /** loading / ok(undefined) = nothing to add (the prompt carries the loader); ok(text) = one dim
        *  note under the agent row (a spawn, a slow start); err = `kit ✕ <why>` on the agent row. */
       status: Slot<string | undefined>;
       /** The machine running it; ok(undefined) = nothing names one (then nothing is said, never `?`). */
@@ -80,8 +80,9 @@ export function renderBanner(st: BannerState, c: BannerStyle): string {
       `     ${c.dim(`type to broadcast to #${st.room} · @name starts a DM · ${KEYS_HINT}`)}\n\n`
     );
   }
-  const agent =
-    st.status.s === "loading" ? `${st.agent} ${c.dim(LOADER)}` : st.status.s === "err" ? `${st.agent} ${c.red(`✕ ${st.status.msg}`)}` : st.agent;
+  // No loader on the agent row: the prompt (`you → kit ◌>`) and the footer phase carry it, and a banner
+  // with anything printed under it can't be repainted in place — a loader there would never resolve.
+  const agent = st.status.s === "err" ? `${st.agent} ${c.red(`✕ ${st.status.msg}`)}` : st.agent;
   const machine = st.machine.s === "ok" && st.machine.v ? `${c.dim(" · on ")}${st.machine.v}` : "";
   const note = st.status.s === "ok" && st.status.v ? `     ${st.status.v}\n` : "";
   const info =

@@ -317,7 +317,7 @@ try {
       setTimeout(() => io.write("for-echoer\r"), 30);
       const shown = await io.waitFor(/✕ no agent echoerr in [\s\S]*did you mean[\s\S]*1 echoer/, 20_000);
       ok("11. the chooser says there's no echoerr and offers echoer", shown, io.out().split("\n").slice(-10).join(" | "));
-      ok("11. …once: no status row, no second copy, the footer says not found, the prompt ✕", (strip(io.out()).match(/no agent echoerr/g) ?? []).length === 1 && /echoerr ✕ not found/.test(strip(io.out())) && /you → echoerr ✕> /.test(strip(io.out())) && !/status:|offline|not running|any other key/.test(strip(io.out())), io.out().split("\n").slice(-10).join(" | "));
+      ok("11. …once: no status row, no second copy, the footer says not found, the prompt ✕", (strip(io.out()).match(/✕ no agent echoerr/g) ?? []).length === 1 && /echoerr ✕ not found/.test(strip(io.out())) && /you → echoerr ✕> /.test(strip(io.out())) && !/status:|offline|not running|any other key/.test(strip(io.out())), io.out().split("\n").slice(-10).join(" | "));
       await sleep(300);
       ok("11. …and the line typed meanwhile was not sent", !dms.some((d) => /for-echoer/.test(d)) && general.length === 0, JSON.stringify(dms));
       io.write("1");

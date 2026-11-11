@@ -1172,7 +1172,7 @@ export async function collectStatus(space: string, ctl?: ManagerControl, opts: C
     rows.push({
       name,
       space,
-      ...(host ? { host } : {}),
+      ...(host && host.label !== "?" ? { host } : {}), // nothing names a machine → the cell is —, never ?
       folder: "",
       mesh: ros.status,
       live: true,

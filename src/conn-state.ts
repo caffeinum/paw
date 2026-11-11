@@ -261,11 +261,11 @@ export class ConnState {
     if (this.degradedSpells) counts.push(plural(this.degradedSpells, "shaky spell"));
     if (this.totalLoud) counts.push(plural(this.totalLoud, "error"));
     if (this.episodes || this.totalTransients || this.totalLoud) lines.push(`this session: ${counts.join(", ")}`);
-    const recent = this.recent
-      .slice()
-      .reverse()
-      .map((r) => `${ago(r.at)} ${r.loud ? r.text : reasonOf(r.text)}`);
-    if (recent.length) lines.push(`recent: ${recent.join(" · ")}`);
+    const recent = this.recent.slice().reverse();
+    const words = recent.map((r) => (r.loud ? r.text : reasonOf(r.text)));
+    // Five copies of one reason collapse to a count; mixed signals list newest first.
+    if (recent.length > 1 && words.every((w) => w === words[0])) lines.push(`recent: ${words[0]} ×${recent.length}, last ${ago(recent[0]!.at)}`);
+    else if (recent.length) lines.push(`recent: ${recent.map((r, i) => `${ago(r.at)} ${words[i]}`).join(" · ")}`);
     return lines;
   }
 

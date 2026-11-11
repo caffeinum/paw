@@ -820,7 +820,7 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
     const printed = [...s.feed({ kind: "error", error: dns() }, 1000), ...s.feed({ kind: "warning", error: dns() }, 3000)];
     assert(printed.length === 0, `conn: ENOTFOUND prints nothing (got ${JSON.stringify(printed)})`);
     assert(s.phase(3000) === "reconnecting" && s.label(3000) === "◌ reconnecting 2s (dns failed)", `conn: a failed dial with no transport event → reconnecting, reason word in the footer label (got ${s.label(3000)})`);
-    assert(/\(dns failed\) — last try 0s ago, 2 tries/.test(s.report(3000)[0]!) && /recent: 0s ago dns failed · 2s ago dns failed/.test(s.report(3000).join("\n")), `conn: /conn names the failed dial in plain words (got ${s.report(3000).join(" | ")})`);
+    assert(/\(dns failed\) — last try 0s ago, 2 tries/.test(s.report(3000)[0]!) && /recent: dns failed ×2, last 0s ago/.test(s.report(3000).join("\n")), `conn: /conn names the failed dial in plain words (got ${s.report(3000).join(" | ")})`);
     s.feed({ kind: "transport", connected: true }, 9000);
     assert(s.phase(9000) === "connected", `conn: the transport back clears the dial failure at once, and the outage's own warnings are not a shaky link (got ${s.phase(9000)})`);
     const side = new ConnState(0);
@@ -1355,7 +1355,7 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
   const agent = (o: Record<string, unknown> = {}) => ({ mode: "agent" as const, space: "s", remote: true, agent: "kit", where: "", status: loading<string>(), machine: loading<string | undefined>(), info: loading<{ model: string; context: string } | undefined>(), only: false, bang: true, ...o });
   const loadingText = renderBanner(agent(), PLAIN);
   const rows = (t: string) => t.split("\n").filter((l) => l.trim());
-  assert(/kit ◌ · mesh s \(remote\)$/m.test(loadingText) && !/on ◌|model|context|status:/.test(loadingText), `banner: the one loader is on the agent row; nothing unknown gets a row of its own (got ${JSON.stringify(loadingText)})`);
+  assert(/^     kit · mesh s \(remote\)$/m.test(loadingText) && !/◌|model|context|status:/.test(loadingText), `banner: identity only while loading — the prompt carries the loader; nothing unknown gets a row (got ${JSON.stringify(loadingText)})`);
   assert(rows(loadingText).length === 3, `banner: 3 rows while loading — title, agent · mesh, keys hint (got ${rows(loadingText).length})`);
   assert(!/offline|this machine|reusing|not running|idle|working/.test(loadingText), "banner: a loading banner fabricates nothing (no offline / this machine / status words)");
   const okText = renderBanner(agent({ status: ok(undefined), machine: ok("mini"), info: ok({ model: "opus", context: "12k" }) }), PLAIN);

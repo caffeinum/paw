@@ -501,7 +501,7 @@ export function renderTable(rows: TopRow[], o: { width: number; now: number; not
   rows.forEach((r, i) => {
     const st = fit(r.state, stateW);
     const stc = /^[⚠◌]/.test(r.state) ? color.yellow(st) : /online|busy|working/.test(r.state) ? color.green(st) : color.dim(st);
-    const cpu = r.cpu === undefined ? "?" : `${Math.round(r.cpu)}%`;
+    const cpu = r.cpu === undefined ? "—" : `${Math.round(r.cpu)}%`;
     const note = r.note ?? "";
     lines.push(
       `${color.bold(fit(r.name, nameW))}  ${stc}  ${fmtMb(r.mem).padStart(6)} ${cpu.padStart(5)}  ${fit(r.activeMs === undefined ? "—" : ago(r.activeMs, o.now), 6)}  ` +
@@ -510,7 +510,7 @@ export function renderTable(rows: TopRow[], o: { width: number; now: number; not
     if (!inline && note) lines.push(`${" ".repeat(nameW + 2)}${color.dim("↳")} ${note}`);
     if (o.verbose) {
       for (const it of r.items ?? []) {
-        const c = it.cpu === undefined ? "?" : `${Math.round(it.cpu)}%`;
+        const c = it.cpu === undefined ? "—" : `${Math.round(it.cpu)}%`;
         const what = `${it.pid === r.toolPid ? "tool" : it.kind}${it.label === it.kind ? "" : ` ${it.label}`}${it.stale ? " (npx)" : ""}${ports(it.ports)}`;
         lines.push(color.dim(`${" ".repeat(nameW + 2)}${String(it.pid).padStart(6)}  ${fit(what, 36)} ${fmtMb(it.mem).padStart(6)} ${c.padStart(5)}  ${dur(it.ageMs)}`));
       }
@@ -551,7 +551,10 @@ export function sortRows(rows: TopRow[], by: string): TopRow[] {
 
 /** Everything attributed to the space: agent trees plus orphans. */
 export function pawMb(f: Fleet): number | undefined {
-  return f.measured ? [...Object.values(f.agents), ...f.orphans].reduce((s, x) => s + (x.mem ?? 0), 0) : undefined;
+  if (!f.measured) return undefined;
+  const all = [...Object.values(f.agents), ...f.orphans];
+  // A sum over rows that could not be measured is not a measurement — `paw 0M` above `—` rows was.
+  return all.some((x) => x.mem === undefined) ? undefined : all.reduce((s, x) => s + (x.mem ?? 0), 0);
 }
 
 /** Memory coloured by how full it is: yellow from {@link MEM_WARN}, red from {@link MEM_CRIT}. */
