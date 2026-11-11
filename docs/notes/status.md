@@ -32,6 +32,18 @@ Moved verbatim from CLAUDE.md (2026-10-02 split). Index: [CLAUDE.md](../../CLAUD
 
 ## unregistered agents
 
+**2026-11-10 (ux-unify):** STATUS uses chat's words — `online` (never `idle`), `working`, `waiting`,
+`offline`, `asleep`, plus paw's own `busy`/`starting`/`in tool Nm`. A roster-only peer is ONE row,
+`online (not registered here)`, with no second note row; the fix is said once under the table
+(`N online agents aren't registered on this machine — \`paw adopt <folder>\` registers one`). A
+manager-listed unregistered peer's note is `not registered here (<harness>) — \`paw restart\` registers
++ revives it`; `unregistered.agent` is optional (no `?` pasted into prose), and a card that names no
+machine leaves MACHINE as `—`, never `?`. A registered agent whose persona folder no longer exists gets
+`⚠ folder gone: <path> — \`paw rm <name>\`, or restore it` ahead of any pin note, and the footer counts
+`N folder(s) missing` (chat says the same: `chat-lookup.ts` `folder-gone`). `src/fleet.ts failureWord`
+is the one short form of a refused turn for status, top and chat (`⚠ limit — resets 1am`, `⚠ login
+needed — paw attach x`, `⚠ api error 500`). Test: `check:status`, `check:top`.
+
 - **Unregistered manager-listed agents get a row (2026-09-09):** `paw status`/`/api/status` rendered ONE
   row per REGISTERED agent (folders.json ∪ agents.json) joined with the manager's ps, so a
   `cotal_spawn(name, agent: "codex", cwd…)` peer — on the roster, in `paw cotal ps` — was invisible on

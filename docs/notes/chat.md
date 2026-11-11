@@ -777,6 +777,33 @@ and `$` mode keep the plain hint. Machine comes from the same `machineOf` as `pa
 reads `?`. Another machine is cyan, `?` yellow. ↓ picker rows append `· <machine>` when the row fits; the
 banner prints the mesh line once. Tests: `check:chat` (whereTag, hintWithTag widths).
 
+## vocabulary (2026-11-10)
+
+One set of glyphs and words on every screen — `src/ux.ts` holds them, chat/status/top/sleep/web use
+them (the "before" dumps had 15 glyphs, `! `/`×`/`✕` for one failure, and `idle`/`live (unmanaged)`/
+`● idle`/`not live` for one state):
+`◌` paw is still doing something · `●` live (colour = sub-state) · `○` offline/asleep · `✓` done ·
+`✕` failed/refused/not found · `⚠` degraded, needs a human · `↻` trying again. Presence words:
+online · working · waiting · offline (`presenceWord`; `busy` stays paw's own inference in status/top).
+A problem is ONE line, `<glyph> <what> — <what paw does about it> · <what you can do>`
+(`problemLine`), the reason in parentheses from the fixed table `reasonWord`: connection refused · no
+answer · hung up · no route · dns failed · rejected credentials · reconnecting — never a raw library
+string (`error connecting - node provided an undefined error`, `Authorization Violation`,
+`reconnecting - try again sh…` all read as one of those; the raw text stays in `/conn`'s recent list).
+One fact lives in ONE place: the footer = current state (replaced in place), the transcript = facts
+that became true (one line per change of verdict), `/conn` = history. The banner is 3–4 rows (title ·
+`kit · (by name) · mesh s` · the filter note when filtered · `? keys · @name switches · /quit`); the
+help block is behind `?`/`/help` (`HELP_LINES`). The prompt is `you → kit>` (`kit ◌` while resolving,
+`kit ✕` when lost) — no `(only)`, no `[N queued]` (the footer cell says it). Footer cells
+(`src/chat-views.ts hintWithTag`) have priority — connection problem › unsent › peer › mesh — and a
+narrow row drops them from the END, so at 80 cols the problem cell survives (it used to be dropped
+whole). The peer cell is `kit ◌` whenever the link is not connected (never a green `● idle` from a
+stale roster), `kit ✕ not found` for a name the roster never had (never `offline`), and the mesh cell
+names a machine only when something names it (never `on ?`/`not running`). Waiting for a reply is ONE
+replaceable line under the prompt (`setReceipt`: `◌ waiting for kit…` → `◌ kit is on it` → gone when
+the reply lands), and the round-trip stamp prints only from 10s. Tests: `check:chat` (`banner`,
+`chooser`, `footer cells`, `conn:`), `check:chat-tty`.
+
 ## connection state
 
 `src/conn-state.ts` (`ConnState`, `attachConn`, `logConn`). cotal 0.100's endpoint reports trouble one
@@ -794,7 +821,26 @@ recovers. Printed immediately: auth/permission refusals (even inside a `mesh con
 creds/bearer refresh failures, cotal `transient: false` escalations (presence-write-stuck only while the
 connection is UP — during an outage it is the outage restated), and anything unrecognised (fail loud);
 a repeated loud text is counted, not reprinted, for 10 min. `/conn` prints the state, the session's
-transient + loud counts and the last of each; `PAW_CONN_DEBUG=1` prints every raw signal. `show()` now
+counts and the recent signals in plain words (`● connected 93s · no trouble this session` when fine;
+`✕ down 104s (connection refused) — last try 11s ago, 7 tries` / `this session: 1 outage, 18 hiccups`
+/ `recent: …` during one); `PAW_CONN_DEBUG=1` prints every raw signal. 2026-11-10: the footer cell is
+EMPTY while connected (the peer's `●` is the only dot on the row), `⚠ shaky (N hiccups)` when degraded,
+`◌ reconnecting Ns (reason)` / `✕ down Ns (reason)` otherwise — timed from the FIRST sign of trouble
+(`downSince`), not cotal's terminal close (the footer said `4s` 23s into an outage); the transcript
+lines are `⚠ mesh down 2m (connection refused) — retrying · what you send is kept` and `✓ mesh back
+after 3m` (the hiccup count that used to ride the recovery line was reset before it printed, so it
+always said 0 — it is in `/conn` now); a transport/connection UP clears `lastTransientAt`, so a
+recovery never reads `degraded (0 failed)` for 20s. `/reconnect` during a mid-session outage (and
+`/retry`) calls cotal's public `ep.reconnect()` to cut its reestablish backoff (doubles to 60s) — it
+used to answer `(connected — nothing to reconnect)` under a red `disconnected` footer. A connect that
+fails at boot prints ONE line per reason (`✕ can't reach s at host:port (connection refused) — retrying
+in 5s · /reconnect now · /conn explains · what you type is kept`); later attempts only tick the footer
+(`✕ unreachable 35s · retry 3 in 20s`, `failedLabel`), success prints `✓ connected to s after 45s`;
+`refused` is transient (`chat-boot.ts` NEVER_RETRY no longer matches it — a dead port and a server
+that accepts-then-hangs-up are the same situation), and the unreachable chooser opens only when no
+self-retry is armed. The inbox release that fails with the SAME reason word as the startup is not
+reported a second time above the real error (`chat-startup.ts`; the ledger entry is swept by the
+next chat). `show()` now
 clears from the prompt's FIRST row (`getCursorPos().rows`), so a wrapped input no longer leaves stale
 prompt rows above each printed line. Upstream: cotal should log one line per failure streak, not per
 heartbeat. Tests: `check:chat` (`conn:` cases).
