@@ -195,6 +195,7 @@ console.log("the persistent home ($PAW_HOME/containers/<name>)");
   const pf = r.indexOf("--append-system-prompt-file");
   const brief = pf !== -1 ? readFileSync(r[pf + 1], "utf8") : r[r.indexOf("--append-system-prompt") + 1];
   assert(brief.includes("YOU RUN IN A SANDBOX") && brief.includes("~/.env"), "the sandboxed seat's brief tells it about its persistent home and ~/.env");
+  assert(brief.includes("/paw/claude/skills/handoff/handoff --to") && brief.includes("never put a secret in a DM"), "the sandboxed seat's brief tells it how to hand another agent a secret");
   // The rc file, run by a real bash: ~/.env exported, PATH prepended even after a profile reset it.
   const fakeRoot = join(home, "fake-vm-root");
   mkdirSync(fakeRoot);
