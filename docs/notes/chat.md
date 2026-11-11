@@ -753,10 +753,11 @@ or disable functions that don't make sense for remote agents"):
 | feature | remote agent |
 |---|---|
 | messages, `@name`, `/dm`, `#channel`, pastes (inline text) | work, over the mesh |
+| the agent is OFFLINE | `○ offline — what you type sends when it's back · start it: ssh mini paw start x --space s` under the agent row; lines are HELD and sent on its next presence (see [offline on another machine](#offline-on-another-machine-2026-11-11)) |
 | header | `agent: tracepaper  runs on ssh:mini · /Users/aleks/.paw/repos/caffeinum/tracepaper`, `status: live on the mesh`, no model/context lines (stale), one dim line `logs, ctx, !cmd and files are on ssh:mini — from here you message it over the mesh`; the help line drops `!cmd runs in its folder` |
 | `← logs` view | `(no logs for tracepaper — logs live on ssh:mini, where it runs — the transcript on this machine stopped when it left)` |
 | `paw log`, web trace | `paw: no logs for "tracepaper" here — logs live on ssh:mini, where it runs — …` (guard in `openAgentLog`, persona-present agents only) |
-| `!cmd` (chat + web) | `! !cmd runs on this machine, not on ssh:mini where tracepaper works` |
+| `!cmd` (chat + web) | `✕ !cmd runs on this machine, not on ssh:mini where tracepaper works` (chat: checked BEFORE any lost-target reason) |
 | image/file attachment (chat) | staging warns `⚠ tracepaper runs on ssh:mini and can't open a file on this machine — /noimg drops it and keeps your text`; the send is refused (`AwayFilesRefused` thrown in `flush`, nothing sent, still staged): `! not sent — tracepaper runs on ssh:mini and can't open [Image #1] (a file on this machine) — /noimg drops it and keeps your text`. The refused line waits in `awayDraft` (the input is needed to type `/noimg`); `/noimg` drops the images AND puts the line back into the input without its placeholders (`dropPlaceholders`, whitespace tidied), so Enter sends the words alone. A quit before that prints it in full; a second refusal moves the first into `keptUnsent`. Before 2026-11-10 `/noimg` cleared the images and the typed line was simply gone. Actually carrying the image to the other machine is the real follow-up. `check:chat-tty` 22 |
 | `paw dm` / web send with an attachment line | `sendAsYou` refuses: `paw: not sent — … (a file on this machine)` (`attachedPlaceholders` reads the `📷/📎 [Image #N] /abs` lines) |
 | `paw attach` / `paw open` | `paw: "tracepaper" runs on ssh:mini — attach to it there; from here \`paw chat @tracepaper\` messages it` |
@@ -769,6 +770,35 @@ none. ctx % over the mesh needs the remote to publish it (card meta or an event)
 (`#files` announces absolute paths — meaningless on another box; the agent's own `📷 /mini/path` replies
 404 in paw web here). Tests: `check:teleport` (marker cwd, runsElsewhere, log/attach refusals, status row),
 `check:remote` (elsewhereOf + strings), `check:images` (`attachedPlaceholders`).
+
+## offline on another machine (2026-11-11)
+
+`paw chat @2027-intern --space team2027` with the agent teleported to the mini and not running printed a red
+wall twice — `✕ "2027-intern" was teleported to ssh:mini at … — \`paw teleport … --back\` brings it back here —
+and it isn't on the mesh right now (start it there: …) — lines to it are kept, not sent`, then the same under
+the refused line. Operator: "why do i need to see this error? i know it was teleported, i am trying to chat
+with it". Now (`src/chat-away.ts`):
+- The wake gate's teleported refusal is a typed `AwayOfflineError` (`agent`, `where`, `start` =
+  `startThereCommand`; message unchanged for dm/adopt/restart). chat reads the fields: `targetAway`, never
+  `targetLost`. Also an away target when the gate isn't involved: a roster-found offline agent whose card
+  names another host, or (remote space, no persona here, off the roster) the peer ledger's newest sighting
+  ≤7 days with a `host` that isn't this one (`ledgerHost`) — a sighting without a host stays "not found".
+- Banner: agent row `runs on ssh:mini` (once — no `· on ssh:mini` beside it), one dim
+  `○ offline — what you type sends when it's back · start it: <exact command>` (`start it on <host>` when
+  paw can't name a transport). Prompt `you → x ○>`; footer `x ○ offline` + `◌ N waiting for x`.
+- Lines typed to it are HELD (`HeldForReturn`, already flushed — pastes inline, local images still refused
+  by `AwayFilesRefused`); `◌ queued — sends when x is back` prints once per absence. Its presence appearing
+  (`onPresence`, a missed event caught on the next line, or it came up during boot) → `● x is back — sending
+  N lines…`, each `sendDm` to the NEW id through the outbox (retry-safe ids), in typed order. A quit prints
+  every held line in full (`→ x (offline — was waiting for it): …`). Pipe mode fails loud, nothing sent.
+- `@x` to such an agent switches to it and holds (no respawn attempt); `!cmd` refuses in one clause.
+- Why not deliver through the broker or wake it: DMs are addressed to an incarnation id (a new one every
+  start; a DM to the old id sits unread — messaging.md#stale-peer-ids; the stale-id forwarder is off under
+  PAW_AUTH), and no over-the-mesh path asks ANOTHER machine's paw to start an agent (the sleep host stands in
+  only for agents this machine hosts; `wake <name>` via `global` is the local space's LLM agent). A held
+  line lives in this chat's memory only — the exact start command is the operator's lever.
+Tests: `check:chat` (`away:` cases), `check:chat-tty` 23 (teleported, offline → held → delivered once each,
+in order, when it appears; quit prints the held line).
 
 ## where it runs (hint row, picker, banner)
 

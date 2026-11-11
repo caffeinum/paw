@@ -295,6 +295,10 @@ Each entry: what it is + the most load-bearing rule. Full notes behind the link.
   a registered name whose folder is gone → `folder-gone` (named, never "no agent"), never a dead prompt, never a guessed
   "not found" from an unread roster; a boot failure self-retries (`refused` included) with the footer counting down, and
   opens the unreachable chooser only when it will NOT retry by itself. → [chat.md#instant-ui](docs/notes/chat.md#instant-ui)
+- `src/chat-away.ts` — chat to ANOTHER machine's agent that is offline (teleported, or roster/ledger host elsewhere):
+  ONE `○ offline — what you type sends when it's back · start it: <cmd>` note, never the teleport history; lines are
+  HELD and sent to its new id when its presence appears; quit prints them. Gate refusal = typed `AwayOfflineError`.
+  No cross-machine wake exists. → [chat.md#offline-on-another-machine-2026-11-11](docs/notes/chat.md#offline-on-another-machine-2026-11-11)
 - `src/chat-own.ts` — chat's echo tap + earlier block's read + the messages view's other-peer reads; remote: narrow creds
   only, never the space wildcard — `chat-echo`/`chat-history` for "you"'s own subjects, operator-only `chat-peers` (5 min,
   per read + one renewed live tap) for the TARGET's own DM subjects (every id) + its channel posts.

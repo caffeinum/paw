@@ -34,6 +34,8 @@ import {
   assertUnambiguousTarget,
   canonicalDir,
   cliRestartConsent,
+  AwayOfflineError,
+  awayFromMark,
   ensureAgentSpawned,
   unreachableHint,
   stuckWarning,
@@ -111,6 +113,9 @@ import { spaceChoice } from "./space.ts";
 import { bangNoFolder, elsewhereBang, elsewhereBanner, elsewhereFiles, elsewhereLogs, elsewhereStatus, localMachine, machineOf, machineOfCard, runsElsewhere, type Elsewhere, type Machine } from "./hosted.ts";
 import { readTeleported } from "./teleport-plan.ts";
 import { cachedLedger, ledgerName } from "./peer-ledger.ts";
+import { awayOfflineNote, backLine, heldCell, heldLine, HeldForReturn, ledgerHost, type AwayTarget } from "./chat-away.ts";
+import { KNOWN_PEER_MAX_AGE_MS } from "./dm-wait.ts";
+import { localHost, machineLabel } from "./host-stamp.ts";
 import { hueSgr, parsePersonalityArg, personaGlyph, personalityFor, type Glyph } from "./personality.ts";
 import {
   composePastes,
@@ -843,6 +848,11 @@ async function chat(argv: string[]): Promise<void> {
     const failed = outboxRef?.failed().length ?? 0;
     if (pending.some((i) => i.retried)) cell(`${LOADER} sending ${pending.length}`, c.yellow);
     if (failed) cell(`${FAIL} ${failed} not sent · /retry`, c.red);
+    const heldN = heldAway.count();
+    if (heldN) {
+      const names = [...new Set(heldAway.all().map((l) => l.to))];
+      cell(heldCell(heldN, names.length === 1 ? names[0]! : `${names.length} agents`), c.yellow);
+    }
     // A roster never read is NOT an empty one, and one read over a link that is down now says nothing
     // about the agent: the target shows a loader, never `offline`.
     const linkUp = ready && !!conn && conn.phase(now) === "connected";
@@ -925,7 +935,11 @@ async function chat(argv: string[]): Promise<void> {
   let bootStartedAt = Date.now();
   /** The target could not be reached — plain lines to it are REFUSED (kept), never posted to #general. */
   let targetLost: { name: string; reason: string } | undefined;
-  const roster = (): Presence[] | undefined => (ep && rosterSeen ? ep.getRoster() : undefined);
+  /** The target runs on ANOTHER machine and is offline: lines to it are HELD (src/chat-away.ts) and sent
+   *  the moment its presence appears — never refused, never a teleport history lesson. */
+  let targetAway: AwayTarget | undefined;
+  const heldAway = new HeldForReturn();
+  const roster =(): Presence[] | undefined => (ep && rosterSeen ? ep.getRoster() : undefined);
   const needEp = (): CotalEndpoint => {
     if (!ep || !ready) throw new Error("not connected yet — the line waits in the queue (◌) until it is");
     return ep;
@@ -971,6 +985,28 @@ async function chat(argv: string[]): Promise<void> {
     const personaHere = !!persona && existsSync(persona);
     const teleportedTo = personaHere ? readTeleported(persona!)?.to : undefined;
     return machineOf({ card: live ? machineOfCard(peer.card) : undefined, teleportedTo, localSpaceHere: !remoteSpace && personaHere && !teleportedTo, running: live, local: here });
+  };
+  /** `name` as an offline agent of ANOTHER machine — teleported away (its marker here), or on a remote
+   *  space with no persona here and a host named by its roster card or the peer ledger's newest
+   *  sighting (≤7 days, the same "known" as `paw dm`). Undefined when nothing names another machine:
+   *  an unknown name stays "not found", never a guessed host. */
+  const awayTargetFor = (nm: string): AwayTarget | undefined => {
+    if (!/^[A-Za-z0-9_-]+$/.test(nm)) return undefined;
+    const persona = personaFilePath(space, nm);
+    const personaHere = existsSync(persona);
+    const mark = personaHere ? readTeleported(persona) : undefined;
+    if (mark) {
+      const { where, start } = awayFromMark(nm, space, mark);
+      return { name: nm, where, ...(start ? { start } : {}) };
+    }
+    if (!remoteSpace || personaHere) return undefined;
+    const card = findPeer(nm)?.card;
+    if (card) {
+      const away = runsElsewhere(space, nm, card);
+      return away && machineOfCard(card) ? { name: nm, where: away.where } : undefined;
+    }
+    const host = ledgerHost(cachedLedger(space), nm, Date.now(), KNOWN_PEER_MAX_AGE_MS);
+    return host && host !== localHost() ? { name: nm, where: machineLabel(host) } : undefined;
   };
   /** A typed `name#space` / `#chan#space`: this session's space → the bare name; another (or unknown)
    *  space → said in red and undefined — this REPL is one space's endpoint and never re-routes. */
@@ -1077,7 +1113,9 @@ async function chat(argv: string[]): Promise<void> {
     const state =
       targetLost && curName && targetLost.name === curName
         ? ` ${c.red(FAIL)}`
-        : (lookup === "pending" || (!ready && bootPhase !== "failed")) && (curName || pendingName())
+        : targetAway && curName && targetAway.name === curName
+          ? ` ${c.dim(OFF)}`
+          : (lookup === "pending" || (!ready && bootPhase !== "failed")) && (curName || pendingName())
           ? ` ${c.dim(LOADER)}`
           : "";
     const tail = c.dim(`${badges.length ? ` [${badges.join(" · ")}]` : ""}`) + state + c.dim("> ");
@@ -1890,9 +1928,37 @@ async function chat(argv: string[]): Promise<void> {
     refreshFooter();
   };
 
+  /** The target is another machine's agent and offline: one dim note on the agent row, lines held. */
+  function markAway(t: AwayTarget): void {
+    targetAway = t;
+    targetLost = undefined;
+    fields.status = okSlot(c.dim(awayOfflineNote(t)));
+    rl?.setPrompt(promptFor());
+    updateBanner();
+    refreshFooter();
+  }
+  /** An away agent (the target, or one with lines held for it) is on the mesh: send what waited, in order. */
+  function cameBack(card: { id: string; name: string }): void {
+    const isTarget = targetAway?.name.toLowerCase() === card.name.toLowerCase();
+    const lines = heldAway.drain(card.name);
+    if (!isTarget && !lines.length) return;
+    if (isTarget) {
+      targetAway = undefined;
+      fields.status = okSlot(undefined);
+    }
+    if (curName?.toLowerCase() === card.name.toLowerCase()) curId = card.id;
+    emit(c.green(`${LIVE} ${backLine(card.name, lines.length)}`));
+    for (const text of lines) sendDm(card.name, card.id, text);
+    rl?.setPrompt(promptFor());
+    updateBanner();
+    refreshFooter();
+  }
+
   const onPresence = (ev: { type: string; presence: Presence }): void => {
     const card = ev.presence.card;
     if (card.id === me) return;
+    if (ready && ev.type !== "offline" && ev.presence.status !== "offline" && (targetAway?.name.toLowerCase() === card.name.toLowerCase() || heldAway.count(card.name)))
+      cameBack(card);
     onRosterSeen();
     if (rosterSeen && (ev.type === "join" || ev.type === "offline"))
       printPeerLines(peerHold.feed({ type: ev.type, id: card.id, card, status: ev.presence.status }, presenceQuiet(Date.now()), Date.now()));
@@ -2856,10 +2922,12 @@ async function chat(argv: string[]): Promise<void> {
    *  folder, show the output here, then DM the agent the command AND its output so the answer becomes
    *  its context. Needs an agent target — a channel has no folder to run in. */
   async function runBangCommand(command: string): Promise<void> {
-    if (curName && targetLost) return void emit(c.red(`✕ not run — ${targetLost.reason}`));
-    if (!curName || !curId) return void emit(c.red("! `!cmd` runs in an agent's folder — `@name` first (a channel has no folder)"));
-    const away = awayOf(curName);
-    if (away) return void emit(c.red(`✕ ${elsewhereBang(curName, away)}`));
+    // Where it runs leads: a teleported/remote agent's refusal is one clause, never its teleport history.
+    const away = curName ? awayOf(curName) : undefined;
+    if (curName && away) return void emit(c.red(`${FAIL} ${elsewhereBang(curName, away)}`));
+    if (curName && targetAway?.name === curName) return void emit(c.red(problemLine(FAIL, `!cmd not run — ${curName} is offline on ${targetAway.where}`)));
+    if (curName && targetLost) return void emit(c.red(problemLine(FAIL, `!cmd not run — ${targetLost.reason.replace(/^paw: /, "")}`)));
+    if (!curName || !curId) return void emit(c.red(`${FAIL} !cmd runs in an agent's folder — @name first (a channel has no folder)`));
     const cwd = folderForName(space, curName);
     if (!cwd) return void emit(c.red(`✕ ${bangNoFolder(space, curName, (roster() ?? []).find((p) => p.card.id === curId)?.card)}`));
     if (!existsSync(cwd)) return void emit(c.red(`✕ "${curName}" is registered at ${cwd}, which no longer exists`));
@@ -3231,6 +3299,27 @@ async function chat(argv: string[]): Promise<void> {
           let peer = fresh ? findPeer(to) : needEp().getRoster().find((p) => p.card.name.toLowerCase() === to.toLowerCase() && p.card.id !== me && p.status !== "offline");
           let stuckId: string | undefined; // a stuck seat's inbox address: queue there instead of stranding
           if (!fresh && !peer) emit(c.dim(`(presence still loading — not waking ${to} from a roster that hasn't loaded)`));
+          // Another machine's agent, offline: nothing here can start it — switch to it and hold lines.
+          const awayTo = fresh && (!peer || peer.status === "offline") ? awayTargetFor(peer?.card.name ?? to) : undefined;
+          if (awayTo) {
+            const switched = awayTo.name.toLowerCase() !== curName?.toLowerCase();
+            if (awayTo.name !== curName) bang = false;
+            curName = awayTo.name;
+            curId = undefined;
+            if (filter?.kind === "agent") filter = { kind: "agent", name: awayTo.name };
+            if (switched) {
+              lookup = "found";
+              fields.info = okSlot(undefined);
+            }
+            markAway(awayTo);
+            flushBanner();
+            if (!body) emit(c.dim(`(now messaging ${curName})`));
+            if (switched) loadBacklog(curName);
+            if (body && heldAway.hold(curName, flush(body, curName))) emit(c.dim(heldLine(curName)), "you");
+            refreshFooter();
+            if (!closing) rl!.prompt();
+            return refused;
+          }
           // Not live? If we know the agent's folder, resurrect it (resumed) — `@name` wakes an agent
           // you exited earlier, with full history, instead of just saying "offline".
           if (fresh && (!peer || peer.status === "offline")) {
@@ -3320,7 +3409,14 @@ async function chat(argv: string[]): Promise<void> {
         // falling through to the room below would post a message typed for one agent to everyone.
         refreshTarget();
         const lost = targetLost?.name === curName ? targetLost : undefined;
-        if (!curId || lost) {
+        const away = targetAway?.name.toLowerCase() === curName.toLowerCase() ? targetAway : undefined;
+        const backPeer = away && findPeer(curName);
+        if (backPeer && backPeer.status !== "offline") cameBack(backPeer.card); // a missed presence event
+        if (targetAway === away && away) {
+          // Another machine's agent, offline: held, sent when it is back — not refused (src/chat-away.ts).
+          if (heldAway.hold(curName, flush(text, curName))) emit(c.dim(heldLine(curName)), "you");
+          refreshFooter();
+        } else if (!curId || lost) {
           refused = { refusedTo: curName, body: text };
           const why = `✕ not sent to ${curName}: ${lost?.reason ?? "it isn't reachable on the mesh"}`;
           // A replayed line's keeping is said by replayDeferred, which knows where it put it.
@@ -3538,7 +3634,17 @@ async function chat(argv: string[]): Promise<void> {
       lookup = "found";
       targetLost = undefined;
       curId = peer.status !== "offline" ? peer.card.id : await waitForPeerId(ep!, nm, 5000, signal);
-      fields.status = curId ? okSlot(undefined) : failedSlot("offline");
+      const away = curId ? undefined : awayTargetFor(nm);
+      if (away) markAway(away);
+      else fields.status = curId ? okSlot(undefined) : failedSlot("offline");
+      return;
+    }
+    // Off the roster, but the peer ledger saw it on another machine this week: an offline agent of that
+    // machine, not a typo — lines wait for it (src/chat-away.ts).
+    const away = awayTargetFor(nm);
+    if (away) {
+      lookup = "found";
+      markAway(away);
       return;
     }
     const gone = goneFolder(nm);
@@ -3715,11 +3821,20 @@ async function chat(argv: string[]): Promise<void> {
             if (curId) fields.status = okSlot(undefined);
           }
         } catch (e) {
-          targetLost = { name, reason: (e as Error).message };
+          if (e instanceof AwayOfflineError) targetAway = { name, where: e.where, ...(e.start ? { start: e.start } : {}) };
+          else targetLost = { name, reason: (e as Error).message };
         }
         if (signal.aborted) return;
-        if (!curId && !targetLost)
-          targetLost = { name, reason: folder ? unreachableHint(name, space, busy) : `paw: no live agent named "${name}" — start one with \`paw chat <folder>\`` };
+        if (!curId && !targetLost && !targetAway) {
+          const away = awayTargetFor(name);
+          if (away) targetAway = away;
+          else targetLost = { name, reason: folder ? unreachableHint(name, space, busy) : `paw: no live agent named "${name}" — start one with \`paw chat <folder>\`` };
+        }
+        if (targetAway && !curId) {
+          // Pipe mode has no later to send in: say so and fail, never pretend it was delivered.
+          if (!interactive) throw new Error(`paw: ${name} is offline on ${targetAway.where} — nothing sent${targetAway.start ? ` · start it: ${targetAway.start}` : ""}`);
+          markAway(targetAway);
+        }
         if (targetLost && lookup !== "absent" && lookup !== "unreachable" && lookup !== "folder-gone") {
           if (!interactive) throw new Error(targetLost.reason);
           fields.status = failedSlot(curId ? "not reachable" : "not on the mesh");
@@ -3730,6 +3845,9 @@ async function chat(argv: string[]): Promise<void> {
       }
       ready = true;
       everReady = true;
+      // It came up between the check and now (presence events before `ready` are not acted on).
+      const backNow = targetAway && findPeer(targetAway.name);
+      if (backNow && backNow.status !== "offline") cameBack(backNow.card);
       if (bootFailWhy !== undefined) emit(c.green(`${OK} connected to ${space} after ${secsText(Date.now() - bootFailedAt)}`));
       bootRetries = 0;
       bootFailWhy = undefined;
@@ -3806,10 +3924,12 @@ async function chat(argv: string[]): Promise<void> {
     const queued = deferred.unsentLines();
     const out = [...outbox.pending(), ...outbox.failed()];
     const kept = awayDraft ? [...keptUnsent, { to: awayDraft.to, text: awayDraft.text }] : keptUnsent;
-    const n = kept.length + queued.length + out.length;
+    const waiting = heldAway.all();
+    const n = kept.length + queued.length + out.length + waiting.length;
     if (n) {
       writeOut(c.red(`\n✕ quitting with ${n} message${n === 1 ? "" : "s"} not sent:\n`));
       for (const k of kept) writeOut(c.dim(`   → ${k.to} (refused): `) + `${k.text}\n`);
+      for (const w of waiting) writeOut(c.dim(`   → ${w.to} (offline — was waiting for it): `) + `${w.text}\n`);
       for (const t of queued) writeOut(c.dim(`   → ${curName ?? pendingName() ?? `#${room}`} (queued): `) + `${t}\n`);
       for (const it of out) writeOut(c.dim(`   → ${it.label}: `) + `${textOf(it.msg.msg)}${it.lastError ? c.dim(` (${shortReason(it.lastError)})`) : ""}\n`);
     }

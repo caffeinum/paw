@@ -40,7 +40,7 @@ import { readRemoteMesh } from "./remote-mesh.ts";
 import { presenceProbeCreds } from "./remote-creds.ts";
 import { withFileLock, withFileLockAsync, type LockOpts } from "./lock.ts";
 import { liveSessionProcs, meshAgentSession, meshIdentity, type LiveSessionProc } from "./named.ts";
-import { readTeleported, startThereCommand, teleportedRefusal } from "./teleport-plan.ts";
+import { ORIGIN, readTeleported, startThereCommand, teleportedRefusal } from "./teleport-plan.ts";
 import { elsewhereClause, localNameFor, ownedHere, resolve as resolveNamespace, stateWords } from "./namespace.ts";
 import { spaceChoice } from "./space.ts";
 import type { Elsewhere } from "./hosted.ts";
@@ -1099,8 +1099,7 @@ export async function ensureAgentSpawned(
     // NOT "already running here": the seat is another machine's. `elsewhere` lets every caller say so
     // (adopt printed "already live, left it running" for the mini's seat — 2026-11-11).
     if (id) return { spawned: false, id, elsewhere: { how: "teleported", where: teleported.to, ...(teleported.cwd ? { cwd: teleported.cwd } : {}) } };
-    const there = startThereCommand(opts.name, opts.space, teleported.to);
-    throw new Error(`${teleportedRefusal(opts.name, teleported)} — and it isn't on the mesh right now (start it there${there ? `: \`${there}\`` : ""})`);
+    throw new AwayOfflineError(opts.name, opts.space, teleported);
   }
   if (existsSync(ownPersona)) assertOneSpace(opts.space, readResumeId(ownPersona));
   const lastWrite = (): number | undefined => {
@@ -1607,6 +1606,33 @@ function healSleep(space: string, name: string, say: (line: string) => void = (l
  *  headline; `starting` is set too, so messages still go to its durable inbox. `busy`: offline on the
  *  mesh but its transcript is fresh — left alone, it will drain its inbox when its turn ends. */
 export type SpawnOutcome = { spawned: boolean; id?: string; unmanaged?: true; starting?: true; stuck?: string; busy?: true; elsewhere?: Elsewhere };
+
+/**
+ * The wake gate's refusal for a TELEPORTED agent that is not on the mesh: it runs on another machine, so
+ * no start here may make a second copy. CLI verbs print the message (the teleport history + how to start
+ * it there); `paw chat` reads the fields instead — there the teleport is not news, only "offline on X,
+ * start it with Y" is (operator, 2026-11-11: "i know it was teleported, i am trying to chat with it").
+ */
+export class AwayOfflineError extends Error {
+  override name = "AwayOfflineError";
+  /** Where it runs (`ssh:mini`, `the machine it came from`). */
+  readonly where: string;
+  /** The exact command that starts it on its host, when the marker names a transport paw knows. */
+  readonly start: string | undefined;
+  readonly agent: string;
+  constructor(agent: string, space: string, mark: { to: string; at?: string }) {
+    const { where, start } = awayFromMark(agent, space, mark);
+    super(`${teleportedRefusal(agent, mark)} — and it isn't on the mesh right now (start it there${start ? `: \`${start}\`` : ""})`);
+    this.agent = agent;
+    this.where = where;
+    this.start = start;
+  }
+}
+
+/** Where a teleported agent runs, and the exact command that starts it there (none for a transport paw can't name). */
+export function awayFromMark(agent: string, space: string, mark: { to: string }): { where: string; start: string | undefined } {
+  return { where: mark.to === ORIGIN ? "the machine it came from" : mark.to, start: startThereCommand(agent, space, mark.to) };
+}
 
 /** The words a caller prints for an outcome whose seat runs on another machine (never "already live"). */
 export const elsewhereOutcome = (e: Elsewhere): string => `runs on ${e.where} — not started here; that seat is another machine's`;

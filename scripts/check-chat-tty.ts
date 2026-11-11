@@ -40,6 +40,9 @@
  *  20. /quit typed in the beads view turns mouse reporting off on the way out.
  *  22. an image to an agent on another machine (teleported persona): refused, `/noimg` drops it and puts
  *      the typed words back in the input; Enter sends them alone, exactly once.
+ *  23. an OFFLINE teleported agent: one `○ offline … start it: <cmd>` note (no teleport history, row 1 names its
+ *      machine once); lines typed to it are held and delivered once each, in order, when it appears; a quit
+ *      while it is offline prints the held line.
  *  (1. also covers a peer registered nowhere here that IS on the roster: found → the normal prompt.)
  */
 import { spawn as ptySpawn } from "@lydell/node-pty";
@@ -635,6 +638,68 @@ try {
       await far.stop().catch(() => {});
       rmSync(persona, { force: true });
     }
+  }
+
+  // 23. a teleported agent that is OFFLINE (operator, 2026-11-11: "i know it was teleported, i am trying to
+  // chat with it"): one short offline note with the exact start command, no teleport history, no red; lines
+  // typed to it are HELD and delivered — once each, in order — the moment it appears on the mesh.
+  {
+    const dir = join(home, "nearcat-folder");
+    mkdirSync(dir, { recursive: true });
+    const persona = join(home, "spaces", space, "personas", "nearcat.md");
+    mkdirSync(join(home, "spaces", space, "personas"), { recursive: true });
+    writeFileSync(persona, `---\nname: nearcat\ncwd: ${dir}\nteleported: ssh:mini\nteleportedAt: 2026-10-24T08:56:07.077Z\n---\n`);
+    const nearDms: string[] = [];
+    let near: CotalEndpoint | undefined;
+    try {
+      let queuedSeen = false;
+      let backSeen = false;
+      let bangSeen = false;
+      const r = await chat(["nearcat"], async (io) => {
+        await io.waitFor(/start it: ssh mini paw start nearcat/, 20_000);
+        await sleep(300);
+        io.write("pause the videos\r");
+        queuedSeen = await io.waitFor(/◌ queued — sends when nearcat is back/, 5000);
+        await sleep(200);
+        io.write("and the music\r");
+        await io.waitFor(/2 waiting for nearcat/, 3000);
+        io.write("!ls\r");
+        bangSeen = await io.waitFor(/!cmd runs on this machine, not on ssh:mini where nearcat works/, 3000);
+        near = new CotalEndpoint({ space, servers: server, creds: await controlCreds(space), card: { name: "nearcat", kind: "agent" }, registerPresence: true, consume: true, watchPresence: true });
+        near.on("error", (e: Error) => console.error("nearcat:", e.message));
+        near.on("warning", () => {});
+        near.on("message", (m: CotalMessage, d: Delivery, meta: MessageMeta) => {
+          d.ack();
+          if (meta.kind === "dm") nearDms.push(text(m));
+        });
+        await near.start();
+        backSeen = await io.waitFor(/nearcat is back — sending 2 lines/, 15_000);
+        const end = Date.now() + 10_000;
+        while (Date.now() < end && nearDms.length < 2) await sleep(50);
+        await sleep(300);
+        io.write("/quit\r");
+      });
+      const plain = r.plain;
+      const row1 = plain.split("\n").find((l) => /nearcat\s+runs on ssh:mini/.test(l)) ?? "";
+      ok("23. an offline teleported agent: one offline note with the exact start command, never its teleport history", /○ offline — what you type sends when it's back · start it: ssh mini paw start nearcat --space/.test(plain) && !/teleported|--back|not on the mesh|not sent/.test(plain), plain.split("\n").filter((l) => /nearcat|offline|teleport|not sent/.test(l)).join(" | "));
+      ok("23. …the agent row says where it runs ONCE (no `· on ssh:mini` beside `runs on ssh:mini`)", !!row1 && (row1.match(/ssh:mini/g) ?? []).length === 1, JSON.stringify(row1));
+      ok("23. …a line typed to it is queued (said once), not refused", queuedSeen && (plain.match(/queued — sends when nearcat is back/g) ?? []).length === 1);
+      ok("23. …!cmd says where it runs in one clause", bangSeen);
+      ok("23. …when it appears, the held lines are sent", backSeen);
+      ok("23. …delivered exactly once each, in typed order", JSON.stringify(nearDms) === JSON.stringify(["pause the videos", "and the music"]), JSON.stringify(nearDms));
+    } finally {
+      await near?.stop().catch(() => {});
+    }
+    // A quit while it is still offline prints the held line in full — never dropped.
+    const q = await chat(["nearcat"], async (io) => {
+      await io.waitFor(/start it: ssh mini paw start nearcat/, 20_000);
+      await sleep(300);
+      io.write("still there?\r");
+      await io.waitFor(/queued — sends when nearcat is back/, 5000);
+      io.write("/quit\r");
+    });
+    ok("23. …a quit while it is offline prints the held line in full", /nearcat \(offline — was waiting for it\): still there\?/.test(q.plain), q.plain.split("\n").filter((l) => /quitting|nearcat/.test(l)).join(" | "));
+    rmSync(persona, { force: true });
   }
 } finally {
   await echoer.stop().catch(() => {});

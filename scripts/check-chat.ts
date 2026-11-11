@@ -3,7 +3,7 @@
  * No mesh, no manager, no readline — just the [matches, substringToReplace] contract node's readline
  * expects. Isolated PAW_HOME/PAW_SPACE so real paw state is untouched. Run: pnpm check:chat
  */
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -1869,6 +1869,39 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
   // ctrl+z gives the terminal back before stopping.
   const tstp = chatSrc.slice(chatSrc.indexOf('r.on("SIGTSTP"'));
   assert(tstp.indexOf("MOUSE_OFF") < tstp.indexOf('process.kill(process.pid, "SIGSTOP")') && tstp.indexOf("MOUSE_OFF") > 0, "views: ctrl+z turns mouse reporting off before the process stops");
+}
+
+// An agent on ANOTHER machine that is offline (operator, 2026-11-11: "why do i need to see this error? i
+// know it was teleported, i am trying to chat with it"): one short note, lines held until it is back.
+{
+  const { awayOfflineNote, heldLine, heldCell, backLine, HeldForReturn, ledgerHost } = await import("../src/chat-away.ts");
+  const { AwayOfflineError, awayFromMark } = await import("../src/addressing.ts");
+  const t = { name: "2027-intern", where: "ssh:mini", start: "ssh mini paw start 2027-intern --space team2027" };
+  const note = awayOfflineNote(t);
+  assert(note === "○ offline — what you type sends when it's back · start it: ssh mini paw start 2027-intern --space team2027", `away: the note is ONE problemLine with the exact start command (got ${note})`);
+  assert(!/teleport|--back/.test(note), "away: the note never retells the teleport");
+  assert(awayOfflineNote({ name: "x", where: "mini" }) === "○ offline — what you type sends when it's back · start it on mini", "away: no known transport → names the host, never a guessed command");
+  assert(heldLine("2027-intern") === "◌ queued — sends when 2027-intern is back" && heldCell(2, "kit") === "◌ 2 waiting for kit", "away: queued line + footer cell wording");
+  assert(backLine("kit", 0) === "kit is back" && /sending 2 lines/.test(backLine("kit", 2)) && /sending the line/.test(backLine("kit", 1)), "away: the back line counts what it sends");
+  const h = new HeldForReturn();
+  assert(h.hold("Kit", "one") === true && h.hold("kit", "two") === false && h.hold("bob", "b1") === true, "away: the queued line is said once per agent per absence");
+  assert(h.count() === 3 && h.count("KIT") === 2, "away: held lines are counted per agent, case-insensitively");
+  assert(eq(h.drain("kit"), ["one", "two"]) && eq(h.all(), [{ to: "bob", text: "b1" }]), "away: drain hands back that agent's lines in typed order, others stay");
+  assert(h.hold("kit", "three") === true, "away: a new absence says its queued line again");
+  const now = 10 * 24 * 3600_000;
+  const ledger = { a: { name: "kit", first: 0, last: now - 1000, host: "Alekss-Mac-Mini.local" }, b: { name: "kit", first: 0, last: now - 5000, host: "old-box" }, c: { name: "Kit", first: 0, last: now - 8 * 24 * 3600_000, host: "ancient" }, d: { name: "bob", first: 0, last: now - 10 } };
+  assert(ledgerHost(ledger, "KIT", now, 7 * 24 * 3600_000) === "Alekss-Mac-Mini.local", "away: the ledger's newest sighting in the window names the host");
+  assert(ledgerHost(ledger, "bob", now, 7 * 24 * 3600_000) === undefined && ledgerHost(ledger, "nobody", now, 7 * 24 * 3600_000) === undefined, "away: a sighting without a host (or none) names no machine");
+  const err = new AwayOfflineError("2027-intern", "team2027", { to: "ssh:mini", at: "2026-10-24T08:56:07.077Z" });
+  assert(err instanceof Error && err.agent === "2027-intern" && err.where === "ssh:mini" && err.start === "ssh mini paw start 2027-intern --space team2027", "away: the gate's teleported refusal carries where + the start command as fields");
+  assert(/was teleported to ssh:mini/.test(err.message) && /ssh mini paw start/.test(err.message), "away: CLI verbs still print the full refusal (dm/adopt/restart unchanged)");
+  assert(eq(awayFromMark("x", "s", { to: "origin" }), { where: "the machine it came from", start: undefined }), "away: a marker paw can't dial has no start command");
+  // chat wiring (source pins — the flow itself runs in check:chat-tty 23)
+  const chatSrc = readFileSync(new URL("../src/chat.ts", import.meta.url), "utf8");
+  assert(/e instanceof AwayOfflineError\) targetAway =/.test(chatSrc), "away: chat reads the gate's typed refusal instead of printing it");
+  assert(/heldAway\.hold\(curName, flush\(text, curName\)\)/.test(chatSrc), "away: a plain line to an offline away target is held, not refused");
+  assert(/for \(const text of lines\) sendDm\(card\.name, card\.id, text\)/.test(chatSrc), "away: held lines go to the NEW id when it comes back");
+  assert(/offline — was waiting for it/.test(chatSrc), "away: a quit prints held lines in full");
 }
 
 rmSync(process.env.PAW_HOME as string, { recursive: true, force: true });
