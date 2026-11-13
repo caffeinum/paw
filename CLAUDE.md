@@ -274,6 +274,10 @@ Each entry: what it is + the most load-bearing rule. Full notes behind the link.
   once; publish retries keep one msg id. → [messaging.md#paw-dm](docs/notes/messaging.md#paw-dm)
 - `src/mailbox.ts` — the "you" presence beacon daemon (consume:false); also hosts the sleep host; on a remote space it
   keeps the peer ledger (`src/ledger-recorder.ts`: roster + one DM-backlog seed) — chat-peers reads by every id an agent had. → [messaging.md#paw-mailbox](docs/notes/messaging.md#paw-mailbox)
+- `src/artil-relay.ts` — in the mailbox: each artil-linked agent's (`artil link` in its folder) new email/texts/Telegram/
+  Message URL arrive as a DM from the peer `artil` (wakes a sleeper) via `artil internal hermes-channel` (cursor; needs
+  `artil listen on --client hermes` there once, the operator's step); one account ↔ one agent across spaces, else refused
+  until `artil: off`; sender-less notices → log only. `check:artil-relay`. → [messaging.md#artil](docs/notes/messaging.md#artil)
 - `src/inbox.ts` — `paw inbox`: pure reader + shared cursor; `--watch` keeps its own high-water mark;
   `--json` never advances the cursor; `--sent`, `--mark-read`. → [messaging.md#paw-inbox](docs/notes/messaging.md#paw-inbox)
 - `src/feed.ts` — `messageText` (THE flattener), `observerEndpoint`, `readConversation`, `pollLoop`. → [messaging.md#srcfeedts](docs/notes/messaging.md#srcfeedts)

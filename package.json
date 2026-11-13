@@ -15,6 +15,7 @@
     "check:sandbox-forward": "node scripts/check-sandbox-forward.ts",
     "check:sandbox-wedge": "node scripts/check-sandbox-wedge.ts",
     "check:handoff-relay": "node scripts/check-handoff-relay.ts",
+    "check:artil-relay": "node scripts/check-artil-relay.ts",
     "check:addressing": "node scripts/check-addressing.ts",
     "check:dm": "node scripts/check-dm.ts",
     "check:web": "node scripts/check-web.ts",
