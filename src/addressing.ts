@@ -386,6 +386,20 @@ export function spacesHoldingAgent(name: string, except: string): string[] {
     .sort();
 }
 
+/**
+ * The space a name-taking verb acts on. A space the operator CHOSE (`#space`, `--space`, PAW_SPACE) is kept
+ * as is. A DEFAULTED one that doesn't hold `name` gives way to the one local space that does (with a note);
+ * several → fail loud with each exact command (`retry(space)`) to copy. Nowhere → the default stays and the
+ * verb says "no agent named …" itself.
+ */
+export function defaultedSpace(name: string, space: string, chosen: boolean, retry: (space: string) => string): { space: string; note?: string } {
+  if (existsSync(personaFilePath(space, name))) return { space };
+  const others = spacesHoldingAgent(name, space);
+  if (!others.length) return { space };
+  if (others.length === 1 && !chosen) return { space: others[0], note: `paw: no "${name}" in space "${space}" — using ${name}#${others[0]}, the only space that has it` };
+  throw new Error(`paw: no agent named "${name}" in space "${space}" — it's in ${others.map((o) => `"${o}"`).join(", ")}; run one of:\n` + others.map((o) => `  ${retry(o)}`).join("\n"));
+}
+
 /** ` — it's in "team2027": add --space team2027` when `name` is registered in another local space, else "".
  *  When that record is NOT this machine's to act on (teleported away, another machine's on a shared mesh)
  *  the hint says so instead — "add --space" would have led `paw rename` into splitting a teleported

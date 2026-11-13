@@ -20,6 +20,7 @@ const cron = await import("../src/cron.ts");
 const { buildJob, parseCronArgs, unfireable, formatJobs, runCommand } = await import("../src/commands/cron.ts");
 const { setFolderName } = await import("../src/addressing.ts");
 
+const eq = (a: unknown, b: unknown): boolean => JSON.stringify(a) === JSON.stringify(b);
 let failures = 0;
 function assert(cond: boolean, msg: string): void {
   if (cond) console.log(`  ok  ${msg}`);
@@ -77,6 +78,7 @@ console.log("one-shot times");
   assert(cron.parseAt("2026-11-10 09:30", now) === at(2026, 11, 10, 9, 30), "--at 'YYYY-MM-DD HH:MM' is local time");
   throws(() => cron.parseAt("2026-10-01 09:00", now), /in the past/, "--at in the past fails loud");
   throws(() => cron.parseAt("tomorrowish", now), /bad --at/, "--at garbage fails loud");
+  throws(() => cron.parseAt("2026-11-10", now), /has no time — use "2026-11-10 HH:MM"/, "--at with a date but no time fails loud with the fix (Date would read it as UTC midnight)");
 }
 
 console.log("catch-up once");
@@ -214,7 +216,32 @@ console.log("fire gate");
   assert(unfireable(SPACE, name) === undefined, "a registered local agent is fireable");
   assert(/not a registered agent/.test(unfireable(SPACE, "nobody") ?? ""), "an unregistered name is refused (never spawned)");
   assert(cron.fireText({ id: "i", agent: name, prompt: "go", cron: "0 * * * *", createdAt: 0, createdBy: "me" }).startsWith('⏰ paw cron i ("0 * * * *", set by me'), "the fire text names job, schedule and author");
+  // On a REMOTE space a name not created yet used to read as "runs on another machine" (ai-keys, 2026-11-12:
+  // scheduling its new name just before the rename): no persona here is "not registered", said plainly.
+  const { writeRemoteMesh } = await import("../src/remote-mesh.ts");
+  const REMOTE = `${SPACE}-remote`;
+  writeRemoteMesh({ space: REMOTE, server: "tls://127.0.0.1:1", root: home, ts: new Date().toISOString() });
+  const why = unfireable(REMOTE, "ai-keys") ?? "";
+  assert(/not a registered agent in space/.test(why) && !/another machine \(|runs on/.test(why), `an unknown name on a remote space is "not registered", never "runs on another machine" (${why})`);
   rmSync(folder, { recursive: true, force: true });
+}
+
+console.log("jobs follow a rename / move (moveCronJobs)");
+{
+  const A = `${SPACE}-a`, B = `${SPACE}-b`;
+  assert(cron.moveCronJobs(A, "nobody", A, "x").length === 0 && !existsSync(cron.cronPath(A)), "no store → nothing moved, no store created");
+  cron.updateStore(A, (st) => {
+    st.jobs.push({ id: "r1", agent: "old", prompt: "hourly", cron: "0 * * * *", createdAt: 1, createdBy: "old", lastFiredAt: 5 });
+    st.jobs.push({ id: "r2", agent: "old", prompt: "once", at: Date.now() + 3_600_000, createdAt: 1, createdBy: "op" });
+    st.jobs.push({ id: "o1", agent: "other", prompt: "keep", cron: "0 9 * * *", createdAt: 1, createdBy: "op" });
+  });
+  const renamed = cron.moveCronJobs(A, "old", A, "new");
+  const a1 = cron.readStore(A).jobs;
+  assert(eq(renamed, ["r1", "r2"]) && a1.filter((j) => j.agent === "new").length === 2 && a1.find((j) => j.id === "r1")!.lastFiredAt === 5, `rename: same ids, schedule and fire history, now on the new name (${renamed.join(",")})`);
+  assert(a1.find((j) => j.id === "o1")!.agent === "other", "rename: another agent's job is untouched");
+  const moved = cron.moveCronJobs(A, "new", B, "newer");
+  assert(eq(moved, ["r1", "r2"]) && !cron.readStore(A).jobs.some((j) => j.agent === "new") && cron.readStore(B).jobs.every((j) => j.agent === "newer") && cron.readStore(B).jobs.length === 2, "move: jobs leave the source store and land in the target under the new name");
+  assert(eq(cron.readStore(A).jobs.map((j) => j.id), ["o1"]), "move: the source keeps everyone else's jobs");
 }
 
 rmSync(home, { recursive: true, force: true });

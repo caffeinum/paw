@@ -13,6 +13,7 @@ import {
   agentRecord,
   assertUnambiguousTarget,
   cleanAgentName,
+  defaultedSpace,
   elsewhereHint,
   ensureAgentSpawned,
   folderForName,
@@ -23,6 +24,8 @@ import {
   withRegistryLock,
 } from "./addressing.ts";
 import { ensureSpaceFor, resolveSpace, withEnsuredManager } from "./lifecycle.ts";
+import { moveCronJobs } from "./cron.ts";
+import { spaceWasChosen } from "./space.ts";
 import { assertMutableByName } from "./namespace.ts";
 import { resolveExistingFolderArg } from "./address.ts";
 import { renameInFleetJob } from "./commands/launchd.ts";
@@ -123,7 +126,9 @@ export function renameAgentOnDisk(
 async function rename(argv: string[]): Promise<void> {
   const { space: spaceArg, target, newName } = parseArgs(argv);
   if (!target || !newName) throw new Error(`paw: usage — paw rename <folder|name> <newname>`);
-  const space = spaceArg ?? resolveSpace();
+  const picked = defaultedSpace(target, spaceArg ?? resolveSpace(), spaceArg !== undefined || spaceWasChosen(), (s) => `paw rename ${target}#${s} ${newName}`);
+  if (picked.note) console.error(picked.note);
+  const space = picked.space;
   assertUnambiguousTarget(space, target); // a bare token that's BOTH a known name and a folder here → fail loud
   const canonical = resolveTarget(space, target);
   // Refused before the mesh is even touched: nothing moves for a record that isn't this machine's.
@@ -165,7 +170,18 @@ async function rename(argv: string[]): Promise<void> {
     console.error(`paw: ⚠ renamed, but couldn't update "${from}" in company rosters (${(e as Error).message}) — fix metadata.org on the company epic: bd show <epic> --json`);
   }
 
+  // Its schedules follow it: the keeper fires only for a registered name, so a job left on the old one
+  // never fires again. Loud with the fix on failure, like the beads above.
+  let crons: string[] = [];
+  try {
+    crons = moveCronJobs(space, from, space, to);
+  } catch (e) {
+    process.exitCode = 1;
+    console.error(`paw: ⚠ renamed, but couldn't move "${from}"'s cron jobs (${(e as Error).message}) — \`paw cron ls --space ${space}\`, then re-add them for "${to}"`);
+  }
+
   console.log(`✓ renamed "${from}" → "${to}"`);
+  if (crons.length) console.log(`  moved ${crons.length} cron job(s) to "${to}": ${crons.join(", ")}`);
   if (companies.length) console.log(`  company roster(s) now say "${to}": ${companies.join(", ")}`);
   if (moved.length) console.log(`  moved ${moved.length} open bead(s) to "${to}": ${moved.join(", ")}`);
   if (fleetPlist) console.log(`  login fleet job now starts "${to}" (${fleetPlist}; takes effect at next login)`);

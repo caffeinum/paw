@@ -32,6 +32,7 @@ import {
   quietFor,
   SESSION_RELEASE_MS,
   spacesHoldingAgent,
+  defaultedSpace,
   stopAgent,
   withRegistryLock,
   type PsRow,
@@ -121,14 +122,7 @@ export function archivePath(folder: string): string {
  * gives way to the one local space that does; several → fail loud with each exact command to copy.
  */
 export function relocateSpace(name: string, space: string, chosen: boolean, target: string): { space: string; note?: string } {
-  if (existsSync(personaFilePath(space, name))) return { space };
-  const others = spacesHoldingAgent(name, space);
-  if (!others.length) return { space };
-  if (others.length === 1 && !chosen) return { space: others[0], note: `paw: no "${name}" in space "${space}" — using ${name}#${others[0]}, the only space that has it` };
-  throw new Error(
-    `paw: no agent named "${name}" in space "${space}" — it's in ${others.map((o) => `"${o}"`).join(", ")}; run one of:\n` +
-      others.map((o) => `  paw relocate ${name}#${o} ${target}`).join("\n"),
-  );
+  return defaultedSpace(name, space, chosen, (o) => `paw relocate ${name}#${o} ${target}`);
 }
 
 /** One agent that follows the folder: its old and new `cwd`. */

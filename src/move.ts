@@ -40,6 +40,7 @@ import { liveSessionProcs, meshIdentity } from "./named.ts";
 import { isRemoteSpace } from "./server.ts";
 import { isClaudeHarness, personaTranscriptRoots, readAgentType, readCwd, readHermesHome, readResumeId, readSandbox, transcriptExists, transcriptMtime } from "./session.ts";
 import { KIT_AGENT } from "./kit.ts";
+import { moveCronJobs } from "./cron.ts";
 import { sleepState } from "./sleep-state.ts";
 import { readTeleported } from "./teleport-plan.ts";
 import { fleetJobStarts } from "./commands/launchd.ts";
@@ -496,6 +497,14 @@ export async function move(a: MoveArgs): Promise<void> {
   }
   const { started } = await applyMove(d, live, liveDeps);
   console.log(`✓ moved ${d.name}: ${from} → ${d.to}${renamed ? ` as "${d.newName}"` : ""}  (source copies in ${d.backupRoot})`);
+  // Its schedules follow it to the new space (and name): the old space's keeper pass would never fire them.
+  try {
+    const crons = moveCronJobs(from, d.name, d.to, d.newName);
+    if (crons.length) console.log(`  moved ${crons.length} cron job(s) to ${d.newName}#${d.to}: ${crons.join(", ")}`);
+  } catch (e) {
+    process.exitCode = 1;
+    console.error(`paw: ⚠ moved, but couldn't move "${d.name}"'s cron jobs (${(e as Error).message}) — \`paw cron ls --space ${from}\`, then re-add them in ${d.to}`);
+  }
   if (renamed && !a.keepBeads) {
     const b = await moveBeads(d.name, d.newName);
     if (b.moved.length) console.log(`  moved ${b.moved.length} open bead(s) to "${d.newName}": ${b.moved.join(", ")}`);

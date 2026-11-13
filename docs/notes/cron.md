@@ -41,6 +41,15 @@ agent's registered folder, `daemonEnv()` (PATH backfilled, harness markers strip
 (src/lock.ts), atomic tmp+rename. A job is `{id, agent, prompt, cron | at, createdAt, createdBy,
 lastFiredAt?, attempts?, lastError?}`.
 
+**Jobs follow their agent** (`moveCronJobs`, 2026-11-12). `paw rename` re-keys the agent's jobs to the new
+name, and `paw move` carries them to the target space's store (under `--as`'s name). Ids, schedules and
+fire history are kept, and a failure prints the fix. Before this, ai-keys (renamed from aig-run-proxy)
+found its 4 jobs still on the old name, which the keeper never fires (it fires only for a registered
+agent), and re-created them by hand. Also: `unfireable` checks registration BEFORE where the agent runs.
+On a remote space a name with no persona here used to read as "runs on another machine". `--at` with a
+date and no time (`2027-01-15`) fails loud asking for `"2027-01-15 HH:MM"` (Date would read it as UTC
+midnight); the usage line now shows the date form.
+
 ## Firing
 - Rides the global keeper tick (`paw global`, launchd 60s `StartInterval`): `cronSweep` runs AFTER global
   is brought up, and even when that fails. It sweeps EVERY space under `$PAW_HOME` with a store.

@@ -168,6 +168,23 @@ assert(renameAgentOnDisk(SPACE, FOLDER, "api2", "queue2").from === "api", "a for
   }
 }
 
+// A DEFAULTED space gives way to the one local space holding the name (ai-keys, 2026-11-12: rename needed
+// --space although the name was unique). A chosen one is kept; two matches fail loud with both commands.
+{
+  const { defaultedSpace, setFolderName } = await import("../src/addressing.ts");
+  const f = mkdtempSync(join(tmpdir(), "paw-rename-def-"));
+  setFolderName("rn-other", f, "lonely");
+  const retry = (s: string) => `paw rename lonely#${s} solo`;
+  const picked = defaultedSpace("lonely", "rn-default", false, retry);
+  assert(picked.space === "rn-other" && /using lonely#rn-other, the only space that has it/.test(picked.note ?? ""), `defaulted: the only space holding it is used, with a note (${picked.space})`);
+  assert(throws(() => defaultedSpace("lonely", "rn-default", true, retry)), "chosen: a --space / PAW_SPACE that lacks it is kept (fails loud)");
+  setFolderName("rn-third", mkdtempSync(join(tmpdir(), "paw-rename-def-")), "lonely");
+  let msg = "";
+  try { defaultedSpace("lonely", "rn-default", false, retry); } catch (e) { msg = (e as Error).message; }
+  assert(/paw rename lonely#rn-other solo\n\s+paw rename lonely#rn-third solo/.test(msg), "two spaces → fail loud with each exact command");
+  assert(defaultedSpace("nobody", "rn-default", false, retry).space === "rn-default", "nowhere → the default stays (rename says no agent named …)");
+}
+
 if (failures > 0) {
   console.error(`\n${failures} paw rename check(s) failed`);
   process.exit(1);

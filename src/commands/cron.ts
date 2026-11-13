@@ -50,7 +50,7 @@ import { resolveSpace } from "../space.ts";
 export const CRON_SENDER = "cron";
 
 const USAGE =
-  'cron add [<agent>[#space]] "<m h dom mon dow>" "<prompt>" [--once] · cron add [<agent>] --in 20m|--at HH:MM "<prompt>" · ' +
+  'cron add [<agent>[#space]] "<m h dom mon dow>" "<prompt>" [--once] · cron add [<agent>] --in 20m|--at HH:MM|--at "YYYY-MM-DD HH:MM" "<prompt>" · ' +
   '--run "<cmd>" [--timeout 10m] (keeper runs it; silent unless it prints or fails; prompt optional) · cron ls [--all] · cron rm <id> · cron tick   [--space s]';
 
 export interface CronArgs {
@@ -89,9 +89,11 @@ export function parseCronArgs(argv: string[]): CronArgs {
 
 /** Why `agent` can't be scheduled from this machine in `space`, or undefined when it can. */
 export function unfireable(space: string, agent: string): string | undefined {
+  // Registration first: with no persona here, runsElsewhere() reads a remote space's unknown name as
+  // "another machine" — a name not created yet (a rename about to happen) got that wrong answer.
+  if (!folderForName(space, agent)) return `"${agent}" is not a registered agent in space "${space}" on this machine (\`paw status\` lists them; an agent on another machine is scheduled there)`;
   const away = runsElsewhere(space, agent);
   if (away) return `"${agent}" is not hosted on this machine (runs on ${away.where}) — schedule it there`;
-  if (!folderForName(space, agent)) return `"${agent}" is not a registered agent in space "${space}" (\`paw status\` lists them)`;
   if (!existsSync(personaFilePath(space, agent))) return `"${agent}" has no persona in space "${space}" on this machine`;
   return undefined;
 }
