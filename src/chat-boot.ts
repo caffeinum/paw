@@ -39,7 +39,7 @@ export const ok = <T>(v: T): Slot<T> => ({ s: "ok", v });
 export const failed = <T>(msg: string): Slot<T> => ({ s: "err", msg });
 
 export { LOADER } from "./ux.ts";
-import { FAIL, LOADER, secsText } from "./ux.ts";
+import { FAIL, LOADER, reasonWord, secsText } from "./ux.ts";
 
 /** A slot as text: a dim `◌` while loading, the value once known, a red `✕ <why>` on failure. */
 export function slotText<T>(slot: Slot<T>, fmt: (v: T) => string, style: { dim(s: string): string; red(s: string): string }): string {
@@ -130,4 +130,19 @@ export class DeferredQueue<A, P> {
   unsentLines(): string[] {
     return this.items.map((i) => (i.bang ? `!${i.text}` : i.text));
   }
+}
+
+/**
+ * What a failed connect's problem line says, and what /conn keeps. A diagnosed connect names where and
+ * the fixed reason word; an undiagnosed one (an error thrown past the broker probe, e.g. node's TLS
+ * "Client network socket disconnected before secure TLS connection was established") is named by its
+ * reason word too, its raw text kept for /conn. Text no reason word fits stays as it is (fail loud).
+ * Operator, 2026-11-13: that raw TLS sentence filled the chat line on a hotspot.
+ */
+export function bootFailure(space: string, message: string, diag?: { at: string; word: string; hint: string; trace: string }): { why: string; trace?: string } {
+  if (diag) return { why: `can't reach ${space} at ${diag.at} (${diag.word})`, trace: `${diag.hint} · ${diag.trace}` };
+  const [first, ...rest] = message.replace(/^paw: /, "").split("\n");
+  const word = reasonWord(first!);
+  if (word) return { why: `can't reach ${space} (${word})`, trace: message };
+  return { why: first!, trace: rest.length ? rest.join(" ").trim() : undefined };
 }

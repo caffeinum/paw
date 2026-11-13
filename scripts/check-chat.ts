@@ -1296,7 +1296,18 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
 
 // ── instant UI: the pure half (src/chat-boot.ts, src/chat-banner.ts, src/chat-consent.ts) ──────────
 {
-  const { lineNeedsMesh, DeferredQueue, bootLabel, slotText, loading, ok, failed, bootRetry } = await import("../src/chat-boot.ts");
+  const { lineNeedsMesh, DeferredQueue, bootLabel, slotText, loading, ok, failed, bootRetry, bootFailure } = await import("../src/chat-boot.ts");
+  {
+    // Operator, 2026-11-13: on a hotspot the chat line was node's raw TLS sentence.
+    const tls = "Client network socket disconnected before secure TLS connection was established";
+    const f = bootFailure("team2027", tls);
+    assert(f.why === "can't reach team2027 (hung up)" && f.trace === tls, `bootFailure: a TLS handshake cut is "hung up", raw text kept for /conn (got ${JSON.stringify(f)})`);
+    assert(bootRetry(tls, 1) === 5_000, "bootRetry: a TLS handshake cut retries by itself");
+    const d = bootFailure("s", "paw: can't reach s …", { at: "h:4222", word: "no answer", hint: "the broker didn't answer", trace: "tcp ok · tls stalled" });
+    assert(d.why === "can't reach s at h:4222 (no answer)" && d.trace === "the broker didn't answer · tcp ok · tls stalled", "bootFailure: a diagnosed connect keeps its where + word");
+    const u = bootFailure("s", "paw: no agent named bob\nmore detail");
+    assert(u.why === "no agent named bob" && u.trace === "more detail", "bootFailure: text no reason word fits stays as it is");
+  }
   // A failed connect retries by itself when the network may answer next time (operator, 2026-11-10).
   const brokerDrop = 'paw: remote mesh "team2027" at tls://x:4222: the connect failed. … the peer closed the connection before any NATS INFO greeting';
   assert(bootRetry("timeout", 1) === 5_000 && bootRetry("timeout", 2) === 10_000 && bootRetry("timeout", 3) === 20_000, "bootRetry: a timeout retries at 5s, then doubles");
