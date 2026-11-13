@@ -320,6 +320,10 @@ CLI-side only (ensureAgentSpawned runs in the caller) — live without a release
   (reverse lookup), a `<repo>@<branch>` worktree, or a folder path. If the agent is LIVE it's retired
   under the old name (`stopAgent`) and respawned under the new one (`ensureAgentSpawned`, resumes via
   the moved pin); if not live, only the on-disk state changes. In NEEDS_MANAGER. Test: `check:rename`.
+  Its open beads, company rosters and **cron jobs** follow the new name (`moveCronJobs`, 2026-11-12). A name
+  with no `--space`/`#space`/PAW_SPACE that isn't in the default space but is in exactly one other local
+  space uses that space, with a note (`defaultedSpace`, shared with relocate); two spaces → fail loud with
+  both commands.
 
 ## paw move
 

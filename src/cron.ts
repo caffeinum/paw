@@ -204,6 +204,7 @@ export function parseAt(s: string, now: number): number {
     if (d.getTime() <= now) d.setDate(d.getDate() + 1);
     return d.getTime();
   }
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s.trim())) throw new Error(`paw cron: --at "${s}" has no time — use "${s.trim()} HH:MM" (local time)`);
   const t = new Date(s.trim().replace(/^(\d{4}-\d{2}-\d{2}) (\d)/, "$1T$2")).getTime();
   if (!Number.isFinite(t)) throw new Error(`paw cron: bad --at "${s}" — use HH:MM or "YYYY-MM-DD HH:MM"`);
   if (t <= now) throw new Error(`paw cron: --at "${s}" is in the past`);
@@ -332,6 +333,31 @@ export function updateStore<T>(space: string, fn: (store: CronStore) => T): T {
     writeStore(space, store);
     return out;
   });
+}
+
+/**
+ * `from`'s jobs in `fromSpace` now belong to `to` in `toSpace`: `paw rename` (same space) and `paw move`
+ * (another space, maybe a new name). Ids, schedules and fire history are kept. A job left on the old
+ * name would never fire: the keeper only fires for a registered agent (ai-keys, 2026-11-12, re-created
+ * its 4 crons by hand). Returns the moved ids; a failed write to the target puts them back in the source.
+ */
+export function moveCronJobs(fromSpace: string, from: string, toSpace: string, to: string): string[] {
+  if (!existsSync(cronPath(fromSpace))) return [];
+  if (fromSpace === toSpace)
+    return updateStore(fromSpace, (s) => s.jobs.filter((j) => j.agent === from).map((j) => ((j.agent = to), j.id)));
+  const taken = updateStore(fromSpace, (s) => {
+    const mine = s.jobs.filter((j) => j.agent === from);
+    s.jobs = s.jobs.filter((j) => j.agent !== from);
+    return mine;
+  });
+  if (!taken.length) return [];
+  try {
+    updateStore(toSpace, (s) => void s.jobs.push(...taken.map((j) => ({ ...j, agent: to }))));
+  } catch (e) {
+    updateStore(fromSpace, (s) => void s.jobs.push(...taken));
+    throw e;
+  }
+  return taken.map((j) => j.id);
 }
 
 /** Every space under $PAW_HOME that has a cron store. */
