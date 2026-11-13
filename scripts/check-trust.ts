@@ -258,6 +258,30 @@ async function boot(name: string, opts: { poll: () => void; mode?: string; delay
   ok("IMPORTS: an operator's approval is left as it is (nothing added)", a.hasClaudeMdExternalIncludesApproved === true && a.hasClaudeMdExternalIncludesWarningShown === undefined && isFolderTrusted(approved), JSON.stringify(a));
 }
 
+// IMPORTS, repo root: claude reads the imports flag from the canonical git root's project entry
+// (fX(xv(cwd) ?? cwd)), not the folder's; #129 wrote only the folder's and queue kept dying.
+{
+  const { claudeProjectKey } = await import("../src/cwd.ts");
+  const cfg = () => JSON.parse(readFileSync(join(process.env.HOME!, ".claude.json"), "utf8"));
+  const git = (cwd: string, ...a: string[]) => spawnSync("git", a, { cwd, encoding: "utf8" });
+  const repo = realpathSync(mkdtempSync(join(root, "repo-")));
+  git(repo, "init", "-q");
+  git(repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "init");
+  const sub = join(repo, "apps", "queue");
+  mkdirSync(sub, { recursive: true });
+  ok("IMPORTS root: a subfolder's project key is the repo root", claudeProjectKey(sub) === repo, claudeProjectKey(sub));
+  pretrustFolder(sub);
+  const c = cfg();
+  ok("IMPORTS root: the repo root's entry gets the imports flag", c.projects[repo]?.hasClaudeMdExternalIncludesWarningShown === true, JSON.stringify(c.projects[repo]));
+  ok("IMPORTS root: …and NOT trust (that would trust the whole repo)", c.projects[repo]?.hasTrustDialogAccepted === undefined);
+  ok("IMPORTS root: the folder keeps its own trust", c.projects[sub]?.hasTrustDialogAccepted === true);
+  const wt = join(root, "repo-wt");
+  git(repo, "worktree", "add", "-q", wt);
+  ok("IMPORTS root: a worktree's project key is the main checkout", claudeProjectKey(realpathSync(wt)) === repo, claudeProjectKey(realpathSync(wt)));
+  const plain = realpathSync(mkdtempSync(join(tmpdir(), "pawtrust-nogit-")));
+  ok("IMPORTS root: outside git the key is the folder", claudeProjectKey(plain) === plain);
+}
+
 tmux("kill-server");
 console.log(fails ? `\n${fails} FAILED` : "\nall trust checks passed");
 process.exit(fails ? 1 : 0);
