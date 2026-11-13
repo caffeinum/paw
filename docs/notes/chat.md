@@ -823,7 +823,10 @@ A problem is ONE line, `<glyph> <what> — <what paw does about it> · <what you
 (`problemLine`), the reason in parentheses from the fixed table `reasonWord`: connection refused · no
 answer · hung up · no route · dns failed · rejected credentials · reconnecting — never a raw library
 string (`error connecting - node provided an undefined error`, `Authorization Violation`,
-`reconnecting - try again sh…` all read as one of those; the raw text stays in `/conn`'s recent list).
+`reconnecting - try again sh…`, node's `Client network socket disconnected before secure TLS connection was
+established` all read as one of those; the raw text stays in `/conn`'s recent list). A connect error that reaches
+chat undiagnosed (thrown past the broker probe) is named the same way, `can't reach <space> (hung up)` (`bootFailure`,
+2026-11-13: the raw TLS sentence filled the line on a hotspot).
 One fact lives in ONE place: the footer = current state (replaced in place), the transcript = facts
 that became true (one line per change of verdict), `/conn` = history. The banner is 3–4 rows (title ·
 `kit · (by name) · mesh s` · the filter note when filtered · `? keys · @name switches · /quit`); the

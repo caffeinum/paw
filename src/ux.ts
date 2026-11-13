@@ -29,7 +29,9 @@ const REASONS: Array<[RegExp, ReasonWord]> = [
   [/ECONNREFUSED|connection refused/i, "connection refused"],
   [/ENETUNREACH|EHOSTUNREACH|ENETDOWN|no route/i, "no route"],
   [/ENOTFOUND|EAI_AGAIN|getaddrinfo/i, "dns failed"],
-  [/error connecting|closed before|ClosedConnectionError|mesh connection closed|connection (closed|lost|reset)|ECONNRESET|EPIPE|socket hang up|hung up/i, "hung up"],
+  // node's TLS "Client network socket disconnected before secure TLS connection was established": the
+  // broker (or a link on the way: a hotspot, a proxy) cut the handshake.
+  [/error connecting|closed before|disconnected before|ClosedConnectionError|mesh connection closed|connection (closed|lost|reset)|ECONNRESET|EPIPE|socket hang up|hung up/i, "hung up"],
   [/^timeout$|\btime[sd]? ?out\b|ETIMEDOUT|deadline-exceeded|no answer|not answering|TimeoutError/i, "no answer"],
   [/reconnect/i, "reconnecting"],
 ];

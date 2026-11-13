@@ -101,7 +101,7 @@ import { renderMarkdown } from "./markdown.ts";
 import { HUMAN_PEER, humanPeer } from "./names.ts";
 import { sameSpaceAddress } from "./dispatch.ts";
 import { describeInboxBindFailure, inboxLedgerDir, prepareHumanInbox, sweepOrphanInboxes, type HumanInbox } from "./human-inbox.ts";
-import { bootLabel, bootRetry, DeferredQueue, failed as failedSlot, failedLabel, LOADER, lineNeedsMesh, loading as loadingSlot, ok as okSlot, slotText, type BootPhase, type Slot } from "./chat-boot.ts";
+import { bootFailure, bootLabel, bootRetry, DeferredQueue, failed as failedSlot, failedLabel, LOADER, lineNeedsMesh, loading as loadingSlot, ok as okSlot, slotText, type BootPhase, type Slot } from "./chat-boot.ts";
 import { canRepaintInPlace, HELP_LINES, paintedRows, renderBanner, type BannerState } from "./chat-banner.ts";
 import { PendingConsent } from "./chat-consent.ts";
 import { takeFrame } from "./chat-preshell.ts";
@@ -3891,10 +3891,10 @@ async function chat(argv: string[]): Promise<void> {
       const wait = bootRetry(err.message, ++bootRetries);
       if (bootRetries === 1) bootFailedAt = Date.now();
       bootRetryAt = wait === undefined ? undefined : Date.now() + wait;
-      const why = err.diag ? `can't reach ${space} at ${err.diag.at} (${err.diag.word})` : err.message.replace(/^paw: /, "").split("\n")[0]!;
+      const { why, trace } = bootFailure(space, err.message, err.diag);
       if (why !== bootFailWhy) {
         bootFailWhy = why;
-        bootFailTrace = err.diag ? `${err.diag.hint} · ${err.diag.trace}` : err.message.includes("\n") ? err.message.split("\n").slice(1).join(" ").trim() : undefined;
+        bootFailTrace = trace;
         const doing = wait === undefined ? "won't retry by itself" : `retrying in ${secsText(wait)}`;
         emit(c.red(problemLine(FAIL, why, doing, `${wait === undefined ? "/reconnect retries" : "/reconnect now"} · /conn explains · what you type is kept`)));
       }
