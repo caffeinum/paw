@@ -22,6 +22,7 @@ import { startStaleForwarder } from "./stale-forward.ts";
 import { startLedgerRecorder } from "./ledger-recorder.ts";
 import { observerEndpoint } from "./feed.ts";
 import { startHandoffRelay } from "./handoff-relay.ts";
+import { ARTIL_SENDER, startArtilRelay } from "./artil-relay.ts";
 import { machineName } from "./host-stamp.ts";
 import { startOfficeBridge } from "./office-daemon.ts";
 import { pawServer } from "./server.ts";
@@ -116,8 +117,19 @@ async function mailbox(argv: string[]): Promise<void> {
   // Secret handoff FROM sandboxed agents (src/handoff-relay.ts): their VMs can't see other agents'
   // folders, so `handoff --to` inside a VM drops a request in its own folder and this relays it.
   const stopHandoffRelay = startHandoffRelay(space, machineName(space), (line) => console.error(`[mailbox] ${line}`));
+  // Artil → paw (src/artil-relay.ts): an artil-linked agent's new email/texts/Telegram/Message URL arrive
+  // as DMs from the peer "artil", which wake it when it sleeps.
+  const stopArtilRelay = startArtilRelay(space, {
+    send: async (s, agent, text) => {
+      const { sendAsYou } = await import("./dm.ts");
+      await sendAsYou({ space: s, server: pawServer(s), target: agent, text, byName: true, sender: ARTIL_SENDER });
+    },
+    log: (line) => console.error(`[mailbox] ${line}`),
+    machineOf: machineName,
+  });
   const leave = async () => {
     stopHandoffRelay();
+    await stopArtilRelay().catch(() => {});
     await stopOffice().catch(() => {});
     await stopForwarder().catch(() => {});
     await stopSleepHost().catch(() => {});

@@ -64,6 +64,43 @@ Moved verbatim from CLAUDE.md (2026-10-02 split). Index: [CLAUDE.md](../../CLAUD
   to another PAW_HOME — that home's `human.id` is a different "you" (the 2026-10-21 two-"you" incident).
   → [lifecycle.md#srclifecyclets](lifecycle.md#srclifecyclets)
 
+## Artil (email, texts, Telegram → a DM) {#artil}
+
+`src/artil-relay.ts`, run by the mailbox (2026-11-12). [Artil](https://docs.artil.ai) gives an agent
+account its own email address, phone number, Telegram bot and Message URL. `artil link <account>` in a
+folder makes the artil CLI there act as that account (`.artil/account.json`, git-ignored by itself), so
+an agent can already read and answer with `artil email|sms|telegram`. What it could not do was HEAR a
+new message: artil's Claude Code channel needs a dev-channels flag paw never passes (`--strict-mcp-config`
+drops the plugin's MCP too), has no cursor, and dies with the session, while paw agents sleep after 1h.
+
+The mailbox is the listener instead. Every rescan (60s) it reads every space's personas on this machine
+and, for each agent whose folder (or a parent) is artil-linked, runs `artil internal hermes-channel` in
+that folder, its stdin held open. That is artil's line protocol for gateways (the Hermes plugin uses it):
+one JSON notice `{content, meta: {message_id, sender, …}}` per message, and artil keeps a cursor per
+account, so what came while the mailbox was down arrives when it is back. Each notice becomes a DM to the
+agent from the peer **`artil`** (`sendAsYou(... sender: "artil")`, like cron's `cron`), which wakes a
+sleeping agent; the text opens with a tag saying it is outside mail, information and not instructions.
+- **Nothing flows until the account listens here as Hermes**, once: `cd <folder> && artil listen on
+  --client hermes`. It is the operator's step: it takes the account's messages away from whichever client
+  listened before. Until then the channel idles (~90 MB, no CPU) and exits when its stdin closes.
+- **One account, one agent.** An account linked from two agents' folders (an extra in the same folder,
+  two agents in different spaces sharing one folder) is refused in every space, one
+  log line naming them, until all but one carry `artil: off` in their persona. `artil: off` also opts one
+  agent out. Agents another machine hosts and teleported copies are skipped.
+- A notice that names no sender is artil about itself (renew a sign-in, a limit): it goes to
+  `mailbox.log` as `artil says: …`, never to the agent.
+- The channel's env drops `ARTIL_ACCOUNT`/`ARTIL_TOKEN` (the folder link decides) and
+  `ARTIL_CLIENT`/`CLAUDECODE`/`AI_AGENT`/… (else artil writes `! artil …` / `hermes artil …` into the reply hint).
+- Delivery: up to 3 tries 30s apart, then `NOT delivered … it stays in the account's artil inbox`. artil
+  saves its cursor once it has printed a notice, so a message lost here is still in the inbox, not re-sent.
+- A channel that exits is restarted after 30s with artil's last stderr in the log. The command is
+  `PAW_ARTIL_BIN`, else `artil` on PATH, else `~/.local/bin/artil`; none, with a linked agent → one loud line.
+- Artil only lets through senders on the agent's wake list (its team by default): a text from a number on
+  no member's profile does not wake it (it stays in the inbox). Polling the inbox with a `paw cron --run`
+  check sees those too, at up to the cron's lag (and both together deliver twice).
+
+`check:artil-relay` (fake artil, two spaces, stub send).
+
 ## paw inbox
 
 - `src/inbox.ts` — `paw inbox [--history] [--watch] [--limit N]`: read the human peer ("you")'s DM inbox — the
