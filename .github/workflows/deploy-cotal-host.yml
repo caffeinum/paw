@@ -1,0 +1,27 @@
+# The team2027 broker (fly app 2027-cotal) redeploys ONLY when cotal-host/ changes.
+# Every deploy restarts the one broker and drops the whole mesh for a minute or more,
+# so a push that touches anything else must never deploy it.
+name: deploy cotal-host
+
+on:
+  push:
+    branches: [main]
+    paths: ["cotal-host/**"]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-cotal-host
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: cotal-host
+    steps:
+      - uses: actions/checkout@v4
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+      - run: flyctl deploy -a 2027-cotal --remote-only --ha=false
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN_2027_COTAL }}

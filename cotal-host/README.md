@@ -43,7 +43,7 @@ cotal send dm bob "hi bob"  --space team2027 --server $SRV --creds alice.creds
 ## Operate
 
 ```sh
-fly deploy -a 2027-cotal --remote-only --ha=false   # from this folder
+fly deploy -a 2027-cotal --remote-only --ha=false   # from this folder — restarts the broker
 fly logs -a 2027-cotal
 fly ssh console -a 2027-cotal                        # then: cd /data/cotal && HOME=/data/home cotal ...
 ```
@@ -55,6 +55,16 @@ last 30 days and need `cotal down` + `cotal up --rotate-sys`; next due 2026-11-1
 
 The machine must never auto-stop (`auto_stop_machines = "off"`): a stopped machine is a dead mesh.
 
+## Deploys
+
+Every deploy restarts the one broker: the whole team2027 mesh drops for a minute or more. So the
+broker deploys ONLY when `cotal-host/` changes: `.github/workflows/deploy-cotal-host.yml` runs on a
+push to `main` touching `cotal-host/**` (or by hand: Actions → deploy cotal-host → Run), with the
+repo secret `FLY_API_TOKEN_2027_COTAL` (a `fly tokens create deploy -a 2027-cotal` token).
+Fly's own GitHub deployer must stay DISCONNECTED for this app: it redeployed on EVERY push to
+`main` (2026-11-10/11: 13 broker restarts, one per paw push). Secrets changes restart it too, so
+stage them: `fly secrets set --stage …`, then they ride the next real deploy.
+
 ## Office bridge (optional, off by default)
 
 `paw office serve` can run next to the broker and mirror EVERY agent on the `team2027` mesh into one
@@ -63,15 +73,15 @@ agent-office, whichever machine each agent runs on (paw #85; design in paw's doc
 behave exactly as before (the hook is one `if` that doesn't fire):
 
 1. **paw in the image**: build arg `PAW_REF` = a caffeinum/paw commit (public repo: no build secret).
-   Empty by default, which installs nothing. To turn it on, add to `fly.toml` (this repo auto-deploys
-   `cotal-host/` from `main`, so that commit redeploys the broker):
+   Empty by default, which installs nothing. To turn it on, add to `fly.toml` (a push to `main` that
+   changes `cotal-host/` redeploys the broker, see "Deploys" below):
    ```toml
    [build.args]
      PAW_REF = "<full commit sha of caffeinum/paw>"
    ```
 2. **the office link**, as Fly secrets (never in fly.toml):
    ```sh
-   fly secrets set -a 2027-cotal OFFICE_URL=https://<agent-office> OFFICE_JOIN_KEY=<joinKey> [OFFICE_OWNER_KEY=<ownerKey>]
+   fly secrets set --stage -a 2027-cotal OFFICE_URL=https://<agent-office> OFFICE_JOIN_KEY=<joinKey> [OFFICE_OWNER_KEY=<ownerKey>]
    ```
    Optional: `OFFICE_HUMAN=<name>` (the human name the bridge's paw home uses on the space: agent DMs to
    that name are mirrored to the office's owner), `OFFICE_ROSTER=all`, `OFFICE_BRIDGE_HEAP_MB` (192).
