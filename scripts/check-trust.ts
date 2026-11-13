@@ -234,6 +234,30 @@ async function boot(name: string, opts: { poll: () => void; mode?: string; delay
   ok("CLAUDE (explicit agent: claude): the watch still re-writes the entry", isFolderTrusted(folder));
 }
 
+// IMPORTS: Claude Code's "Allow external CLAUDE.md file imports?" dialog (claude shows it when neither
+// hasClaudeMdExternalIncludesApproved nor hasClaudeMdExternalIncludesWarningShown is set and a loaded
+// CLAUDE.md imports a file outside the folder). queue#team2027 in evals/apps/queue died at cotal's 15s
+// startup check on it (2026-11-13). paw marks it shown, never approves, and leaves an approval alone.
+{
+  const cfg = () => JSON.parse(readFileSync(join(process.env.HOME!, ".claude.json"), "utf8"));
+  const sub = realpathSync(mkdtempSync(join(root, "monorepo-sub-")));
+  pretrustFolder(sub);
+  const p = cfg().projects[sub];
+  ok("IMPORTS: pre-trust marks the external-imports warning shown", p.hasClaudeMdExternalIncludesWarningShown === true, JSON.stringify(p));
+  ok("IMPORTS: …and never approves the imports", p.hasClaudeMdExternalIncludesApproved !== true);
+  ok("IMPORTS: the folder reads as trusted", isFolderTrusted(sub));
+  // An entry trusted before this flag existed (every agent's) is completed by the pre-spawn pre-trust.
+  const old = realpathSync(mkdtempSync(join(root, "old-entry-")));
+  writeFileSync(join(process.env.HOME!, ".claude.json"), JSON.stringify({ projects: { [old]: { hasTrustDialogAccepted: true, hasCompletedProjectOnboarding: true } } }));
+  pretrustFolder(old);
+  ok("IMPORTS: pre-trust completes an entry trusted before the imports flag", cfg().projects[old].hasClaudeMdExternalIncludesWarningShown === true);
+  const approved = realpathSync(mkdtempSync(join(root, "approved-")));
+  writeFileSync(join(process.env.HOME!, ".claude.json"), JSON.stringify({ projects: { [approved]: { hasTrustDialogAccepted: true, hasCompletedProjectOnboarding: true, hasClaudeMdExternalIncludesApproved: true } } }));
+  pretrustFolder(approved);
+  const a = cfg().projects[approved];
+  ok("IMPORTS: an operator's approval is left as it is (nothing added)", a.hasClaudeMdExternalIncludesApproved === true && a.hasClaudeMdExternalIncludesWarningShown === undefined && isFolderTrusted(approved), JSON.stringify(a));
+}
+
 tmux("kill-server");
 console.log(fails ? `\n${fails} FAILED` : "\nall trust checks passed");
 process.exit(fails ? 1 : 0);

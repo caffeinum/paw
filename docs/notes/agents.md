@@ -56,6 +56,16 @@ once the broker is back (cotal's `superviseConnection` → `reestablishLoop`, fo
   `ensureAgentSpawned` just before the manager spawn, returns the CANONICAL cwd to pass through (so the
   dir claude runs in matches the trust key). Moved out of the connector when cotal #43 gave the
   manager the cwd.
+- **External CLAUDE.md imports (2026-11-13).** Claude Code's other folder dialog, "Allow external
+  CLAUDE.md file imports?", shows when a loaded CLAUDE.md imports a file OUTSIDE the folder and the project
+  has neither `hasClaudeMdExternalIncludesApproved` nor `hasClaudeMdExternalIncludesWarningShown` (checked in
+  the claude binary: the check returns false when either is set). cotal's startup watch answers only trust
+  + dev-channels, so the seat is SIGTERMed at 15s ("prompt "WARNING: Loading development channels" did not
+  appear"). queue#team2027, relocated to a monorepo subfolder whose root CLAUDE.md imports `@apps/web/…`,
+  failed every start. `pretrustFolder` now also sets `hasClaudeMdExternalIncludesWarningShown: true`, never
+  `Approved`: claude skips those imports and starts. An operator's approval is left as it is; entries
+  trusted earlier are completed at their next spawn. `isFolderTrusted` (the race re-check) still reads
+  trust only. `check:trust` IMPORTS.
 
 ## bypass consent
 
