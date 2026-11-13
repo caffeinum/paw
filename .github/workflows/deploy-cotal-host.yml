@@ -6,7 +6,7 @@ name: deploy cotal-host
 on:
   push:
     branches: [main]
-    paths: ["cotal-host/**"]
+    paths: ["cotal-host/**", "!cotal-host/**/*.md"]
   workflow_dispatch:
 
 concurrency:
