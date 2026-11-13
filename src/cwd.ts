@@ -104,16 +104,30 @@ export function pretrustFolder(abs: string): void {
     }
     if (!config.projects) config.projects = {};
     const project = config.projects[abs] ?? {};
-    if (project.hasTrustDialogAccepted === true && project.hasCompletedProjectOnboarding === true) {
+    if (project.hasTrustDialogAccepted === true && project.hasCompletedProjectOnboarding === true && importsSettled(project)) {
       return;
     }
     project.hasTrustDialogAccepted = true;
     project.hasCompletedProjectOnboarding = true;
+    if (!importsSettled(project)) project.hasClaudeMdExternalIncludesWarningShown = true;
     config.projects[abs] = project;
     const tmp = `${file}.paw-${process.pid}.tmp`;
     writeFileSync(tmp, JSON.stringify(config, null, 2));
     renameSync(tmp, file);
   });
+}
+
+/**
+ * Claude Code's second startup dialog, "Allow external CLAUDE.md file imports?": shown when a CLAUDE.md
+ * it loads imports a file OUTSIDE the folder (an agent in a monorepo subfolder whose root CLAUDE.md
+ * imports `@apps/web/...`) and the project has neither `hasClaudeMdExternalIncludesApproved` nor
+ * `hasClaudeMdExternalIncludesWarningShown`. Unanswered, it blocks the launch: queue#team2027, moved to
+ * `evals/apps/queue`, died at cotal's 15s startup check every time (2026-11-13). paw marks the warning
+ * as SHOWN, never approves: claude then skips the outside imports and starts. Approving them stays the
+ * operator's call (`hasClaudeMdExternalIncludesApproved: true`), and an approval is left as it is.
+ */
+function importsSettled(project: { hasClaudeMdExternalIncludesApproved?: unknown; hasClaudeMdExternalIncludesWarningShown?: unknown }): boolean {
+  return project.hasClaudeMdExternalIncludesApproved === true || project.hasClaudeMdExternalIncludesWarningShown === true;
 }
 
 /** Does ~/.claude.json hold the trust flags for `abs` right now? An unreadable file reads as NOT
