@@ -65,7 +65,11 @@ once the broker is back (cotal's `superviseConnection` → `reestablishLoop`, fo
   failed every start. `pretrustFolder` now also sets `hasClaudeMdExternalIncludesWarningShown: true`, never
   `Approved`: claude skips those imports and starts. An operator's approval is left as it is; entries
   trusted earlier are completed at their next spawn. `isFolderTrusted` (the race re-check) still reads
-  trust only. `check:trust` IMPORTS.
+  trust only. **The flag's key is the canonical git root** (main checkout for a worktree), not the folder:
+  claude files project settings under `fX(xv(cwd) ?? cwd)` and looks trust up per folder and its parents.
+  #129 set it on `evals/apps/queue` while claude read `evals`, and queue still died; `claudeProjectKey`
+  (`git rev-parse --git-common-dir`) now picks the key and only the imports flag goes there, never trust
+  (that would trust the whole repo). `check:trust` IMPORTS + IMPORTS root.
 
 ## bypass consent
 

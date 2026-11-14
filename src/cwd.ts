@@ -7,9 +7,10 @@
  * straight to the runtime (`runtime.spawn(name, spec, cwd)`) — the connector never sees it. So the
  * confine+trust step moves here, to the one place paw still resolves the folder itself.
  */
+import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { isAbsolute, join, sep } from "node:path";
+import { dirname, isAbsolute, join, sep } from "node:path";
 import { withFileLock } from "./lock.ts";
 
 /**
@@ -97,6 +98,7 @@ export function confineCwd(abs: string): { canonical: string; inRoot: boolean } 
  */
 export function pretrustFolder(abs: string): void {
   const file = join(homedir(), ".claude.json");
+  const root = claudeProjectKey(abs);
   withFileLock(`${file}.paw-lock`, () => {
     const config = existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : {};
     if (typeof config !== "object" || config === null) {
@@ -104,13 +106,19 @@ export function pretrustFolder(abs: string): void {
     }
     if (!config.projects) config.projects = {};
     const project = config.projects[abs] ?? {};
-    if (project.hasTrustDialogAccepted === true && project.hasCompletedProjectOnboarding === true && importsSettled(project)) {
+    const rootProject = root === abs ? project : (config.projects[root] ?? {});
+    if (project.hasTrustDialogAccepted === true && project.hasCompletedProjectOnboarding === true && importsSettled(project) && importsSettled(rootProject)) {
       return;
     }
     project.hasTrustDialogAccepted = true;
     project.hasCompletedProjectOnboarding = true;
     if (!importsSettled(project)) project.hasClaudeMdExternalIncludesWarningShown = true;
     config.projects[abs] = project;
+    // Only the imports flag goes on the repo root's entry: trusting the root would trust the whole repo.
+    if (root !== abs && !importsSettled(rootProject)) {
+      rootProject.hasClaudeMdExternalIncludesWarningShown = true;
+      config.projects[root] = rootProject;
+    }
     const tmp = `${file}.paw-${process.pid}.tmp`;
     writeFileSync(tmp, JSON.stringify(config, null, 2));
     renameSync(tmp, file);
@@ -126,6 +134,26 @@ export function pretrustFolder(abs: string): void {
  * as SHOWN, never approves: claude then skips the outside imports and starts. Approving them stays the
  * operator's call (`hasClaudeMdExternalIncludesApproved: true`), and an approval is left as it is.
  */
+/**
+ * The key Claude Code files a folder's PROJECT settings under (the imports flags among them): its
+ * canonical git root, the main checkout for a worktree, else the folder itself (claude's
+ * `fX(xv(cwd) ?? cwd)`, read in the 2.1.x binary). Trust is different: claude looks it up for the folder
+ * and its parents, so paw keeps trust on the folder. 2026-11-13: #129 set the imports flag on
+ * `evals/apps/queue` while claude read it from `evals`, and queue kept dying at the dialog.
+ */
+export function claudeProjectKey(abs: string): string {
+  const git = (...args: string[]) => {
+    const r = spawnSync("git", args, { cwd: abs, encoding: "utf8", timeout: 5_000 });
+    return r.status === 0 ? r.stdout.trim() : "";
+  };
+  const common = git("rev-parse", "--path-format=absolute", "--git-common-dir");
+  if (!common) return abs; // not in a git repo: claude keys it by the folder too
+  if (common.endsWith(`${sep}.git`)) return realpathSync(dirname(common));
+  const top = git("rev-parse", "--show-toplevel"); // a submodule's common dir lives under the superproject's .git
+  if (!top) throw new Error(`paw: ${abs} has a git dir (${common}) but no top level`);
+  return realpathSync(top);
+}
+
 function importsSettled(project: { hasClaudeMdExternalIncludesApproved?: unknown; hasClaudeMdExternalIncludesWarningShown?: unknown }): boolean {
   return project.hasClaudeMdExternalIncludesApproved === true || project.hasClaudeMdExternalIncludesWarningShown === true;
 }
