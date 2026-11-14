@@ -147,7 +147,8 @@ Each entry: what it is + the most load-bearing rule. Full notes behind the link.
 
 ### Control rail → [control-rail.md](docs/notes/control-rail.md)
 - `src/control.ts` — the ONE door to the manager: v0.4 service endpoint (`resolveService` once, invoke
-  many); ops `ps`/`spawn`/`inspect`/`despawn`/`attach` (despawn/attach targeted by principal triple);
+  many); ops `ps`/`spawn`/`inspect`/`despawn`/`attach`/`input` (despawn/attach/input targeted by principal triple;
+  `input` = a line into a PTY seat, what `paw type` uses there — keys stay tmux-only);
   **spawn is an acceptance, not an outcome** — paw then waits for the mesh, judging the launched seat by
   its PID (`src/seat-witness.ts`: COTAL_LIFECYCLE_UID = the reply's uid) and the manager log, never ps alone
   (#96: a seat the manager dropped is `SeatAliveError`, never "gone"; fresh session + live pid → 180s); `sharedManagerControl` for

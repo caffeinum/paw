@@ -490,6 +490,14 @@ rmSync(unmapped, { recursive: true, force: true });
   try { parseKeyNames(["Dwon"]); } catch (x) { e = (x as Error).message; }
   assert(e.includes('"Dwon"'), "keys: a typo'd key name fails loud instead of being typed as text");
 
+  // pty seats (2026-11-13): a LINE goes through the manager's `input` op; keys can't (it pastes)
+  const { ptyTypeRefusal } = await import("../src/commands/type.ts");
+  assert(ptyTypeRefusal("vercel", false, false, "idle") === undefined, "pty: a line into an idle seat is typed");
+  assert(ptyTypeRefusal("vercel", false, false, undefined) === undefined, "pty: an unread presence doesn't block a line (unknown, not waiting)");
+  assert(/not keys/.test(ptyTypeRefusal("vercel", true, false, undefined) ?? "") && /paw attach vercel/.test(ptyTypeRefusal("vercel", true, true, undefined) ?? ""), "pty: keys (\\n, --keys) are refused even with --force — the input op would paste them as text");
+  assert(/ANSWER/.test(ptyTypeRefusal("vercel", false, false, "waiting") ?? ""), "pty: a seat waiting on a question is refused — the Enter would answer it");
+  assert(ptyTypeRefusal("vercel", false, true, "waiting") === undefined, "pty: --force types into a waiting seat anyway");
+
   // the input box, read from a real Claude Code pane (evals, captured 2026-09-23)
   const rule = "─".repeat(60);
   const idle = `  That thread is done.\n\n${rule}\n❯ \n\n${rule}\n  🐾 evals [main] (Opus 5) 430k/1m at 43% >\n  ⏵⏵ bypass permissions on`;
