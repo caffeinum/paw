@@ -130,9 +130,10 @@ continuations, so a claude view must never see kit's fork). Used by: kit.ts (`--
 for an id it can find), `paw log` + web trace (`agentTranscriptFile`: the cwd-local claude file is a
 shortcut only within the claude tier, so a fork wins over its original), `paw status` (pins resolved
 per store, one listing each), `paw attach` summary + kit view, `paw sleep` (activity/activeMs), the
-dm/chat wake gate's busy check. `paw unstick` and `paw type`'s keys need a tmux pane, which a kit agent never has,
-so they stay claude-only. (`paw type` sends a LINE to any pty seat through the manager's `input` op
-since 2026-11-13. It hasn't been tried on a kit seat.) Not forwarded: `CLAUDE_CONFIG_DIR` (paw's claude lookups are `~/.claude`).
+dm/chat wake gate's busy check. `paw unstick` needs a tmux pane, which a kit agent never has, so it stays claude-only. `paw type`
+refuses a kit seat and points at `paw dm`: `kit run` never reads its terminal. Tried on 2026-11-13: the
+manager's `input` op wrote the line into kit's pty, paw printed ✓, and no turn ever came. acp, hermes
+and `headless: true` claude seats are refused the same way (`typeHarnessRefusal`, src/commands/type.ts). Not forwarded: `CLAUDE_CONFIG_DIR` (paw's claude lookups are `~/.claude`).
 
 Switching an agent: `storage: claude` → removed = its next boot forks the claude transcript into kit's
 store (the claude original stays as it was at the switch). Removed → `storage: claude` = kit resumes
