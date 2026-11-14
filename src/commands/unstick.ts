@@ -9,7 +9,7 @@ import { registry, type Command } from "@cotal-ai/core";
 import { personaFilePath, psRowAlive, type PsRow } from "../addressing.ts";
 import { withManagerControl } from "../control.ts";
 import { readForeground } from "../foreground.ts";
-import { actualManagerRuntime, resolveSpace } from "../lifecycle.ts";
+import { actualManagerRuntime, resolveSpace, type Runtime } from "../lifecycle.ts";
 import { readResumeId } from "../session.ts";
 import { ago, readTurnState, toolLabel } from "../status.ts";
 import { interruptTool, sendEscape } from "../unstick.ts";
@@ -40,6 +40,19 @@ export function parseUnstickArgs(argv: string[]): { space?: string; target: stri
  * (its terminal is the operator's own window), not live, or a runtime with no reachable pane.
  */
 export async function requireTmuxPane(space: string, name: string, verb: string, action: string): Promise<void> {
+  const runtime = await liveSeatRuntime(space, name, action);
+  if (runtime !== "tmux") throw new Error(notTmuxMessage(name, runtime, verb, action));
+}
+
+export function notTmuxMessage(name: string, runtime: Runtime | undefined, verb: string, action: string): string {
+  return (
+    `paw: "${name}" runs under the ${runtime ?? "unknown"} runtime — ${verb} needs tmux, the only runtime with a pane paw can ${action} ` +
+    `(pty seats have no reachable terminal; cmux tabs belong to the app). \`paw runtime tmux\` switches.`
+  );
+}
+
+/** The runtime of a LIVE managed seat (foreground claudes and dead seats refused, as above). */
+export async function liveSeatRuntime(space: string, name: string, action: string): Promise<Runtime | undefined> {
   if (readForeground(space, name)) {
     throw new Error(`paw: "${name}" runs as a foreground claude in another terminal — use that window; paw has no pane to ${action}`);
   }
@@ -49,13 +62,7 @@ export async function requireTmuxPane(space: string, name: string, verb: string,
     return ((ps.data as PsRow[]) ?? []).find((r) => r.name === name);
   });
   if (!row || !psRowAlive(row)) throw new Error(`paw: "${name}" isn't live — there is no terminal to ${action} (\`paw status\`)`);
-  const runtime = actualManagerRuntime(space);
-  if (runtime !== "tmux") {
-    throw new Error(
-      `paw: "${name}" runs under the ${runtime ?? "unknown"} runtime — ${verb} needs tmux, the only runtime with a pane paw can ${action} ` +
-        `(pty seats have no reachable terminal; cmux tabs belong to the app). \`paw runtime tmux\` switches.`,
-    );
-  }
+  return actualManagerRuntime(space);
 }
 
 async function unstick(argv: string[]): Promise<void> {

@@ -25,8 +25,8 @@
  * against the operator's PAW_HOME and space it would be a production change. It refuses rather than
  * trusting the caller to have exported the right variables.
  *
- * Run:  pnpm check:rail          (ps/inspect/despawn over the rail — no claude)
- *       PAW_RAIL_SPAWN=1 pnpm check:rail   (also spawns a REAL claude agent and despawns it)
+ * Run:  pnpm check:rail          (ps/inspect/despawn/input over the rail — no claude)
+ *       PAW_RAIL_SPAWN=1 pnpm check:rail   (also spawns a REAL claude agent, types a line into it, despawns it)
  */
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -159,6 +159,11 @@ try {
     const d = await ctl.despawn("no-such-agent-here");
     const ms2 = Date.now() - t2;
     ok("despawn of an unknown agent is REFUSED, not hung", !d.ok && ms2 < 10_000, `ok=${d.ok} in ${ms2}ms (${d.error ?? "no error"})`);
+
+    const t3 = Date.now();
+    const i = await ctl.input("no-such-agent-here", "x");
+    const ms3 = Date.now() - t3;
+    ok("input to an unknown agent is REFUSED, not hung", !i.ok && ms3 < 10_000, `ok=${i.ok} in ${ms3}ms (${i.error ?? "no error"})`);
   });
 
   // 5b. The NARROWED resolve (`paw status` resolves only `ps`): the same answer as the full surface, and
@@ -211,6 +216,25 @@ try {
       withAgent.ok && withAgent.names.includes(name),
       withAgent.ms >= 0 ? `answered in ${withAgent.ms}ms with [${withAgent.names.join(", ")}]` : `NO ANSWER (${withAgent.error})`,
     );
+
+    // `paw type` on a pty seat (2026-11-13): a line through the manager's `input` op must be SUBMITTED on
+    // its own call — cotal #1649 was every line landing one call behind — so the marker has to show up
+    // as a user turn in the transcript, not just a byte count in the receipt.
+    {
+      const { personaFilePath } = await import("../src/addressing.ts");
+      const { readResumeId, transcriptPath } = await import("../src/session.ts");
+      const { readFileSync } = await import("node:fs");
+      const marker = `paw-rail-input-${process.pid}`;
+      const r = await withManagerControl(space, pawServer(), (c) => c.input(name, `${marker}: reply with just ok`), { only: ["inspect", "input"] });
+      ok("input over the rail is written into a pty seat", r.ok && typeof (r.data as { bytes?: unknown })?.bytes === "number", r.ok ? `receipt ${JSON.stringify(r.data)}` : `failed: ${r.error}`);
+      const pin = readResumeId(personaFilePath(space, name));
+      let landed = false;
+      for (const until = Date.now() + 30_000; !landed && Date.now() < until; await new Promise((res) => setTimeout(res, 1000))) {
+        const file = pin ? transcriptPath(pin) : undefined;
+        landed = !!file && readFileSync(file, "utf8").split("\n").some((l) => l.includes(marker) && l.includes('"type":"user"'));
+      }
+      ok("the typed line is SUBMITTED as a user turn on its own call", landed, landed ? "in the transcript" : `no user turn with ${marker} in 30s (pin ${pin ?? "none"})`);
+    }
 
     await withManagerControl(space, pawServer(), async (c2) => {
       const d = await c2.despawn(name);

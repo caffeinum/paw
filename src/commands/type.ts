@@ -20,13 +20,18 @@
  * `paw chat`/`paw attach` use. A BARE first word is text — unless it names one of your agents, which
  * fails loud ("did you mean @evals?") rather than guess which of the two you meant.
  *
- * tmux only, like `paw unstick`: a pty seat has no terminal paw can reach, a cmux tab is the app's.
+ * tmux panes, and pty seats for a LINE: a pty seat has no pane paw can read, so its line goes through the
+ * manager's `input` op (cotal 0.100), which pastes the text and presses Enter — keys need tmux (2026-11-13,
+ * devops couldn't reach vercel/stripe). A cmux tab is the app's.
  */
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { registry, type Command } from "@cotal-ai/core";
-import { folderForName, personaFilePath } from "../addressing.ts";
+import { folderForName, humanEndpointAuth, personaFilePath } from "../addressing.ts";
+import { withManagerControl } from "../control.ts";
+import { readMeshRoster } from "../roster.ts";
+import { pawServer } from "../server.ts";
 import { resolveSpace } from "../lifecycle.ts";
 import { readResumeId } from "../session.ts";
 import { readTurnState } from "../status.ts";
@@ -34,7 +39,7 @@ import { capturePane, paneInput, paneShowsPrompt, sendKeys, tmuxTarget, type Key
 import { liveSessionProcs } from "../named.ts";
 import { tmuxSplit, tmuxSplitAdvice } from "../native-attach.ts";
 import { resolveStopName } from "./stop.ts";
-import { requireTmuxPane } from "./unstick.ts";
+import { liveSeatRuntime } from "./unstick.ts";
 
 export type TypeArgs = {
   space?: string;
@@ -161,6 +166,22 @@ export function paneTail(pane: string, n = 8): string[] {
     .slice(-n);
 }
 
+/**
+ * Why a pty seat can't take this, or undefined when it can. The manager's `input` op writes the text as
+ * a bracketed PASTE and then one Enter, so it delivers a LINE and never key presses: an Escape, an arrow
+ * or a lone Enter inside a paste is text. paw can't read a pty screen, so the one guard left is the
+ * mesh's word: `waiting` means claude is asking something, and the Enter after the text would answer it.
+ */
+export function ptyTypeRefusal(name: string, exact: boolean, force: boolean, presence: string | undefined): string | undefined {
+  if (exact) {
+    return `paw: "${name}" is a pty seat — paw can type a line into it (text, then Enter), not keys: \`\\n\`, \`\\e\` and \`--keys\` need a tmux pane. \`paw attach ${name}\` and press them there.`;
+  }
+  if (!force && presence === "waiting") {
+    return `paw: not typing into "${name}" — it's waiting on a question, and the Enter after your text would ANSWER it. \`paw attach ${name}\` to look; \`--force\` types anyway.`;
+  }
+  return undefined;
+}
+
 const describe = (parts: KeyPart[]) => parts.map((p) => ("key" in p ? `<${p.key}>` : p.literal)).join("");
 
 async function type(argv: string[]): Promise<void> {
@@ -174,7 +195,11 @@ async function type(argv: string[]): Promise<void> {
   }
   const name = resolveStopName(space, args.target ?? ".");
   const { parts, exact } = args.keys ? { parts: parseKeyNames(args.words), exact: true } : parseTyped(args.words.join(" "));
-  await requireTmuxPane(space, name, "type", "type into");
+  const runtime = await liveSeatRuntime(space, name, "type into");
+  if (runtime === "pty") return typeIntoPty(space, name, args, exact);
+  if (runtime !== "tmux") {
+    throw new Error(`paw: "${name}" runs under the ${runtime ?? "unknown"} runtime — paw types into tmux panes and pty seats only (a cmux tab belongs to the app)`);
+  }
 
   const before = capturePane(space, name);
   if (before === undefined) {
@@ -229,11 +254,42 @@ async function type(argv: string[]): Promise<void> {
   }
 }
 
+async function typeIntoPty(space: string, name: string, args: TypeArgs, exact: boolean): Promise<void> {
+  const text = args.words.join(" ");
+  const presence = exact || args.force ? undefined : await seatPresence(space, name);
+  const refusal = ptyTypeRefusal(name, exact, args.force, presence);
+  if (refusal) throw new Error(refusal);
+  const pin = readResumeId(personaFilePath(space, name));
+  if (pin && readTurnState(pin)?.inFlight) console.log(`note: ${name} is mid-turn — what Claude Code does with a line submitted now is its call`);
+  const modelBefore = globalDefaultModel();
+  const r = await withManagerControl(space, pawServer(space), (ctl) => ctl.input(name, text), { only: ["inspect", "input"] });
+  if (!r.ok) throw new Error(`paw: the manager didn't type into "${name}" — ${r.error ?? "no reply"}`);
+  const bytes = (r.data as { bytes?: unknown } | undefined)?.bytes;
+  if (typeof bytes !== "number") throw new Error(`paw: the manager answered, but its receipt for "${name}" has no byte count — the line may or may not have been typed; \`paw attach ${name}\` to look`);
+  console.log(`✓ typed ${text}<Enter> into ${name} (pty seat: the manager wrote ${bytes} bytes)`);
+  console.log(`  paw can't read a pty screen — \`paw attach ${name}\` shows what it did, and answers a dialog the line opened`);
+  await new Promise((r) => setTimeout(r, 2000)); // the /model default write lands right after the switch
+  const modelAfter = globalDefaultModel();
+  if (modelAfter !== modelBefore) {
+    console.log(
+      `  ⚠ Claude Code changed the DEFAULT model for new sessions (~/.claude/settings.json "model": ${JSON.stringify(modelBefore)} → ${JSON.stringify(modelAfter)}) — ` +
+        `every agent started or restarted from now on boots on it. Change it back there if you only meant ${name}.`,
+    );
+  }
+}
+
+/** The seat's mesh presence (`waiting` = claude asked something), or undefined when the roster read
+ *  didn't see it — a partial snapshot says nothing, so that is "unknown", never "idle". */
+async function seatPresence(space: string, name: string): Promise<string | undefined> {
+  const roster = await readMeshRoster(space, pawServer(space), (await humanEndpointAuth(space, "operator")).creds, new Set([name]));
+  return roster.get(name)?.status;
+}
+
 const typeCommand: Command = {
   kind: "command",
   name: "type",
   group: "Mesh",
-  summary: 'type into an agent\'s terminal without attaching — `paw type "/model claude-fable-5"`, `"2\\n"` or `--keys Down Enter` to answer a prompt (tmux)',
+  summary: 'type into an agent\'s terminal without attaching — `paw type "/model claude-fable-5"`, `"2\\n"` or `--keys Down Enter` to answer a prompt (keys: tmux; a line: tmux or pty)',
   usage: "type [@name|folder] <text…> [--keys] [--force] [--space s]",
   run: (a) => type([...a.raw]),
 };

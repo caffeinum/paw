@@ -182,6 +182,14 @@ export class ManagerControl {
     return this.invokeTargeted("admin", "attach", name, undefined, timeoutMs);
   }
 
+  /** `input` — type `text` into a PTY seat's terminal, then Enter unless `enter` is false (cotal 0.100's
+   *  C3 op). The manager writes the text as a bracketed paste and the Enter as its own key, so it is a
+   *  LINE, never key presses. tmux/cmux seats refuse it as `unimplemented`. The reply's `bytes` is what
+   *  was written to the pty, not proof the harness read it. Targeted, like despawn. */
+  async input(name: string, text: string, enter = true, timeoutMs = 8000): Promise<ManagerReply> {
+    return this.invokeTargeted("admin", "input", name, { text, enter }, timeoutMs);
+  }
+
   /** `inspect` — one agent's row by name. Also the name→triple resolver every targeted command
    *  needs, which is why it rides the same rail as the command it is resolving FOR: cotal mints
    *  `inspect`'s read row onto the same capability arm as despawn/attach, so resolving on a

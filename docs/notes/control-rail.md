@@ -36,6 +36,14 @@ principal TRIPLE `(owner, actor, lifecycleUid)`, never by alias, so each one fir
 resolving on another tier's connection would be a grant paw isn't holding). Mode is `any` (cross-agent
 operator reach), matching cotal's own non-bearer `stop`.
 
+**`input` (cotal 0.100, wired 2026-11-13)** is targeted the same way, on the admin tier:
+`ctl.input(name, text, enter)` types a LINE into a PTY seat. The manager writes the text as a bracketed
+paste and the Enter as its own write (cotal #1649: a fused `\r` landed every line one call behind), so it
+can't press keys; tmux/cmux seats answer `unimplemented`. The receipt's `bytes` is what reached the pty,
+not proof the harness read it. `paw type` uses it for pty seats (src/commands/type.ts); `check:rail`
+refuses an unknown name, and with `PAW_RAIL_SPAWN=1` types into a real claude and waits for the
+line as a user turn in its transcript.
+
 **The PAW_AUTH tier caveat is finally closed.** `controlCreds` minted the PRIVILEGED tier and
 stopAgent/restartAgent then rode it onto an ADMIN subject — under-privileged, and only ever working
 because the open mesh enforces nothing. The tier is now chosen by the COMMAND (`ps`/`spawn`/`inspect` →
