@@ -20,6 +20,7 @@
  * `paw chat`/`paw attach` use. A BARE first word is text — unless it names one of your agents, which
  * fails loud ("did you mean @evals?") rather than guess which of the two you meant.
  *
+ * Claude Code agents only (a TUI claude; kit/acp/hermes/headless seats have no input box — `paw dm` them).
  * tmux panes, and pty seats for a LINE: a pty seat has no pane paw can read, so its line goes through the
  * manager's `input` op (cotal 0.100), which pastes the text and presses Enter — keys need tmux (2026-11-13,
  * devops couldn't reach vercel/stripe). A cmux tab is the app's.
@@ -33,7 +34,7 @@ import { withManagerControl } from "../control.ts";
 import { readMeshRoster } from "../roster.ts";
 import { pawServer } from "../server.ts";
 import { resolveSpace } from "../lifecycle.ts";
-import { readResumeId } from "../session.ts";
+import { isClaudeHarness, readAgentType, readHeadless, readResumeId } from "../session.ts";
 import { readTurnState } from "../status.ts";
 import { capturePane, paneInput, paneShowsPrompt, sendKeys, tmuxTarget, type KeyPart } from "../unstick.ts";
 import { liveSessionProcs } from "../named.ts";
@@ -167,6 +168,18 @@ export function paneTail(pane: string, n = 8): string[] {
 }
 
 /**
+ * Why this agent has nothing to type into, or undefined when it has Claude Code's input box. Only the
+ * claude TUI reads its terminal: kit (`kit run`), acp and hermes seats and a `headless: true` claude
+ * (`claude -p`) take prompts from the mesh only, so typed text would be written and silently dropped.
+ * 2026-11-13: `paw type` into a kit seat reported ✓ and kit never saw the line.
+ */
+export function typeHarnessRefusal(name: string, agentType: string | undefined, headless: boolean): string | undefined {
+  const runs = !isClaudeHarness(agentType) ? agentType : headless ? "claude headless (claude -p)" : undefined;
+  if (runs === undefined) return undefined;
+  return `paw: "${name}" runs ${runs}, which has no input box to type into: it takes its prompts from the mesh. \`paw dm ${name} "…"\` sends it one.`;
+}
+
+/**
  * Why a pty seat can't take this, or undefined when it can. The manager's `input` op writes the text as
  * a bracketed PASTE and then one Enter, so it delivers a LINE and never key presses: an Escape, an arrow
  * or a lone Enter inside a paste is text. paw can't read a pty screen, so the one guard left is the
@@ -194,6 +207,9 @@ async function type(argv: string[]): Promise<void> {
     );
   }
   const name = resolveStopName(space, args.target ?? ".");
+  const persona = personaFilePath(space, name);
+  const noBox = typeHarnessRefusal(name, readAgentType(persona), readHeadless(persona));
+  if (noBox) throw new Error(noBox);
   const { parts, exact } = args.keys ? { parts: parseKeyNames(args.words), exact: true } : parseTyped(args.words.join(" "));
   const runtime = await liveSeatRuntime(space, name, "type into");
   if (runtime === "pty") return typeIntoPty(space, name, args, exact);
