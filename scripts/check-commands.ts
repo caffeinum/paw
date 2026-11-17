@@ -497,6 +497,11 @@ rmSync(unmapped, { recursive: true, force: true });
   assert(/not keys/.test(ptyTypeRefusal("vercel", true, false, undefined) ?? "") && /paw attach vercel/.test(ptyTypeRefusal("vercel", true, true, undefined) ?? ""), "pty: keys (\\n, --keys) are refused even with --force — the input op would paste them as text");
   assert(/ANSWER/.test(ptyTypeRefusal("vercel", false, false, "waiting") ?? ""), "pty: a seat waiting on a question is refused — the Enter would answer it");
   assert(ptyTypeRefusal("vercel", false, true, "waiting") === undefined, "pty: --force types into a waiting seat anyway");
+  const { typeHarnessRefusal } = await import("../src/commands/type.ts");
+  assert(typeHarnessRefusal("a", undefined, false) === undefined && typeHarnessRefusal("a", "claude", false) === undefined, "type: a claude TUI agent has an input box");
+  assert(/runs kit.*paw dm kitty/.test(typeHarnessRefusal("kitty", "kit", false) ?? ""), "type: a kit seat is refused with `paw dm` — `kit run` never reads its terminal (✓ was a silent no-op)");
+  assert(/runs acp/.test(typeHarnessRefusal("a", "acp", false) ?? "") && /runs hermes/.test(typeHarnessRefusal("a", "hermes", false) ?? ""), "type: acp and hermes seats are refused");
+  assert(/claude headless/.test(typeHarnessRefusal("a", undefined, true) ?? ""), "type: a headless claude (claude -p) is refused");
 
   // the input box, read from a real Claude Code pane (evals, captured 2026-09-23)
   const rule = "─".repeat(60);
