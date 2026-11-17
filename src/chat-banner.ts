@@ -10,6 +10,7 @@
 import { slotText, type Slot } from "./chat-boot.ts";
 import { whereTag } from "./chat-views.ts";
 import { displayWidth } from "./width.ts";
+import { OVER_BLANK } from "./chat-stamp.ts";
 
 export interface BannerStyle {
   dim(s: string): string;
@@ -120,7 +121,8 @@ export function paintedRows(text: string, cols: number): number {
   const lines = text.split("\n");
   lines.pop();
   const w = Math.max(1, cols);
-  return lines.reduce((n, l) => n + Math.max(1, Math.ceil(displayWidth(l) / w)), 0);
+  // A stamp drawn over the blank row above (chat-stamp.ts OVER_BLANK) writes over a row, adds none.
+  return lines.reduce((n, l) => n + (l.startsWith(OVER_BLANK) ? 0 : Math.max(1, Math.ceil(displayWidth(l) / w))), 0);
 }
 
 /**

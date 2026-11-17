@@ -30,6 +30,7 @@ import type { PeerMsg } from "./chat-peers.ts";
 import type { Block } from "./transcript.ts";
 import type { Machine } from "./hosted.ts";
 import { displayWidth, fitWidth } from "./width.ts";
+import { OVER_BLANK, stampRow, stampText } from "./chat-stamp.ts";
 
 export type ChatView = "logs" | "chat" | "messages" | "beads";
 
@@ -231,7 +232,7 @@ export type Entry =
   | { kind: "banner"; text: string }
   | { kind: "chat"; text: string; side: "you" | "peer" | "sys"; tight: boolean; from?: string; onlyLogs?: boolean; onlyMessages?: boolean; bannerDelta?: boolean; historical?: boolean; ts?: number }
   | { kind: "peer"; agent: string; msg: PeerMsg; historical?: boolean }
-  | { kind: "echo"; text: string }
+  | { kind: "echo"; text: string; ts?: number }
   | { kind: "log"; agent: string; blocks: Block[]; backfill: boolean; note?: string };
 
 /**
@@ -309,9 +310,17 @@ export class History {
  * from emit() so the live path and a reprint share one implementation — two copies of this is how a
  * redraw ends up spaced differently from the live screen it replaces.
  */
+/** What a painter carries from one entry to the next — saved and restored to repaint one in place. */
+export type PaintState = { lastSide: Painter["lastSide"]; trailingBlank: boolean; stampDay: string | undefined };
+
+/** Message times (src/chat-stamp.ts): on when chat draws to a terminal. */
+export type StampOpts = { cols: () => number; now: () => number };
+
 export class Painter {
   lastSide: "you" | "peer" | "sys" | "log" | "other" | undefined;
   trailingBlank = false;
+  /** The day the last stamp named (or implied), so the next one names a day only when it changes. */
+  stampDay: string | undefined;
 
   private readonly render: (b: Block) => string;
   private readonly dim: (s: string) => string;
@@ -320,6 +329,7 @@ export class Painter {
   private readonly attachesAbove: (rendered: string) => boolean;
   /** An other-peer message as screen rows, at the width of the moment (chat.ts: peerRows). */
   private readonly peer: (p: PeerMsg) => string;
+  private readonly stamps: StampOpts | undefined;
 
   constructor(
     render: (b: Block) => string,
@@ -327,17 +337,39 @@ export class Painter {
     pad = "  ",
     attachesAbove: (rendered: string) => boolean = () => false,
     peer: (p: PeerMsg) => string = (p) => `${p.from} → ${p.to}: ${p.text}`,
+    stamps?: StampOpts,
   ) {
     this.render = render;
     this.dim = dim;
     this.pad = pad;
     this.attachesAbove = attachesAbove;
     this.peer = peer;
+    this.stamps = stamps;
   }
 
   reset(): void {
     this.lastSide = undefined;
     this.trailingBlank = false;
+    this.stampDay = undefined;
+  }
+
+  state(): PaintState {
+    return { lastSide: this.lastSide, trailingBlank: this.trailingBlank, stampDay: this.stampDay };
+  }
+
+  restore(s: PaintState): void {
+    this.lastSide = s.lastSide;
+    this.trailingBlank = s.trailingBlank;
+    this.stampDay = s.stampDay;
+  }
+
+  /** The time of `ts`, right-aligned, as one row's content (no newline) — or undefined when stamps are
+   *  off. Advances the day tracking, so call it once per stamp actually drawn. */
+  stampFor(ts: number): string | undefined {
+    if (!this.stamps) return undefined;
+    const s = stampText(ts, this.stampDay, this.stamps.now());
+    this.stampDay = s.day;
+    return stampRow(s.text, this.stamps.cols(), this.dim);
   }
 
   /** Text for `e` in `view`, or "" when it renders to nothing (a log batch the view filters empty). */
@@ -347,14 +379,18 @@ export class Painter {
         this.lastSide = undefined;
         this.trailingBlank = e.text.endsWith("\n\n");
         return e.text;
-      case "echo":
+      case "echo": {
         // Your typed line takes the "you" side, and whatever blank preceded it is no longer adjacent —
-        // the same two facts the line handler has always asserted after readline echoes a line.
+        // the same two facts the line handler has always asserted after readline echoes a line. Its time
+        // goes on that blank only when there is one: readline already drew the line, so live there is no
+        // row to add above it (chat.ts stampTypedLine draws the same thing).
+        const row = e.ts !== undefined && this.trailingBlank ? this.stampFor(e.ts) : undefined;
         this.lastSide = "you";
         this.trailingBlank = false;
-        return e.text + "\n";
+        return (row === undefined ? "" : `${OVER_BLANK}${row}\n`) + e.text + "\n";
+      }
       case "chat":
-        return this.put(e.side, e.text.split("\n").join(`\n${this.pad}`), e.side === "sys" || e.tight);
+        return this.put(e.side, e.text.split("\n").join(`\n${this.pad}`), e.side === "sys" || e.tight, e.ts);
       case "peer":
         // Laid out now (indented right, dimmed) — a side of its own, so a run of other-peer rows sits
         // together with air above and below it, apart from your conversation.
@@ -380,8 +416,12 @@ export class Painter {
     }
   }
 
-  private put(side: "you" | "peer" | "sys" | "log" | "other", body: string, tight: boolean): string {
-    const gap = !this.trailingBlank && this.lastSide !== undefined && side !== this.lastSide ? "\n" : "";
+  /** `ts` stamps the entry: its time takes the blank row above it — the gap this entry opens, or the
+   *  trailing blank the last one left (drawn over with {@link OVER_BLANK}); with neither, a row of its own. */
+  private put(side: "you" | "peer" | "sys" | "log" | "other", body: string, tight: boolean, ts?: number): string {
+    const opens = !this.trailingBlank && this.lastSide !== undefined && side !== this.lastSide;
+    const row = ts === undefined ? undefined : this.stampFor(ts);
+    const gap = row === undefined ? (opens ? "\n" : "") : this.trailingBlank ? `${OVER_BLANK}${row}\n` : `${row}\n`;
     const tail = tight ? "" : "\n";
     this.trailingBlank = tail !== "";
     this.lastSide = side;
