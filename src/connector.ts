@@ -5,7 +5,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { briefWhere } from "./names.ts";
 import { permissionMode } from "./bypass-consent.ts";
-import { ADDRESSING_BRIEF, BACKGROUND_BASH_BRIEF, CRON_BRIEF, CHANNELS_BRIEF, COTAL_TOOLS_NOTICE_BRIEF, FILES_BRIEF, OPERATOR_REQUESTS_BRIEF, SANDBOX_BRIEF, TASKS_BRIEF, UNATTENDED_BRIEF, WAKE_BRIEF, whereBrief, type BriefWhere } from "./brief.ts";
+import { ADDRESSING_BRIEF, BACKGROUND_BASH_BRIEF, CRON_BRIEF, GITHUB_BRIEF, CHANNELS_BRIEF, COTAL_TOOLS_NOTICE_BRIEF, FILES_BRIEF, OPERATOR_REQUESTS_BRIEF, SANDBOX_BRIEF, TASKS_BRIEF, UNATTENDED_BRIEF, WAKE_BRIEF, whereBrief, type BriefWhere } from "./brief.ts";
 import { beadsDir } from "./beads-dir.ts";
 import { voiceLineFor } from "./personality.ts";
 import { personaTranscriptRoots, readClaudeArgs, readCwd, readHeadless, readNice, readResumeId, readSandbox, transcriptExists } from "./session.ts";
@@ -79,6 +79,7 @@ export function meshBrief(name: string, voice: string | undefined, where: BriefW
     ...FILES_BRIEF,
     ...WAKE_BRIEF,
     ...CRON_BRIEF,
+    ...GITHUB_BRIEF,
     ...TASKS_BRIEF,
     ...OPERATOR_REQUESTS_BRIEF,
     ...BACKGROUND_BASH_BRIEF,

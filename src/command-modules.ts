@@ -47,6 +47,7 @@ const optimize: Loader = () => import("./commands/optimize.ts"); // "optimize" (
 const top: Loader = () => import("./commands/top.ts"); // "top" (per-agent memory/cpu/subprocesses)
 const tidy: Loader = () => import("./commands/tidy.ts"); // "tidy" (DM agents holding background processes)
 const cron: Loader = () => import("./commands/cron.ts"); // "cron" (scheduled wake-ups for agents)
+const github: Loader = () => import("./commands/github.ts"); // "github" (follow PRs: activity → DMs from "github")
 const nice: Loader = () => import("./commands/nice.ts"); // "nice" (per-agent CPU priority)
 const acpHost: Loader = () => import("./commands/acp-host.ts"); // "acp-host" (the Rust ACP seat host)
 const sandbox: Loader = () => import("./commands/sandbox.ts"); // "sandbox" (build the image, list sandboxed agents)
@@ -102,6 +103,7 @@ export const COMMAND_LOADERS: Readonly<Record<string, Loader>> = {
   top,
   tidy,
   cron,
+  github,
   nice,
   "acp-host": acpHost,
   sandbox,

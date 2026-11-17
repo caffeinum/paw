@@ -28,7 +28,7 @@ export function callerSpace(): string {
  *  `paw dm github:firegoat-ai/canary` (→ team2027), then `paw status` and `paw log canary` read `paw`,
  *  where neither canary nor canary-env is registered — both "missing" while live (#96). */
 /** `relocate` too: an agent relocating ITSELF from team2027 got "no agent named … in space paw" (canary-env). */
-export const CALLER_SPACE_VERBS: ReadonlySet<string> = new Set(["cron", "open", "attach", "chat", "start", "dm", "claude", "status", "log", "relocate"]);
+export const CALLER_SPACE_VERBS: ReadonlySet<string> = new Set(["cron", "github", "open", "attach", "chat", "start", "dm", "claude", "status", "log", "relocate"]);
 
 /** The space `paw <verb>` acts on when no --space / `#space` names one. */
 export function defaultSpaceFor(verb: string): string {

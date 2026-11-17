@@ -279,6 +279,11 @@ Each entry: what it is + the most load-bearing rule. Full notes behind the link.
   Message URL arrive as a DM from the peer `artil` (wakes a sleeper) via `artil internal hermes-channel` (cursor; needs
   `artil listen on --client hermes` there once, the operator's step); one account ↔ one agent across spaces, else refused
   until `artil: off`; sender-less notices → log only. `check:artil-relay`. → [messaging.md#artil](docs/notes/messaging.md#artil)
+- `src/github-relay.ts` + `src/commands/github.ts` — on the global keeper tick: new comments/reviews/settled CI/merges on a
+  PR reach its followers as a DM from the peer `github` (wakes a sleeper); followers = the agent with the PR's branch
+  checked out, the persona `github: <login>`'s open PRs, `paw github watch <pr>` (`unwatch` = drop/mute); its own login's
+  events never come back; first sight baselines; outbox retried ≤5; `<PAW_HOME>/github.json`. `check:github-relay`.
+  → [messaging.md#github](docs/notes/messaging.md#github)
 - `src/inbox.ts` — `paw inbox`: pure reader + shared cursor; `--watch` keeps its own high-water mark;
   `--json` never advances the cursor; `--sent`, `--mark-read`. → [messaging.md#paw-inbox](docs/notes/messaging.md#paw-inbox)
 - `src/feed.ts` — `messageText` (THE flattener), `observerEndpoint`, `readConversation`, `pollLoop`. → [messaging.md#srcfeedts](docs/notes/messaging.md#srcfeedts)

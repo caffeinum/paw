@@ -101,6 +101,44 @@ sleeping agent; the text opens with a tag saying it is outside mail, information
 
 `check:artil-relay` (fake artil, two spaces, stub send).
 
+## GitHub (PR comments, reviews, CI, merges → a DM) {#github}
+
+`src/github-relay.ts` + `src/commands/github.ts`, run by the global keeper's 60s tick (2026-11-17). New
+activity on a pull request used to wake nobody: the agent working the PR had to poll `gh` itself. Now each
+new comment, review (verdict, body, the first inline comments), settled CI result and merge/close reaches
+the agents that follow the PR as a DM from the peer **`github`** (`sendAsYou(... sender: "github")`, the
+cron path), which wakes a sleeper. The operator's answers that shaped it: agents comment as their OWN
+GitHub accounts; comments, reviews, CI and merges all count; every author (bots too) reaches whoever follows.
+
+Who follows a PR — for every agent this machine hosts, in every space (teleported copies and agents pinned
+to another `machine:` skipped):
+- **branch**: its folder has the PR's head branch checked out (not the repo's default branch, not a fork's
+  PR with the same branch name) — what a `paw chat <PR url>` agent is;
+- **author**: open PRs opened by the persona's `github: <login>` (the agent's own account);
+- **watch**: `paw github watch <pr> [<agent>]` (default: the caller). `paw github unwatch` drops a watch,
+  or MUTES a branch/author PR for that agent. Watches and mutes end with the PR.
+
+An event by the follower's own `github:` login is never sent back to it. A follower with no `github:` gets
+a note on comments/reviews by the account paw reads GitHub with (`viewer`), since it may have posted them.
+
+How a sweep reads GitHub (`gh api graphql`, the operator's login, one machine-wide pass):
+1. one query: `viewer`, the open PRs of every checked-out (repo, branch), every login's open PRs (search),
+   and the cheap state (`updatedAt`, state, head sha + rollup) of every PR already followed or watched;
+2. only if something moved: one detail query — the last 25 timeline items (comments, reviews, merged/closed/
+   reopened) and, for a head whose rollup settled (SUCCESS/FAILURE/ERROR), its checks.
+A PR seen first is baselined: its detail is read, nothing is sent. New items = submit/create time ≥ the
+cursor and not already seen at it — a page, not `since`, because a review sits at its START time and one
+written over ten minutes would fall behind a time cursor. CI is told once per `<sha>:<verdict>`. A merge
+drops the ClosedEvent beside it. A merged/closed PR is told to who followed it last, then forgotten.
+
+State is `<PAW_HOME>/github.json` (watches, mutes, per-PR cursor/seen/ci/followers, outbox, last log).
+DMs go to the outbox under the lock first, then out: a failed send stays queued (`paw github ls` shows
+it) and is retried every tick, dropped after 5 tries with a `NOT delivered` keeper-log line. A GitHub error
+is logged once while unchanged. Two sweeps at once (keeper + `paw github tick`): the second is a no-op.
+`gh` comes from the daemon PATH or `PAW_GH_BIN`. Cost: ~1 GraphQL point a minute when quiet.
+
+`check:github-relay` (fake GitHub, stub send).
+
 ## paw inbox
 
 - `src/inbox.ts` — `paw inbox [--history] [--watch] [--limit N]`: read the human peer ("you")'s DM inbox — the

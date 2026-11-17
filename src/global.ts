@@ -73,6 +73,10 @@ async function globalUp(argv: string[]): Promise<void> {
   // `paw cron` fires on this tick too (every space), AFTER global and even when bringing global up fails:
   // a scheduled wake-up must not depend on the wake authority being healthy. A fire is a DM, nothing else.
   const cronAfter = () => cronSweep().catch((e: Error) => console.error(`paw keeper: cron sweep failed: ${e.message}`));
+  // GitHub PR activity → DMs from "github" (src/github-relay.ts): one sweep per machine over every space, after
+  // cron and, like it, whether or not bringing global up worked.
+  const githubAfter = () =>
+    import("./commands/github.ts").then((m) => m.githubKeeperSweep()).catch((e: Error) => console.error(`paw keeper: github sweep failed: ${e.message}`));
   // The hibernation sweep of every OTHER space with opted-in agents (team2027, a remote mesh…): each on its own
   // manager handle, only where this machine's manager already runs, failures isolated per space — and, like
   // cron, regardless of whether bringing global up worked.
@@ -107,6 +111,7 @@ async function globalUp(argv: string[]): Promise<void> {
   }).finally(async () => {
     await othersAfter();
     await cronAfter();
+    await githubAfter();
   });
   // No automatic unstick sweep here any more. The keeper pressed Esc on canary-env-52 at a permission
   // prompt (2026-09-16), rejecting the call; the operator's rule is that nothing touches a live agent
