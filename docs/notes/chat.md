@@ -571,6 +571,31 @@ agent BEFORE the chat started … not start from an empty screen", on open AND o
   the air after your message instead of after the ⏳. And `trailingBlank` is cleared on submit, since a
   blank the previous round ended on is no longer adjacent once a prompt and your typed line sit between.
 
+## message times (2026-11-16)
+
+The operator asked for timestamps and picked "time in the gap row" from four drawn options: a
+message's local time sits right-aligned on the BLANK ROW ABOVE it, so it costs no row and moves no text.
+The day is named on the first stamp and whenever it changes (`sun 15 nov 09:41`, then `09:44`, then
+`today 13:29`). `src/chat-stamp.ts` decides what a stamp says and draws it: the cursor is moved to its
+column (CHA), so a copied line carries no run of blanks. The Painter decides where it goes.
+
+- **Which entries:** live DMs, channel posts, the cross-session echo, the earlier block (all `ts` on
+  their `chat` entry), and your typed line (`echo` entry `ts` = when you pressed Enter). The other-peer
+  rows in the messages view keep their own age layout. On a tty the old `(3h ago)` tag is dropped from
+  stamped lines; off a tty there are no stamps (the cursor moves would be garbage) and the tag stays.
+- **Where:** `Painter.put` gives the stamp the blank row this entry opens (a side change). If the last
+  entry already left a trailing blank, the stamp is drawn OVER it (`OVER_BLANK` = up one row + clear the
+  row). With neither, the stamp takes a row of its own. `paintedRows` counts an `OVER_BLANK` line as no
+  row, or the in-place loader swap (`placeOver`) would erase one row too many.
+- **Your line:** readline has already drawn it, so `stampTypedLine` writes the stamp onto the blank
+  above it with save/restore cursor (DECSC/DECRC). That happens only when the painter has a trailing
+  blank (the first line of a round); the painter's `echo` case applies the same rule, so a redraw matches.
+  A second line typed right after a receipt gets no stamp, because there is no row for one.
+- **Day tracking** is painter state (`stampDay`), saved and restored with `lastSide`/`trailingBlank`
+  (`PaintState`), so a repaint in place doesn't name the day again. `reset()` (redraw) starts over.
+- Tests: `check:chat` (`stamp:` lines). Seen live in an isolated space under tmux: two DMs, a typed
+  line, a ←/→ redraw with identical stamps.
+
 ## views
 
 - **`paw chat` views: logs | chat | messages | beads (`src/chat-views.ts`; tasks 2026-10-07, the order

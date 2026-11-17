@@ -285,6 +285,51 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
   pr.paint({ kind: "chat", text: "reply", side: "peer", tight: false }, "chat");
   assert(pr.paint({ kind: "chat", text: "joined", side: "sys", tight: false }, "chat") === "joined\n", "painter: after a trailing blank, a side change adds no second blank");
 
+  // Message times (2026-11-16, "time in the gap row"): the blank row above a message carries its time
+  {
+    const { stampText, OVER_BLANK } = await import("../src/chat-stamp.ts");
+    const { paintedRows } = await import("../src/chat-banner.ts");
+    const at = (d: string) => new Date(d).getTime();
+    const now = at("2026-11-16T13:30:00");
+    assert(stampText(at("2026-11-15T09:41:00"), undefined, now).text === "sun 15 nov 09:41", "stamp: the first one names its day");
+    assert(stampText(at("2026-11-15T09:44:00"), stampText(at("2026-11-15T09:41:00"), undefined, now).day, now).text === "09:44", "stamp: the same day again is just HH:MM");
+    assert(stampText(at("2026-11-16T13:29:00"), "2026-11-15", now).text === "today 13:29", "stamp: a new day that is today says `today`");
+    let bad = "";
+    try { stampText(Number.NaN, undefined, now); } catch (x) { bad = (x as Error).message; }
+    assert(bad.includes("finite"), "stamp: a message with no usable time fails loud, never a made-up stamp");
+
+    const plain = (x: string) => x;
+    const SP = () => new Painter(render, plain, "  ", () => false, undefined, { cols: () => 40, now: () => now });
+    const strip = (x: string) => x.replace(/\u001b\[[0-9;]*[A-Za-z]/g, "");
+    const seqT: E[] = [
+      { kind: "banner", text: "BANNER\n\n" },
+      { kind: "chat", text: "devops: one", side: "peer", tight: false, ts: at("2026-11-15T09:41:00") },
+      { kind: "chat", text: "devops: two", side: "peer", tight: false, ts: at("2026-11-15T09:44:00") },
+      { kind: "chat", text: "◌ waiting", side: "sys", tight: true },
+      { kind: "chat", text: "devops: three", side: "peer", tight: false, ts: at("2026-11-16T13:20:00") },
+      { kind: "echo", text: "you → devops> 1748 is merged", ts: at("2026-11-16T13:29:00") },
+      { kind: "echo", text: "you → devops> again", ts: at("2026-11-16T13:29:30") },
+    ];
+    const sp = SP();
+    const parts = seqT.map((e) => sp.paint(e, "chat"));
+    assert(parts[1]!.startsWith(OVER_BLANK) && strip(parts[1]!).startsWith("sun 15 nov 09:41\n"), "stamp: after the banner's blank, the time is drawn OVER that blank — no new row");
+    assert(parts[1]!.includes("\u001b[25G"), "stamp: right-aligned by moving the cursor to its column (40 cols − 16 chars + 1), not by padding spaces");
+    assert(parts[2]!.startsWith(OVER_BLANK) && strip(parts[2]!).startsWith("09:44\n"), "stamp: the next message, same day, takes the blank its predecessor left");
+    assert(!parts[4]!.startsWith(OVER_BLANK) && strip(parts[4]!).startsWith("today 13:20\ndevops: three"), "stamp: after a tight line, the gap the message opens carries the time (a new day named)");
+    assert(parts[5]!.startsWith(OVER_BLANK) && strip(parts[5]!).startsWith("13:29\nyou →"), "stamp: your typed line gets the blank above it");
+    assert(parts[6] === "you → devops> again\n", "stamp: a typed line with no blank above gets none — readline already drew it, there is no row to use");
+    const again2 = SP();
+    assert(seqT.map((e) => again2.paint(e, "chat")).join("") === parts.join(""), "stamp: a redraw paints the same stamps as the live screen");
+    assert(new Painter(render).paint(seqT[1]!, "chat") === "devops: one\n\n", "stamp: off (not a tty) → no stamp row at all");
+    assert(paintedRows(parts[2]!, 40) === 2 && paintedRows("x\n\n", 40) === 2, "stamp: a row drawn over the blank above adds no row (the in-place loader swap erases exactly what was painted)");
+    const st = SP();
+    st.paint(seqT[1]!, "chat");
+    const saved = st.state();
+    st.paint(seqT[2]!, "chat");
+    st.restore(saved);
+    assert(strip(st.paint(seqT[2]!, "chat")).startsWith("09:44\n"), "stamp: restoring a saved state restores the day too (a repaint doesn't re-name the day)");
+  }
+
   // History — conversation kept forever, only trace (log) entries bounded
   const h = new History(2);
   h.push({ kind: "banner", text: "B" });

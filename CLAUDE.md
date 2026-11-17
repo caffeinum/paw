@@ -316,6 +316,9 @@ Each entry: what it is + the most load-bearing rule. Full notes behind the link.
 - `src/chat-backlog.ts` — the earlier block: `paw chat @x` (and every `@name` switch) opens on the last 20 messages
   with x from 24h (`--history N`, 0 = off, `/more [N]` older), between `── earlier ──`/`── now ──`, dimmed, behind a
   `◌` loader; never news (no follow/await/cursor), deduped by id against live. → [chat.md#earlier-block](docs/notes/chat.md#earlier-block) → [remote-mesh.md#paw-chat--paw-web-taps](docs/notes/remote-mesh.md#paw-chat--paw-web-taps)
+- `src/chat-stamp.ts` — message times: local `HH:MM` right-aligned on the blank row above each message (no row, no
+  shifted text), the day named when it changes; drawn over a trailing blank with `OVER_BLANK` (paintedRows counts it
+  as none), your typed line stamped via save/restore cursor; tty only. → [chat.md#message-times-2026-11-16](docs/notes/chat.md#message-times-2026-11-16)
 - `src/ux.ts` — THE terminal vocabulary: glyphs `◌ ● ○ ✓ ✕ ⚠ ↻`, `reasonWord` (connection refused · no answer · hung up ·
   no route · dns failed · rejected credentials · reconnecting — never a raw library string on a screen), `problemLine`
   (`<glyph> <what> — <doing> · <you can>`), `presenceWord` (online · working · waiting · offline). One fact in ONE place:

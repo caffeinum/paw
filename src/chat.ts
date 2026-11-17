@@ -67,7 +67,7 @@ import { Outbox, type OutEvent } from "./outbox.ts";
 import { LinkProbe, PROBE_MS, isAckTimeout } from "./link-probe.ts";
 import { OFFLINE_DEBOUNCE_MS, PresenceHold, type PresenceLine } from "./presence-hold.ts";
 import { AwaitTracker } from "./chat-awaiting.ts";
-import { arrowRun, CLEAR_ALL, displayWidth, fitWidth, entryVisible, hintFor, hintWithTag, whereTag, History, type FooterCell, LogFollower, navKey, scrollKey, Painter, type Entry, pickerWindow, showsChat, showsLogs, showsPeers, stepView, VIEW_LABEL, viewNeedsTarget, type ChatView } from "./chat-views.ts";
+import { arrowRun, CLEAR_ALL, displayWidth, fitWidth, entryVisible, hintFor, hintWithTag, whereTag, History, type FooterCell, LogFollower, navKey, scrollKey, Painter, type Entry, type PaintState, pickerWindow, showsChat, showsLogs, showsPeers, stepView, VIEW_LABEL, viewNeedsTarget, type ChatView } from "./chat-views.ts";
 import { classifyPeer, isPeerForwardOf, mergeByTs, peerRows, peerSummary, pickPeers, type PeerMsg, type RawMsg } from "./chat-peers.ts";
 import { agentBeads, agentInfo, CLOSED_RECENT_MS, hitAt, renderTasksPanel, type InfoFacts, type TasksHit } from "./chat-tasks.ts";
 import { MOUSE_OFF, MOUSE_ON, SELECT_MODE_KEY, stripMouse, type MouseEvent } from "./mouse.ts";
@@ -680,7 +680,10 @@ async function chat(argv: string[]): Promise<void> {
       strip: stripVTControlCharacters,
       tag: (n) => agentTag(n),
     }).join("\n");
-  const painter = new Painter(renderBlock, c.dim, "  ", attachesAbove, layPeer);
+  // Message times on the blank row above each message (src/chat-stamp.ts) — a terminal only: off a tty
+  // the cursor moves would be garbage, and the old "(3h ago)" tag stays instead.
+  const stamps = !!process.stdout.isTTY;
+  const painter = new Painter(renderBlock, c.dim, "  ", attachesAbove, layPeer, stamps ? { cols: () => process.stdout.columns || 80, now: () => Date.now() } : undefined);
   const follower = new LogFollower(
     (name) => {
       const away = awayOf(name);
@@ -702,7 +705,7 @@ async function chat(argv: string[]): Promise<void> {
   let lastPainted: Entry | undefined;
   /** How `lastPainted` was painted (its text, the painter's state before it, the width then) — so a
    *  loader that is still the last thing on screen can be swapped in place for what it was loading. */
-  let lastPaint: { text: string; before: { lastSide: Painter["lastSide"]; trailingBlank: boolean }; cols: number } | undefined;
+  let lastPaint: { text: string; before: PaintState; cols: number } | undefined;
   /** The banner's history entry (its text is rewritten as fields load) and how many rows it last took. */
   let bannerEntry: (Entry & { kind: "banner" }) | undefined;
   let bannerRows = 0;
@@ -722,7 +725,7 @@ async function chat(argv: string[]): Promise<void> {
       return;
     }
     if (!entryVisible(e, view, curName, follower.readable(curName))) return;
-    const before = { lastSide: painter.lastSide, trailingBlank: painter.trailingBlank };
+    const before = painter.state();
     const text = painter.paint(e, view);
     if (!text) return;
     lastPaint = { text, before, cols: process.stdout.columns || 80 };
@@ -753,8 +756,21 @@ async function chat(argv: string[]): Promise<void> {
    * one multi-line message together; `from` marks an INBOUND DM with its sender, which the logs view
    * needs (another agent's DM stays visible there — hiding it would hide mail).
    */
-  function emit(s: string, side: Side = "sys", tight = false, from?: string): void {
-    show({ kind: "chat", text: s, side, tight, ...(from !== undefined ? { from } : {}) });
+  function emit(s: string, side: Side = "sys", tight = false, from?: string, ts?: number): void {
+    show({ kind: "chat", text: s, side, tight, ...(from !== undefined ? { from } : {}), ...(ts !== undefined ? { ts } : {}) });
+  }
+
+  /**
+   * Your typed line's time, on the blank row above it — what the painter's `echo` case draws on a
+   * redraw. readline has already drawn the line and moved below it, so the stamp is written up there and
+   * the cursor put back (DECSC/DECRC). Only over a blank the last round left; with none there is no row.
+   */
+  function stampTypedLine(echo: { text: string; ts?: number }): void {
+    if (echo.ts === undefined || !painter.trailingBlank || view === "beads" || !process.stdout.isTTY) return;
+    const row = painter.stampFor(echo.ts);
+    if (row === undefined) return;
+    const up = paintedRows(`${echo.text}\n`, process.stdout.columns || 80) + 1;
+    process.stdout.write(`\u001b7\u001b[${up}A\r${row}\u001b8`);
   }
 
   /** Redraw the whole current view: clear the screen AND the scrollback, then reprint every entry the
@@ -769,7 +785,7 @@ async function chat(argv: string[]): Promise<void> {
     for (const e of history.entries) {
       if (!entryVisible(e, view, curName, readable)) continue;
       if (e.kind === "chat" && e.bannerDelta && bannerEntry) continue; // the banner below says it now
-      const before = { lastSide: painter.lastSide, trailingBlank: painter.trailingBlank };
+      const before = painter.state();
       const text = painter.paint(e, view);
       out += text;
       if (text) {
@@ -1408,7 +1424,7 @@ async function chat(argv: string[]): Promise<void> {
     // Any message — DM or channel — can arrive stale: JetStream redelivers a copy that a prior
     // (crashed/quit) session never acked, after AckWait (~30s). Stamp its age so a redelivered old
     // broadcast/DM never reads as a live reply. Empty for anything sent in the last minute.
-    const age = agoTag(m.ts);
+    const age = stamps ? "" : agoTag(m.ts); // the stamp above the message says when
     // Filtered session? Anything outside it is NOT shown and NOT marked read — hiding a message and
     // then advancing the cursor past it would silently consume mail you never saw. It is announced in
     // one dim line so nothing vanishes without trace, and it stays in `paw inbox` to be read for real.
@@ -1454,8 +1470,8 @@ async function chat(argv: string[]): Promise<void> {
       // The receipt under the prompt is answered BEFORE the reply is painted, so it is replaced where it
       // stands (once the reply sits under it, it could only be dropped from the history).
       if (!meta.historical && curName && from.toLowerCase() === curName.toLowerCase()) setReceipt(stillPending ? `${LOADER} waiting for ${from} (${stillPending} more)` : undefined);
-      if (curName && from.toLowerCase() === curName.toLowerCase()) emit(said(`${tag}${agentTag(from)}${fwdMark}${age}${took}${c.dim(":")}`, text), "peer", false, from);
-      else emit(said(`${tag}${agentTag(from, c.bold)} ${c.dim("→ you")}${fwdMark}${age}${took}${c.dim(":")}`, text), "peer", false, from);
+      if (curName && from.toLowerCase() === curName.toLowerCase()) emit(said(`${tag}${agentTag(from)}${fwdMark}${age}${took}${c.dim(":")}`, text), "peer", false, from, m.ts);
+      else emit(said(`${tag}${agentTag(from, c.bold)} ${c.dim("→ you")}${fwdMark}${age}${took}${c.dim(":")}`, text), "peer", false, from, m.ts);
       advanceCursor(space, m.ts); // shown here = seen, so `paw inbox` won't re-surface it as new
       // Follow the conversation: an empty input means you have not started a reply to anyone else, so
       // the next thing you type is almost certainly for whoever just spoke. Announced, never silent —
@@ -1482,7 +1498,7 @@ async function chat(argv: string[]): Promise<void> {
       emit(said(`${tag}${c.yellow("(@" + ((m as { toService?: string }).toService ?? "?") + ")")} ${m.from.name}${age}${c.dim(":")}`, text), "peer");
     } else {
       if (m.id) shownIds.add(m.id); // the messages view's tap won't print it a second time
-      const line: Entry = { kind: "chat", text: said(`${tag}${c.dim("#" + ((m as { channel?: string }).channel ?? "?"))} ${m.from.name}${age}${c.dim(":")}`, text), side: "peer", tight: false };
+      const line: Entry = { kind: "chat", text: said(`${tag}${c.dim("#" + ((m as { channel?: string }).channel ?? "?"))} ${m.from.name}${age}${c.dim(":")}`, text), side: "peer", tight: false, ts: m.ts };
       // The tap beat this delivery and placed it as a peer row: the line takes the row's place, once.
       if (!swapPeerRowFor(m.id, line)) show(line);
     }
@@ -1558,7 +1574,7 @@ async function chat(argv: string[]): Promise<void> {
         // placeholder (not as raw `--- [Pasted text #1] ---` fences). The painter indents rows 2+.
         const sent = parseComposed(body);
         const rows = railMessage(sent.body, sent.blocks, { ...viewOpts(), width: viewOpts().width - 2, rail: RAIL.trimStart() });
-        emit(rows.length === 1 && !sent.blocks.length ? `${header} ${sent.body.trim()}` : [header, ...rows].join("\n"), "you");
+        emit(rows.length === 1 && !sent.blocks.length ? `${header} ${sent.body.trim()}` : [header, ...rows].join("\n"), "you", false, undefined, msg.ts);
       } catch {
         /* a render failure must never abort the tap iterator */
       }
@@ -1587,7 +1603,7 @@ async function chat(argv: string[]): Promise<void> {
       .join("\n");
   /** One earlier message, drawn as its live twin would be (markdown, images, pastes on the rail) — dimmed. */
   const historyEntry = (agent: string, e: FeedEntry): Entry => {
-    const age = agoTag(e.ts);
+    const age = stamps ? "" : agoTag(e.ts);
     let text: string;
     if (e.dir === "out") {
       const sent = parseComposed(e.text);
@@ -1617,14 +1633,13 @@ async function chat(argv: string[]): Promise<void> {
     readline.clearScreenDown(process.stdout);
     readline.moveCursor(process.stdout, 0, -paintedRows(was.text, cols));
     readline.clearScreenDown(process.stdout);
-    painter.lastSide = was.before.lastSide;
-    painter.trailingBlank = was.before.trailingBlank;
+    painter.restore(was.before);
     let out = "";
     lastPainted = undefined;
     lastPaint = undefined;
     for (const e of block) {
       if (!entryVisible(e, view, curName, follower.readable(curName))) continue;
-      const before = { lastSide: painter.lastSide, trailingBlank: painter.trailingBlank };
+      const before = painter.state();
       const text = painter.paint(e, view);
       out += text;
       if (text) {
@@ -3031,9 +3046,10 @@ async function chat(argv: string[]): Promise<void> {
     // opens with a blank, putting air after your own message instead of after the ⏳ receipt.
     // (Recorded as an `echo` entry, so a redraw reproduces your line; the painter asserts both facts.)
     if (typed) {
-      const echo: Entry = { kind: "echo", text: echoed };
+      const echo: Entry = { kind: "echo", text: echoed, ts: Date.now() };
       history.push(echo);
       lastPainted = echo;
+      stampTypedLine(echo);
       // A paste this line mentions shows right under it — where it sits in the message the agent gets.
       if (!bang) emitRows(railPastes(rawLine, stage().pastes, viewOpts()));
     }
