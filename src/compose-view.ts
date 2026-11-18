@@ -149,10 +149,21 @@ export function fitRows(rows: readonly string[], room: number, opts: ViewOpts): 
  * the end, as it does on the wire).
  */
 export function railMessage(body: string, blocks: readonly PasteBlock[], opts: ViewOpts): string[] {
-  const out: string[] = [];
-  for (const line of foldBlanks(body.split("\n"))) out.push(...railLine(line, blocks, opts));
-  for (const b of blocks) if (!body.includes(b.placeholder)) out.push(...pasteRows(b, opts).map((r) => railOf(opts) + r));
-  return out;
+  return [...foldBlanks(body.split("\n")).flatMap((line) => railLine(line, blocks, opts)), ...strayPastes(body, blocks, opts)];
+}
+
+/** The rail rows of every paste `text` never mentions — they ride along at the end of the message all the same. */
+export function strayPastes(text: string, blocks: readonly PasteBlock[], opts: ViewOpts): string[] {
+  return blocks.filter((b) => !text.includes(b.placeholder)).flatMap((b) => pasteRows(b, opts).map((r) => railOf(opts) + r));
+}
+
+/**
+ * A message you sent, read back from the wire (the earlier block, another session's echo), under its
+ * `header`: one row when it is one line with no paste, else the header with the message on the rail.
+ */
+export function saidRows(header: string, sent: { body: string; blocks: readonly PasteBlock[] }, opts: ViewOpts): string[] {
+  const rows = railMessage(sent.body, sent.blocks, opts);
+  return rows.length === 1 && !sent.blocks.length ? [`${header} ${sent.body.trim()}`] : [header, ...rows];
 }
 
 /** The fence {@link composePastes} writes around each payload — read back so an echo of a SENT message

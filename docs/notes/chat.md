@@ -383,10 +383,11 @@ decides how long the `◌` loaders stay up.
     above its own line); the hint row names the staged paste instead.
   - **the hint row turns into the draft's keys** while lines are held or a paste is staged
     (`draft · 3 lines · 📋 1 pasted │ enter sends  alt+enter or \ new line  ⌫ … ctrl+u …`).
-  - **the cross-session echo** (`↗ you → x (other session):`) reads the wire text back with
+  - **the cross-session echo** (`you (elsewhere) → x:`) reads the wire text back with
     `parseComposed` (the inverse of `composePastes`' fences) and draws it on the same rail: blank runs
     folded, each paste inline at its placeholder, never the raw `--- [Pasted text #1] ---` fences. It is
-    no longer markdown-rendered — it is your own text, shown as typed.
+    no longer markdown-rendered — it is your own text, shown as typed (laid out at paint time since
+    2026-11-18 — an `outbound` entry, see the next note).
   - **The wire text is unchanged** — `check:chat-tty` 13 asserts the exact DM (incl. the trailing space
     the placeholder rewrite has always left: `[Pasted text #1] \n`), and passes on the old code too.
   Tests: `check:paste` (wrap, fold, inline paste, parse round-trip, the screenshot's message),
@@ -396,92 +397,83 @@ decides how long the `◌` loaders stay up.
 
 - **What the operator saw** (a screenshot, reproduced under tmux): composing a multi-line message — `\`
   and alt+enter lines, a paste inside line 3 — while the agent replied, the reply printed IN THE MIDDLE
-  of the draft. Enter didn't heal it: the sent message stayed split in the scrollback, its tail got a
-  time stamp of its own and `◌ queued` sat under the tail only; a ←/→ redraw replayed the split. A
-  single line was always right.
-- **The cause:** `holdLine` committed each held row to the history as it was typed (`heldEntries` kept
-  them to splice back out for ⌫ / Ctrl+U), an incoming DM was appended after them, and `show()` erased
-  only from the current line's first row; Enter pushed an echo of the last line alone, after the DM.
-  Every `\` row also showed twice (readline's own echo of `prompt+line\` stayed), and a staged paste's
-  `[N pasted]` badge was never drawn (the caret 11 columns past the text).
-- **The live input area.** Held lines live only in `held` + `draftHead` (the prompt the first line was
-  typed at); nothing of a draft is in the history before Enter. On screen, top to bottom:
-  `[draft rows][picker | chooser][readline's prompt + line][hint row]`. Two helpers own it and are the
-  only writers above the prompt. `eraseInput(above, cursorRow)` climbs the RECORDED rows — `drawnDraft.rows`,
-  the overlay's own erase, the prompt's rows and `above` rows replaced over it — and clears down.
-  `paintInput()` paints the draft (`draftRows`, src/compose-view.ts — the rail look held rows always had),
-  then the overlay or `rl.prompt(true)`, and zeroes readline's `prevRows`: its refresh climbs that count
-  to find the prompt, and a count from before a write climbed into what was written (the prompt wrapper
-  fails loud if node stops keeping it, where `prompt()` refreshes — not under TERM=dumb). A message
-  (`show`), the loader swap (`placeOver`), the banner's in-place repaint, `redraw()` (history, then the
-  draft), hold/unhold, a paste's settle, the image drop, Ctrl+L, a resize and quitting all go through
-  them: a message lands where the draft began and the area is painted back under it. Off a tty there is
-  no area: nothing is erased or painted (no cursor control in piped output).
-- **Rows as the terminal and readline lay them out** (src/width.ts). `wrappedWidth`/`rowsAt`: a wide
-  glyph that would start in the last column wraps whole; a tab goes to the next multiple of 8. `echoRows`
-  (the prompt + line live, and the echo Enter leaves) adds readline's caret row for a line ending exactly
-  at the edge — kRefreshLine writes a space there so the terminal gives the caret a row — but only when
-  READLINE's count ends there too (`readlineWidth`: node's width per code point, no VS16 look-ahead, no
-  ZWJ joining). A `❤️` filling the row is 2 columns on screen and 1 to readline, so it gets no caret row;
-  counting one erased the blank row above the draft and put the next reply's time over the last row of
-  the reply before. `drawHint` follows the same layout (it wiped a row the input fills).
-- **Never a clear from the home row.** Every clear paw starts at a row's first column — the area, the
-  picker and the chooser, the pre-shell frame — is `CLEAR_BELOW` (src/chat-banner.ts): its first row
-  cleared as a LINE, the rest from the row under it. tmux (`scroll-on-clear`, on by default) takes a
-  clear-to-end from the home row for "clear the screen" and copies the screen into the scrollback first;
-  a fresh pane's banner is on that row, so repainting it (a lookup or the roster settling) left the
-  banner, a draft under it and the hint row in the scrollback (`paw chat --all` a stale prompt, every
-  boot). Ctrl+L: readline clears from home itself, so the draft is erased first and painted back one
-  row down.
-- **What counting can't reach → `redraw()`.** The erase counts up from the cursor: in place only while
-  the area was painted at this width and never stood taller than the screen since (`drawnDraft.tallest`,
-  noted after every keystroke and prompt — the terminal only scrolls forward, so a top that scrolled off
-  stays off). Otherwise it touches nothing and the caller redraws; a resize mid-draft schedules that
-  (150ms, shared with the messages view's relayout); quitting repaints the history only
-  (`redrawHistory`). The cap keeps it rare: a draft taller than its room (`draftRoom`: the screen less
-  the prompt, the hint, an open overlay's real height and two spare rows — a stamp over the blank above,
-  a row the line may wrap onto) shows its last rows under `  │ … +N more rows above`, re-capped at the
-  next keystroke as the line grows; opening or closing an overlay re-fits it. The message sent is whole.
+  of the draft. Enter didn't heal it: the sent message stayed split in the scrollback, its tail stamped
+  on its own with `◌ queued` under the tail only, and a ←/→ redraw replayed the split. A single line was
+  always right.
+- **The cause:** each held row was committed to the history as it was typed (`heldEntries` kept them to
+  splice back out for ⌫ / Ctrl+U), a DM was appended after them, and `show()` erased only from the
+  current line's first row; Enter pushed an echo of the last line alone, after the DM.
+- **The live input area.** Held lines live only in `held` + `draftHead` — the prompt of the target the
+  draft goes to: taken at the first hold, re-taken by `syncPrompt` when the boot settles or an `@name`
+  switch moves the target (the chooser's pick, the picker's, a replayed one). Nothing of a draft is in the
+  history before Enter. On screen: `[draft rows][picker | chooser][readline's prompt + line][hint row]`.
+  Two helpers own it and are the only writers above the prompt: `eraseInput(above, cursorRow)` climbs the
+  RECORDED rows (`drawnDraft.rows`, the overlay's own erase, the prompt's rows, `above`) and clears down;
+  `paintInput()` paints the draft (`draftRows`, src/compose-view.ts), then the overlay or
+  `rl.prompt(true)`, and zeroes readline's `prevRows` (its refresh climbs that count — one from before a
+  write climbed into what was written; the prompt wrapper fails loud if node stops keeping it). A message
+  (`show`), the loader swap (`placeOver`), the banner's in-place repaint, `redraw()`, hold/unhold, a
+  paste's settle, the image drop, Ctrl+L, a resize and quitting all go through them: a message lands where
+  the draft began and the area is painted back under it. Off a tty there is no area: no cursor control in
+  piped output.
+- **Rows counted as the terminal lays them out** (src/width.ts, measured in tmux 3.8). `wrappedWidth`: a
+  wide glyph that would start in the last column wraps whole — one wide only by its VS16 (`⚠️`, `❤️`) is
+  placed narrow, widened after, and stays there; a tab goes to the next multiple of 8. readline is handed
+  the same count (`_getDisplayPos` → `displayPos`, fail loud if the hook is gone): by its own (node's width
+  per code point) `⚠️` was one column, and on a row of them its refresh climbed too few rows, left the hint
+  row inside the line and the caret short of the text. `echoRows` = those rows + readline's caret row for
+  a line ending exactly at the edge (kRefreshLine writes a space there).
+- **Never a clear from the home row.** tmux (`scroll-on-clear`, on by default) takes a clear-to-end from
+  the home row for "clear the screen" and copies the screen into the scrollback first. Every clear paw
+  starts at a row's first column — the area, the picker, the chooser, the pre-shell frame — is
+  `CLEAR_BELOW` (src/chat-banner.ts): that row cleared as a LINE, the rest from the row under it. Ctrl+L:
+  readline clears from home and redraws its line there, and each later refresh of it cleared from home
+  again (a copy of the prompt and hint per keystroke) — so the area is erased before that clear and
+  painted back one row down, draft or not.
+- **What counting can't reach → `redraw()`.** The erase counts up from the cursor: in place only while the
+  area was painted at this width and never stood taller than the screen since (`drawnDraft.tallest` — the
+  terminal only scrolls forward, a top that scrolled off stays off). Otherwise the caller redraws; a
+  resize schedules that (150ms); quitting repaints the history only. A draft taller than its room
+  (`draftRoom`: the screen less the prompt, the hint, an open overlay's `height()` and two spare rows)
+  shows its last rows under `  │ … +N more rows above`; opening or closing an overlay re-fits it. An
+  overlay's `height()` is what it draws: each picker row is cut to one terminal row (`fitPainted` — rows
+  that wrapped made the area outgrow the screen). The message sent is whole.
 - **readline's own writes into the area.** A paste mutes readline — `_writeToOutput` AND `_refreshLine`
-  (fail loud if either hook is gone) — from its START marker, with `pasteAnchor` = where the cursor stood
-  before readline folded the chunk in: inside a chunk readline writes each character raw and refreshes
-  on the last only, so an unmuted paste that wrapped left a stale copy a reply then landed under. Nothing
-  measures by readline's buffer meanwhile (hint, row count, footer, banner, re-cap, picker filter), and
-  both ways a paste ends (typed text; a placeholder under its badge prompt) settle in ONE `endPaste()` →
-  `repaintInput({ cursorRow: anchor })`. `@` + Tab Tab: readline only completes; the candidates are a
-  note above the area (readline printed them inside it, over the hint row).
-- **Enter = ONE entry.** `onLine` records the draft AS TYPED — a `sent` entry: head, the lines the send
-  keeps (`joinLines(…).trim()`: no empty rail row), its pastes copied before the send consumes the stage —
-  and the Painter lays it out with `draftRows` at PAINT time, at the width then, like `peer` rows (stored
-  laid out, a ←/→ after a resize wrapped its rows off the rail). `settleDraft` erases the area, readline's
-  echo of the last line included, and paints it: one time stamp over the blank above, the receipt right
-  under it; the logs view gets it plain, once. A draft of blank lines sends nothing and goes whole, the
-  painter's side and gap untouched (taking the `you` side gave the next reply a second blank row). A
-  single line is unchanged: readline's echo, `stampTypedLine`, its paste rows.
-- **Edge rules.** `\` hands readline's echo of the line to the erase (its rows replace the prompt's). ⌫ on
-  the empty rail and Ctrl+U take lines back, repainted in place. `/quit` / `/exit` on the rail is tested
-  on that line alone, before the join: chat quits and prints the draft once as unsent, composed as Enter
-  sends it (a staged paste's text too). `!` on the rail is text (command mode ran the draft as a shell
-  script). A draft begun during the boot takes the settled prompt as its head (`syncPrompt`). A refused
-  line comes back as typed through `typeBack` — a multi-line one as the draft it was: a `"\n"` written
-  into readline is Enter (the lines went out again, each refused again, the rest glued in reverse). The
-  ↓ picker over a draft: [echo and picker](#echo-and-picker). The wire text is byte-identical
-  (`joinLines` + `composePastes`; check:chat-tty 13).
+  — from its START marker (`pasteAnchor` = where the cursor stood); both ways a paste ends settle in ONE
+  `endPaste()` → `repaintInput({ cursorRow: anchor })`. `@` + Tab Tab: readline only completes; the
+  candidates are a note above the area.
+- **Enter = ONE entry.** `onLine` records a `sent` entry — head, the lines the send keeps, its pastes
+  copied before the send consumes the stage — and the Painter lays it out with `draftRows` at PAINT time,
+  at the width then. Your messages read back from the wire are laid out the same way (`outbound`: the
+  earlier block's, another session's echo — `saidRows`); stored laid out, a redraw after a resize wrapped
+  their rows off the rail. `settleDraft` erases the area, readline's echo of the last line included, and
+  paints the entry: one time stamp over the blank above, the receipt right under it. A draft of blank
+  lines sends nothing and leaves the painter's side and gap alone. A single line is unchanged: readline's
+  echo, `stampTypedLine`, its paste rows. A staged paste no line mentions (its placeholder deleted) still
+  rides along, and `flush` shows it under the message (`strayPastes`).
+- **Edge rules.** `\` hands readline's echo of the line to the erase. ⌫ on the empty rail takes the last
+  line back; Ctrl+U clears the draft and what was staged for it (pastes, images — the next line sent them
+  unseen), both repainted in place. `/quit` / `/exit` on the rail quits and prints the draft once as
+  unsent, composed as Enter sends it. `!` on the rail is text. A refused line comes back through
+  `giveBack` → `typeBack`, a multi-line one as the draft it was (a `"\n"` written into readline is Enter);
+  with the input in use, or off a terminal (readline glued it to the next piped line, and its line
+  rewrite crashed a pipe), it is kept and printed on quit. ↓ on an empty line with more keys in the same
+  chunk (a laggy link): the arrows are split off (`pickerOpener`) and the rest re-emitted a tick later as
+  the picker's filter — folded into the line first, Enter sent it as text. The picker over a draft:
+  [echo and picker](#echo-and-picker). The wire text is byte-identical (`joinLines` + `composePastes`;
+  check:chat-tty 13).
 - **Not changed:** a line and a paste in ONE stdin chunk during the boot (`t-one\` + Enter + a paste at
-  `◌>`) lose the held line and send a payload line alone (eaff988 too) — the paste listener opens on the
-  chunk, so readline's submission of `t-one\` counts as payload; splitting a chunk at the START marker
-  would fix it. A typed multi-character chunk is written raw by readline (`tallest` catches it). Where
-  readline and the terminal disagree on a row edge BEFORE the cursor (a row of VS16/ZWJ emoji),
-  readline's own cursor and refresh are off and the erase follows them; readline's refresh also still
-  clears from the prompt's row, the home row only when nothing is above the prompt (its Ctrl+L with no
-  draft). With a line exactly the width being typed, the hint sits under readline's caret row; a second
-  message sent mid-turn gets no receipt of its own (the one-receipt design).
-- Tests: `check:paste` (draftRows, fitRows, wrappedWidth/rowsAt/echoRows, `readlineWidth` against node's
-  readline itself for VS16/ZWJ/flags/keycaps/marks), `check:chat` (a `sent` entry laid out at the paint
-  width, its one stamp and receipt, redraw == live; source pins on the helpers, the mutes, `CLEAR_BELOW`,
-  the picker's Enter and Esc, `typeBack`), and the real-terminal **`check:chat-draft`**: tmux on a private
-  socket, an isolated space, a raw `echoer`, every screen read with its scrollback, every wire DM byte for
-  byte — scenarios A–AQ, each a screen a tester or reviewer saw wrong.
+  `◌>`) lose the held line (eaff988 too — splitting the chunk at the START marker would fix it). A typed
+  multi-character chunk is written raw by readline (`tallest` catches it). With a line exactly the width,
+  the hint sits under readline's caret row; a second message sent mid-turn gets no receipt of its own
+  (the one-receipt design).
+- Tests: `check:paste` (draftRows, fitRows, saidRows, strayPastes, wrappedWidth/echoRows against tmux's
+  measured layout and against readline given `displayPos`, fitPainted), `check:chat` (`sent` and
+  `outbound` entries laid out at the paint width, the stamp and receipt, redraw == live, `pickerOpener`;
+  source pins on the helpers, the mutes, `CLEAR_BELOW`, the picker, `giveBack`), and the real-terminal
+  **`check:chat-draft`**: tmux on a private socket, an isolated space, a raw `echoer`, every screen read
+  with its scrollback, every wire DM byte for byte — scenarios A–AY, each a screen a tester or reviewer
+  saw wrong.
 
 ## earlier block
 
@@ -513,10 +505,11 @@ agent BEFORE the chat started … not start from an empty screen", on open AND o
 - **Never news.** The block is read through `readOwnConversation` (src/chat-own.ts — the tasks seed's
   reader) and placed directly; it never passes through `onMessage`, so it can't follow/retarget, answer an
   await, or advance the unread cursor (`check:chat` greps `loadBacklog` for it; `check:chat-tty` 15 asserts
-  the cursor didn't move). Entries are `historical: true` chat entries: shown in the chat view only (the
+  the cursor didn't move). Entries are `historical: true` (`chat` theirs, `outbound` yours): shown in the chat view only (the
   logs view's transcript already says it — and in the messages view, which is chat plus), dimmed (ANSI stripped, then dim), rendered like their live twins
-  — inbound through markdown with the agent's glyph, outbound on the rail via `parseComposed`/`railMessage`
-  (images and `[Pasted text #N]` inline), `(Nh ago)` age tags.
+  — inbound through markdown with the agent's glyph, outbound as `outbound` entries laid out on the rail
+  at paint time (`parseComposed` → `saidRows`, images and `[Pasted text #N]` inline: a redraw after a
+  resize re-wraps them), `(Nh ago)` age tags.
 - **Dedup by id.** `readOwnConversation` now returns ids (`feed.ts` `withIds`, opt-in so other surfaces'
   payloads keep their shape). `shownIds` holds every id chat put on screen (live DMs, the echo, earlier
   blocks) and `ownIds` our sends; the pick skips both at the moment it is placed, and a live DM whose id
@@ -565,15 +558,17 @@ agent BEFORE the chat started … not start from an empty screen", on open AND o
   the submitted line itself: a filter typed with Enter in ONE chunk arrives before the picker re-filters,
   and text after the mention (`@echoer hi⏎` in one chunk) is a message, sent as typed. Over a draft that
   pick is all Enter does (`pickUnderDraft`: the draft stays, re-headed for the new target; no match →
-  the filter goes back into the input).
+  the filter goes back into the input). ↓ batched with the keys after it in one chunk (`↓echoer⏎`) is
+  split: the arrows go first and open the picker, the rest arrives a tick later as its filter.
   **The filter is held in the picker's OWN state, never read back from `rl.line` after an arrow:**
   readline handles ↑/↓ as history-prev/next and REPLACES the buffer with a past line before the
   prepended handler runs, so reading the filter from it saw something that no longer looked like
   `@name` and closed the picker — the arrows cycled history and the marker never moved (reported live).
   A typed key re-syncs the filter from the buffer; an arrow never does.
   Pausing readline to own the keyboard would also stop the data events the filter reads, and
-  re-implementing editing/history/completion for one widget is a bad trade. Redraw erases exactly the
-  rows it drew; submitting a single line leaves them where they are, because readline has already
+  re-implementing editing/history/completion for one widget is a bad trade. Each row is cut to one
+  terminal row (a wrapped one outgrew the room a draft left it). Redraw erases exactly the rows it drew;
+  submitting a single line leaves them where they are, because readline has already
   echoed the line and those rows are scrollback — erasing there would eat unrelated output (and no time
   stamp is drawn over them). Over a draft they go with the whole input area. Both verified under a real
   node-pty, the echo with two concurrent chats in one space.

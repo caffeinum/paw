@@ -41,6 +41,11 @@
  *   AM. piped chat: no cursor control;  AN. picker + mention + text + Enter in one chunk;
  *   AO. a filter naming an agent exactly;  AP. a `❤️` line filling the row;  AQ. Enter in the picker
  *   under a blank row (its time).  M and Q: Esc in the picker takes its `@` with it.
+ * Round 5 (the round-4 verify): AR. your multi-line message read back (the earlier block, another
+ *   session's send) after a resize;  AS. ↓ batched with its filter and Enter in one chunk;  AT. Ctrl+U
+ *   clearing a draft with a paste in it, and a paste no line mentions;  AU. Ctrl+L with no draft, then
+ *   editing;  AV. a wrapping line of `⚠️`;  AW. the picker over a tall draft at 44 columns;  AX. piped, a
+ *   refused multi-line message;  AY. the not-found chooser's pick over a draft.
  * Every wire DM is asserted byte for byte (check:chat-tty 13 pins the same format).
  * Teardown always runs: tmux kill-server, echoer stop, `paw down`, purgeTestSpace, the space dir.
  */
@@ -52,7 +57,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { CotalEndpoint, type CotalMessage, type Delivery, type MessageMeta } from "@cotal-ai/core";
 import { controlCreds } from "../src/addressing.ts";
-import { draftRows } from "../src/compose-view.ts";
+import { draftRows, saidRows } from "../src/compose-view.ts";
 import { ensure, stop } from "../src/lifecycle.ts";
 import { makeBlock, type PasteBlock } from "../src/paste.ts";
 import { purgeTestSpace } from "../src/prune.ts";
@@ -1128,9 +1133,10 @@ async function main(): Promise<void> {
   }
 
   // AP. a `\` line on the rail that ends with `❤️` exactly at the right edge (60 columns): two columns on
-  //     screen, one to readline, which then writes no caret row. Counted with one, the hold erased a row
-  //     too many — the blank row above the draft — and the next reply's time went over the last row of
-  //     the reply before it. The hint row also wiped the line while it was typed.
+  //     screen, one to readline's own count. Counted apart, the hold erased a row too many — the blank row
+  //     above the draft — and the next reply's time went over the last row of the reply before it; the
+  //     hint row wiped the line while it was typed. readline counts as the terminal does now (round 5):
+  //     the line gets the caret row any line ending at the edge gets.
   {
     await startChat(30, { cols: 60 });
     await says("AP1");
@@ -1139,7 +1145,7 @@ async function main(): Promise<void> {
     type(`${heart}\\`);
     await sleep(500);
     const typing = screen();
-    ok("AP: the `❤️` line filling the row shows while it is typed", typing[typing.length - 2] === `${RAIL}${heart}\\`, shown(typing.slice(-4)));
+    ok("AP: the `❤️` line filling the row shows while it is typed, the caret on the row under it", typing[typing.length - 3] === `${RAIL}${heart}\\` && typing[typing.length - 2] === "", shown(typing.slice(-4)));
     key("Enter");
     await waitFor((l) => draftLines(l) === 3);
     await sleep(300);
@@ -1166,6 +1172,237 @@ async function main(): Promise<void> {
     await sleep(300);
     const at = s.lastIndexOf("you → echoer> @echoer");
     ok("AQ: no time drawn over the picker's last row, above the line", at > 0 && /^ {2}▸ echoer /.test(s[at - 1]!) && !/\d\d:\d\d$/.test(s[at - 1]!), shown(s.slice(-8)));
+    await quit();
+  }
+
+  // ── round 5 (2026-11-18): the round-4 verify ─────────────────────────────────────────────────────────
+  /** `paw chat <args>` in a second window of the same tmux server — a second session of "you". */
+  const second = async (name: string, args: string, ready: RegExp): Promise<void> => {
+    const env = ["PAW_HOME", "PAW_SPACE", "PAW_RELEASE", "PAW_BEADS_DIR"].flatMap((k) => ["-e", `${k}=${process.env[k]}`]);
+    tmux("new-session", "-d", "-s", name, "-x", String(COLS), "-y", "30", "-c", home!, ...env, `${process.execPath} ${join(REPO, "bin/paw.mjs")} chat ${args}; sleep 600`);
+    const end = Date.now() + 30_000;
+    while (Date.now() < end && !tmux("capture-pane", "-p", "-t", name).split("\n").some((l) => ready.test(l.replace(/\s+$/, "")))) await sleep(100);
+    await sleep(1500);
+  };
+  /** ←/→: the chat view redrawn from the history, at the width now. */
+  const redrawn = async (): Promise<string[]> => {
+    key("Right");
+    await waitFor(has(/^messages /));
+    key("Left");
+    return waitFor(has(/^chat /));
+  };
+  /** A message of yours read back, as the painter lays it out at `cols`: the header, then rows 2+ on the rail. */
+  const readBack = (header: string, body: string, cols: number): string[] =>
+    saidRows(header, { body, blocks: [] }, { width: cols - 2, rail: "│ " }).map((r, i) => (i ? `  ${r}` : r).replace(/\s+$/, ""));
+
+  // AR. your own multi-line message READ BACK — in a later chat's earlier block, and as another session's
+  //     send — then a resize and ←/→: every row on the rail at the new width. Laid out once at the width
+  //     it arrived at, its rows wrapped off the rail and words split (only a `sent` block was re-laid out).
+  {
+    const words = (tag: string) => `${tag}-two ${Array.from({ length: 30 }, (_, i) => `word${String(i).padStart(2, "0")}`).join(" ")} ${tag}end`;
+    await startChat(40);
+    await hold("ar-one");
+    type(words("ar"));
+    const first = await send();
+    ok("AR: ONE DM, text unchanged", JSON.stringify(first.wire) === JSON.stringify([`ar-one\n${words("ar")}`]), JSON.stringify(first.wire));
+    await quit();
+    await startChat(40, { args: "echoer --history 20", ready: /^── now ──$/ });
+    tmux("resize-window", "-t", T, "-x", "60");
+    await sleep(800);
+    const earlier = await redrawn();
+    const block = readBack("you → echoer:", `ar-one\n${words("ar")}`, 60);
+    ok("AR: the earlier block's copy, redrawn at 60 columns: every row on the rail, words whole", block.length > 4 && block.slice(1).every((r) => r.startsWith(RAIL)) && blockAt(earlier, block) >= 0, shown(earlier.slice(-16)));
+    await quit();
+    await startChat(40);
+    await second("chat2", "echoer --history 0", /^you → echoer> ?$/);
+    tmux("send-keys", "-t", "chat2", "-l", "ar-x-one\\");
+    tmux("send-keys", "-t", "chat2", "Enter");
+    await sleep(500);
+    tmux("send-keys", "-t", "chat2", "-l", words("arx"));
+    const n = dms.length;
+    tmux("send-keys", "-t", "chat2", "Enter");
+    const end = Date.now() + 10_000;
+    while (Date.now() < end && dms.length === n) await sleep(100);
+    const shownHere = await waitFor(has(/^you \(elsewhere\) → echoer:$/));
+    tmux("kill-session", "-t", "chat2");
+    ok("AR: another session's send shows here once", JSON.stringify(dms.slice(n)) === JSON.stringify([`ar-x-one\n${words("arx")}`]) && blockAt(shownHere, readBack("you (elsewhere) → echoer:", `ar-x-one\n${words("arx")}`, COLS)) >= 0, `${JSON.stringify(dms.slice(n))}\n${shown(shownHere.slice(-8))}`);
+    tmux("resize-window", "-t", T, "-x", "60");
+    await sleep(800);
+    const echoed = await redrawn();
+    const echo60 = readBack("you (elsewhere) → echoer:", `ar-x-one\n${words("arx")}`, 60);
+    ok("AR: …redrawn at 60 columns: every row on the rail, words whole", echo60.slice(1).every((r) => r.startsWith(RAIL)) && blockAt(echoed, echo60) >= 0, shown(echoed.slice(-14)));
+    await quit();
+  }
+
+  // AS. ↓ and the keys after it in ONE chunk (a laggy link batches them): the picker opens and they are its
+  //     filter. Over a draft Enter picks and the draft stays; with none, the filter is never sent as text.
+  //     readline folded the chunk into the line before the picker opened: the draft went out with
+  //     `echoer` as its last line, and alone the chunk was a DM saying `echoer`.
+  {
+    await startChat(30);
+    await hold("as-one");
+    await hold("as-two");
+    const n = dms.length;
+    type("\x1b[Bechoer\r");
+    const over = await waitFor(has(/\(now messaging echoer\)/));
+    await sleep(600);
+    const s = screen();
+    ok("AS: over a draft, ↓ + `echoer` + Enter in one chunk picks — nothing sent", dms.length === n && has(/\(now messaging echoer\)/)(over), JSON.stringify(dms.slice(n)));
+    ok("AS: …and the draft stays whole", blockAt(s, [`${HEAD}as-one`, rail("as-two"), RAIL.trimEnd()]) === s.length - 4 && draftLines(s) === 3, shown(s.slice(-8)));
+    key("C-u");
+    await waitFor((l) => draftLines(l) === 1);
+    await sleep(300);
+    const notes = screen().filter((l) => /\(now messaging echoer\)/.test(l)).length;
+    type("\x1b[Bechoer\r");
+    await waitFor((l) => l.filter((r) => /\(now messaging echoer\)/.test(r)).length > notes);
+    await sleep(800);
+    ok("AS: with no draft, the same chunk picks too — no DM saying `echoer`", dms.length === n, JSON.stringify(dms.slice(n)));
+    await quit();
+  }
+
+  // AT. Ctrl+U clearing a draft takes the paste staged in it along (kept, the next line sent it, and its
+  //     echo showed none of it); a paste no line mentions any more is shown under the message it rides with.
+  {
+    await startChat(30);
+    await hold("at-one");
+    type("at-two ");
+    paste("at-p1\nat-p2\nat-p3");
+    await waitFor(has(/\[Pasted text #1\] ?$/));
+    type("\\");
+    key("Enter");
+    await waitFor((l) => draftLines(l) === 3);
+    key("C-u");
+    const cleared = await waitFor(has(/^✕ cleared the draft/));
+    await sleep(300);
+    const c1 = screen();
+    ok("AT: Ctrl+U clears the draft and the paste staged in it", has(/^✕ cleared the draft \(2 lines · 1 paste\)$/)(cleared) && c1[c1.length - 2] === HEAD.trimEnd() && !/pasted/.test(c1[c1.length - 1]!), shown(c1.slice(-5)));
+    type("at-after");
+    const after = await send();
+    ok("AT: …the next line goes out alone", JSON.stringify(after.wire) === JSON.stringify(["at-after"]), JSON.stringify(after.wire));
+    type("at-three ");
+    paste("at-q1\nat-q2\nat-q3");
+    await waitFor(has(/\[Pasted text #1\] ?$/));
+    key("C-u"); // readline's: the line, placeholder and all — the paste stays staged
+    await waitFor(has(/^you → echoer \[1 pasted\]> ?$/));
+    type("at-stray");
+    const stray = await send();
+    ok("AT: a staged paste no line mentions still goes out", JSON.stringify(stray.wire) === JSON.stringify(["at-stray\n\n--- [Pasted text #1] (3 lines) ---\nat-q1\nat-q2\nat-q3\n--- end [Pasted text #1] ---"]), JSON.stringify(stray.wire));
+    const at = stray.lines.lastIndexOf("you → echoer [1 pasted]> at-stray");
+    ok("AT: …and is shown right under the line it went with", at >= 0 && /^ {2}│ 📋 \[Pasted text #1\] 3 lines/.test(stray.lines[at + 1] ?? "") && stray.lines[at + 2] === rail("  at-q1"), shown(stray.lines.slice(-8)));
+    await quit();
+  }
+
+  // AU. Ctrl+L with NO draft, then typing and editing: readline cleared from the home row and redrew its
+  //     line there, so every later refresh cleared from the home row — tmux copied the screen, prompt and
+  //     hint row included, into the scrollback each time.
+  {
+    await startChat(20, { cols: 80 });
+    await says("AU");
+    key("C-l");
+    await sleep(600);
+    type("au abc");
+    await sleep(200);
+    for (let i = 0; i < 3; i++) key("BSpace");
+    await sleep(200);
+    key("C-u");
+    type("au typed again");
+    await sleep(200);
+    key("C-a");
+    key("C-k");
+    await sleep(600);
+    const s = screen();
+    ok("AU: after Ctrl+L, no copy of the line being edited is left in the scrollback", !s.some((l) => /^you → echoer> au/.test(l)) && s.filter((l) => /^chat /.test(l)).length === 1 && s.filter((l) => /^you → echoer>/.test(l)).length === 1, `history ${tmux("display-message", "-p", "-t", T, "#{history_size}").trim()}\n${shown(s)}`);
+    await quit();
+  }
+
+  // AV. a line of VS16 emoji (`⚠️`: 2 columns on screen, 1 to readline's own count) wrapping while it is
+  //     typed: readline's refresh climbed too few rows and left the hint row's old copy in the line, and
+  //     the caret short of the text. readline counts by the terminal's widths now.
+  {
+    await startChat(24, { cols: 60 });
+    const w1 = "\u26a0\ufe0f".repeat(24);
+    type(`av ${w1} end`);
+    await sleep(600);
+    const s = screen();
+    // 14 + 3 + 21×2 = 59: the 22nd ⚠️ starts in the last column and stays there (tmux widens it in place).
+    ok("AV: the wrapping line, then ONE hint row under it — no hint fragment in the line", s[s.length - 3] === `${HEAD}av ${"\u26a0\ufe0f".repeat(22)}` && s[s.length - 2] === `${"\u26a0\ufe0f".repeat(2)} end` && /^chat /.test(s[s.length - 1]!) && s.filter((l) => /← logs/.test(l)).length === 1, shown(s.slice(-5)));
+    ok("AV: …the caret right after the text", cursorX() === 8, `cursor_x ${cursorX()}`);
+    type("\\");
+    key("Enter");
+    await waitFor((l) => draftLines(l) === 2);
+    const w2 = "\u26a0\ufe0f".repeat(27);
+    type(`av ${w2} ok`);
+    await sleep(600);
+    const r = screen();
+    ok("AV: on the rail too: the line, then one hint row", r[r.length - 3] === `${RAIL}av ${w2}` && r[r.length - 2] === " ok" && /^draft · 2 lines/.test(r[r.length - 1]!) && r.filter((l) => /draft · /.test(l)).length === 1 && cursorX() === 3, `cursor_x ${cursorX()}\n${shown(r.slice(-6))}`);
+    const { wire } = await send();
+    ok("AV: ONE DM, text unchanged", JSON.stringify(wire) === JSON.stringify([`av ${w1} end\nav ${w2} ok`]), JSON.stringify(wire));
+    await quit();
+  }
+
+  // AW. the ↓ picker over a tall draft at 44 columns, its rows too wide for the width: it took the rows it
+  //     drew (each wrapped onto two), not the rows it had asked the draft for — the area outgrew the screen,
+  //     the draft's top scrolled off, and a reply landed under a stale copy of it.
+  {
+    const personas = join(home!, "spaces", space!, "personas");
+    mkdirSync(personas, { recursive: true });
+    const long = Array.from({ length: 6 }, (_, i) => join(personas, `long-agent-name-x${i}.md`));
+    long.forEach((f, i) => writeFileSync(f, `---\nname: long-agent-name-x${i}\ncwd: ${join(home!, "no-such-folder-aw")}\n---\n`));
+    try {
+      await startChat(24, { cols: 44 });
+      await says("AW1");
+      for (let i = 1; i <= 14; i++) await hold(`aw-${String(i).padStart(2, "0")}`);
+      key("Down");
+      const open = await waitFor(has(/^agents \d+\/\d+$/));
+      await sleep(400);
+      ok("AW: the picker's rows are one terminal row each", open.filter((l) => /long-agent-name-x\d/.test(l)).every((l) => /…$/.test(l)) && !open.some((l) => /^(?:message wakes it|wakes it)/.test(l)), shown(open.slice(-12)));
+      const s = await says("AW2");
+      const dmAt = s.findIndex((l) => l.trim().startsWith("AW2: reply line one"));
+      const above = s.slice(0, dmAt).filter((l) => /aw-\d\d|more rows? above/.test(l));
+      ok("AW: a reply with the picker open lands above the whole draft — no draft row left above it", dmAt > 0 && above.length === 0, `${JSON.stringify(above)}\n${shown(s.slice(-24))}`);
+      key("Escape");
+      await waitFor((l) => !l.some((r) => /^agents /.test(r)));
+      await sleep(400);
+      await quit();
+    } finally {
+      long.forEach((f) => rmSync(f, { force: true }));
+    }
+  }
+
+  // AX. piped chat, a refused multi-line message (`@` a name in a space that isn't this one): it was typed
+  //     back through readline's terminal-only line rewrite, and the chat crashed. Off a terminal it is kept
+  //     and printed in full on quit.
+  {
+    const n = dms.length;
+    let code = 0;
+    const out = await run("sh", ["-c", `(printf '@ghost#nospace ax one\\\\\\nax two\\n'; sleep 6) | ${process.execPath} ${join(REPO, "bin/paw.mjs")} chat echoer 2>&1`], { env: process.env, timeout: 60_000 }).then(
+      (r) => r.stdout,
+      (e: { code: number; stdout: string }) => ((code = e.code), e.stdout),
+    );
+    ok("AX: piped, a refused multi-line message: no crash, nothing sent", code === 0 && dms.length === n && !/TypeError|ERR_INVALID_ARG_TYPE/.test(out), `exit ${code}\n${out.slice(-600)}`);
+    ok("AX: …kept, and printed in full on quit", out.includes("the refused line is kept") && out.includes("(refused): @ghost#nospace ax one\nax two"), out.slice(-600));
+  }
+
+  // AY. a draft typed while a mistyped name is looked up, then the chooser's suggestion picked: the draft
+  //     kept its head for the name typed (`you → echoe ✕>`), live and in the sent block. Every `@name`
+  //     switch re-heads it now.
+  {
+    await startChat(30, { args: "echoe --history 0", ready: /^you → echoe ◌> ?$/ });
+    type("ay-one\\");
+    key("Enter");
+    type("ay-two\\");
+    key("Enter");
+    await waitFor(has(/did you mean/), 20_000);
+    await sleep(500);
+    type("1");
+    const picked = await waitFor(has(/\(now messaging echoer\)/));
+    await sleep(500);
+    const live = screen();
+    ok("AY: after the chooser's pick the draft is headed for the agent it goes to", blockAt(live, [`${HEAD}ay-one`, rail("ay-two")]) >= 0 && !live.some((l) => /^you → echoe\b.*ay-one/.test(l)) && has(/\(now messaging echoer\)/)(picked), shown(live.slice(-8)));
+    type("ay-three");
+    const { wire, lines } = await send();
+    ok("AY: ONE DM to echoer, text unchanged", JSON.stringify(wire) === JSON.stringify(["ay-one\nay-two\nay-three"]), JSON.stringify(wire));
+    ok("AY: …the sent block headed for echoer", blockAt(lines, [`${HEAD}ay-one`, rail("ay-two"), rail("ay-three")]) >= 0, shown(lines.slice(-8)));
     await quit();
   }
 }

@@ -229,11 +229,16 @@ export interface FollowSource {
  * - `sent` — a multi-line message you sent (a draft, src/compose-view.ts draftRows): stored as typed — the
  *   prompt its first line was typed at, its lines, its pastes — and laid out at PAINT time, at the width
  *   then, as `peer` is: a redraw after a resize shows it as the live draft reads at that width.
+ * - `outbound` — a message you sent, read back from the wire: an earlier-block row (`historical`) or
+ *   another session's send (the cross-session echo). Its header and parsed text, laid out on the rail at
+ *   PAINT time like `sent` — stored laid out, a redraw after a resize wrapped its rows off the rail.
  * - `log` — a batch of the target's transcript blocks, stored RAW: which blocks show depends on the view
  *   (logBlockVisible), so filtering happens at paint time, not at capture.
  */
 /** A draft as it was sent: what draftRows lays out. */
 export type SentDraft = { head: string; lines: readonly string[]; pastes: readonly PasteBlock[] };
+/** A message you sent, read back from the wire: its header and its text parsed (compose-view parseComposed). */
+export type Outbound = { header: string; body: string; blocks: readonly PasteBlock[]; historical?: boolean; ts?: number };
 
 export type Entry =
   | { kind: "banner"; text: string }
@@ -241,6 +246,7 @@ export type Entry =
   | { kind: "peer"; agent: string; msg: PeerMsg; historical?: boolean }
   | { kind: "echo"; text: string; ts?: number }
   | { kind: "sent"; draft: SentDraft; ts: number }
+  | ({ kind: "outbound" } & Outbound)
   | { kind: "log"; agent: string; blocks: Block[]; backfill: boolean; note?: string };
 
 /**
@@ -266,6 +272,8 @@ export function entryVisible(e: Entry, view: ChatView, target: string | undefine
     case "echo":
     case "sent":
       return showsChat(view);
+    case "outbound":
+      return !e.historical || showsChat(view); // a `chat` line of your own: the logs view keeps it too
     case "chat":
       if (e.onlyLogs) return showsLogs(view); // a note about the logs themselves ("no logs for x")
       if (e.onlyMessages) return showsPeers(view); // a note about the other-peer rows
@@ -341,6 +349,8 @@ export class Painter {
   private readonly stamps: StampOpts | undefined;
   /** A sent draft as screen rows, at the width of the moment (chat.ts: draftRows). */
   private readonly sent: (d: SentDraft) => string;
+  /** A message you sent, read back, as screen rows at the width of the moment (chat.ts: saidRows). */
+  private readonly outbound: (o: Outbound) => string;
 
   constructor(
     render: (b: Block) => string,
@@ -352,6 +362,9 @@ export class Painter {
     sent: (d: SentDraft) => string = () => {
       throw new Error("Painter: a sent draft needs a layout (chat.ts passes draftRows)");
     },
+    outbound: (o: Outbound) => string = () => {
+      throw new Error("Painter: a message read back needs a layout (chat.ts passes saidRows)");
+    },
   ) {
     this.render = render;
     this.dim = dim;
@@ -360,6 +373,7 @@ export class Painter {
     this.peer = peer;
     this.stamps = stamps;
     this.sent = sent;
+    this.outbound = outbound;
   }
 
   reset(): void {
@@ -407,6 +421,8 @@ export class Painter {
       }
       case "chat":
         return this.put(e.side, e.text.split("\n").join(`\n${this.pad}`), e.side === "sys" || e.tight, e.ts);
+      case "outbound":
+        return this.put("you", this.outbound(e).split("\n").join(`\n${this.pad}`), false, e.ts);
       case "peer":
         // Laid out now (indented right, dimmed) — a side of its own, so a run of other-peer rows sits
         // together with air above and below it, apart from your conversation.
@@ -600,4 +616,15 @@ export function arrowRun(raw: string): number | undefined {
   let step = 0;
   for (const m of raw.matchAll(/\x1b[[O]([AB])/g)) step += m[1] === "B" ? 1 : -1;
   return step;
+}
+
+/**
+ * The keys a chunk STARTS with when, on an empty line, they open the ↓ picker — a run of vertical arrows
+ * that nets down, or one modified ↓ (navKey) — else undefined. What follows them in the same chunk (keys
+ * a laggy link or `tmux send-keys` batched) is the picker's filter, not text of the line.
+ */
+export function pickerOpener(raw: string): string | undefined {
+  const run = /^(?:\x1b[[O][AB])+/.exec(raw)?.[0];
+  if (run !== undefined) return arrowRun(run)! > 0 ? run : undefined;
+  return ["\x1b[1;3B", "\x1b[1;9B", "\x1b[1;10B"].find((k) => raw.startsWith(k));
 }

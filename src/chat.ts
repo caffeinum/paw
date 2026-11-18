@@ -67,7 +67,7 @@ import { Outbox, type OutEvent } from "./outbox.ts";
 import { LinkProbe, PROBE_MS, isAckTimeout } from "./link-probe.ts";
 import { OFFLINE_DEBOUNCE_MS, PresenceHold, type PresenceLine } from "./presence-hold.ts";
 import { AwaitTracker } from "./chat-awaiting.ts";
-import { arrowRun, CLEAR_ALL, displayWidth, fitWidth, entryVisible, hintFor, hintWithTag, whereTag, History, type FooterCell, LogFollower, navKey, scrollKey, Painter, type Entry, type PaintState, pickerWindow, type SentDraft, showsChat, showsLogs, showsPeers, stepView, VIEW_LABEL, viewNeedsTarget, type ChatView } from "./chat-views.ts";
+import { arrowRun, CLEAR_ALL, displayWidth, fitWidth, entryVisible, hintFor, hintWithTag, whereTag, History, type FooterCell, LogFollower, navKey, type Outbound, pickerOpener, scrollKey, Painter, type Entry, type PaintState, pickerWindow, type SentDraft, showsChat, showsLogs, showsPeers, stepView, VIEW_LABEL, viewNeedsTarget, type ChatView } from "./chat-views.ts";
 import { classifyPeer, isPeerForwardOf, mergeByTs, peerRows, peerSummary, pickPeers, type PeerMsg, type RawMsg } from "./chat-peers.ts";
 import { agentBeads, agentInfo, CLOSED_RECENT_MS, hitAt, renderTasksPanel, type InfoFacts, type TasksHit } from "./chat-tasks.ts";
 import { MOUSE_OFF, MOUSE_ON, SELECT_MODE_KEY, stripMouse, type MouseEvent } from "./mouse.ts";
@@ -129,8 +129,8 @@ import {
   type PasteBlock,
 } from "./paste.ts";
 import { isRemoteSpace, pawServer } from "./server.ts";
-import { draftRows, fitRows, parseComposed, RAIL, railMessage, railPastes, type ViewOpts } from "./compose-view.ts";
-import { echoRows, wrappedWidth } from "./width.ts";
+import { draftRows, fitRows, parseComposed, RAIL, railMessage, railPastes, saidRows, strayPastes, type ViewOpts } from "./compose-view.ts";
+import { displayPos, echoRows, fitPainted, wrappedWidth } from "./width.ts";
 
 /** Rows drawn between the draft and the prompt (the ↓ picker, the not-found chooser), erased by count. */
 interface Overlay {
@@ -698,7 +698,19 @@ async function chat(argv: string[]): Promise<void> {
   const stamps = !!process.stdout.isTTY;
   // A sent draft too: laid out as the live draft reads at the width now (src/compose-view.ts).
   const laySent = (d: SentDraft): string => draftRows(d.head, d.lines, d.pastes, viewOpts()).join("\n");
-  const painter = new Painter(renderBlock, c.dim, "  ", attachesAbove, layPeer, stamps ? { cols: () => process.stdout.columns || 80, now: () => Date.now() } : undefined, laySent);
+  /** The earlier block's look: every row dimmed, its own colours dropped. */
+  const dimAll = (s: string): string =>
+    s
+      .split("\n")
+      .map((l) => c.dim(stripVTControlCharacters(l)))
+      .join("\n");
+  // A message you sent, read back (the earlier block dimmed, another session's echo): on the rail at the
+  // width now. The painter indents rows 2+ by two columns, so the rail here is the rest of it.
+  const layOutbound = (o: Outbound): string => {
+    const text = saidRows(o.header, o, { ...viewOpts(), width: viewOpts().width - 2, rail: RAIL.trimStart() }).join("\n");
+    return o.historical ? dimAll(text) : text;
+  };
+  const painter = new Painter(renderBlock, c.dim, "  ", attachesAbove, layPeer, stamps ? { cols: () => process.stdout.columns || 80, now: () => Date.now() } : undefined, laySent, layOutbound);
   const follower = new LogFollower(
     (name) => {
       const away = awayOf(name);
@@ -732,9 +744,10 @@ async function chat(argv: string[]): Promise<void> {
     if (view === "beads") {
       // The dashboard has no scrolling conversation, so a receipt or an error (anything that isn't a
       // message) becomes its notice line — a send that failed must not fail silently here.
-      if (e.kind === "chat" && !e.onlyLogs) {
+      const said = e.kind === "chat" && !e.onlyLogs ? e.text : e.kind === "outbound" ? layOutbound(e) : undefined;
+      if (said !== undefined) {
         // A message arriving answers whatever the notice was waiting on ("⏳ waiting for kit…").
-        tasksNotice = e.side === "peer" ? undefined : stripVTControlCharacters(e.text).trim().split("\n")[0];
+        tasksNotice = e.kind === "chat" && e.side === "peer" ? undefined : stripVTControlCharacters(said).trim().split("\n")[0];
         paintTasks();
       }
       return;
@@ -1346,18 +1359,20 @@ async function chat(argv: string[]): Promise<void> {
   /**
    * A refused line goes back into the input, so nothing typed is lost to a refusal. A multi-line one
    * comes back as the draft it was (held lines + the last one being edited). When the input is in use
-   * by then (the operator typed on during a slow refusal), it is kept and printed in full on quit.
+   * by then (the operator typed on during a slow refusal), it is kept and printed in full on quit — and
+   * off a terminal, where there is no input to edit: readline took the text for the start of the next
+   * piped line, and a multi-line one crashed it (its line rewrite is a terminal's).
    */
-  const giveBack = (to: string, text: string, said: string): void => {
+  const giveBack = (to: string, text: string, said?: string): void => {
     if (!rl || closing || !text.trim()) return;
     setImmediate(() => {
       if (!rl || closing) return;
-      if (rl.line !== "" || held.length) {
+      if (!rl.terminal || rl.line !== "" || held.length) {
         keptUnsent.push({ to, text });
         emit(c.dim("  the refused line is kept, not sent — it is printed in full when you quit"));
         return;
       }
-      emit(c.dim(said));
+      if (said) emit(c.dim(said));
       typeBack(text);
     });
   };
@@ -1388,6 +1403,9 @@ async function chat(argv: string[]): Promise<void> {
     // Pastes attach to the body first (the payload follows the text), THEN the image lines — so an
     // image announcement is never buried under a 200-line paste block.
     const composed = composeMessage(composePastes(body, pastes), live);
+    // The echo shows each paste under the line that mentions it; one no line mentions (its placeholder
+    // deleted) goes along all the same, and is shown here, under the message it rides with.
+    emitRows(strayPastes(body, pastes, viewOpts()));
     pending.length = 0;
     pastes.length = 0;
     rl?.setPrompt(promptFor());
@@ -1725,10 +1743,8 @@ async function chat(argv: string[]): Promise<void> {
         const fwdMark = forwardOf !== undefined ? " · forwarded from an old id" : "";
         const header = `${c.dim(`${HUMAN_PEER} (elsewhere) →`)} ${label}${c.dim(`${fwdMark}:`)}`;
         // As the agent got it, readable: on the rail, blank runs folded, each paste inline at its
-        // placeholder (not as raw `--- [Pasted text #1] ---` fences). The painter indents rows 2+.
-        const sent = parseComposed(body);
-        const rows = railMessage(sent.body, sent.blocks, { ...viewOpts(), width: viewOpts().width - 2, rail: RAIL.trimStart() });
-        emit(rows.length === 1 && !sent.blocks.length ? `${header} ${sent.body.trim()}` : [header, ...rows].join("\n"), "you", false, undefined, msg.ts);
+        // placeholder (not as raw `--- [Pasted text #1] ---` fences).
+        show({ kind: "outbound", header, ...parseComposed(body), ts: msg.ts });
       } catch {
         /* a render failure must never abort the tap iterator */
       }
@@ -1750,22 +1766,12 @@ async function chat(argv: string[]): Promise<void> {
   const backlogs = new Map<string, { divider: Entry & { kind: "chat" }; agent: string; count: number; oldest: number; older: number; windowed: boolean }>();
   /** Agents whose earlier block has been asked for this session (on open, on a switch). */
   const backlogAsked = new Set<string>();
-  const dimAll = (s: string): string =>
-    s
-      .split("\n")
-      .map((l) => c.dim(stripVTControlCharacters(l)))
-      .join("\n");
   /** One earlier message, drawn as its live twin would be (markdown, images, pastes on the rail) — dimmed. */
   const historyEntry = (agent: string, e: FeedEntry): Entry => {
     const age = stamps ? "" : agoTag(e.ts);
-    let text: string;
-    if (e.dir === "out") {
-      const sent = parseComposed(e.text);
-      const header = `you → ${agent}${age}:`;
-      const rows = railMessage(sent.body, sent.blocks, { ...viewOpts(), width: viewOpts().width - 2, rail: RAIL.trimStart() });
-      text = rows.length === 1 && !sent.blocks.length ? `${header} ${sent.body.trim()}` : [header, ...rows].join("\n");
-    } else text = said(`${agentTag(e.from)}${e.forwardedFrom !== undefined ? " · forwarded from an old id" : ""}${age}:`, e.text);
-    return { kind: "chat", text: dimAll(text), side: e.dir === "out" ? "you" : "peer", tight: false, historical: true, ts: e.ts };
+    if (e.dir === "out") return { kind: "outbound", header: `you → ${agent}${age}:`, ...parseComposed(e.text), historical: true, ts: e.ts };
+    const text = said(`${agentTag(e.from)}${e.forwardedFrom !== undefined ? " · forwarded from an old id" : ""}${age}:`, e.text);
+    return { kind: "chat", text: dimAll(text), side: "peer", tight: false, historical: true, ts: e.ts };
   };
   const sysLine = (text: string, historical = true): Entry & { kind: "chat" } => ({ kind: "chat", text, side: "sys", tight: true, ...(historical ? { historical: true } : {}) });
 
@@ -2020,7 +2026,7 @@ async function chat(argv: string[]): Promise<void> {
         const from = block ? history.entries.indexOf(block.divider) + 1 : 0;
         const nowAt = from > 0 ? history.entries.findIndex((e, i) => i >= from && e.kind === "chat" && e.historical === true && stripVTControlCharacters(e.text) === NOW_DIVIDER) : -1;
         if (!rows.length || nowAt < 0) return placeOver(slot, [...rows, ...tail]);
-        const merged = mergeByTs(history.entries, from, nowAt, rows, (e) => (e.kind === "peer" ? e.msg.ts : e.kind === "chat" ? e.ts : undefined));
+        const merged = mergeByTs(history.entries, from, nowAt, rows, (e) => (e.kind === "peer" ? e.msg.ts : e.kind === "chat" || e.kind === "outbound" ? e.ts : undefined));
         history.entries.splice(0, history.entries.length, ...merged);
         history.replace(slot, tail);
         redraw();
@@ -2247,6 +2253,12 @@ async function chat(argv: string[]): Promise<void> {
       if (pasting()) return;
       refreshLine();
     };
+    // readline lays its prompt and line out by paw's count — the terminal's (src/width.ts displayPos). By
+    // its own a row of `⚠️` was half as wide as on screen: its refresh climbed too few rows and left the
+    // old rows, the hint row in the middle of the line, and the caret columns short of the text.
+    const posInternal = r as unknown as { _getDisplayPos?: (s: string) => { cols: number; rows: number }; columns: number };
+    if (typeof posInternal._getDisplayPos !== "function") throw new Error("paw chat: readline._getDisplayPos is gone — counting the input as the terminal lays it out needs a new hook");
+    posInternal._getDisplayPos = (s: string) => displayPos(s, posInternal.columns);
     // The `@` candidates of a second Tab: readline prints them straight under the line — over the hint row,
     // and inside the input area where no erase counts them (the next reply landed between two copies of a
     // draft). readline only completes here; the list is a note above the input area, like any other.
@@ -2468,14 +2480,13 @@ async function chat(argv: string[]): Promise<void> {
   const UP = "\x1b[A";
   const ESC = "\x1b";
 
-  /** The agents you could talk to: live peers first, then registered-but-offline ones (a DM wakes
-   *  those from their pin). Marks the current sticky target so the list answers "who am I talking
-   *  to?" as well as "who is there?". */
   /**
    * The agent picker: ↓ on an empty line opens it, typing FILTERS it, ↑/↓ move the selection, Enter
-   * picks. Built on readline rather than against it — the selection IS the line buffer (`@name`), so
-   * Enter needs no interception at all: it flows through the existing `@name` handler, which already
-   * latches the sticky target and even respawns a known-but-offline agent.
+   * picks, Esc closes it. Built on readline rather than against it — the filter is typed into the line
+   * buffer as `@filter`, and an arrow rewrites the buffer to `@<name>`. Enter takes the marked agent only
+   * while the submitted line is still that bare `@filter` (onLine): it goes through the existing `@name`
+   * handler, which latches the sticky target and respawns a known-but-offline agent; over a draft that
+   * switch is all Enter does (pickUnderDraft). A line that grew past the mention is sent as typed.
    *
    * Why not take the keyboard over properly: pausing readline to own stdin would also stop the data
    * events this needs, and re-implementing editing/history/completion to get one widget is a bad
@@ -2489,7 +2500,9 @@ async function chat(argv: string[]): Promise<void> {
    *  the arrows cycled history and the marker never moved. Our own state cannot be clobbered. */
   let pickFilter = "";
 
-  /** Every agent worth offering: live peers first (they answer now), then registered-but-offline. */
+  /** The agents you could talk to: live peers first (they answer now), then registered-but-offline ones
+   *  (a DM wakes those from their pin). drawPicker marks the current target among them, so the list
+   *  answers "who am I talking to?" as well as "who is there?". */
   const pickerAgents = (): Array<{ name: string; note: string }> => {
     const r = roster();
     const live = (r ?? []).filter((p) => p.card.id !== me && p.status !== "offline").map((p) => ({ name: p.card.name, note: statusBadge(p.status) }));
@@ -2559,7 +2572,9 @@ async function chat(argv: string[]): Promise<void> {
    *  conversation visible — the picker is a detour, not a new screen. */
   const pickerSize = (): number => Math.max(3, Math.min(12, (process.stdout.rows || 24) - 6));
 
-  /** The most rows the list takes, whatever the filter: the count row, a window of agents, the ↑/↓ `more` rows. */
+  /** The most rows the list takes, whatever the filter: the count row, a window of agents, the ↑/↓ `more`
+   *  rows — one terminal row each (drawPicker cuts a row to the width; a wrapped one made the area taller
+   *  than the room the draft left it). */
   const pickerHeight = (): number => {
     const all = pickerAgents().length;
     return 1 + Math.min(all, pickerSize()) + (all > pickerSize() ? 2 : 0);
@@ -2591,7 +2606,7 @@ async function chat(argv: string[]): Promise<void> {
     ];
     readline.cursorTo(process.stdout, 0);
     process.stdout.write(CLEAR_BELOW); // the hint row under the prompt too, or its tail shows after a short row
-    const text = rows.join("\n") + "\n";
+    const text = rows.map((r) => fitPainted(r, cols)).join("\n") + "\n";
     process.stdout.write(text);
     drawn = paintedRows(text, cols); // a wrapped row is erased whole
     rl.prompt(true);
@@ -2962,7 +2977,18 @@ async function chat(argv: string[]): Promise<void> {
       if (event !== "data") return stdinEmit(event, ...args);
       const chunk = args[0] as Buffer | string;
       if (chooser && chooserTakes(typeof chunk === "string" ? chunk : chunk.toString("utf8"))) return true;
-      const text = typeof chunk === "string" ? chunk : chunk.includes("\x1b[<") || chunk.includes(PASTE_END) ? chunk.toString("utf8") : undefined;
+      const text = typeof chunk === "string" ? chunk : chunk[0] === 0x1b || chunk.includes("\x1b[<") || chunk.includes(PASTE_END) ? chunk.toString("utf8") : undefined;
+      // ↓ on an empty line with more keys behind it in the SAME chunk (a laggy link, `tmux send-keys`): the
+      // arrow goes first and opens the picker, the rest a tick later as its filter — readline folded them
+      // into the line before the picker opened, and Enter sent the filter as text (over a draft, as its
+      // last line). The picker opens on a setImmediate queued by the arrow, so it runs before the rest.
+      const opener = text !== undefined && rl && !closing && !picking && !bang && !pasting() && rl.line === "" ? pickerOpener(text) : undefined;
+      if (opener !== undefined && opener.length < text!.length) {
+        const rest = text!.slice(opener.length);
+        const handled = stdinEmit(event, typeof chunk === "string" ? opener : Buffer.from(opener, "utf8"));
+        setImmediate(() => process.stdin.emit("data", typeof chunk === "string" ? rest : Buffer.from(rest, "utf8")));
+        return handled;
+      }
       // Keys typed after a paste's END marker in the SAME chunk — what the kernel hands over at once for
       // everything typed while chat was still loading — are cut off and re-emitted a tick later: the
       // paste is staged on a setImmediate (readline is mid-chunk), and an Enter folded into the same
@@ -3027,16 +3053,23 @@ async function chat(argv: string[]): Promise<void> {
       }
       if (!bang && held.length && rl.line === "" && raw === "\x15") {
         const n = held.length;
+        // What was staged for the draft goes with it: the line being typed is empty, so every placeholder
+        // was in the lines cleared — kept, the next line sent them along, and its echo showed none.
+        const st = stage();
+        const counted = (k: number, what: string): string => (k ? `${k} ${what}${k === 1 ? "" : "s"}` : "");
+        const gone = [counted(n, "line"), counted(st.pastes.splice(0).length, "paste"), counted(st.pending.splice(0).length, "image")];
+        if (liveStage) liveStage.stagedFor = undefined;
+        else stagedFor = undefined;
         unholdLines(n); // resets the prompt too
-        emit(c.dim(`✕ cleared the draft (${n} line${n === 1 ? "" : "s"})`));
+        emit(c.dim(`✕ cleared the draft (${gone.filter(Boolean).join(" · ")})`));
         return;
       }
       // Ctrl+L: readline clears the screen from the home row — a whole-screen clear, which tmux
-      // (scroll-on-clear, its default) copies into the scrollback — and redraws only its own line. The
-      // draft is input, not conversation: it is taken off BEFORE that clear, and painted back above the
-      // line one row down, where no later erase starts on the home row (another whole-screen clear,
-      // which would copy the draft into the scrollback under the next message).
-      if (held.length && raw === "\x0c" && view !== "beads") {
+      // (scroll-on-clear, its default) copies into the scrollback — and redraws only its own line, on
+      // that row. The input area is taken off BEFORE that clear (it is input, not conversation), and
+      // painted back one row down: every later refresh of readline's clears from the prompt's row, and
+      // from the home row each one copied the screen into the scrollback again.
+      if (raw === "\x0c" && view !== "beads") {
         eraseInput();
         setImmediate(() => {
           if (!rl || closing) return;
@@ -3417,7 +3450,6 @@ async function chat(argv: string[]): Promise<void> {
       return void emit(c.dim(`${LOADER} queued — switches to ${pick} ${replaying ? "after the lines before it" : "when connected"}`), "you");
     }
     await handleLine(`@${pick}`, {});
-    syncPrompt();
   }
 
   /**
@@ -3656,6 +3688,7 @@ async function chat(argv: string[]): Promise<void> {
               fields.info = okSlot(undefined);
             }
             markAway(awayTo);
+            syncPrompt();
             flushBanner();
             if (!body) emit(c.dim(`(now messaging ${curName})`));
             if (switched) loadBacklog(curName);
@@ -3695,7 +3728,7 @@ async function chat(argv: string[]): Promise<void> {
             targetLost = undefined;
             curName = to;
             if (filter?.kind === "agent") filter = { kind: "agent", name: to };
-            rl!.setPrompt(promptFor());
+            syncPrompt();
             if (switched) loadBacklog(curName);
             if (body) sendDm(curName, curId, flush(body, curName), false);
           } else if (!peer) {
@@ -3725,7 +3758,8 @@ async function chat(argv: string[]): Promise<void> {
               flushBanner();
               loadInfo();
             }
-            rl!.setPrompt(promptFor());
+            // The prompt names the new target — and so does a draft's head row: the message goes there now.
+            syncPrompt();
             if (!body) emit(c.dim(`(now messaging ${curName})`));
             // A new target's earlier conversation, above what you are about to say to it.
             if (switched) loadBacklog(curName);
@@ -3767,7 +3801,7 @@ async function chat(argv: string[]): Promise<void> {
           if (opts.replay) emit(c.red(why));
           else {
             emit(c.red(`${why} — text kept (↑ to recall)`));
-            if (rl && !closing) setImmediate(() => rl && !closing && typeBack(text));
+            giveBack(curName, text);
           }
         } else sendDm(curName, curId, flush(text, curName));
       } else {
@@ -3812,7 +3846,7 @@ async function chat(argv: string[]): Promise<void> {
         if (outcome) {
           const { refusedTo: to, body } = outcome;
           const single = !body.includes("\n");
-          if (single && rl && !closing && rl.line === "" && !held.length && !live.pending.length && !live.pastes.length) {
+          if (single && rl && !closing && rl.terminal && rl.line === "" && !held.length && !live.pending.length && !live.pastes.length) {
             // Back into the input; its attachments stay staged with it (the prompt counts them).
             live.pending.push(...pending.splice(0));
             live.pastes.push(...pastes.splice(0));
@@ -4056,7 +4090,7 @@ async function chat(argv: string[]): Promise<void> {
     lookup = "pending";
     targetLost = undefined;
     fields.status = loadingSlot();
-    rl?.setPrompt(promptFor());
+    syncPrompt();
     updateBanner();
     if (bootPhase === "failed") {
       if (booting) return;
@@ -4066,7 +4100,7 @@ async function chat(argv: string[]): Promise<void> {
       return;
     }
     await settleLookup(nm);
-    rl?.setPrompt(promptFor());
+    syncPrompt();
     updateBanner();
     presentLookup();
   }

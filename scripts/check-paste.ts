@@ -107,7 +107,7 @@ assert(block.lines === 5 && block.chars === "alpha\nbeta\ngamma\ndelta\nepsilon"
 
 // --- compose-view: how a draft / sent message is SHOWN (src/compose-view.ts) ------------------------
 {
-  const { foldBlanks, parseComposed, pasteRows, RAIL, railLine, railMessage, railPastes, wrapLine } = await import("../src/compose-view.ts");
+  const { foldBlanks, parseComposed, pasteRows, RAIL, railLine, railMessage, railPastes, saidRows, strayPastes, wrapLine } = await import("../src/compose-view.ts");
   const opts = { width: 40 };
   assert(JSON.stringify(foldBlanks(["", "a", "", "", " ", "b", "", ""])) === '["a","","b"]', "foldBlanks: leading/trailing blanks dropped, a run of blanks becomes one");
   const w = wrapLine("the quick brown fox jumps over the lazy dog", 16);
@@ -143,6 +143,13 @@ assert(block.lines === 5 && block.chars === "alpha\nbeta\ngamma\ndelta\nepsilon"
   const unmentioned = railMessage("fix it", [p1], opts);
   assert(unmentioned[0] === `${RAIL}fix it` && unmentioned[1].includes("📋"), "railMessage: a paste the text never mentions goes at the end, as it does on the wire");
   assert(railMessage("a\nb", [], { width: 40, rail: "│ " })[0] === "│ a", "railMessage: the rail is the caller's (the echo's painter indents for it)");
+  assert(strayPastes("fix it", [p1], opts).length === 3 && strayPastes("[Pasted text #1] fix", [p1], opts).length === 0, "strayPastes: only the pastes the text never mentions (they ride along all the same)");
+  // A message read back (the earlier block, the cross-session echo) is laid out at the width it is painted
+  // at: stored laid out, a redraw after a resize wrapped its rows off the rail (2026-11-18).
+  const words = `two ${Array.from({ length: 30 }, (_, i) => `word${String(i).padStart(2, "0")}`).join(" ")} end`;
+  const said = (width: number) => saidRows("you → echoer:", { body: `one\n${words}`, blocks: [] }, { width: width - 2, rail: "│ " });
+  assert(said(120).length === 4 && said(60).length > 4 && said(60).slice(1).every((r) => r.startsWith("│ ") && r.length <= 58) && said(60).slice(1).map((r) => r.slice(2)).join(" ") === `one ${words}`, "saidRows: the header, then the message on the rail wrapped at the width given — words whole");
+  assert(JSON.stringify(saidRows("you → echoer:", { body: "hi", blocks: [] }, opts)) === '["you → echoer: hi"]' && saidRows("you → echoer:", { body: "hi", blocks: [p1] }, opts).length === 5, "saidRows: one short line with no paste is one row; a paste puts it on the rail");
 
   // An echo of a SENT message reads the wire text back: the fences become pastes again.
   const wire = composeMessageLike(composePastes(body, [big]));
@@ -157,7 +164,7 @@ assert(block.lines === 5 && block.chars === "alpha\nbeta\ngamma\ndelta\nepsilon"
 // --- the draft is INPUT: laid out whole on every paint, capped to the screen (2026-11-17) -----------------
 {
   const { draftRows, fitRows, RAIL } = await import("../src/compose-view.ts");
-  const { echoRows, readlineWidth, rowsAt, wrappedWidth } = await import("../src/width.ts");
+  const { displayPos, echoRows, fitPainted, rowsAt, wrappedWidth } = await import("../src/width.ts");
   const opts = { width: 40 };
   const p1 = makeBlock(1, "pasted row one\npasted row two\npasted row three");
   const head = "you → echoer> ";
@@ -205,37 +212,52 @@ assert(block.lines === 5 && block.chars === "alpha\nbeta\ngamma\ndelta\nepsilon"
 
   // A tab moves to the next multiple of 8, as readline counts it (2026-11-18: counted as 0 columns, a
   // 120-column `\t`-filled line was one row to paw and two to readline — the erase left a stale head row).
+  // Measured in tmux 3.8 at 60 columns (cursor after 59 × `x` + the glyph): a glyph wide only by its VS16
+  // is placed narrow, then widened — in the last column it stays (60); one wide by itself wraps whole (62).
+  const tmux59 = (g: string) => wrappedWidth(`${"x".repeat(59)}${g}`, 60);
+  assert(tmux59("⚠️") === 60 && tmux59("❤️") === 60 && wrappedWidth(`${"x".repeat(58)}⚠️`, 60) === 60 && tmux59("✅") === 62 && tmux59("界") === 62 && tmux59("👩‍💻") === 62 && wrappedWidth(`${"x".repeat(59)}⚠️y`, 60) === 61, "wrappedWidth: a VS16 glyph in the last column stays there; an emoji or CJK glyph wraps whole (tmux's own layout)");
   assert(wrappedWidth("a\tb", 120) === 9 && wrappedWidth("\t", 120) === 8 && rowsAt(`${RAIL}${"a\t".repeat(15)}end`, 120) === 2, "wrappedWidth: a tab advances to the next tab stop");
-  // …and where the terminal and readline lay a line out alike, every count agrees with readline's own.
-  // They part on VS16 and ZWJ emoji (`❤️` is 2 columns on screen, 1 to readline; `👩‍💻` 2 and 4):
-  // readlineWidth is readline's count, checked against readline itself for those too.
+  // readline lays the line out by paw's count (chat hands it displayPos as its _getDisplayPos): its own put
+  // `❤️` at 1 column and `👩‍💻` at 4, so on a row of them its refresh climbed too few rows, left stale rows
+  // and the hint row in the line, and put the caret short of the text (2026-11-18). With the hook, readline
+  // agrees with the terminal everywhere — VS16/ZWJ/flags/keycaps/marks — and echoRows with readline.
   const { createInterface } = await import("node:readline");
   const { PassThrough, Writable } = await import("node:stream");
   const emoji = ["❤️", "⚠️ warn", "👩‍💻 ok", "🏳️‍🌈", "👍🏽", "🇺🇸", "1️⃣", "e\u0301", "a\u200bb", "\u00ad", "ｱ한"];
   for (const cols of [60, 120]) {
     const out = Object.assign(new Writable({ write: (_c, _e, cb) => cb() }), { isTTY: true, columns: cols, rows: 40 });
     const r = createInterface({ input: new PassThrough(), output: out, terminal: true });
+    const hooked = r as unknown as { _getDisplayPos: (s: string) => { cols: number; rows: number } };
+    hooked._getDisplayPos = (s) => displayPos(s, cols);
     const at = (l: string): { rows: number; cols: number } => {
       r.setPrompt(l);
       return r.getCursorPos();
     };
-    const lines = [`${RAIL}${"a\t".repeat(15)}end`, `${head}a${"界".repeat(52)}b`, "x".repeat(cols), "x".repeat(cols - 1), `${head}\tx\t${"y".repeat(70)}\t`, "👩‍💻 ok"];
-    const off = lines.filter((l) => echoRows(l, cols) !== at(l).rows + 1);
-    assert(off.length === 0, `echoRows: as readline lays the line out at ${cols} columns (off: ${JSON.stringify(off)})`);
     const edges = emoji.flatMap((e) => [e, `${"x".repeat(cols - 2)}${e}`, `${"x".repeat(cols - 1)}${e}`, `${"x".repeat(cols - 4)}${e}`]);
-    const miscounted = edges.filter((l) => readlineWidth(l, cols) !== at(l).rows * cols + at(l).cols);
-    assert(miscounted.length === 0, `readlineWidth: readline's own count at ${cols} columns, VS16/ZWJ/flags/keycaps/marks included (off: ${JSON.stringify(miscounted)})`);
+    const lines = [`${RAIL}${"a\t".repeat(15)}end`, `${head}a${"界".repeat(52)}b`, "x".repeat(cols), "x".repeat(cols - 1), `${head}\tx\t${"y".repeat(70)}\t`, ...edges];
+    const off = lines.filter((l) => echoRows(l, cols) !== at(l).rows + 1 || wrappedWidth(l, cols) !== at(l).rows * cols + at(l).cols);
+    assert(off.length === 0, `displayPos: readline, given it, lays every line out as the terminal does, and echoRows agrees at ${cols} columns (off: ${JSON.stringify(off)})`);
     r.close();
   }
-  // The caret row is readline's: only where ITS count ends at the edge too. A `\` line on a 60-column rail
-  // ending in `❤️` (tmux draws it 2 wide) fills the row, but readline counts 59 and writes no caret row:
-  // the echo is ONE row (two erased the blank row above the draft). `👩‍💻` the other way: 58 on screen,
-  // 60 to readline — its space lands on the same row, still one.
+  assert(JSON.stringify(displayPos("ab\ncd", 60)) === '{"cols":2,"rows":1}' && JSON.stringify(displayPos(`${"x".repeat(60)}\nab`, 60)) === '{"cols":2,"rows":1}' && JSON.stringify(displayPos("\n", 60)) === '{"cols":0,"rows":1}', "displayPos: a newline ends a row as readline's own count has it (a full row before it adds none)");
+  assert(JSON.stringify(displayPos("x".repeat(70), Infinity)) === '{"cols":70,"rows":0}', "displayPos: no width known (readline's Infinity) → one row");
+  // The caret row: readline writes one for any line ending exactly at the edge — now by the terminal's count.
+  // A `\` line on a 60-column rail ending in `❤️` fills the row (tmux draws it 2 wide): two rows, the caret's
+  // included. `👩‍💻` is 2 columns: 58, one row.
   const heart = `${RAIL}${"y".repeat(53)}❤️\\`;
-  assert(wrappedWidth(heart, 60) === 60 && readlineWidth(heart, 60) === 59 && echoRows(heart, 60) === 1, "echoRows: a `❤️` that fills the row — two columns on screen, one to readline — takes no caret row");
+  assert(wrappedWidth(heart, 60) === 60 && echoRows(heart, 60) === 2, "echoRows: a `❤️` that fills the row takes the caret row, like any line ending at the edge");
   const zwj = `${"x".repeat(56)}👩‍💻`;
-  assert(wrappedWidth(zwj, 60) === 58 && readlineWidth(zwj, 60) === 60 && echoRows(zwj, 60) === 1, "echoRows: a ZWJ emoji readline counts to the edge, short of it on screen: one row");
-  assert(echoRows(`${"x".repeat(58)}界`, 60) === 2 && echoRows(`${"x".repeat(59)}界`, 60) === 2, "echoRows: a wide glyph ending at the edge (both counts agree) still gets the caret row; one wrapped whole gets none");
+  assert(wrappedWidth(zwj, 60) === 58 && echoRows(zwj, 60) === 1, "echoRows: a ZWJ emoji is one glyph, two columns: short of the edge, one row");
+  assert(echoRows(`${"x".repeat(58)}界`, 60) === 2 && echoRows(`${"x".repeat(59)}界`, 60) === 2, "echoRows: a wide glyph ending at the edge gets the caret row; one wrapped whole gets none");
+
+  // A painted row cut to one terminal row (the ↓ picker at a narrow width: a wrapped row made the area
+  // taller than the room the draft left for it).
+  const dim = (t: string) => `\x1b[2m${t}\x1b[0m`;
+  const row = `  ▸ \x1b[1m\x1b[36mlong-agent-name-x0\x1b[0m ${dim("○ offline — a message wakes it")}`;
+  const cut = fitPainted(row, 44);
+  assert(wrappedWidth(cut, 44) === 44 && cut.endsWith("…\x1b[0m") && cut.includes("\x1b[1m\x1b[36mlong-agent-name-x0\x1b[0m"), "fitPainted: a painted row too wide is cut to the width, its colours intact, `…` at the cut, the colour reset");
+  assert(fitPainted("short", 44) === "short" && fitPainted(row, 120) === row, "fitPainted: a row that fits is left as it is");
+  assert(wrappedWidth(fitPainted(`${"x".repeat(43)}界`, 44), 44) <= 44 && wrappedWidth(fitPainted("a👩‍💻bcdef", 5), 5) <= 5 && fitPainted("a👩‍💻bcdef", 5).includes("👩‍💻"), "fitPainted: a wide glyph at the edge and a ZWJ sequence are cut whole, within the width");
 }
 function composeMessageLike(s: string): string {
   return `${s}\n📷 [Image #1] /tmp/x.png`; // what composeMessage appends after the pastes

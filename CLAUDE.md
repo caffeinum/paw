@@ -346,13 +346,15 @@ Each entry: what it is + the most load-bearing rule. Full notes behind the link.
 - `src/compose-view.ts` — how a draft / sent message READS (pure): one rail (`  │ `) that the continuation
   prompt also draws, pastes inline at their placeholder (≤10 wrapped rows + `+N more`), blank runs folded;
   the cross-session echo parses the wire fences back. `draftRows` lays out the live draft AND the ONE `sent`
-  entry it becomes on Enter (stored as typed, laid out at paint time — a redraw after a resize re-wraps
-  it); `fitRows` caps a draft taller than the screen (`… +N more rows above`). The draft is INPUT, painted
-  above the prompt by chat's eraseInput/paintInput, never history; its rows are counted as the terminal
-  and readline lay them out (src/width.ts `rowsAt`: a wide glyph wraps whole at the edge; `echoRows`:
-  readline's caret row, only where readline's OWN count — `readlineWidth`, no VS16/ZWJ joining — ends at
-  the edge too). Every clear from a row's start is `CLEAR_BELOW` (src/chat-banner.ts): never a clear-to-end from
-  the home row, which tmux copies into the scrollback. Display only — wire text unchanged. → [chat.md#multiline](docs/notes/chat.md#multiline), [chat.md#the-draft-is-input-not-history-2026-11-17](docs/notes/chat.md#the-draft-is-input-not-history-2026-11-17)
+  entry it becomes on Enter; `saidRows` your messages read back (earlier block, another session's echo) —
+  all stored as typed/parsed and laid out at paint time (a redraw after a resize re-wraps them); `fitRows`
+  caps a draft taller than the screen (`… +N more rows above`). The draft is INPUT, painted above the prompt
+  by chat's eraseInput/paintInput, never history; its rows are counted as the terminal lays them out
+  (src/width.ts, measured in tmux: `wrappedWidth` — a wide glyph wraps whole at the edge, a VS16 one stays;
+  readline is handed the same count via `_getDisplayPos` → `displayPos`; `echoRows` adds its caret row at
+  the edge). Every clear from a row's start is `CLEAR_BELOW` (src/chat-banner.ts): never a clear-to-end from
+  the home row, which tmux copies into the scrollback (Ctrl+L repaints the area one row down). Display
+  only — wire text unchanged. → [chat.md#multiline](docs/notes/chat.md#multiline), [chat.md#the-draft-is-input-not-history-2026-11-17](docs/notes/chat.md#the-draft-is-input-not-history-2026-11-17)
 - `src/markdown.ts` — markdown → ANSI; never lose content, never eat placeholders. → [chat.md#markdown](docs/notes/chat.md#markdown)
 - Also: echo + ↓ picker, modes, `!cmd` (detached from the tty), follow, visual rounds, wait feedback. →
   [chat.md](docs/notes/chat.md) (sections `echo-and-picker`, `modes`, `bang-commands`, `follows-the-conversation`, `visual-rounds`, `waiting-feedback`)

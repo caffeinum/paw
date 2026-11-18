@@ -149,11 +149,15 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
 
 // ── views: logs · chat · messages · beads, the keys, the hint and the picker window (2026-09-23, tasks 2026-10-07) ─
 {
-  const { stepView, navKey, hintFor, pickerWindow, logBlockVisible, showsLogs, showsChat, showsPeers, arrowRun, VIEWS, VIEW_LABEL, viewNeedsTarget, displayWidth: displayWidthOf } = await import("../src/chat-views.ts");
+  const { stepView, navKey, hintFor, pickerWindow, pickerOpener, logBlockVisible, showsLogs, showsChat, showsPeers, arrowRun, VIEWS, VIEW_LABEL, viewNeedsTarget, displayWidth: displayWidthOf } = await import("../src/chat-views.ts");
   assert(arrowRun("\x1b[B") === 1 && arrowRun("\x1b[A") === -1, "arrows: a single ↓/↑ is one step");
   assert(arrowRun("\x1b[B".repeat(20)) === 20, "arrows: a held ↓ read as ONE chunk is 20 steps, not typing (the collapse-to-1/1 bug)");
   assert(arrowRun("\x1b[B\x1b[A\x1b[B") === 1 && arrowRun("\x1bOB\x1bOB") === 2, "arrows: mixed runs net out; SS3 encodings count");
   assert(arrowRun("\x1b[Ba") === undefined && arrowRun("ab") === undefined && arrowRun("\x1b[D") === undefined, "arrows: anything else in the chunk is typing, not a run");
+  // ↓ batched with the keys after it (2026-11-18): the arrows are split off and open the picker first, the
+  // rest is its filter — in one chunk readline folded them into the line and Enter sent the filter as text.
+  assert(pickerOpener("\x1b[Bother\r") === "\x1b[B" && pickerOpener("\x1b[B\x1b[Becho") === "\x1b[B\x1b[B" && pickerOpener("\x1bOBx") === "\x1bOB" && pickerOpener("\x1b[1;3Bx") === "\x1b[1;3B", "picker: a chunk STARTING with ↓ (a run, SS3, a modified ↓) yields the keys that open the picker");
+  assert(pickerOpener("\x1b[Ax") === undefined && pickerOpener("\x1b[B\x1b[Ax") === undefined && pickerOpener("x\x1b[B") === undefined && pickerOpener("\x1b[Dx") === undefined, "picker: ↑, a run that nets nothing, ↓ mid-chunk, ← — none opens it");
   assert(eq(VIEWS, ["logs", "chat", "messages", "beads"]), "view: exactly four views, logs · chat · messages · beads (operator order, 2026-11-06)");
   assert(!Object.values(VIEW_LABEL).some((l) => l.includes("+")) && Object.keys(VIEW_LABEL).length === 4 && VIEW_LABEL.beads === "beads" && !Object.values(VIEW_LABEL).includes("tasks"), "view: the tasks view is labelled beads; no `logs + chat` label survives");
   assert(stepView("chat", -1) === "logs" && stepView("chat", 1) === "messages" && stepView("messages", 1) === "beads", "view: → walks logs → chat → messages → beads");
@@ -332,7 +336,7 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
     // The draft is INPUT (2026-11-17): Enter turns it into ONE echo entry — the whole message, laid out
     // as the draft was — painted like any entry: one time over the blank its predecessor left, the rows
     // verbatim (no painter indent), the receipt tight under its last row; a redraw paints the same.
-    const { draftRows, RAIL } = await import("../src/compose-view.ts");
+    const { draftRows, RAIL, saidRows } = await import("../src/compose-view.ts");
     const sent = draftRows("you → echoer> ", ["first line", "second line", "third and done"], [], { width: 40 }).join("\n");
     const round: E[] = [
       { kind: "banner", text: "BANNER\n\n" },
@@ -365,6 +369,23 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
     let unlaid = "";
     try { new Painter(render).paint(sentE, "chat"); } catch (x) { unlaid = (x as Error).message; }
     assert(unlaid.includes("needs a layout"), "draft: a painter with no layout for a sent draft fails loud, never paints it some other way");
+
+    // A message you sent, READ BACK — the earlier block, another session's echo — is stored parsed and laid
+    // out at paint time too (2026-11-18: stored laid out, after a resize its rows wrapped off the rail).
+    const layOut = (o: import("../src/chat-views.ts").Outbound) => saidRows(o.header, o, { width: width - 2, rail: "│ " }).join("\n");
+    const OP = () => new Painter(render, plain, "  ", () => false, undefined, undefined, lay, layOut);
+    const outE: E = { kind: "outbound", header: "you (elsewhere) → echoer:", body: `one\n${long}`, blocks: [] };
+    width = 60;
+    const outWide = OP().paint(outE, "chat");
+    width = 30;
+    const outNarrow = OP().paint(outE, "chat");
+    const railed = (t: string) => t.split("\n").filter(Boolean).slice(1);
+    assert(outWide.startsWith("you (elsewhere) → echoer:\n  │ one\n") && railed(outNarrow).every((r) => r.startsWith("  │ ") && r.length <= 30) && railed(outNarrow).length > railed(outWide).length, "outbound: a message read back is laid out at the width it is painted at, every row on the rail");
+    const histE: E = { kind: "outbound", header: "you → echoer:", body: "hi", blocks: [], historical: true, ts: 1 };
+    assert(vis(outE, "chat") && vis(outE, "logs") && vis(outE, "messages") && vis(histE, "chat") && !vis(histE, "logs") && !vis(outE, "beads"), "visible: another session's send shows where a chat line of yours does; the earlier block's only in the conversation views");
+    let noOut = "";
+    try { new Painter(render).paint(outE, "chat"); } catch (x) { noOut = (x as Error).message; }
+    assert(noOut.includes("needs a layout"), "outbound: a painter with no layout for it fails loud");
   }
 
   // History — conversation kept forever, only trace (log) entries bounded
@@ -2057,7 +2078,7 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
   assert(/else if \(next\[0\]\) receiptSlot = slot;/.test(fn("const setReceipt = (")), "receipt: one printed over keeps its text in the history — a redraw shows what the screen showed there, not the next message's state above that message");
 
   // Round 4 (the same two on round 3, 2026-11-18): the screens run in check:chat-draft AI–AQ.
-  assert(/typeBack\(text\)/.test(fn("const giveBack = (")) && /text kept \(↑ to recall\)`\)\);\s*if \(rl && !closing\) setImmediate\(\(\) => rl && !closing && typeBack\(text\)\)/.test(src) && !/rl!?\.write\(text\)/.test(src) && /if \(lines\.length > 1\) holdLines\(lines\.slice\(0, -1\)\);\s*rl!\.write\(lines\[lines\.length - 1\]!\)/.test(fn("const typeBack = (")), "refusal: a refused line goes back through typeBack — a multi-line one as the draft it was, never a \"\\n\" into readline (it is Enter there)");
+  assert(/typeBack\(text\)/.test(fn("const giveBack = (")) && /text kept \(↑ to recall\)`\)\);\s*giveBack\(curName, text\);/.test(src) && !/rl!?\.write\(text\)/.test(src) && /if \(lines\.length > 1\) holdLines\(lines\.slice\(0, -1\)\);\s*rl!\.write\(lines\[lines\.length - 1\]!\)/.test(fn("const typeBack = (")), "refusal: a refused line goes back through giveBack → typeBack — a multi-line one as the draft it was, never a \"\\n\" into readline (it is Enter there)");
   const { CLEAR_BELOW } = await import("../src/chat-banner.ts");
   const preshell = readFileSync(new URL("../src/chat-preshell.ts", import.meta.url), "utf8");
   assert(CLEAR_BELOW === "\x1b7\x1b[2K\x1b[1B\x1b[0J\x1b8" && ["function eraseInput(", "const erasePicker = (", "const drawPicker = (", "const eraseChooser = (", "const drawChooser = ("].every((h) => /process\.stdout\.write\(CLEAR_BELOW\)/.test(fn(h)) && !/clearScreenDown/.test(fn(h))) && /process\.stdout\.write\(CLEAR_BELOW\)/.test(preshell) && !/clearScreenDown/.test(preshell), "home row: the input area, the overlays and the pre-shell clear their first row as a LINE and the rest from the row under it — never a clear-to-end from the home row (tmux copies the screen into the scrollback for that)");
@@ -2065,6 +2086,21 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
   assert(/name === f \? 0 : name\.startsWith\(f\) \? 1 : 2/.test(fn("const pickerHits = (")), "picker: the agent a filter names exactly is listed (and marked) first, then prefixes, then the rest");
   assert(/rl\.write\(null, \{ ctrl: true, name: "u" \}\);\s*rl\.write\(null, \{ ctrl: true, name: "k" \}\);\s*closePicker\(\);/.test(fn("const dismissPicker = (")) && /if \(raw === ESC\) return void setImmediate\(dismissPicker\);/.test(src), "picker: Esc takes the `@filter` it wrote with it — nothing of the picker is sent as text");
   assert(/if \(!overPickerRows\) stampTypedLine\(echo\);/.test(line) && /if \(!draft \|\| sent\) \{\s*painter\.lastSide = "you";/.test(line), "line: no time over the picker's rows left above a line, and a draft with nothing in it (erased whole) leaves the painter as it was");
+
+  // Round 5 (2026-11-18, the round-4 verify): the screens run in check:chat-draft AR–AY.
+  assert(!/railMessage\(/.test(fn("const historyEntry = (")) && /kind: "outbound"/.test(fn("const historyEntry = (")) && /show\(\{ kind: "outbound", header, \.\.\.parseComposed\(body\), ts: msg\.ts \}\)/.test(src), "outbound: the earlier block's rows of yours and another session's send are stored parsed, laid out when painted (never laid out once at the width then)");
+  assert(/rl\.line === "" \? pickerOpener\(text\) : undefined;/.test(src) && /setImmediate\(\(\) => process\.stdin\.emit\("data", typeof chunk === "string" \? rest/.test(src), "picker: ↓ batched with the keys after it is split off, so the picker opens before the rest (its filter) reaches readline");
+  const ctrlU = src.slice(src.indexOf('raw === "\\x15") {'), src.indexOf("// Ctrl+L: readline clears"));
+  assert(ctrlU.indexOf("st.pastes.splice(0)") > 0 && ctrlU.indexOf("st.pending.splice(0)") > 0 && ctrlU.indexOf("st.pastes.splice(0)") < ctrlU.indexOf("unholdLines(n)"), "draft: Ctrl+U clearing the draft drops what was staged for it (pastes, images) before the prompt is reset — kept, the next line sent them unseen");
+  assert(/emitRows\(strayPastes\(body, pastes, viewOpts\(\)\)\)/.test(fn("const flush = (")), "paste: a staged paste no line mentions is shown under the message it goes out with");
+  assert(/if \(!rl\.terminal \|\| rl\.line !== "" \|\| held\.length\) \{\s*keptUnsent\.push/.test(fn("const giveBack = (")) && /rl\.terminal && rl\.line === "" && !held\.length/.test(src), "pipe: off a terminal a refused line is kept for the quit, never typed back (readline glued it to the next line; a multi-line one crashed it)");
+  assert(/raw === "\\x0c" && view !== "beads"\) \{/.test(src) && !/held\.length && raw === "\\x0c"/.test(src), "Ctrl+L: with or without a draft, the input area is painted back one row down — readline's later refreshes never clear from the home row");
+  assert(/posInternal\._getDisplayPos = \(s: string\) => displayPos\(s, posInternal\.columns\)/.test(src), "width: readline lays its line out by the terminal's count (VS16/ZWJ emoji): its refresh and caret agree with the screen");
+  assert(/rows\.map\(\(r\) => fitPainted\(r, cols\)\)/.test(fn("const drawPicker = (")), "picker: each row is cut to one terminal row, so its height (what the draft leaves room for) is what it draws");
+  const at = fn("async function handleLine(");
+  const atName = at.slice(at.indexOf('} else if (text.startsWith("@")) {'), at.indexOf("} else if (parseBang(text) !== undefined)"));
+  assert((atName.match(/syncPrompt\(\);/g) ?? []).length === 3 && !/rl!\.setPrompt\(promptFor\(\)\)/.test(atName) && !/syncPrompt/.test(fn("async function pickUnderDraft(")), "draft: every `@name` switch re-heads a draft (the chooser's pick, the picker's, a replayed one) — it kept naming the old target");
+  assert(!/Enter needs no interception/.test(src), "picker: the comment says how Enter picks now");
 }
 
 rmSync(process.env.PAW_HOME as string, { recursive: true, force: true });
