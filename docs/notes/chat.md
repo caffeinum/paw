@@ -427,13 +427,18 @@ decides how long the `◌` loaders stay up.
   undocumented, so the prompt wrapper fails loud if a node release stops keeping it (like the
   `_writeToOutput` hook).
 - **The cap:** a draft taller than the screen shows its LAST rows under one dim `  │ … +N more rows
-  above` row (`fitRows`), leaving room for the prompt, the hint, an open overlay and two spare rows (a
-  stamp drawn over the blank above, and the row readline echoes on `\`/Enter, which the next erase must
-  still reach). The whole message is still sent, and its echo is whole.
+  above` row (`fitRows`), leaving room (`draftRoom`) for the prompt, the hint, an open overlay (the rows
+  it can draw: the picker's count row + its window of agents + the `more` rows) and two spare rows (a
+  stamp drawn over the blank above, and a row the line being typed may wrap onto). Each further row the
+  line wraps onto re-caps the draft at the next keystroke (`drawnDraft.rows > draftRoom()` →
+  repaint), while its top can still be reached. The whole message is still sent, and its echo is whole.
 - **The redraw fallback:** `eraseInput` erases in place only while its count still finds the area's
-  top — painted at this width, with the area (+ `above` + the row over it) on screen. Otherwise it
-  touches nothing and the caller runs `redraw()`. A resize mid-draft schedules that redraw (150ms,
-  shared with the messages view's relayout); Ctrl+L repaints the draft over readline's own clear.
+  top: painted at this width, and the area (+ `above` + the row over it) NEVER taller than the screen
+  since it was painted. The terminal only scrolls forward — once the area outgrew the screen (a picker
+  drawn under a full draft, a 470-character line pasted in one chunk) its top rows are in the scrollback
+  for good, even after it shrinks back — so `drawnDraft.tallest` keeps the most rows it stood at, noted
+  after every keystroke and every prompt. Otherwise it touches nothing and the caller runs `redraw()`.
+  A resize mid-draft schedules that redraw (150ms, shared with the messages view's relayout).
 - **Enter = ONE echo.** `onLine` lays the whole message out with the same `draftRows` (head row, rail
   rows, inline paste blocks, the last line on the rail) BEFORE the send consumes the stage, pushes ONE
   `echo` entry, and `settleDraft` erases the area (draft + readline's echo of the last line + an open
@@ -443,7 +448,8 @@ decides how long the `◌` loaders stay up.
   once, as readline's echo of a single line stays there. A single line (nothing held) is unchanged:
   readline's echo + `stampTypedLine` + its paste rows.
 - **`\` and the badge:** `holdLines(lines, echoed)` hands readline's echo of the `\` line to the erase
-  (`above`), so it goes with the old area instead of staying as a second copy. `stagePaste` (and the
+  (its rows replace the prompt's: the cursor sits on the old hint row), so it goes with the old area
+  instead of staying as a second copy. `stagePaste` (and the
   image drop) set the badge prompt and repaint the area BEFORE writing the placeholder, so the badge is
   drawn and the caret sits right after the text.
 - ⌫ on the empty rail and Ctrl+U take lines back by repainting the area in place — no history edit, no
@@ -457,9 +463,62 @@ decides how long the `◌` loaders stay up.
   DM above the whole draft, rows contiguous and once, one block + one stamp + receipt after Enter, the
   same after ←/→, the 20-row cap, ⌫ / Ctrl+U in place, a burst of 3 DMs, view switches mid-draft, a
   resize to 90 columns, the ↓ picker open mid-draft, the badge + caret column, every wire DM byte for
-  byte). 117 checks; against the code before this fix (eaff988) 84 of them fail — only the wire texts,
-  the one-line control and a few row counts pass. The teammate's repro driver (scenarios A–H) reads
-  right on every screen after the fix, with the same wire DMs.
+  byte; round 2's N–W below). 117 checks then; against the code before this fix (eaff988) 84 of them
+  fail — only the wire texts, the one-line control and a few row counts pass. The teammate's repro
+  driver (scenarios A–H) reads right on every screen after the fix, with the same wire DMs.
+
+#### round 2: what a real-terminal tester and a reviewer still found (2026-11-17)
+
+An adversarial run (30 scenarios, 60×20 to 120×40 panes under tmux) and a code review of the change
+above found these; each is reproduced by a scenario in `check:chat-draft` (N–W) or a pure check.
+- **Counting rows the way the terminal and readline lay them out** (`src/width.ts`). `paintedRows` /
+  `fitRows` counted `ceil(width / cols)`, which misses two things: (1) a wide glyph (CJK, emoji) that
+  would start in the LAST column wraps whole to the next row, leaving that column empty — a head row of
+  `a` + 52×`界` + `b` after the 14-column prompt is three rows at 60 columns, not two
+  (`wrappedWidth`/`rowsAt`, the rule readline's own `_getDisplayPos` uses); (2) readline's echo of a line
+  that ends EXACTLY at the right edge is one row taller than its text: `kRefreshLine` writes a space to
+  make the terminal give the caret a row of its own, and Enter's `\r\n` leaves from there (`echoRows`).
+  Counted one short, the erase left a `prompt…A\` copy above the draft, the next hold doubled the head
+  row, and a reply landed under the stale copy — the very split this note is about. `promptRows`,
+  `drawHint`, `holdLines`, `settleDraft` and `stampTypedLine` (a single exact-width line's time went
+  over the end of its text) all count with them now.
+- **`/quit` typed on the rail** was the last line of the message (eaff988 did the same): `onLine` joined
+  the held lines first and tested the joined text. It is tested on the last line alone now, before the
+  join; chat quits and prints the draft once as unsent. Slash only — a bare `exit` on the rail is as
+  likely the text of the message.
+- **The picker's room:** it reserved `pickerSize() + 3` rows (15 in a 20-row pane) whatever it drew, so a
+  2-line draft collapsed to `… +2 more rows above` with 4 picker rows on screen, and stayed collapsed
+  after Esc. `height()` is now the rows it can draw (count row + `min(agents, window)` + the `more` rows),
+  and opening or closing the picker or the chooser over a draft repaints the area (`repaintInput({ change
+  })`): the draft gives the overlay its rows, then gets them back. The picker also clears down before it
+  draws — its rows kept the tail of the hint row they were drawn over (on every prompt, since before).
+- **An area that outgrew the screen** (a picker opened under a draft that filled it, 470 characters
+  landing in one chunk): its top scrolled into the scrollback, yet the erase counted from the area's
+  current, smaller height — after Esc or Ctrl+U a reply landed between two copies of the draft (eaff988
+  too). `drawnDraft.tallest` ([the redraw fallback](#the-draft-is-input-not-history-2026-11-17)) sends that
+  to redraw(); a line growing keystroke by keystroke re-caps the draft before it gets there; and a `\`
+  line's echo counts as the prompt rows it replaced (a 2-row `\` line at the cap counted one row too
+  many and fell back to a scrollback-wiping redraw).
+- **Quitting with the picker open:** `shutdown` set `closing` before the erase, and the overlays' erase
+  stands down once `closing` is set, so the draft and picker rows stayed above `✎ your unsent draft`,
+  whose last line was the picker's `@`. The erase runs first now, and the picker's filter is not a line.
+- **Ctrl+L under tmux** (`scroll-on-clear`, on by default, copies a clear that starts on the home row
+  into the scrollback): readline's clear copied the draft there, and with the area then starting on the
+  home row every later erase was such a clear — each message copied the draft above itself. The draft
+  is erased BEFORE readline's clear and painted back one row down (row 0 cleared as a line).
+- **A draft begun during the boot** kept the `◌` prompt its first line was typed at, live and in the
+  sent block. When the phase moves on (`syncPrompt`), a held draft takes the settled prompt as its head.
+- **TERM=dumb** crashed at startup: readline's `prompt()` only refreshes (and keeps `prevRows`) when
+  `TERM !== "dumb"`, so the hook's guard fired on the first prompt. It runs under the same condition now.
+- **Not changed, on purpose:** with a line exactly the width being typed, a blank row sits between it and
+  the hint — that is readline's caret row (the forced space above), so the hint goes under it. A second
+  message sent while the agent is mid-turn gets no receipt of its own (single lines too): the ONE-receipt
+  design, unchanged here.
+- Tests: `check:chat-draft` A–W, 154 checks (on the first fix, 0e14b85, 22 of N–V fail and A–M pass;
+  W is the reviewer's own case, which split there too); `check:paste` (`wrappedWidth`/`rowsAt`/`echoRows`,
+  `fitRows` with a wide head row); `check:chat` source pins (the echo counted by `echoRows`, `/quit` before
+  the join, the quit erase before `closing`, the TERM=dumb guard, the picker's height and re-fit,
+  `tallest` and the re-cap, the boot head refresh, Ctrl+L).
 
 ## earlier block
 

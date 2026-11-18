@@ -156,7 +156,8 @@ assert(block.lines === 5 && block.chars === "alpha\nbeta\ngamma\ndelta\nepsilon"
 
 // --- the draft is INPUT: laid out whole on every paint, capped to the screen (2026-11-17) -----------------
 {
-  const { draftRows, fitRows, RAIL, screenRows } = await import("../src/compose-view.ts");
+  const { draftRows, fitRows, RAIL } = await import("../src/compose-view.ts");
+  const { echoRows, rowsAt, wrappedWidth } = await import("../src/width.ts");
   const opts = { width: 40 };
   const p1 = makeBlock(1, "pasted row one\npasted row two\npasted row three");
   const head = "you → echoer> ";
@@ -176,7 +177,15 @@ assert(block.lines === 5 && block.chars === "alpha\nbeta\ngamma\ndelta\nepsilon"
   try { draftRows(head, [], [], opts); } catch (e) { threw = (e as Error).message; }
   assert(threw.includes("at least one line"), "draftRows: an empty draft fails loud");
 
-  assert(screenRows("x".repeat(40), 40) === 1 && screenRows("x".repeat(41), 40) === 2 && screenRows("", 40) === 1 && screenRows("\x1b[2mab\x1b[0m", 1) === 2, "screenRows: rows the terminal wraps a row onto (ANSI takes none, an empty row still one)");
+  assert(rowsAt("x".repeat(40), 40) === 1 && rowsAt("x".repeat(41), 40) === 2 && rowsAt("", 40) === 1 && rowsAt("\x1b[2mab\x1b[0m", 1) === 2, "rowsAt: rows the terminal wraps a row onto (ANSI takes none, an empty row still one)");
+  // A wide glyph that would start in the last column wraps whole, leaving that column empty (the S25
+  // head row: 14-col prompt + `a` + 52×界 + `b` at 60 cols is THREE rows, not ceil(120/60) = 2).
+  const cjk = `${head}a${"界".repeat(52)}b`;
+  assert(wrappedWidth("x" + "界".repeat(2), 4) === 6 && wrappedWidth("界".repeat(2), 4) === 4 && rowsAt(cjk, 60) === 3, "rowsAt: a wide glyph starting in the last column wraps whole onto the next row");
+  // readline gives a line that ends exactly at the edge a row of its own for the caret (kRefreshLine's
+  // forced space) — its echo is one row taller than the text (the S12/S24 doubled head row).
+  assert(echoRows("x".repeat(59), 60) === 1 && echoRows("x".repeat(60), 60) === 2 && echoRows("x".repeat(61), 60) === 2 && echoRows("", 60) === 1, "echoRows: readline's echo of a line exactly the width takes the extra caret row");
+  assert(echoRows(`${head}${"x".repeat(44)}A\\`, 60) === 2 && echoRows(`${RAIL}${"y".repeat(54)}B\\`, 60) === 2 && echoRows(`${cjk}\\`, 60) === 3, "echoRows: the exact-width `\\` lines and the wide head row of the adversarial runs");
   const ten = Array.from({ length: 10 }, (_, i) => `${RAIL}row ${i + 1}`);
   assert(JSON.stringify(fitRows(ten, 10, opts)) === JSON.stringify(ten), "fitRows: a draft that fits is shown whole");
   const capped = fitRows(ten, 4, opts);
@@ -184,7 +193,9 @@ assert(block.lines === 5 && block.chars === "alpha\nbeta\ngamma\ndelta\nepsilon"
   const wrapped = [`${head}${"w".repeat(60)}`, `${RAIL}b`, `${RAIL}c`];
   const fitW = fitRows(wrapped, 3, opts);
   assert(fitW.length === 3 && fitW[0] === `${RAIL}… +2 more rows above` && fitW[2] === `${RAIL}c`, "fitRows: a wrapped head row counts every terminal row it takes");
-  assert(fitW.reduce((n, r) => n + screenRows(r, 40), 0) <= 3, "fitRows: what it returns fits in the room");
+  assert(fitW.reduce((n, r) => n + rowsAt(r, 40), 0) <= 3, "fitRows: what it returns fits in the room");
+  const wide = fitRows([cjk, `${RAIL}s25 two`], 3, { width: 60 });
+  assert(wide.length === 2 && wide[0] === `${RAIL}… +3 more rows above`, "fitRows: a wide glyph wrapping at the edge counts its extra row");
   const one = fitRows(ten, 1, opts);
   assert(one.length === 1 && one[0] === `${RAIL}… +10 more rows above`, "fitRows: room for one row → the count alone");
   assert(fitRows(["only"], 1, { width: 40, dim: (s) => `<${s}>` })[0] === "only" && fitRows(ten, 2, { width: 40, dim: (s) => `<${s}>` })[0] === `<${RAIL}><… +9 more rows above>`, "fitRows: the count row is dimmed like the rail");

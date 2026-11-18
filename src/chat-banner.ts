@@ -9,7 +9,7 @@
  */
 import { slotText, type Slot } from "./chat-boot.ts";
 import { whereTag } from "./chat-views.ts";
-import { displayWidth } from "./width.ts";
+import { rowsAt } from "./width.ts";
 import { OVER_BLANK } from "./chat-stamp.ts";
 
 export interface BannerStyle {
@@ -113,16 +113,15 @@ export function renderBanner(st: BannerState, c: BannerStyle): string {
 /**
  * How many terminal rows `text` occupies once written at column 0 of `cols` columns — the cursor then
  * sits on the row below. Wrapped lines count every row they wrap onto (display width, so an emoji is
- * two columns). Text must end with a newline: a banner always does, and a partial last row would make
- * "how far up is its first row" ambiguous.
+ * two columns, and a wide glyph that would start in the last column wraps whole). Text must end with a
+ * newline: a banner always does, and a partial last row would make "how far up is its first row" ambiguous.
  */
 export function paintedRows(text: string, cols: number): number {
   if (!text.endsWith("\n")) throw new Error("paintedRows: text must end with a newline");
   const lines = text.split("\n");
   lines.pop();
-  const w = Math.max(1, cols);
   // A stamp drawn over the blank row above (chat-stamp.ts OVER_BLANK) writes over a row, adds none.
-  return lines.reduce((n, l) => n + (l.startsWith(OVER_BLANK) ? 0 : Math.max(1, Math.ceil(displayWidth(l) / w))), 0);
+  return lines.reduce((n, l) => n + (l.startsWith(OVER_BLANK) ? 0 : rowsAt(l, cols)), 0);
 }
 
 /**

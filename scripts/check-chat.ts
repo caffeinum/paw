@@ -2008,8 +2008,19 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
     const owner = [...before.matchAll(/(?:function (\w+)\(|const (\w+) = (?:async )?\()/g)].pop();
     return owner?.[1] ?? owner?.[2] ?? "?";
   });
-  const allowed = new Set(["eraseInput", "erasePicker", "eraseChooser", "drawChooser", "drawHint", "shutdown"]);
+  const allowed = new Set(["eraseInput", "erasePicker", "drawPicker", "eraseChooser", "drawChooser", "drawHint", "shutdown"]);
   assert(movers.length > 0 && movers.every((o) => allowed.has(o)), `draft: cursor moves above the prompt only in ${[...allowed].join(", ")} (found: ${[...new Set(movers)].join(", ")})`);
+
+  // Round 2 (a real-terminal tester + a reviewer, 2026-11-17): each a screen seen wrong, pinned here.
+  assert(/echoRows\(echoed, /.test(fn("const holdLines = (")) && /eraseInput\(0, echoRows\(echoed, cols\)\)/.test(fn("function settleDraft(")) && !/paintedRows\(`\$\{echoed\}/.test(src), "draft: readline's echo of a `\\` or last line is counted as readline lays it out (an exact-width line takes its caret row too)");
+  assert(line.search(/\/\^\\\/\(quit\|exit\)\$\/i\.test\(rawLine\.trim\(\)\)/) > 0 && line.search(/\/\^\\\/\(quit\|exit\)\$\/i\.test\(rawLine/) < line.indexOf("joinLines(held, raw)"), "draft: `/quit` on the rail is tested on the last line alone, BEFORE the held lines join it (it quit nothing and was sent)");
+  const quit = fn("async function shutdown(");
+  assert(quit.indexOf("eraseInput(0, echoed)") > 0 && quit.indexOf("overlay()?.erase()") > 0 && quit.indexOf("eraseInput(0, echoed)") < quit.indexOf("closing = true") && /rl && !picking \? \[rl\.line\]/.test(quit), "draft: quitting erases the input area (an open picker too) BEFORE `closing` stands the overlays down, and the picker's `@` is no line of the draft");
+  assert(/process\.env\.TERM !== "dumb" && typeof \(r as unknown as ReadlineRows\)\.prevRows/.test(src), "draft: the prevRows guard only runs where prompt() refreshes (TERM=dumb keeps no count — chat crashed at startup)");
+  assert(!/pickerSize\(\) \+ 3/.test(src) && /height: pickerHeight/.test(src) && /if \(held\.length\) return repaintInput\(\{ change: close \}\)/.test(fn("const closePicker = (")) && /if \(held\.length\) return repaintInput\(\{ change: open \}\)/.test(fn("const openPicker = (")), "draft: the picker takes the rows it really draws out of the draft's room, and opening/closing it re-fits the draft");
+  assert(/drawnDraft\.rows > draftRoom\(\)\) return repaintInput\(\)/.test(src) && /Math\.max\(drawnDraft\.tallest, inputRows\(echoed\)\)/.test(fn("function eraseInput(")), "draft: an area that outgrew the screen since its paint is never erased by count (its top scrolled away), and a growing line re-caps the draft first");
+  assert(/held\.length && !bang && targetPrompt\(\) !== draftHead\) \{\s*draftHead = targetPrompt\(\);\s*if \(!scanner\.pasting\) repaintInput\(\);/.test(fn("const syncPrompt = (")), "draft: a draft begun during the boot gets its head prompt again once the phase moves on (no `◌` frozen into it)");
+  assert(/raw === "\\x0c" && view !== "beads"\) \{\s*eraseInput\(\);\s*setImmediate\(\(\) => \{[\s\S]{0,80}readline\.cursorTo\(process\.stdout, 0, 0\);\s*process\.stdout\.write\("\\x1b\[2K\\n\\x1b\[J"\)/.test(src), "draft: Ctrl+L takes the draft off before readline's clear, and paints it back one row down — no erase from the home row (tmux copies a whole-screen clear into the scrollback)");
 }
 
 rmSync(process.env.PAW_HOME as string, { recursive: true, force: true });

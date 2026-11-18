@@ -55,6 +55,37 @@ export function displayWidth(s: string): number {
   return w;
 }
 
+/**
+ * The columns `s` moves the cursor when written from column 0 of a `cols`-wide terminal: its display
+ * width, plus one for every wide glyph that would start in the last column — the terminal wraps it whole
+ * onto the next row and leaves that column empty (readline's own _getDisplayPos counts it the same way).
+ */
+export function wrappedWidth(s: string, cols: number): number {
+  const w = Math.max(1, cols);
+  const chars = Array.from(s.replace(ANSI, ""));
+  let at = 0;
+  for (let i = 0; i < chars.length; i++) {
+    if (chars[i] === "‍") {
+      i++;
+      continue;
+    }
+    const cw = charWidth(chars[i], chars[i + 1]);
+    if (cw === 2 && (at + 1) % w === 0) at++;
+    at += cw;
+  }
+  return at;
+}
+
+/** Terminal rows one line (no newline in it) takes once written from column 0 and wrapped: at least one. */
+export const rowsAt = (line: string, cols: number): number => Math.max(1, Math.ceil(wrappedWidth(line, cols) / Math.max(1, cols)));
+
+/**
+ * Rows readline's prompt + line takes — live, and as the echo it leaves on Enter (the cursor then sits on
+ * the row under it). One more than {@link rowsAt} when the text ends exactly at the right edge: readline
+ * writes a space there to make the terminal give the caret a row of its own (kRefreshLine).
+ */
+export const echoRows = (line: string, cols: number): number => Math.floor(wrappedWidth(line, cols) / Math.max(1, cols)) + 1;
+
 /** The longest prefix of `s` (plain text, no ANSI) that fits in `cols` columns. */
 export function sliceWidth(s: string, cols: number): string {
   const chars = Array.from(s);

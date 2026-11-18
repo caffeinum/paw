@@ -12,7 +12,7 @@
  */
 import { formatBytes } from "./images.ts";
 import { PASTE_ICON, type PasteBlock } from "./paste.ts";
-import { displayWidth, sliceWidth } from "./width.ts";
+import { displayWidth, rowsAt, sliceWidth } from "./width.ts";
 
 /** The message rail, and the continuation prompt that draws the same rail for the line being typed. */
 export const RAIL = "  │ ";
@@ -127,9 +127,6 @@ export function draftRows(head: string, lines: readonly string[], blocks: readon
   return [head + first, ...railPastes(first, blocks, opts), ...rest.flatMap((l) => railLine(l, blocks, opts))];
 }
 
-/** Terminal rows one row of text takes at `width` columns once the terminal wraps it (ANSI takes none). */
-export const screenRows = (row: string, width: number): number => Math.max(1, Math.ceil(displayWidth(row) / Math.max(1, width)));
-
 /**
  * The rows of a live draft that fit in `room` terminal rows: all of them, or — a draft taller than that —
  * its LAST rows under one `… +N more rows above` row (N terminal rows). Only what is on screen while
@@ -137,7 +134,7 @@ export const screenRows = (row: string, width: number): number => Math.max(1, Ma
  */
 export function fitRows(rows: readonly string[], room: number, opts: ViewOpts): string[] {
   if (room < 1) throw new Error(`fitRows: room for ${room} rows — the caller keeps at least one, for the count`);
-  const tall = (r: string): number => screenRows(r, opts.width);
+  const tall = (r: string): number => rowsAt(r, opts.width);
   if (rows.reduce((n, r) => n + tall(r), 0) <= room) return [...rows];
   let used = 1;
   let from = rows.length;
