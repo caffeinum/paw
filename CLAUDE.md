@@ -338,7 +338,10 @@ Each entry: what it is + the most load-bearing rule. Full notes behind the link.
 - `src/link-probe.ts` — a send whose ack timed out PINGs the socket (cotal's public `onConnection`); no PONG in 5s →
   `nc.reconnect()` (nats.js alone takes 4–6 min to notice a silently dropped flow); a reconnect re-sends the in-flight head. → [chat.md#connection-state](docs/notes/chat.md#connection-state)
 - `src/images.ts` — `[Image #N]` attachments as TEXT (never a new part kind); stage ephemeral paths. → [chat.md#images](docs/notes/chat.md#images)
-- `src/paste.ts` — bracketed paste → one `[Pasted text #N]` message; suppression starts at the START marker. → [chat.md#paste](docs/notes/chat.md#paste)
+- `src/paste.ts` — bracketed paste → one `[Pasted text #N]` message; suppression starts at the START marker. While a paste
+  is unsettled chat mutes readline's text AND its refresh (`_writeToOutput` + `_refreshLine`) and repaints the input area
+  once from where the paste found the cursor (`pasteAnchor`/`endPaste`) — readline's own count follows a buffer the
+  screen never showed. → [chat.md#paste](docs/notes/chat.md#paste), [chat.md round 3](docs/notes/chat.md#round-3-writes-the-area-helpers-never-saw-2026-11-18)
 - `src/multiline.ts` — alt/shift+enter and trailing `\` continuation. → [chat.md#multiline](docs/notes/chat.md#multiline)
 - `src/compose-view.ts` — how a draft / sent message READS (pure): one rail (`  │ `) that the continuation
   prompt also draws, pastes inline at their placeholder (≤10 wrapped rows + `+N more`), blank runs folded;

@@ -449,9 +449,9 @@ decides how long the `◌` loaders stay up.
   readline's echo + `stampTypedLine` + its paste rows.
 - **`\` and the badge:** `holdLines(lines, echoed)` hands readline's echo of the `\` line to the erase
   (its rows replace the prompt's: the cursor sits on the old hint row), so it goes with the old area
-  instead of staying as a second copy. `stagePaste` (and the
-  image drop) set the badge prompt and repaint the area BEFORE writing the placeholder, so the badge is
-  drawn and the caret sits right after the text.
+  instead of staying as a second copy. The image drop sets the badge prompt and repaints the area BEFORE
+  writing the placeholder, so the badge is drawn and the caret sits right after the text; `stagePaste`
+  gets the same by setting both while readline is still muted and painting once (round 3 below).
 - ⌫ on the empty rail and Ctrl+U take lines back by repainting the area in place — no history edit, no
   full redraw. Off a tty nothing is painted live (no cursor math); the sent draft is an `echo` in the
   history, as a single line is. The wire text is byte-identical (`joinLines` + `composePastes`).
@@ -519,6 +519,70 @@ above found these; each is reproduced by a scenario in `check:chat-draft` (N–W
   `fitRows` with a wide head row); `check:chat` source pins (the echo counted by `echoRows`, `/quit` before
   the join, the quit erase before `closing`, the TERM=dumb guard, the picker's height and re-fit,
   `tallest` and the re-cap, the boot head refresh, Ctrl+L).
+
+#### round 3: writes the area helpers never saw (2026-11-18)
+
+The same tester and reviewer on round 2. Every split they still found was a write into the input area
+that no erase counted — readline's own, mostly — and is now either muted or drawn through the helpers.
+- **A paste that wraps a row** (a 450-character log line on the rail, 100 typed characters + a 40-character
+  paste, a multi-line paste whose last line wraps, a 900-character one that collapses): readline's echo
+  was muted through `_writeToOutput` only, and only while `scanner.pasting`/`pasteOpen`/`swallow` — a
+  paste that opens AND closes in one chunk (anything under ~1 KB) was not muted at all. Inside a chunk
+  readline writes every character raw (node sets `isCompletionEnabled = false` for all but the last, which
+  skips the refresh), the terminal wraps it, and nothing updates `prevRows`; and where a refresh did run
+  (`_refreshLine`, a chunk's last character crossing a row) its cursor moves went straight to the terminal.
+  The settle (`rl.prompt(true)` for typed text, `stagePaste`'s Ctrl+U/K for a placeholder) then climbed
+  readline's stale count: a 3-row stale copy of the line over the repainted one, and an `eraseInput` that
+  stopped short, so the next reply landed between a stale copy of the draft and the real one (eaff988's
+  single-line case too: X27A's stale partial line, its time stamp drawn over it). Now `pasteAnchor` = the
+  rows the cursor sits below the prompt's first row, noted from the START marker BEFORE readline folds the
+  chunk in; while it is set (`pasting()`) readline is muted — `_writeToOutput` AND `_refreshLine` (fail loud
+  if either hook is gone) — so the cursor stays there; nothing measures or draws by readline's buffer
+  (`drawHint`, `noteInputRows`, the footer tick, `syncPrompt`, the banner, the keystroke re-cap, the picker
+  filter); and both ends of a paste go through ONE `endPaste()`: `stagePaste` sets the badge prompt and the
+  placeholder still muted, then `repaintInput({ cursorRow: anchor })` erases from where the paste found the
+  cursor and paints the area once (badge drawn, caret after the text). A message arriving mid-paste erases
+  from the anchor too, and `paintInput` re-anchors at the (still blank) prompt row.
+- **`@` + Tab Tab** (X1, X21): readline's completer printed `\r\n` + the candidates under the prompt —
+  inside the area, over the hint row (`@echoer  @manager  @othern   messages →…`), where no count found
+  them; a reply then landed between two copies of the draft, one stayed in the scrollback. `_tabComplete`
+  is wrapped: readline only completes (a shared prefix), and a second Tab with several candidates is a
+  dim note through `emit` — above the whole input area, like any other.
+- **Enter in the ↓ picker over a draft** (X47, eaff988 too) sent the draft with the filter `@` as its last
+  line. The picker's hint says `enter picks`: `onLine` takes the marked agent (`pickerHits()[picked]` — the
+  buffer shows only the filter until an arrow moves) before the join, and over a draft `pickUnderDraft`
+  erases readline's echo of the filter, switches the target with `@name` (queued without the draft's
+  attachments before the mesh is up), keeps the draft and re-heads it (`syncPrompt`). No match: the filter
+  goes back into the input. Without a draft a bare `@` now picks the marked agent too (it said `usage:`).
+- **`!` on the rail** turned on command mode, and Enter ran the whole draft as a shell script in the
+  agent's folder (eaff988 too; round 2's known-gaps said otherwise, wrongly). The `!` switch needs an empty
+  draft; on the rail `!` is text of the message.
+- **Quitting:** the unsent draft is composed as Enter sends it (`composeMessage(composePastes(joinLines(…)
+  .trim(), pastes), pending)`) — a staged paste printed only its placeholder, its text lost (X15, eaff988
+  too). A draft whose top can't be found by counting (Ctrl-C inside the 150 ms resize debounce, X35) goes
+  with `redrawHistory()` (redraw() without the input area) instead of a clear from the cursor that left it
+  above the unsent copy. The chooser's `→ opening @x in <space>…` is said by `shutdown` after the area is
+  gone (written before it, the count-based erase took it and left two draft rows).
+- **Smaller:** the sent block is laid out from the lines the send keeps (`joinLines(…).trim()`), so Enter
+  on an empty rail leaves no `  │` row the message doesn't have (X2); `wrappedWidth` advances a tab to the
+  next multiple of 8, readline's own count (a `\t`-filled full-width `\` line left a stale head row, R6 —
+  `check:paste` now compares `echoRows` with readline's `getCursorPos` for tabs, wide glyphs and exact
+  widths at 60 and 120 columns); a receipt printed over (a second send mid-turn, X41) keeps its text in the
+  history, so a ←/→ redraw shows what the screen showed there instead of the next message's `queued` state
+  above that message.
+- **Not changed:** a line and a paste in ONE stdin chunk during the boot (`t-one\` + Enter + a paste typed
+  at `◌>`) still lose the held line and send a payload line on its own (identical on eaff988): the paste
+  listener opens on the chunk, so readline's submission of `t-one\` counts as payload. The fix is to split
+  a chunk at the START marker as the emit wrapper splits at the END marker; out of scope here. A typed
+  (unbracketed) multi-character chunk is still written raw by readline; `tallest` sends that to redraw()
+  (W).
+- Tests: `check:chat-draft` X–AH, 195 checks in all (the long paste on the rail, a paste over a row edge +
+  a collapsed one, a long URL with no draft and its stamp, Tab Tab, the picker's Enter, `/exit` with a
+  staged paste, Ctrl-C in the resize debounce, Enter on the empty rail, `!` on the rail, tabs, the covered
+  receipt) — against round 2 (5b6775d) 23 of them fail, every one in X–AH, and A–W pass on both;
+  `check:chat` source pins (both hooks muted, the anchor before readline's fold, one settle, the hint and
+  the count idle mid-paste, the completion note, the pick before the join, the `!` gate, the trimmed
+  layout, the composed unsent draft, the history-only repaint, the chooser note, the receipt).
 
 ## earlier block
 

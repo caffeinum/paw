@@ -55,10 +55,14 @@ export function displayWidth(s: string): number {
   return w;
 }
 
+/** readline's tab stop (its default `tabSize`; chat never sets another). */
+const TAB = 8;
+
 /**
  * The columns `s` moves the cursor when written from column 0 of a `cols`-wide terminal: its display
  * width, plus one for every wide glyph that would start in the last column — the terminal wraps it whole
- * onto the next row and leaves that column empty (readline's own _getDisplayPos counts it the same way).
+ * onto the next row and leaves that column empty (readline's own _getDisplayPos counts it the same way,
+ * and a tab the same way too).
  */
 export function wrappedWidth(s: string, cols: number): number {
   const w = Math.max(1, cols);
@@ -67,6 +71,11 @@ export function wrappedWidth(s: string, cols: number): number {
   for (let i = 0; i < chars.length; i++) {
     if (chars[i] === "‍") {
       i++;
+      continue;
+    }
+    // A tab moves to the next multiple of 8 — readline's own count (its tabSize), which the erase follows.
+    if (chars[i] === "\t") {
+      at += TAB - (at % TAB);
       continue;
     }
     const cw = charWidth(chars[i], chars[i + 1]);

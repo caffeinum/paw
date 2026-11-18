@@ -202,6 +202,24 @@ assert(block.lines === 5 && block.chars === "alpha\nbeta\ngamma\ndelta\nepsilon"
   threw = "";
   try { fitRows(ten, 0, opts); } catch (e) { threw = (e as Error).message; }
   assert(threw.includes("room for 0 rows"), "fitRows: no room at all fails loud (the caller keeps one)");
+
+  // A tab moves to the next multiple of 8, as readline counts it (2026-11-18: counted as 0 columns, a
+  // 120-column `\t`-filled line was one row to paw and two to readline — the erase left a stale head row).
+  assert(wrappedWidth("a\tb", 120) === 9 && wrappedWidth("\t", 120) === 8 && rowsAt(`${RAIL}${"a\t".repeat(15)}end`, 120) === 2, "wrappedWidth: a tab advances to the next tab stop");
+  // …and every count agrees with readline's own, which is what the erase follows.
+  const { createInterface } = await import("node:readline");
+  const { PassThrough, Writable } = await import("node:stream");
+  for (const cols of [60, 120]) {
+    const out = Object.assign(new Writable({ write: (_c, _e, cb) => cb() }), { isTTY: true, columns: cols, rows: 40 });
+    const r = createInterface({ input: new PassThrough(), output: out, terminal: true });
+    const lines = [`${RAIL}${"a\t".repeat(15)}end`, `${head}a${"界".repeat(52)}b`, "x".repeat(cols), "x".repeat(cols - 1), `${head}\tx\t${"y".repeat(70)}\t`, "👩‍💻 ok"];
+    const off = lines.filter((l) => {
+      r.setPrompt(l);
+      return echoRows(l, cols) !== r.getCursorPos().rows + 1;
+    });
+    r.close();
+    assert(off.length === 0, `echoRows: as readline lays the line out at ${cols} columns (off: ${JSON.stringify(off)})`);
+  }
 }
 function composeMessageLike(s: string): string {
   return `${s}\n📷 [Image #1] /tmp/x.png`; // what composeMessage appends after the pastes

@@ -28,6 +28,12 @@
  *   T. a draft begun before chat connected (its `◌` head prompt settles);  U. TERM=dumb starts;
  *   V. a long line typed under a capped draft: the draft is capped again, no scrollback-wiping redraw;
  *   W. a long line landing in ONE chunk under a capped draft (the screen scrolls), killed, then a DM.
+ * Round 3 (the same two on the round-2 fix):
+ *   X. a 450-character line pasted on the rail;  Y. a paste crossing a row edge, and a 900-character one
+ *   collapsed on the rail;  Z. a 300-character URL pasted with no draft (its time stamp);  AA. `@` + Tab Tab
+ *   mid-draft;  AB. Enter in the ↓ picker over a draft;  AC. `/exit` with a staged paste (its text printed);
+ *   AD. Ctrl-C inside the resize debounce;  AE. Enter on the empty rail;  AF. `!` on the rail;  AG. tabs
+ *   in a full-width `\` line;  AH. a second send while the agent is mid-turn (live receipt == redraw).
  * Every wire DM is asserted byte for byte (check:chat-tty 13 pins the same format).
  * Teardown always runs: tmux kill-server, echoer stop, `paw down`, purgeTestSpace, the space dir.
  */
@@ -38,7 +44,9 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CotalEndpoint, type CotalMessage, type Delivery, type MessageMeta } from "@cotal-ai/core";
 import { controlCreds } from "../src/addressing.ts";
+import { draftRows } from "../src/compose-view.ts";
 import { ensure, stop } from "../src/lifecycle.ts";
+import { makeBlock, type PasteBlock } from "../src/paste.ts";
 import { purgeTestSpace } from "../src/prune.ts";
 import { pawServer } from "../src/server.ts";
 
@@ -710,6 +718,238 @@ async function main(): Promise<void> {
     await sleep(500);
     const lines = screen();
     ok("W: after the area outgrew the screen, a reply lands above the whole draft, its head row once", lines.filter((l) => l === `${HEAD}w1`).length === 1 && lines.indexOf(`${HEAD}w1`) > replyEnd("W")(lines) && blockAt(lines, [`${HEAD}w1`, rail("w2")]) >= 0, shown(lines.slice(-18)));
+    await quit();
+  }
+
+  // ── round 3 (2026-11-18): a real-terminal tester + a reviewer on the round-2 fix ──────────────────────
+  /** Rows of a sent draft, as the screen shows them (trailing blanks trimmed like screen()'s). */
+  const sentRows = (lines: string[], blocks: PasteBlock[] = [], head = HEAD) => draftRows(head, lines, blocks, { width: COLS }).map((r) => r.replace(/\s+$/, ""));
+
+  // X. a 450-character log line pasted on the rail (one line, under the collapse threshold: it stays
+  //    typed text). readline wrote it raw, row after row, while its refresh still moved the cursor: the
+  //    line showed twice, and the next reply landed between a stale copy of the draft and the repainted one.
+  {
+    await startChat();
+    await hold("x-one");
+    await hold("x-two");
+    type("x the error was: ");
+    const log = `Error: connect ECONNREFUSED 127.0.0.1:4222 at TCPConnectWrap.afterConnect ${Array.from({ length: 25 }, (_, i) => `stack-frame-${String(i).padStart(2, "0")} `).join("")}`;
+    paste(log);
+    const pasted = await waitFor(has(/ECONNREFUSED/));
+    await sleep(500);
+    const head = (l: string) => l === `${HEAD}x-one`;
+    const drawn = (lines: string[]) => lines.filter(head).length === 1 && lines.filter((l) => l.includes("ECONNREFUSED")).length === 1 && blockAt(lines, [`${HEAD}x-one`, rail("x-two")]) >= 0 && (lines[blockAt(lines, [`${HEAD}x-one`, rail("x-two")]) + 2] ?? "").startsWith(`${RAIL}x the error was: Error: connect`);
+    ok("X: a long line pasted on the rail is drawn once, right under the draft", drawn(screen()), shown(pasted.slice(-8)));
+    const mid = await says("X");
+    ok("X: …a reply after it lands above the whole draft, each row once", drawn(mid) && mid.findIndex(head) > replyEnd("X")(mid), shown(mid.slice(-12)));
+    const { wire, lines } = await send();
+    const last = `x the error was: ${log}`.trimEnd();
+    ok("X: ONE DM, text unchanged", JSON.stringify(wire) === JSON.stringify([`x-one\nx-two\n${last}`]), JSON.stringify(wire).slice(0, 200));
+    sentBlock("X", lines, "X", sentRows(["x-one", "x-two", last]), WAITING);
+    await quit();
+  }
+
+  // Y. a short paste that pushes typed text over a row edge (R7), then a 900-character one that collapses
+  //    to its placeholder (X24D): each a split draft around the next reply before.
+  {
+    await startChat(30);
+    await hold("y-one");
+    type("t".repeat(100));
+    await sleep(200);
+    paste("short pasted words, forty characters ok");
+    await waitFor(has(/forty characters ok$/));
+    await sleep(400);
+    const crossed = screen();
+    ok("Y: a paste that pushes typed text over a row edge: the line shows once", crossed.filter((l) => l.includes("tttttttt")).length === 1 && crossed[crossed.length - 2] === "ds, forty characters ok", shown(crossed.slice(-6)));
+    const mid = await says("Y");
+    ok("Y: a paste crossing a row edge: the reply lands above the whole draft, each row once", mid.filter((l) => l === `${HEAD}y-one`).length === 1 && mid.indexOf(`${HEAD}y-one`) > replyEnd("Y")(mid) && mid.filter((l) => l.includes("tttttttt")).length === 1 && mid[mid.indexOf(`${HEAD}y-one`) + 1]?.startsWith(`${RAIL}tttt`) === true, shown(mid.slice(-8)));
+    key("C-u");
+    await sleep(300);
+    type("y-two + ");
+    const big = Array.from({ length: 75 }, (_, i) => `m${String(i).padStart(3, "0")}-pasted`).join(" "); // 899 characters, one line
+    const raw = (l: string) => /^m\d{3}-pasted/.test(l);
+    paste(big);
+    await waitFor(has(/\[Pasted text #1\] ?$/));
+    await sleep(400);
+    const staged = await says("Y2");
+    ok("Y: a 900-character paste collapsed on the rail: no raw copy of it anywhere, the draft once under the reply", !staged.some(raw) && staged.filter((l) => l === `${HEAD}y-one`).length === 1 && staged.indexOf(`${HEAD}y-one`) > replyEnd("Y2")(staged) && staged[staged.length - 2] === rail("y-two + [Pasted text #1]"), shown(staged.slice(-8)));
+    const { wire, lines } = await send();
+    ok("Y: ONE DM, the paste fenced, text unchanged", JSON.stringify(wire) === JSON.stringify([`y-one\ny-two + [Pasted text #1]\n\n--- [Pasted text #1] (1 line) ---\n${big}\n--- end [Pasted text #1] ---`]), JSON.stringify(wire).slice(0, 200));
+    sentBlock("Y", lines, "Y2", sentRows(["y-one", "y-two + [Pasted text #1]"], [makeBlock(1, big)]), WAITING);
+    ok("Y: …and still no raw copy of the paste", !lines.some(raw), shown(lines.slice(-14)));
+    await quit();
+  }
+
+  // Z. a 300-character URL pasted on an empty prompt (no draft, X27A): readline's raw echo left a partial
+  //    copy, and the time stamp was drawn over its last row.
+  {
+    await startChat(30);
+    await says("Z");
+    type("see ");
+    const url = `https://example.com/${"a".repeat(280)}`;
+    paste(url);
+    await waitFor(has(/^aaaa+$/));
+    await sleep(400);
+    const live = screen();
+    const first = (l: string) => l.startsWith(`${HEAD}see https://example.com/`);
+    ok("Z: a long URL pasted on an empty prompt shows once", live.filter(first).length === 1 && live.filter((l) => /^a+$/.test(l)).length === 2, shown(live.slice(-6)));
+    const { wire, lines } = await send();
+    ok("Z: ONE DM, text unchanged", JSON.stringify(wire) === JSON.stringify([`see ${url}`]), JSON.stringify(wire).slice(0, 120));
+    const at = lines.findIndex(first);
+    ok("Z: …once after Enter, its time on the blank row above, nothing drawn over its rows", lines.filter(first).length === 1 && STAMP.test(lines[at - 1] ?? "") && !lines.some((l) => /a\d\d:\d\d$/.test(l)) && WAITING.test(lines[at + 3] ?? ""), shown(lines.slice(-8)));
+    await quit();
+  }
+
+  // AA. `@` + Tab Tab mid-draft (X1): readline printed its candidates under the prompt, inside the input
+  //     area and over the hint row, where no erase counted them — the reply landed between two copies.
+  {
+    await startChat(30);
+    await hold("aa-one");
+    await hold("aa-two");
+    type("@");
+    await sleep(200);
+    key("Tab");
+    await sleep(250);
+    key("Tab");
+    const listed = await waitFor(has(/^@echoer {2}@/));
+    await sleep(300);
+    const row = screen().find((l) => /^@echoer {2}@/.test(l));
+    const now = screen();
+    ok("AA: a second Tab lists the candidates as a note ABOVE the draft, the row reading only them", row !== undefined && /^(@[\w-]+ {2})+@[\w-]+$/.test(row) && now.indexOf(row) < now.indexOf(`${HEAD}aa-one`) && blockAt(now, [`${HEAD}aa-one`, rail("aa-two"), rail("@")]) === now.length - 4, shown(listed.slice(-8)));
+    const mid = await says("AA");
+    ok("AA: …a reply after it lands above the whole draft, each row once", once(mid, [`${HEAD}aa-one`, rail("aa-two")]) && blockAt(mid, [`${HEAD}aa-one`, rail("aa-two"), rail("@")]) > replyEnd("AA")(mid), shown(mid.slice(-10)));
+    key("BSpace");
+    type("aa-three");
+    const { wire, lines } = await send();
+    ok("AA: ONE DM, text unchanged", JSON.stringify(wire) === JSON.stringify(["aa-one\naa-two\naa-three"]), JSON.stringify(wire));
+    sentBlock("AA", lines, "AA", [`${HEAD}aa-one`, rail("aa-two"), rail("aa-three")], WAITING);
+    await quit();
+  }
+
+  // AB. Enter in the ↓ picker over a draft (X47): it sent the draft with the filter `@` as its last line.
+  //     It picks the marked agent now, and the draft stays.
+  {
+    await startChat(24, { cols: 100 });
+    await hold("ab-one");
+    await hold("ab-two");
+    key("Down");
+    await waitFor(has(/^agents \d+\/\d+$/));
+    type("echo");
+    await waitFor(has(/^agents 1\/1$/));
+    const sent = dms.length;
+    key("Enter");
+    await waitFor(has(/\(now messaging echoer\)/));
+    await sleep(600);
+    const s = screen();
+    ok("AB: Enter in the picker over a draft picks the agent and sends nothing", dms.length === sent && s.findIndex((l) => /\(now messaging echoer\)/.test(l)) < s.indexOf(`${HEAD}ab-one`), `${JSON.stringify(dms.slice(sent))}\n${shown(s.slice(-8))}`);
+    ok("AB: …the draft stays whole under the note, the filter and the list gone", blockAt(s, [`${HEAD}ab-one`, rail("ab-two"), RAIL.trimEnd()]) === s.length - 4 && !s.some((l) => /^agents \d|^ {2}│ @/.test(l)), shown(s.slice(-8)));
+    type("ab-three");
+    const { wire, lines } = await send();
+    ok("AB: …Enter then sends the draft, no `@` in it", JSON.stringify(wire) === JSON.stringify(["ab-one\nab-two\nab-three"]), JSON.stringify(wire));
+    // Right under a sys note there is no blank row to stamp (a single line there gets none either).
+    const block = [`${HEAD}ab-one`, rail("ab-two"), rail("ab-three")];
+    const at = blockAt(lines, block);
+    ok("AB: …as ONE block, the receipt right under it", at >= 0 && once(lines, block) && WAITING.test(lines[at + block.length] ?? ""), shown(lines.slice(-8)));
+    await quit();
+  }
+
+  // AC. `/exit` on the rail with a paste staged in the draft (X15): only the placeholder was printed.
+  {
+    await startChat(30);
+    await hold("ac-one");
+    type("ac-two ");
+    paste("q1\nq2\nq3");
+    await waitFor(has(/\[Pasted text #1\] ?$/));
+    await hold("");
+    type("ac-thr");
+    type("\x1b\r");
+    await waitFor((l) => draftLines(l) === 4);
+    const sent = dms.length;
+    type("/exit");
+    key("Enter");
+    const out = await waitFor(has(/^\[chat exited/));
+    await sleep(400);
+    const at = out.indexOf("✎ your unsent draft:");
+    const want = ["ac-one", "ac-two [Pasted text #1]", "ac-thr", "", "--- [Pasted text #1] (3 lines) ---", "q1", "q2", "q3", "--- end [Pasted text #1] ---"];
+    ok("AC: quitting with a staged paste prints the unsent draft with the paste's text, once", at >= 0 && JSON.stringify(out.slice(at + 1, at + 1 + want.length)) === JSON.stringify(want) && out.filter((l) => l === "q2").length === 1 && dms.length === sent, shown(out.slice(-14)));
+  }
+
+  // AD. Ctrl-C inside the 150ms resize debounce (X35): the draft painted at the old width can't be found
+  //     by counting — it was left above the unsent copy.
+  {
+    await startChat(20, { cols: 60 });
+    await hold("ad-one");
+    await hold("ad-two is long enough to wrap differently at fifty columns wide");
+    type("ad-thr");
+    await sleep(300);
+    tmux("resize-window", "-t", T, "-x", "50");
+    key("C-c");
+    const out = await waitFor(has(/^\[chat exited/));
+    await sleep(300);
+    ok("AD: Ctrl-C right after a resize: the draft shows once, as the unsent draft", out.filter((l) => l.includes("ad-one")).length === 1 && out[out.indexOf("✎ your unsent draft:") + 1] === "ad-one", shown(out.slice(-10)));
+  }
+
+  // AE. Enter on the EMPTY rail (X2): the sent block kept a `  │` row the message doesn't have.
+  {
+    await startChat(30);
+    await hold("ae-one");
+    await hold("ae-two");
+    const { wire, lines } = await send();
+    ok("AE: ONE DM, text unchanged", JSON.stringify(wire) === JSON.stringify(["ae-one\nae-two"]), JSON.stringify(wire));
+    sentBlock("AE (no empty rail row under it)", lines, undefined, [`${HEAD}ae-one`, rail("ae-two")], WAITING);
+    await quit();
+  }
+
+  // AF. `!` typed on a draft's rail (R3): it switched to command mode, and Enter ran the whole draft as a
+  //     shell script in the agent's folder. It is text of the message there.
+  {
+    await startChat(30);
+    await hold("af-one");
+    type("!");
+    await sleep(300);
+    type("echo af-two");
+    await sleep(300);
+    const mid = screen();
+    ok("AF: `!` on the rail stays text — no command mode", mid[mid.length - 2] === rail("!echo af-two") && !mid.some((l) => /^\$ /.test(l)) && !/command mode/.test(mid[mid.length - 1] ?? ""), shown(mid.slice(-4)));
+    const { wire } = await send();
+    ok("AF: …sent as the message's last line, never run", JSON.stringify(wire) === JSON.stringify(["af-one\n!echo af-two"]), JSON.stringify(wire));
+    await quit();
+  }
+
+  // AG. tabs: a `\` line of pasted `a<TAB>`s that is wider than the screen once they are expanded (R6) —
+  //     counted as 0 columns, its echo was one row more than the erase took, a stale head row stayed.
+  {
+    await startChat(30);
+    await hold("ag-one");
+    paste("a\t".repeat(10));
+    await sleep(300);
+    type(`${"x".repeat(40)}\\`);
+    key("Enter");
+    const held = await waitFor((l) => draftLines(l) === 3);
+    await sleep(300);
+    ok("AG: a full-width `\\` line with tabs is held once — no stale head row", screen().filter((l) => l === `${HEAD}ag-one`).length === 1, shown(held.slice(-6)));
+    const mid = await says("AG");
+    ok("AG: …a reply lands above the whole draft, its head row once", mid.filter((l) => l === `${HEAD}ag-one`).length === 1 && mid.indexOf(`${HEAD}ag-one`) > replyEnd("AG")(mid), shown(mid.slice(-8)));
+    await quit();
+  }
+
+  // AH. a second send while the agent is mid-turn (X41): the live receipt and the redrawn one disagreed —
+  //     the redraw put the second message's `queued` state above that message.
+  {
+    await startChat(30);
+    type("ah-first");
+    await send();
+    await echoer.setStatus("working");
+    await waitFor(has(/^◌ echoer is on it$/));
+    type("ah-second");
+    const live = (await send(/^you → echoer> ah-second$/)).lines;
+    const from = (l: string[]) => l.slice(l.indexOf(`${HEAD}ah-first`), l.indexOf(`${HEAD}ah-second`) + 1);
+    key("Right");
+    await waitFor(has(/^messages /));
+    key("Left");
+    const redrawn = await waitFor(has(/^chat /));
+    ok("AH: the redraw shows the receipt the live screen shows between the two messages", from(live).length >= 3 && JSON.stringify(from(redrawn)) === JSON.stringify(from(live)), `${shown(from(live))}\n      ---\n${shown(from(redrawn))}`);
+    await echoer.setStatus("idle");
     await quit();
   }
 }
