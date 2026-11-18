@@ -153,6 +153,45 @@ assert(block.lines === 5 && block.chars === "alpha\nbeta\ngamma\ndelta\nepsilon"
   assert(two.body === "a [Pasted text #1] b [Pasted text #2]" && two.blocks[1].text === "x\n--- not a fence ---\ny", "parseComposed: several pastes, each payload intact");
   assert(parseComposed("just text\n--- x ---").body === "just text\n--- x ---" && parseComposed("just text").blocks.length === 0, "parseComposed: text without fences passes through untouched");
 }
+
+// --- the draft is INPUT: laid out whole on every paint, capped to the screen (2026-11-17) -----------------
+{
+  const { draftRows, fitRows, RAIL, screenRows } = await import("../src/compose-view.ts");
+  const opts = { width: 40 };
+  const p1 = makeBlock(1, "pasted row one\npasted row two\npasted row three");
+  const head = "you → echoer> ";
+  const lines = ["1. corrcet", "2. looks good", "3. okay but [Pasted text #1] ", "4. the las"];
+  const rows = draftRows(head, lines, [p1], opts);
+  assert(rows[0] === `${head}1. corrcet` && rows[1] === `${RAIL}2. looks good`, "draftRows: the head row reads like readline's echo (prompt + first line), later lines on the rail");
+  assert(rows[2] === `${RAIL}3. okay but [Pasted text #1] ` && rows[3] === `${RAIL}📋 [Pasted text #1] 3 lines, 46 B` && rows[4] === `${RAIL}  pasted row one`, "draftRows: a paste sits inline, right under the line that mentions it (the operator's screenshot)");
+  assert(rows[rows.length - 1] === `${RAIL}4. the las` && rows.length === 8, "draftRows: the last line closes the block");
+  const onlyPaste = draftRows(head, ["a", "[Pasted text #1]"], [p1], opts);
+  assert(onlyPaste[1] === `${RAIL}📋 [Pasted text #1] 3 lines, 46 B` && !onlyPaste.some((r) => r.endsWith("│ [Pasted text #1]")), "draftRows: a later line that is only a placeholder becomes its 📋 block");
+  const headPaste = draftRows(head, ["[Pasted text #1] fix", "b"], [p1], opts);
+  assert(headPaste[0] === `${head}[Pasted text #1] fix` && headPaste[1]!.includes("📋") && headPaste[headPaste.length - 1] === `${RAIL}b`, "draftRows: the head line's paste goes right under the head row");
+  const live = draftRows(head, lines.slice(0, 3), [p1], opts);
+  const sent = draftRows(head, [...lines.slice(0, 3), "4. the last line"], [p1], opts);
+  assert(JSON.stringify(sent.slice(0, live.length)) === JSON.stringify(live), "draftRows: the live draft is a prefix of the echo it becomes — the scrollback shows what was composed");
+  let threw = "";
+  try { draftRows(head, [], [], opts); } catch (e) { threw = (e as Error).message; }
+  assert(threw.includes("at least one line"), "draftRows: an empty draft fails loud");
+
+  assert(screenRows("x".repeat(40), 40) === 1 && screenRows("x".repeat(41), 40) === 2 && screenRows("", 40) === 1 && screenRows("\x1b[2mab\x1b[0m", 1) === 2, "screenRows: rows the terminal wraps a row onto (ANSI takes none, an empty row still one)");
+  const ten = Array.from({ length: 10 }, (_, i) => `${RAIL}row ${i + 1}`);
+  assert(JSON.stringify(fitRows(ten, 10, opts)) === JSON.stringify(ten), "fitRows: a draft that fits is shown whole");
+  const capped = fitRows(ten, 4, opts);
+  assert(capped.length === 4 && capped[0] === `${RAIL}… +7 more rows above` && capped[3] === `${RAIL}row 10` && capped[1] === `${RAIL}row 8`, "fitRows: taller than the room → its LAST rows under one `… +N more rows above` row");
+  const wrapped = [`${head}${"w".repeat(60)}`, `${RAIL}b`, `${RAIL}c`];
+  const fitW = fitRows(wrapped, 3, opts);
+  assert(fitW.length === 3 && fitW[0] === `${RAIL}… +2 more rows above` && fitW[2] === `${RAIL}c`, "fitRows: a wrapped head row counts every terminal row it takes");
+  assert(fitW.reduce((n, r) => n + screenRows(r, 40), 0) <= 3, "fitRows: what it returns fits in the room");
+  const one = fitRows(ten, 1, opts);
+  assert(one.length === 1 && one[0] === `${RAIL}… +10 more rows above`, "fitRows: room for one row → the count alone");
+  assert(fitRows(["only"], 1, { width: 40, dim: (s) => `<${s}>` })[0] === "only" && fitRows(ten, 2, { width: 40, dim: (s) => `<${s}>` })[0] === `<${RAIL}><… +9 more rows above>`, "fitRows: the count row is dimmed like the rail");
+  threw = "";
+  try { fitRows(ten, 0, opts); } catch (e) { threw = (e as Error).message; }
+  assert(threw.includes("room for 0 rows"), "fitRows: no room at all fails loud (the caller keeps one)");
+}
 function composeMessageLike(s: string): string {
   return `${s}\n📷 [Image #1] /tmp/x.png`; // what composeMessage appends after the pastes
 }

@@ -360,20 +360,22 @@ decides how long the `◌` loaders stay up.
   the universal fallback — a key only works if your terminal sends it and there's no way to know but to
   try. **ODD** trailing backslashes continue: `C:\path\\` ends in an ESCAPED backslash and is a
   finished line, and miscounting would swallow the Enter on any path, regex or LaTeX macro. Held lines
-  are REPRINTED because the buffer rewrite that clears the line also erases what you typed —
-  otherwise you compose a message you can no longer see. Never fires inside a paste. Verified live under
-  a real pty: five typed lines → TWO messages, both with real newlines. Test: `check:paste`.
+  stay ON SCREEN, above the line being typed — the buffer rewrite that clears the line also erases what
+  you typed, and you can't compose a message you can no longer see; how they are shown is the
+  [draft-is-input note](#the-draft-is-input-not-history-2026-11-17) below. Never fires inside a paste.
+  Verified live under a real pty: five typed lines → TWO messages, both with real newlines. Test:
+  `check:paste`.
 
 - **Readable drafts and sends (2026-11-06, `src/compose-view.ts`, pure).** The operator: "I cannot read
   what I send … I cannot read what I am inputting for multiline messages", with a screenshot of a sent
   message full of blank `│` rows, a 3-line `…`-clipped paste preview printed ABOVE its own
   `[Pasted text #1]` line, and that placeholder dangling below it. Still a plain line REPL (no full-screen
-  TUI, no alternate screen, no cursor math over earlier rows) — the fix is only in what gets printed:
-  - **one rail** (`  │ `): the first held line prints as readline's own echo would (`you → x> line`),
+  TUI, no alternate screen) — the fix is only in what gets printed:
+  - **one rail** (`  │ `): the first held line reads as readline's own echo would (`you → x> line`),
     every later one on the rail, and **the continuation prompt IS the rail** (`promptFor` returns it while
     `held` is non-empty) — so the draft, the line being typed and readline's echo of the final line read as
-    one block. Held lines wrap on the rail; each held line's rows are one `heldEntries` group, so
-    ⌫-on-empty / Ctrl+U still take exactly that line's rows back (and reset the prompt).
+    one block. Held lines wrap on the rail. (Printed into the history as they were held until 2026-11-17 —
+    see the next note for why that split the draft.)
   - **a paste shows inline at its placeholder** (`railLine`/`railPastes`): a line that is ONLY the
     placeholder becomes the `📋` block; a line mentioning it keeps its text with the block underneath; up
     to 10 rows, long lines WRAPPED (indentation kept — pastes are often code), blank runs folded, `… +N
@@ -389,6 +391,75 @@ decides how long the `◌` loaders stay up.
     the placeholder rewrite has always left: `[Pasted text #1] \n`), and passes on the old code too.
   Tests: `check:paste` (wrap, fold, inline paste, parse round-trip, the screenshot's message),
   `check:chat` (draft hint), `check:chat-tty` 13 (real pty, isolated space).
+
+### the draft is input, not history (2026-11-17)
+
+- **What the operator saw** (screenshot, reproduced in a real terminal under tmux): composing a
+  multi-line message — numbered lines with `\` and alt+enter, a paste inside line 3 — while the agent
+  replied, the reply printed IN THE MIDDLE of the draft: lines 1–3 and the paste above it, the line
+  being typed below it. Enter didn't heal it: the sent message stayed split in the scrollback, its tail
+  got a time stamp of its own (`15:03` over the reply's trailing blank, reading like a separate
+  message), and `◌ queued — kit is mid-turn` sat under the tail only. A ←/→ redraw replayed the split.
+  A single-line draft was always right.
+- **The cause:** `holdLine` committed each finished draft row to `history.entries` (emitRows → emit →
+  show) the moment it was held, with `heldEntries` keeping references to splice them back out for ⌫ /
+  Ctrl+U. An incoming DM was then appended AFTER those rows, and only the line still in `rl.line` was
+  reprinted under it — `show()` erased from the CURRENT input line's first row, so the held rows above
+  counted as scrollback. Enter pushed an `echo` of the last line only, after the DM. Two display bugs
+  in the same place: every `\` row showed TWICE live (readline had already echoed `prompt+line\` and
+  moved down before the line event; the reprint didn't erase that echo), and `stagePaste` set the
+  `[N pasted]` prompt without a refresh, so the badge was never drawn and readline placed the caret by
+  the badge's width — typing landed 11 columns past the placeholder.
+- **Now the draft is INPUT.** Held lines live only in `held` (+ `draftHead`, the prompt the first line
+  was typed at); nothing of the draft is in the history. The **live input area** is, top to bottom,
+  `[draft rows][picker | chooser][readline's prompt + line][hint row]`. ONE pair of helpers owns it:
+  `eraseInput(above)` moves up by the RECORDED row count (`drawnDraft.rows` + the overlay's own erase +
+  readline's `getCursorPos().rows`, + `above` rows being replaced over it) and clears down;
+  `paintInput()` paints the draft (`paintDraft`, laid out by the pure `draftRows` in
+  src/compose-view.ts — the look held rows always had), then the overlay or `rl.prompt(true)`. They
+  are the only writers above the prompt: `show()`, `placeOver` and the banner's in-place repaint,
+  `redraw()` (history, THEN the draft, then the prompt), hold / unhold, `stagePaste`, quitting, the
+  resize relayout. An incoming message erases the area, is written where the draft began, and the
+  area is painted back under it — a burst repeats that, never a CLEAR_ALL per message.
+- **readline's `prevRows`** (its refresh climbs that many rows to find the prompt's first row) is
+  zeroed in `paintInput` — the cursor IS that row there. A count left from before a write climbed into
+  the rows just written: also the latent bug where a wrapped input line ate the last row of a DM. It is
+  undocumented, so the prompt wrapper fails loud if a node release stops keeping it (like the
+  `_writeToOutput` hook).
+- **The cap:** a draft taller than the screen shows its LAST rows under one dim `  │ … +N more rows
+  above` row (`fitRows`), leaving room for the prompt, the hint, an open overlay and two spare rows (a
+  stamp drawn over the blank above, and the row readline echoes on `\`/Enter, which the next erase must
+  still reach). The whole message is still sent, and its echo is whole.
+- **The redraw fallback:** `eraseInput` erases in place only while its count still finds the area's
+  top — painted at this width, with the area (+ `above` + the row over it) on screen. Otherwise it
+  touches nothing and the caller runs `redraw()`. A resize mid-draft schedules that redraw (150ms,
+  shared with the messages view's relayout); Ctrl+L repaints the draft over readline's own clear.
+- **Enter = ONE echo.** `onLine` lays the whole message out with the same `draftRows` (head row, rail
+  rows, inline paste blocks, the last line on the rail) BEFORE the send consumes the stage, pushes ONE
+  `echo` entry, and `settleDraft` erases the area (draft + readline's echo of the last line + an open
+  picker — the picker's own erase and this one add up) and paints the echo through the Painter: one
+  time stamp over the blank above its first row, and the `◌ waiting/queued` receipt lands right under
+  it. A ←/→ redraw paints the same block. In the logs view (echoes hidden) the rows are written plain
+  once, as readline's echo of a single line stays there. A single line (nothing held) is unchanged:
+  readline's echo + `stampTypedLine` + its paste rows.
+- **`\` and the badge:** `holdLines(lines, echoed)` hands readline's echo of the `\` line to the erase
+  (`above`), so it goes with the old area instead of staying as a second copy. `stagePaste` (and the
+  image drop) set the badge prompt and repaint the area BEFORE writing the placeholder, so the badge is
+  drawn and the caret sits right after the text.
+- ⌫ on the empty rail and Ctrl+U take lines back by repainting the area in place — no history edit, no
+  full redraw. Off a tty nothing is painted live (no cursor math); the sent draft is an `echo` in the
+  history, as a single line is. The wire text is byte-identical (`joinLines` + `composePastes`).
+- Tests: `check:paste` (draftRows layout, the live draft a prefix of its echo, fitRows), `check:chat`
+  (the multi-row echo's one stamp + verbatim rows + receipt, redraw == live; source pins: no
+  `heldEntries`, hold/unhold never print into the history, one echo push, cursor moves above the
+  prompt only in the area's/overlays' erase, the hint and quitting), and the real-terminal
+  **`check:chat-draft`** (tmux on a private socket, isolated space, a raw `echoer`; scenarios A–M: the
+  DM above the whole draft, rows contiguous and once, one block + one stamp + receipt after Enter, the
+  same after ←/→, the 20-row cap, ⌫ / Ctrl+U in place, a burst of 3 DMs, view switches mid-draft, a
+  resize to 90 columns, the ↓ picker open mid-draft, the badge + caret column, every wire DM byte for
+  byte). 117 checks; against the code before this fix (eaff988) 84 of them fail — only the wire texts,
+  the one-line control and a few row counts pass. The teammate's repro driver (scenarios A–H) reads
+  right on every screen after the fix, with the same wire DMs.
 
 ## earlier block
 
@@ -590,7 +661,9 @@ column (CHA), so a copied line carries no run of blanks. The Painter decides whe
 - **Your line:** readline has already drawn it, so `stampTypedLine` writes the stamp onto the blank
   above it with save/restore cursor (DECSC/DECRC). That happens only when the painter has a trailing
   blank (the first line of a round); the painter's `echo` case applies the same rule, so a redraw matches.
-  A second line typed right after a receipt gets no stamp, because there is no row for one.
+  A second line typed right after a receipt gets no stamp, because there is no row for one. A sent
+  multi-line draft is ONE `echo` painted by the Painter itself, so its one stamp sits above its first
+  row ([the draft is input](#the-draft-is-input-not-history-2026-11-17)).
 - **Day tracking** is painter state (`stampDay`), saved and restored with `lastSide`/`trailingBlank`
   (`PaintState`), so a repaint in place doesn't name the day again. `reset()` (redraw) starts over.
 - Tests: `check:chat` (`stamp:` lines). Seen live in an isolated space under tmux: two DMs, a typed

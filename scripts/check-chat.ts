@@ -328,6 +328,27 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
     st.paint(seqT[2]!, "chat");
     st.restore(saved);
     assert(strip(st.paint(seqT[2]!, "chat")).startsWith("09:44\n"), "stamp: restoring a saved state restores the day too (a repaint doesn't re-name the day)");
+
+    // The draft is INPUT (2026-11-17): Enter turns it into ONE echo entry — the whole message, laid out
+    // as the draft was — painted like any entry: one time over the blank its predecessor left, the rows
+    // verbatim (no painter indent), the receipt tight under its last row; a redraw paints the same.
+    const { draftRows } = await import("../src/compose-view.ts");
+    const sent = draftRows("you → echoer> ", ["first line", "second line", "third and done"], [], { width: 40 }).join("\n");
+    const round: E[] = [
+      { kind: "banner", text: "BANNER\n\n" },
+      { kind: "chat", text: "echoer: A: one\ntwo", side: "peer", tight: false, from: "echoer", ts: at("2026-11-16T13:20:00") },
+      { kind: "echo", text: sent, ts: at("2026-11-16T13:21:00") },
+      { kind: "chat", text: "◌ waiting for echoer…", side: "you", tight: true },
+    ];
+    const rp = SP();
+    const painted = round.map((e) => rp.paint(e, "chat"));
+    const echoPaint = painted[2]!;
+    assert(echoPaint.startsWith(OVER_BLANK) && (echoPaint.match(/\u001b\[\d+G/g) ?? []).length === 1, "draft: the sent message gets ONE stamp, drawn over the blank the reply left");
+    assert(strip(echoPaint) === `13:21\n${sent}\n`, "draft: its rows are painted verbatim, contiguous — head row, rail rows, last line");
+    assert(painted[3] === "◌ waiting for echoer…\n", "draft: the receipt sits right under the message's last row (no gap, no stamp)");
+    assert(paintedRows(echoPaint, 40) === 3, "draft: the stamp adds no row — the message's rows are all it takes");
+    const replay = SP();
+    assert(round.map((e) => replay.paint(e, "chat")).join("") === painted.join(""), "draft: a redraw paints the sent draft exactly as it was painted live");
   }
 
   // History — conversation kept forever, only trace (log) entries bounded
@@ -1958,6 +1979,37 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
   assert(/heldAway\.hold\(curName, flush\(text, curName\)\)/.test(chatSrc), "away: a plain line to an offline away target is held, not refused");
   assert(/for \(const text of lines\) sendDm\(card\.name, card\.id, text\)/.test(chatSrc), "away: held lines go to the NEW id when it comes back");
   assert(/offline — was waiting for it/.test(chatSrc), "away: a quit prints held lines in full");
+}
+
+// ── the draft is INPUT, not history (2026-11-17): source pins — the screens run in check:chat-draft ──
+{
+  const src = readFileSync(new URL("../src/chat.ts", import.meta.url), "utf8");
+  /** The body of the chat()-level function that starts with `head` (up to its closing brace). */
+  const fn = (head: string): string => {
+    const at = src.indexOf(head);
+    if (at < 0) throw new Error(`check:chat: ${head} is gone from src/chat.ts`);
+    return src.slice(at, Math.min(...["\n  };\n", "\n  }\n"].map((end) => src.indexOf(end, at)).filter((i) => i >= 0)));
+  };
+  assert(!/heldEntries/.test(src), "draft: no held rows kept in the history to splice back out (heldEntries is gone)");
+  for (const head of ["const holdLines = (", "const unholdLines = (", "function paintDraft("]) {
+    const body = fn(head);
+    assert(body.length > 100 && !/\bemit(Rows)?\(|\bshow\(|history\./.test(body), `draft: ${head.replace(/[ =(]+$/, "").replace(/^(const|function) /, "")} never prints into, or edits, the conversation`);
+  }
+  const line = fn("async function onLine(");
+  assert((line.match(/history\.push\(/g) ?? []).length === 1 && /text: draft \?\? echoed/.test(line), "draft: Enter pushes ONE echo entry for the whole message (the draft's own rows)");
+  assert(/settleDraft\(echoed, echo\)/.test(line) && /holdLines\(\[cont\.text\], echoed\)/.test(line), "draft: Enter and `\\` both hand readline's echo to the erase (no row shown twice)");
+  assert(/if \(rl && !closing && !eraseInput\(\)\) return redraw\(\);[\s\S]{0,80}process\.stdout\.write\(text\);[\s\S]{0,40}paintInput\(\);/.test(fn("function show(")), "draft: every entry is written above the whole input area, which is painted back under it");
+  const stage = fn("const stagePaste = (");
+  assert(stage.indexOf("rl.setPrompt(promptFor())") < stage.indexOf("repaintInput()") && stage.indexOf("repaintInput()") < stage.indexOf("rl.write(`${prefix}"), "draft: a staged paste puts its badge prompt on screen BEFORE the placeholder goes in");
+  // The ONLY writers that move the cursor above the prompt: the input area's erase, the overlays' own
+  // erase/draw, the hint row, and quitting. Anything else would land between the draft's rows.
+  const movers = [...src.matchAll(/readline\.(moveCursor|clearScreenDown)\(process\.stdout/g)].map((m) => {
+    const before = src.slice(0, m.index);
+    const owner = [...before.matchAll(/(?:function (\w+)\(|const (\w+) = (?:async )?\()/g)].pop();
+    return owner?.[1] ?? owner?.[2] ?? "?";
+  });
+  const allowed = new Set(["eraseInput", "erasePicker", "eraseChooser", "drawChooser", "drawHint", "shutdown"]);
+  assert(movers.length > 0 && movers.every((o) => allowed.has(o)), `draft: cursor moves above the prompt only in ${[...allowed].join(", ")} (found: ${[...new Set(movers)].join(", ")})`);
 }
 
 rmSync(process.env.PAW_HOME as string, { recursive: true, force: true });

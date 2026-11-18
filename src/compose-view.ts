@@ -6,6 +6,9 @@
  * so a draft, the line you're typing and the sent echo read as ONE block. A paste is shown INLINE at its
  * placeholder (`📋 [Pasted text #1] 25 lines, 2 KB` + its first rows, wrapped, never clipped mid-line),
  * runs of blank lines fold to one, and a long paste is capped with a `… +N more lines` footer.
+ *
+ * The draft is INPUT, not history: chat paints {@link draftRows} above readline's prompt and repaints it
+ * under every message that arrives, and only Enter turns it into one entry of the conversation.
  */
 import { formatBytes } from "./images.ts";
 import { PASTE_ICON, type PasteBlock } from "./paste.ts";
@@ -111,6 +114,37 @@ export function railPastes(line: string, blocks: readonly PasteBlock[], opts: Vi
 }
 
 const railOf = (opts: ViewOpts): string => (opts.dim ?? plain)(opts.rail ?? RAIL);
+
+/**
+ * A draft as it reads, and the message it becomes once sent: the first line after the prompt it was
+ * typed at (`head`) with its pastes under it, every later line on the rail (a line that is only a
+ * placeholder becomes its `📋` block). The live draft and the sent echo are both this, so what was
+ * composed is what stays in the scrollback.
+ */
+export function draftRows(head: string, lines: readonly string[], blocks: readonly PasteBlock[], opts: ViewOpts): string[] {
+  const [first, ...rest] = lines;
+  if (first === undefined) throw new Error("draftRows: a draft has at least one line");
+  return [head + first, ...railPastes(first, blocks, opts), ...rest.flatMap((l) => railLine(l, blocks, opts))];
+}
+
+/** Terminal rows one row of text takes at `width` columns once the terminal wraps it (ANSI takes none). */
+export const screenRows = (row: string, width: number): number => Math.max(1, Math.ceil(displayWidth(row) / Math.max(1, width)));
+
+/**
+ * The rows of a live draft that fit in `room` terminal rows: all of them, or — a draft taller than that —
+ * its LAST rows under one `… +N more rows above` row (N terminal rows). Only what is on screen while
+ * composing is capped; the message sent, and its echo, are whole.
+ */
+export function fitRows(rows: readonly string[], room: number, opts: ViewOpts): string[] {
+  if (room < 1) throw new Error(`fitRows: room for ${room} rows — the caller keeps at least one, for the count`);
+  const tall = (r: string): number => screenRows(r, opts.width);
+  if (rows.reduce((n, r) => n + tall(r), 0) <= room) return [...rows];
+  let used = 1;
+  let from = rows.length;
+  while (from > 0 && used + tall(rows[from - 1]!) <= room) used += tall(rows[--from]!);
+  const hidden = rows.slice(0, from).reduce((n, r) => n + tall(r), 0);
+  return [railOf(opts) + (opts.dim ?? plain)(`… +${hidden} more row${hidden === 1 ? "" : "s"} above`), ...rows.slice(from)];
+}
 
 /**
  * A whole message on the rail, as the agent receives it: blank runs folded, each paste inline at its

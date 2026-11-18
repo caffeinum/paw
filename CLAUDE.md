@@ -342,7 +342,10 @@ Each entry: what it is + the most load-bearing rule. Full notes behind the link.
 - `src/multiline.ts` — alt/shift+enter and trailing `\` continuation. → [chat.md#multiline](docs/notes/chat.md#multiline)
 - `src/compose-view.ts` — how a draft / sent message READS (pure): one rail (`  │ `) that the continuation
   prompt also draws, pastes inline at their placeholder (≤10 wrapped rows + `+N more`), blank runs folded;
-  the cross-session echo parses the wire fences back. Display only — wire text unchanged. → [chat.md#multiline](docs/notes/chat.md#multiline)
+  the cross-session echo parses the wire fences back. `draftRows` lays out the live draft AND the ONE echo
+  it becomes on Enter; `fitRows` caps a draft taller than the screen (`… +N more rows above`). The draft is
+  INPUT, painted above the prompt by chat's eraseInput/paintInput, never history. Display only — wire text
+  unchanged. → [chat.md#multiline](docs/notes/chat.md#multiline), [chat.md#the-draft-is-input-not-history-2026-11-17](docs/notes/chat.md#the-draft-is-input-not-history-2026-11-17)
 - `src/markdown.ts` — markdown → ANSI; never lose content, never eat placeholders. → [chat.md#markdown](docs/notes/chat.md#markdown)
 - Also: echo + ↓ picker, modes, `!cmd` (detached from the tty), follow, visual rounds, wait feedback. →
   [chat.md](docs/notes/chat.md) (sections `echo-and-picker`, `modes`, `bang-commands`, `follows-the-conversation`, `visual-rounds`, `waiting-feedback`)
