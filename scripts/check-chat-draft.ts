@@ -34,14 +34,22 @@
  *   mid-draft;  AB. Enter in the ↓ picker over a draft;  AC. `/exit` with a staged paste (its text printed);
  *   AD. Ctrl-C inside the resize debounce;  AE. Enter on the empty rail;  AF. `!` on the rail;  AG. tabs
  *   in a full-width `\` line;  AH. a second send while the agent is mid-turn (live receipt == redraw).
+ * Round 4 (the same two on the round-3 fix):
+ *   AI. a multi-line draft refused (its target lost) comes back whole;  AJ. the banner repainted on the
+ *   home row (a fresh pane) over a draft, and `--all` booting: nothing copied into the scrollback;
+ *   AK. a sent block redrawn after a resize;  AL. a draft of blank lines sent, then a reply;
+ *   AM. piped chat: no cursor control;  AN. picker + mention + text + Enter in one chunk;
+ *   AO. a filter naming an agent exactly;  AP. a `❤️` line filling the row;  AQ. Enter in the picker
+ *   under a blank row (its time).  M and Q: Esc in the picker takes its `@` with it.
  * Every wire DM is asserted byte for byte (check:chat-tty 13 pins the same format).
  * Teardown always runs: tmux kill-server, echoer stop, `paw down`, purgeTestSpace, the space dir.
  */
-import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, rmSync } from "node:fs";
+import { execFile, execFileSync } from "node:child_process";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 import { CotalEndpoint, type CotalMessage, type Delivery, type MessageMeta } from "@cotal-ai/core";
 import { controlCreds } from "../src/addressing.ts";
 import { draftRows } from "../src/compose-view.ts";
@@ -69,6 +77,7 @@ mkdirSync(beadsDir, { recursive: true });
 process.env.PAW_BEADS_DIR = beadsDir;
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const run = promisify(execFile);
 const text = (m: CotalMessage) => m.parts.map((p) => (p.kind === "text" ? p.text : "")).join("");
 const failures: string[] = [];
 const ok = (label: string, pass: boolean, detail = ""): void => {
@@ -146,15 +155,25 @@ let server = "";
 const dms: string[] = [];
 let youId: string | undefined;
 
-/** `paw chat echoer` in a fresh pane; `booting` returns as soon as the pre-shell prompt shows (`◌`). */
-async function startChat(rows = 40, opts: { cols?: number; env?: string[]; booting?: boolean } = {}): Promise<void> {
+/**
+ * `paw chat echoer` in a fresh pane (the banner on its home row); `booting` returns as soon as the
+ * pre-shell prompt shows (`◌`). `args` chats with something else, returning as soon as a row matches
+ * `ready` (polled tight). `mark` prints PANE_START before chat starts: in the scrollback until a redraw.
+ */
+async function startChat(rows = 40, opts: { cols?: number; env?: string[]; booting?: boolean; mark?: boolean; args?: string; ready?: RegExp } = {}): Promise<void> {
   try {
     tmux("kill-session", "-t", T);
   } catch {} // the first scenario has none
   const env = ["PAW_HOME", "PAW_SPACE", "PAW_RELEASE", "PAW_BEADS_DIR"].flatMap((k) => ["-e", `${k}=${process.env[k]}`]);
-  const cmd = `${opts.env?.length ? `env ${opts.env.join(" ")} ` : ""}${process.execPath} ${join(REPO, "bin/paw.mjs")} chat echoer --history 0; echo "[chat exited $?]"; sleep 600`;
+  const cmd = `${opts.mark ? `echo ${PANE_START}; ` : ""}${opts.env?.length ? `env ${opts.env.join(" ")} ` : ""}${process.execPath} ${join(REPO, "bin/paw.mjs")} chat ${opts.args ?? "echoer --history 0"}; echo "[chat exited $?]"; sleep 600`;
   tmux("new-session", "-d", "-s", T, "-x", String(opts.cols ?? COLS), "-y", String(rows), "-c", home!, ...env, cmd);
   tmux("set-option", "-t", T, "history-limit", "5000");
+  if (opts.args !== undefined) {
+    if (!opts.ready) throw new Error("startChat: `args` needs `ready` — what shows once that chat is up");
+    const up = await waitFor(has(opts.ready), 30_000, 10);
+    if (!has(opts.ready)(up)) throw new Error(`chat ${opts.args} never showed ${opts.ready}:\n${shown(up)}`);
+    return;
+  }
   if (opts.booting) {
     // Polled tight: keys typed while only the pre-shell is up are read by readline before boot starts.
     const pre = await waitFor(has(/^you → echoer ◌> ?$/), 30_000, 10);
@@ -168,8 +187,9 @@ async function startChat(rows = 40, opts: { cols?: number; env?: string[]; booti
   if (!youId) throw new Error("echoer never saw `you` on the roster");
   await sleep(1500); // connected, not queued: the live composing path
 }
-/** The pre-shell's first frame stays in the scrollback unless a redraw cleared it (CLEAR_ALL wipes it). */
-const preShellKept = (lines: string[]): boolean => lines.some((l) => /^you → echoer ◌> ?$/.test(l));
+/** Printed in the pane before chat (startChat `mark`): it stays in the scrollback unless a redraw cleared it. */
+const PANE_START = "pane-start";
+const scrollbackKept = (lines: string[]): boolean => lines.includes(PANE_START);
 async function says(tag: string, body = REPLY(tag)): Promise<string[]> {
   await echoer!.unicast(youId!, body);
   return waitFor((l) => replyEnd(tag)(l) >= 0 && /^draft · |^chat |^📋/.test(l[l.length - 1] ?? ""));
@@ -452,7 +472,8 @@ async function main(): Promise<void> {
   }
 
   // M. the ↓ picker open mid-draft when a message lands: the reply goes above the draft, the picker is
-  //    drawn back between the draft and the prompt, and closing it leaves no stale row behind.
+  //    drawn back between the draft and the prompt, and closing it leaves no stale row behind — nor its
+  //    `@` in the line (it stayed, and went out as the start of the message's last line).
   {
     await startChat();
     await hold("m-one");
@@ -467,8 +488,8 @@ async function main(): Promise<void> {
     ok("M: …the picker is drawn back right under the draft, the prompt under it, the hint last", pick === at + 2 && mid[mid.length - 2] === rail("@") && mid.filter((l) => /^agents \d+\/\d+$/.test(l)).length === 1 && once(mid, [`${HEAD}m-one`, rail("m-two")]), shown(mid.slice(-12)));
     key("Escape");
     const closed = await waitFor((l) => !l.some((r) => /^agents \d+\/\d+$/.test(r)));
-    ok("M: Esc closes it with no stale row: the draft, then the prompt", !closed.some((r) => /^agents |echoer ● online$|^ {2}▸ /.test(r)) && blockAt(closed, [`${HEAD}m-one`, rail("m-two"), rail("@")]) === closed.length - 4, shown(closed.slice(-8)));
-    key("BSpace");
+    ok("M: Esc closes it with no stale row: the draft, then the empty rail (the `@` gone with the picker)", !closed.some((r) => /^agents |echoer ● online$|^ {2}▸ /.test(r)) && blockAt(closed, [`${HEAD}m-one`, rail("m-two"), rail("")]) === closed.length - 4, shown(closed.slice(-8)));
+    await sleep(700); // readline holds a lone Esc 500ms before it is a key of its own: typed sooner, it is alt+key
     type("m-three");
     const { wire, lines } = await send();
     ok("M: ONE DM, text unchanged", JSON.stringify(wire) === JSON.stringify(["m-one\nm-two\nm-three"]), JSON.stringify(wire));
@@ -579,9 +600,9 @@ async function main(): Promise<void> {
     const top = plain.findIndex((l) => /^agents \d+\/\d+$/.test(l));
     ok("Q: the picker's rows carry nothing of the hint row they are drawn over", top >= 0 && !plain.slice(top, -2).some((l) => /logs|mesh test-/.test(l)), shown(plain.slice(top)));
     key("Escape");
-    await waitFor((l) => !l.some((r) => /^agents \d+\/\d+$/.test(r)));
-    key("BSpace");
-    await sleep(300);
+    const gone = await waitFor((l) => !l.some((r) => /^agents \d+\/\d+$/.test(r)));
+    ok("Q: Esc takes the picker's `@` with it — the line is as it was before ↓", gone[gone.length - 2] === "you → echoer>", shown(gone.slice(-4)));
+    await sleep(700);
     await hold("q-one");
     await hold("q-two");
     key("Down");
@@ -592,7 +613,7 @@ async function main(): Promise<void> {
     ok("Q: picker open in a 20-row pane: the 2-line draft stays whole, the reply above it", !mid.some((l) => /more rows above/.test(l)) && blockAt(mid, [`${HEAD}q-one`, rail("q-two")]) === pick - 2 && pick > replyEnd("Q")(mid), shown(mid.slice(-10)));
     key("Escape");
     const closed = await waitFor((l) => !l.some((r) => /^agents \d+\/\d+$/.test(r)));
-    ok("Q: …closing it leaves the whole draft", blockAt(closed, [`${HEAD}q-one`, rail("q-two"), rail("@")]) === closed.length - 4 && !closed.some((l) => /more rows above/.test(l)), shown(closed.slice(-6)));
+    ok("Q: …closing it leaves the whole draft", blockAt(closed, [`${HEAD}q-one`, rail("q-two"), rail("")]) === closed.length - 4 && !closed.some((l) => /more rows above/.test(l)), shown(closed.slice(-6)));
     await quit();
     await startChat(16);
     for (let i = 1; i <= 11; i++) await hold(`q${i}`);
@@ -686,7 +707,7 @@ async function main(): Promise<void> {
   //    draft's room as it comes — the area never outgrows the screen, so a reply after it is placed in
   //    place, not by a redraw that wipes the scrollback (S7).
   {
-    await startChat(20, { cols: 60 });
+    await startChat(20, { cols: 60, mark: true });
     for (let i = 1; i <= 20; i++) await hold(`v${String(i).padStart(2, "0")}`);
     const long = "v-last is a line long enough to wrap onto three rows of a sixty column pane, typed a bit at a time like a person does";
     for (let i = 0; i < long.length; i += 8) {
@@ -695,10 +716,10 @@ async function main(): Promise<void> {
     }
     await sleep(500);
     const mid = await says("V");
-    ok("V: a reply after the long line lands above the capped draft, in place (the scrollback is kept)", preShellKept(mid) && mid.findIndex((l) => /^ {2}│ … \+\d+ more rows above$/.test(l)) > replyEnd("V")(mid), shown(mid.slice(-20)));
+    ok("V: a reply after the long line lands above the capped draft, in place (the scrollback is kept)", scrollbackKept(mid) && mid.findIndex((l) => /^ {2}│ … \+\d+ more rows above$/.test(l)) > replyEnd("V")(mid), shown(mid.slice(-20)));
     const { wire, lines } = await send();
     ok("V: ONE DM, all 21 lines, text unchanged", JSON.stringify(wire) === JSON.stringify([[...Array.from({ length: 20 }, (_, i) => `v${String(i + 1).padStart(2, "0")}`), long].join("\n")]), JSON.stringify(wire).slice(0, 200));
-    ok("V: …sent whole, still without a redraw", preShellKept(lines) && blockAt(lines, [`${HEAD}v01`, rail("v02")]) > replyEnd("V")(lines), shown(lines.slice(-8)));
+    ok("V: …sent whole, still without a redraw", scrollbackKept(lines) && blockAt(lines, [`${HEAD}v01`, rail("v02")]) > replyEnd("V")(lines), shown(lines.slice(-8)));
     await quit();
   }
 
@@ -950,6 +971,201 @@ async function main(): Promise<void> {
     const redrawn = await waitFor(has(/^chat /));
     ok("AH: the redraw shows the receipt the live screen shows between the two messages", from(live).length >= 3 && JSON.stringify(from(redrawn)) === JSON.stringify(from(live)), `${shown(from(live))}\n      ---\n${shown(from(redrawn))}`);
     await echoer.setStatus("idle");
+    await quit();
+  }
+
+  // ── round 4 (2026-11-18): the same two on the round-3 fix ─────────────────────────────────────────────
+  /** The `n` rows over the header (`echoer:`) of the reply tagged `tag`, the nearest last. */
+  const aboveReply = (lines: string[], tag: string, n: number): string[] => {
+    const first = lines.findIndex((l) => l.trim().startsWith(`${tag}: reply line one`));
+    return first < 1 ? [] : lines.slice(Math.max(0, first - 1 - n), first - 1);
+  };
+
+  // AI. a multi-line draft to a target that can't be reached (a name registered nowhere): refused ONCE,
+  //     and back in the input as the draft it was. It was typed back with its "\n" in it, which readline
+  //     takes for Enter: `ai one` went again (refused again), the rest landed glued in the wrong order.
+  {
+    await startChat(30, { args: "ghostai --history 0", ready: /^you → ghostai ✕> ?$/ });
+    await sleep(1500);
+    const n = dms.length;
+    type("ai one\\"); // not a key of the not-found chooser: it closes it and reaches the input
+    key("Enter");
+    await waitFor((l) => draftLines(l) === 2);
+    type("ai two");
+    key("Enter");
+    await waitFor(has(/^✕ not sent to ghostai: /));
+    await sleep(1000);
+    const s = screen();
+    ok("AI: a refused multi-line draft is refused once, nothing sent", s.filter((l) => /^✕ not sent to ghostai: /.test(l)).length === 1 && dms.length === n, shown(s.slice(-10)));
+    ok("AI: …and comes back whole — its first line held, the last one in the input", JSON.stringify(s.slice(-3, -1)) === JSON.stringify(["you → ghostai ✕> ai one", rail("ai two")]), shown(s.slice(-6)));
+    key("C-c");
+    const out = await waitFor(has(/^\[chat exited/));
+    await sleep(300);
+    const at = out.indexOf("✎ your unsent draft:");
+    ok("AI: …quitting prints it as typed", at >= 0 && out[at + 1] === "ai one" && out[at + 2] === "ai two", shown(out.slice(-6)));
+  }
+
+  // AJ. a fresh pane: the banner is on the HOME row. A draft typed while a name is still looked up, then
+  //     the lookup settles and the banner is repainted where it stands — a clear-to-end from the home row
+  //     is tmux's "whole screen" clear (scroll-on-clear), which copied the banner, the draft and the hint
+  //     row into the scrollback. Without a draft too: `paw chat --all` left a stale prompt there on boot.
+  {
+    await startChat(40, { args: "ghostaj --history 0", ready: /^you → ghostaj ◌> ?$/ });
+    type("aj one\\");
+    key("Enter");
+    type("aj two\\");
+    key("Enter");
+    type("aj typing");
+    await waitFor(has(/^you → ghostaj ✕> aj one$/), 20_000);
+    await sleep(1500);
+    const s = screen();
+    ok("AJ: the banner repainted over a draft: each draft row once, the scrollback included", ["aj one", "aj two", "aj typing"].every((t) => s.filter((l) => l.endsWith(t)).length === 1) && s.filter((l) => /🐾 paw chat/.test(l)).length === 1, `history ${tmux("display-message", "-p", "-t", T, "#{history_size}").trim()}\n${shown(s)}`);
+    key("C-c");
+    await waitFor(has(/^\[chat exited/));
+    await startChat(40, { args: "--all --history 0", ready: /^you → #general> ?$/ });
+    await sleep(3000);
+    const all = screen();
+    ok("AJ: `paw chat --all` boots with ONE prompt and ONE banner, the scrollback included", all.filter((l) => /^you → #general>/.test(l)).length === 1 && all.filter((l) => /🐾 paw chat/.test(l)).length === 1, shown(all));
+    await quit();
+  }
+
+  // AK. a sent draft whose rail line wraps, then a resize and ←/→: the block is laid out again at the new
+  //     width, as the live draft would be. It was kept laid out at the width it was sent at — redrawn
+  //     narrower, its rows wrapped off the rail and words split.
+  {
+    await startChat(30);
+    const words = `ak-two ${Array.from({ length: 30 }, (_, i) => `word${String(i).padStart(2, "0")}`).join(" ")} end`;
+    await hold("ak-one");
+    type(words);
+    const { wire } = await send();
+    ok("AK: ONE DM, text unchanged", JSON.stringify(wire) === JSON.stringify([`ak-one\n${words}`]), JSON.stringify(wire));
+    tmux("resize-window", "-t", T, "-x", "60");
+    await sleep(800);
+    key("Right");
+    await waitFor(has(/^messages /));
+    key("Left");
+    const redrawn = await waitFor(has(/^chat /));
+    const at60 = draftRows(HEAD, ["ak-one", words], [], { width: 60 }).map((r) => r.replace(/\s+$/, ""));
+    ok("AK: redrawn at 60 columns, the sent block is laid out at 60 — every row on the rail, words whole", at60.length > 3 && at60.slice(1).every((r) => r.startsWith(RAIL)) && blockAt(redrawn, at60) >= 0, shown(redrawn.slice(-12)));
+    await quit();
+  }
+
+  // AL. a draft of blank lines sent: nothing goes out and its area is erased whole — so the next reply is
+  //     spaced as if it never was, its time on the blank row the last reply left. It took the "you" side
+  //     as a typed line does: a new blank row, the time under the old one.
+  {
+    await startChat(30);
+    await says("AL1");
+    type("\\");
+    key("Enter");
+    await waitFor((l) => draftLines(l) === 2);
+    type("   \\");
+    key("Enter");
+    await waitFor((l) => draftLines(l) === 3);
+    const n = dms.length;
+    key("Enter");
+    await waitFor((l) => draftLines(l) === 1);
+    await sleep(500);
+    const s = await says("AL2");
+    const above = aboveReply(s, "AL2", 2);
+    ok("AL: an all-blank draft sends nothing", dms.length === n, JSON.stringify(dms.slice(n)));
+    ok("AL: …and the next reply's time sits on the blank the last one left", above.length === 2 && above[0]!.endsWith("(end of AL1)") && STAMP.test(above[1]!), shown(s.slice(-10)));
+    await quit();
+  }
+
+  // AM. chat piped (no terminal on either end): the draft goes as ONE DM and the output has no cursor
+  //     control in it — every message was preceded by the input area's erase, terminal or not.
+  {
+    const n = dms.length;
+    // Not a sync spawn: echoer's endpoint runs on this event loop.
+    const { stdout: out } = await run("sh", ["-c", `(printf 'am one\\\\\\nam two\\n'; sleep 6) | ${process.execPath} ${join(REPO, "bin/paw.mjs")} chat echoer 2>&1`], { env: process.env, timeout: 60_000 });
+    const end = Date.now() + 5000;
+    while (Date.now() < end && dms.length === n) await sleep(100);
+    await sleep(300);
+    ok("AM: piped, ONE DM, text unchanged", JSON.stringify(dms.slice(n)) === JSON.stringify(["am one\nam two"]), `${JSON.stringify(dms.slice(n))}\n${out.slice(-400)}`);
+    ok("AM: …and no cursor control in the output", !/\x1b(?:\[[0-9;]*[A-HJKSTfsu]|[78])/.test(out), JSON.stringify(out.slice(-400)));
+  }
+
+  // AN. the ↓ picker open, then the mention, a message and Enter in ONE chunk (a laggy link batches keys):
+  //     Enter came before the picker re-filtered, and the line was swapped for the bare `@echoer` — the
+  //     message dropped. Only a bare `@filter` is a pick; more than that is sent as typed.
+  {
+    await startChat(30);
+    key("Down");
+    await waitFor(has(/^agents \d+\/\d+$/));
+    const n = dms.length;
+    type("echoer an-hello-in-one-chunk\r");
+    const end = Date.now() + 10_000;
+    while (Date.now() < end && dms.length === n) await sleep(100);
+    await sleep(500);
+    ok("AN: the text after the mention is sent", JSON.stringify(dms.slice(n)) === JSON.stringify(["an-hello-in-one-chunk"]), JSON.stringify(dms.slice(n)));
+    await quit();
+  }
+
+  // AO. a filter that names an agent exactly (`echo`, registered, offline) while a live one contains it
+  //     (`echoer`, listed first): the exact one is marked first — Enter switched to `echoer`.
+  {
+    const personas = join(home!, "spaces", space!, "personas");
+    mkdirSync(personas, { recursive: true });
+    const echoPersona = join(personas, "echo.md");
+    writeFileSync(echoPersona, `---\nname: echo\ncwd: ${join(home!, "no-such-folder-echo")}\n---\n`);
+    try {
+      await startChat(30);
+      key("Down");
+      await waitFor(has(/^agents \d+\/2$/));
+      type("echo");
+      await sleep(400);
+      const listed = screen();
+      const marked = listed.find((l) => /^ {2}▸ /.test(l)) ?? "";
+      ok("AO: the filter `echo` marks `echo` first, not the live `echoer`", /^ {2}▸ echo /.test(marked) && listed.some((l) => /^agents 1\/2$/.test(l)), shown(listed.slice(-6)));
+      key("Escape");
+      await waitFor((l) => !l.some((r) => /^agents /.test(r)));
+      await sleep(700);
+      await quit();
+    } finally {
+      rmSync(echoPersona);
+    }
+  }
+
+  // AP. a `\` line on the rail that ends with `❤️` exactly at the right edge (60 columns): two columns on
+  //     screen, one to readline, which then writes no caret row. Counted with one, the hold erased a row
+  //     too many — the blank row above the draft — and the next reply's time went over the last row of
+  //     the reply before it. The hint row also wiped the line while it was typed.
+  {
+    await startChat(30, { cols: 60 });
+    await says("AP1");
+    await hold("ap-one");
+    const heart = `${"y".repeat(53)}\u2764\ufe0f`;
+    type(`${heart}\\`);
+    await sleep(500);
+    const typing = screen();
+    ok("AP: the `❤️` line filling the row shows while it is typed", typing[typing.length - 2] === `${RAIL}${heart}\\`, shown(typing.slice(-4)));
+    key("Enter");
+    await waitFor((l) => draftLines(l) === 3);
+    await sleep(300);
+    const held = screen();
+    const end = replyEnd("AP1")(held);
+    ok("AP: …held: the blank row between the reply and the draft stays", end >= 0 && held[end + 1] === "" && held[end + 2] === `${HEAD}ap-one` && held[end + 3] === `${RAIL}${heart}`, shown(held.slice(-8)));
+    const after = await says("AP2");
+    const above = aboveReply(after, "AP2", 2);
+    ok("AP: …and the next reply leaves the last one whole, its time on the blank", after.filter((l) => l.endsWith("(end of AP1)")).length === 1 && above[0]!.endsWith("(end of AP1)") && STAMP.test(above[1] ?? ""), shown(after.slice(-12)));
+    await quit();
+  }
+
+  // AQ. Enter in the ↓ picker with no draft, under the blank row a reply left: the picker's rows stay above
+  //     the line readline echoes, and its time was drawn over the last of them.
+  {
+    await startChat(30);
+    await says("AQ");
+    key("Down");
+    await waitFor(has(/^agents \d+\/\d+$/));
+    type("echoer");
+    await waitFor(has(/^agents 1\/1$/));
+    key("Enter");
+    const s = await waitFor(has(/\(now messaging echoer\)/));
+    await sleep(300);
+    const at = s.lastIndexOf("you → echoer> @echoer");
+    ok("AQ: no time drawn over the picker's last row, above the line", at > 0 && /^ {2}▸ echoer /.test(s[at - 1]!) && !/\d\d:\d\d$/.test(s[at - 1]!), shown(s.slice(-8)));
     await quit();
   }
 }

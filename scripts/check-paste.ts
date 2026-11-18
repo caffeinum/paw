@@ -157,7 +157,7 @@ assert(block.lines === 5 && block.chars === "alpha\nbeta\ngamma\ndelta\nepsilon"
 // --- the draft is INPUT: laid out whole on every paint, capped to the screen (2026-11-17) -----------------
 {
   const { draftRows, fitRows, RAIL } = await import("../src/compose-view.ts");
-  const { echoRows, rowsAt, wrappedWidth } = await import("../src/width.ts");
+  const { echoRows, readlineWidth, rowsAt, wrappedWidth } = await import("../src/width.ts");
   const opts = { width: 40 };
   const p1 = makeBlock(1, "pasted row one\npasted row two\npasted row three");
   const head = "you → echoer> ";
@@ -206,20 +206,36 @@ assert(block.lines === 5 && block.chars === "alpha\nbeta\ngamma\ndelta\nepsilon"
   // A tab moves to the next multiple of 8, as readline counts it (2026-11-18: counted as 0 columns, a
   // 120-column `\t`-filled line was one row to paw and two to readline — the erase left a stale head row).
   assert(wrappedWidth("a\tb", 120) === 9 && wrappedWidth("\t", 120) === 8 && rowsAt(`${RAIL}${"a\t".repeat(15)}end`, 120) === 2, "wrappedWidth: a tab advances to the next tab stop");
-  // …and every count agrees with readline's own, which is what the erase follows.
+  // …and where the terminal and readline lay a line out alike, every count agrees with readline's own.
+  // They part on VS16 and ZWJ emoji (`❤️` is 2 columns on screen, 1 to readline; `👩‍💻` 2 and 4):
+  // readlineWidth is readline's count, checked against readline itself for those too.
   const { createInterface } = await import("node:readline");
   const { PassThrough, Writable } = await import("node:stream");
+  const emoji = ["❤️", "⚠️ warn", "👩‍💻 ok", "🏳️‍🌈", "👍🏽", "🇺🇸", "1️⃣", "e\u0301", "a\u200bb", "\u00ad", "ｱ한"];
   for (const cols of [60, 120]) {
     const out = Object.assign(new Writable({ write: (_c, _e, cb) => cb() }), { isTTY: true, columns: cols, rows: 40 });
     const r = createInterface({ input: new PassThrough(), output: out, terminal: true });
-    const lines = [`${RAIL}${"a\t".repeat(15)}end`, `${head}a${"界".repeat(52)}b`, "x".repeat(cols), "x".repeat(cols - 1), `${head}\tx\t${"y".repeat(70)}\t`, "👩‍💻 ok"];
-    const off = lines.filter((l) => {
+    const at = (l: string): { rows: number; cols: number } => {
       r.setPrompt(l);
-      return echoRows(l, cols) !== r.getCursorPos().rows + 1;
-    });
-    r.close();
+      return r.getCursorPos();
+    };
+    const lines = [`${RAIL}${"a\t".repeat(15)}end`, `${head}a${"界".repeat(52)}b`, "x".repeat(cols), "x".repeat(cols - 1), `${head}\tx\t${"y".repeat(70)}\t`, "👩‍💻 ok"];
+    const off = lines.filter((l) => echoRows(l, cols) !== at(l).rows + 1);
     assert(off.length === 0, `echoRows: as readline lays the line out at ${cols} columns (off: ${JSON.stringify(off)})`);
+    const edges = emoji.flatMap((e) => [e, `${"x".repeat(cols - 2)}${e}`, `${"x".repeat(cols - 1)}${e}`, `${"x".repeat(cols - 4)}${e}`]);
+    const miscounted = edges.filter((l) => readlineWidth(l, cols) !== at(l).rows * cols + at(l).cols);
+    assert(miscounted.length === 0, `readlineWidth: readline's own count at ${cols} columns, VS16/ZWJ/flags/keycaps/marks included (off: ${JSON.stringify(miscounted)})`);
+    r.close();
   }
+  // The caret row is readline's: only where ITS count ends at the edge too. A `\` line on a 60-column rail
+  // ending in `❤️` (tmux draws it 2 wide) fills the row, but readline counts 59 and writes no caret row:
+  // the echo is ONE row (two erased the blank row above the draft). `👩‍💻` the other way: 58 on screen,
+  // 60 to readline — its space lands on the same row, still one.
+  const heart = `${RAIL}${"y".repeat(53)}❤️\\`;
+  assert(wrappedWidth(heart, 60) === 60 && readlineWidth(heart, 60) === 59 && echoRows(heart, 60) === 1, "echoRows: a `❤️` that fills the row — two columns on screen, one to readline — takes no caret row");
+  const zwj = `${"x".repeat(56)}👩‍💻`;
+  assert(wrappedWidth(zwj, 60) === 58 && readlineWidth(zwj, 60) === 60 && echoRows(zwj, 60) === 1, "echoRows: a ZWJ emoji readline counts to the edge, short of it on screen: one row");
+  assert(echoRows(`${"x".repeat(58)}界`, 60) === 2 && echoRows(`${"x".repeat(59)}界`, 60) === 2, "echoRows: a wide glyph ending at the edge (both counts agree) still gets the caret row; one wrapped whole gets none");
 }
 function composeMessageLike(s: string): string {
   return `${s}\n📷 [Image #1] /tmp/x.png`; // what composeMessage appends after the pastes

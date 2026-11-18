@@ -332,7 +332,7 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
     // The draft is INPUT (2026-11-17): Enter turns it into ONE echo entry — the whole message, laid out
     // as the draft was — painted like any entry: one time over the blank its predecessor left, the rows
     // verbatim (no painter indent), the receipt tight under its last row; a redraw paints the same.
-    const { draftRows } = await import("../src/compose-view.ts");
+    const { draftRows, RAIL } = await import("../src/compose-view.ts");
     const sent = draftRows("you → echoer> ", ["first line", "second line", "third and done"], [], { width: 40 }).join("\n");
     const round: E[] = [
       { kind: "banner", text: "BANNER\n\n" },
@@ -349,6 +349,22 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
     assert(paintedRows(echoPaint, 40) === 3, "draft: the stamp adds no row — the message's rows are all it takes");
     const replay = SP();
     assert(round.map((e) => replay.paint(e, "chat")).join("") === painted.join(""), "draft: a redraw paints the sent draft exactly as it was painted live");
+
+    // What Enter records is the draft AS TYPED, laid out when painted — at the width then (2026-11-18:
+    // stored laid out at the width it was sent at, a redraw after a resize wrapped its rows off the rail).
+    let width = 60;
+    const lay = (d: import("../src/chat-views.ts").SentDraft) => draftRows(d.head, d.lines, d.pastes, { width }).join("\n");
+    const WP = () => new Painter(render, plain, "  ", () => false, undefined, { cols: () => width, now: () => now }, lay);
+    const long = `two ${"word ".repeat(16)}end`;
+    const sentE: E = { kind: "sent", draft: { head: "you → echoer> ", lines: ["one", long], pastes: [] }, ts: at("2026-11-16T13:21:00") };
+    const wide = strip(WP().paint(sentE, "chat"));
+    width = 30;
+    const narrow = strip(WP().paint(sentE, "chat"));
+    assert(wide === `you → echoer> one\n${draftRows("", ["x", long], [], { width: 60 }).slice(1).join("\n")}\n` && narrow.split("\n").slice(1, -1).every((r) => r.startsWith(RAIL)) && narrow.split("\n").length > wide.split("\n").length, "draft: a sent draft is laid out at the width it is painted at — narrower, its rows stay on the rail");
+    assert(vis(sentE, "chat") && vis(sentE, "messages") && !vis(sentE, "logs"), "visible: a sent draft shows where your typed lines do");
+    let unlaid = "";
+    try { new Painter(render).paint(sentE, "chat"); } catch (x) { unlaid = (x as Error).message; }
+    assert(unlaid.includes("needs a layout"), "draft: a painter with no layout for a sent draft fails loud, never paints it some other way");
   }
 
   // History — conversation kept forever, only trace (log) entries bounded
@@ -1996,9 +2012,9 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
     assert(body.length > 100 && !/\bemit(Rows)?\(|\bshow\(|history\./.test(body), `draft: ${head.replace(/[ =(]+$/, "").replace(/^(const|function) /, "")} never prints into, or edits, the conversation`);
   }
   const line = fn("async function onLine(");
-  assert((line.match(/history\.push\(/g) ?? []).length === 1 && /text: draft \?\? echoed/.test(line), "draft: Enter pushes ONE echo entry for the whole message (the draft's own rows)");
-  assert(/settleDraft\(echoed, echo\)/.test(line) && /holdLines\(\[cont\.text\], echoed\)/.test(line), "draft: Enter and `\\` both hand readline's echo to the erase (no row shown twice)");
-  assert(/if \(rl && !closing && !eraseInput\(\)\) return redraw\(\);[\s\S]{0,80}process\.stdout\.write\(text\);[\s\S]{0,40}paintInput\(\);/.test(fn("function show(")), "draft: every entry is written above the whole input area, which is painted back under it");
+  assert((line.match(/history\.push\(/g) ?? []).length === 1 && /\{ kind: "sent", draft, ts: at \}/.test(line), "draft: Enter pushes ONE entry for the whole message (the draft as typed, laid out when painted)");
+  assert(/settleDraft\(echoed, sent\)/.test(line) && /holdLines\(\[cont\.text\], echoed\)/.test(line), "draft: Enter and `\\` both hand readline's echo to the erase (no row shown twice)");
+  assert(/if \(rl && !closing && process\.stdout\.isTTY && !eraseInput\(\)\) return redraw\(\);[\s\S]{0,80}process\.stdout\.write\(text\);[\s\S]{0,40}paintInput\(\);/.test(fn("function show(")), "draft: every entry is written above the whole input area, which is painted back under it — on a tty only (piped output carries no cursor moves)");
   const stage = fn("const stagePaste = (");
   assert(stage.indexOf("rl.setPrompt(promptFor())") > 0 && stage.indexOf("rl.setPrompt(promptFor())") < stage.indexOf("rl.write(`${prefix}") && stage.indexOf("rl.write(`${prefix}") < stage.indexOf("endPaste()") && !/repaintInput|drawHint|prompt\(/.test(stage), "draft: a staged paste sets its badge prompt and placeholder while readline is still muted, and the settle paints them once (badge drawn, caret after the text)");
   // The ONLY writers that move the cursor above the prompt: the input area's erase, the overlays' own
@@ -2015,7 +2031,7 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
   assert(/echoRows\(echoed, /.test(fn("const holdLines = (")) && /eraseInput\(0, echoRows\(echoed, cols\)\)/.test(fn("function settleDraft(")) && !/paintedRows\(`\$\{echoed\}/.test(src), "draft: readline's echo of a `\\` or last line is counted as readline lays it out (an exact-width line takes its caret row too)");
   assert(line.search(/\/\^\\\/\(quit\|exit\)\$\/i\.test\(rawLine\.trim\(\)\)/) > 0 && line.search(/\/\^\\\/\(quit\|exit\)\$\/i\.test\(rawLine/) < line.indexOf("joinLines(held, raw)"), "draft: `/quit` on the rail is tested on the last line alone, BEFORE the held lines join it (it quit nothing and was sent)");
   const quit = fn("async function shutdown(");
-  assert(quit.indexOf("eraseInput(0, cursorRow)") > 0 && quit.indexOf("overlay()?.erase()") > 0 && quit.indexOf("eraseInput(0, cursorRow)") < quit.indexOf("closing = true") && /rl && !picking \? rl\.line : ""/.test(quit), "draft: quitting erases the input area (an open picker too) BEFORE `closing` stands the overlays down, and the picker's `@` is no line of the draft");
+  assert(quit.indexOf("eraseInput(0, cursorRow)") > 0 && quit.indexOf("if (o) o.erase();") > 0 && quit.indexOf("if (o) o.erase();") < quit.indexOf("closing = true") && quit.indexOf("eraseInput(0, cursorRow)") < quit.indexOf("closing = true") && /rl && !picking \? rl\.line : ""/.test(quit), "draft: quitting erases the input area (an open picker too) BEFORE `closing` stands the overlays down, and the picker's `@` is no line of the draft");
   assert(/process\.env\.TERM !== "dumb" && typeof \(r as unknown as ReadlineRows\)\.prevRows/.test(src), "draft: the prevRows guard only runs where prompt() refreshes (TERM=dumb keeps no count — chat crashed at startup)");
   assert(!/pickerSize\(\) \+ 3/.test(src) && /height: pickerHeight/.test(src) && /if \(held\.length\) return repaintInput\(\{ change: close \}\)/.test(fn("const closePicker = (")) && /if \(held\.length\) return repaintInput\(\{ change: open \}\)/.test(fn("const openPicker = (")), "draft: the picker takes the rows it really draws out of the draft's room, and opening/closing it re-fits the draft");
   assert(/drawnDraft\.rows > draftRoom\(\)\) return repaintInput\(\)/.test(src) && /Math\.max\(drawnDraft\.tallest, inputRows\(cursorRow\)\)/.test(fn("function eraseInput(")), "draft: an area that outgrew the screen since its paint is never erased by count (its top scrolled away), and a growing line re-caps the draft first");
@@ -2030,15 +2046,25 @@ assert(passesFilter(undefined, { kind: "dm", from: "anyone" }), "echo: unfiltere
   assert(/function drawHint\(\): void \{[\s\S]{0,240}pasting\(\)\) return;/.test(src) && /function noteInputRows\(\): void \{\s*if \(drawnDraft && !pasting\(\)\)/.test(src), "paste: nothing measures or draws by readline's buffer while the screen still shows the input as the paste found it");
   const tab = src.slice(src.indexOf("tabInternal._tabComplete = (again: boolean) =>"), src.indexOf("r.on(\"line\", (line) => void onLine(line));"));
   assert(/tabComplete\(false\);/.test(tab) && /if \(hits\.length > 1\) emit\(/.test(tab), "completion: readline only completes; a second Tab's candidates are a note above the input area, never readline's list under the prompt (inside the area, over the hint row)");
-  assert(line.indexOf("const pick = picking ?") > 0 && line.indexOf("const pick = picking ?") < line.indexOf("picking = false;") && line.indexOf("if (pickOverDraft) return pickUnderDraft(") < line.indexOf("joinLines(held, raw)"), "picker: Enter in the picker over a draft picks the marked agent and keeps the draft — never sent with the filter as its last line");
+  assert(line.indexOf("const pick = mention === undefined ?") > 0 && line.indexOf("const pick = mention === undefined ?") < line.indexOf("picking = false;") && line.indexOf("if (pickOverDraft) return pickUnderDraft(") < line.indexOf("joinLines(held, raw)"), "picker: Enter in the picker over a draft picks the marked agent and keeps the draft — never sent with the filter as its last line");
   const pickDraft = fn("async function pickUnderDraft(");
   assert(/handleLine\(`@\$\{pick\}`, \{\}\)/.test(pickDraft) && !/history\.push|sendDm|joinLines/.test(pickDraft) && /deferred\.push\(\{ text: `@\$\{pick\}`, pending: \[\], pastes: \[\]/.test(pickDraft), "picker: the pick is an `@name` switch (queued without the draft's attachments before the mesh is up), nothing else");
   assert(/raw === "!" && !consent\.open && !replaying && !held\.length\)/.test(src), "bang: `!` on a draft's rail is text of the message, never command mode (Enter ran the draft as a shell script)");
-  assert(/draftRows\(headOfDraft\(\), joinLines\(held, rawLine\)\.trim\(\)\.split\("\\n"\)/.test(line), "draft: the sent block is laid out from the lines the send keeps — no empty rail row the message doesn't have");
+  assert(/\{ head: headOfDraft\(\), lines: joinLines\(held, rawLine\)\.trim\(\)\.split\("\\n"\), pastes: \[\.\.\.stage\(\)\.pastes\] \}/.test(line), "draft: the sent block is laid out from the lines the send keeps — no empty rail row the message doesn't have");
   assert(/composeMessage\(composePastes\(joinLines\(held, rl && !picking \? rl\.line : ""\)\.trim\(\), st\.pastes\), st\.pending\)/.test(quit), "quit: the unsent draft is composed as Enter sends it — a staged paste's text too, not only its placeholder");
   assert(/if \(!eraseInput\(0, cursorRow\)\) redrawHistory\(\);/.test(quit) && !/paintInput/.test(fn("function redrawHistory(")), "quit: a draft whose top can't be found by counting (a resize not yet relaid out) goes with a history repaint, never left above the unsent copy");
   assert(!/writeOut/.test(fn("async function onChoice(")) && quit.indexOf("execAfterQuit.note") > quit.indexOf("printUnsent(draft)"), "quit: the chooser's `→ opening … in <space>` is said after the input area is gone (written before, the erase took it and left draft rows)");
   assert(/else if \(next\[0\]\) receiptSlot = slot;/.test(fn("const setReceipt = (")), "receipt: one printed over keeps its text in the history — a redraw shows what the screen showed there, not the next message's state above that message");
+
+  // Round 4 (the same two on round 3, 2026-11-18): the screens run in check:chat-draft AI–AQ.
+  assert(/typeBack\(text\)/.test(fn("const giveBack = (")) && /text kept \(↑ to recall\)`\)\);\s*if \(rl && !closing\) setImmediate\(\(\) => rl && !closing && typeBack\(text\)\)/.test(src) && !/rl!?\.write\(text\)/.test(src) && /if \(lines\.length > 1\) holdLines\(lines\.slice\(0, -1\)\);\s*rl!\.write\(lines\[lines\.length - 1\]!\)/.test(fn("const typeBack = (")), "refusal: a refused line goes back through typeBack — a multi-line one as the draft it was, never a \"\\n\" into readline (it is Enter there)");
+  const { CLEAR_BELOW } = await import("../src/chat-banner.ts");
+  const preshell = readFileSync(new URL("../src/chat-preshell.ts", import.meta.url), "utf8");
+  assert(CLEAR_BELOW === "\x1b7\x1b[2K\x1b[1B\x1b[0J\x1b8" && ["function eraseInput(", "const erasePicker = (", "const drawPicker = (", "const eraseChooser = (", "const drawChooser = ("].every((h) => /process\.stdout\.write\(CLEAR_BELOW\)/.test(fn(h)) && !/clearScreenDown/.test(fn(h))) && /process\.stdout\.write\(CLEAR_BELOW\)/.test(preshell) && !/clearScreenDown/.test(preshell), "home row: the input area, the overlays and the pre-shell clear their first row as a LINE and the rest from the row under it — never a clear-to-end from the home row (tmux copies the screen into the scrollback for that)");
+  assert(/const mention = picking \? \/\^@\(\[A-Za-z0-9_-\]\*\)\$\/\.exec\(rawLine\)\?\.\[1\] : undefined;/.test(line) && /pickerHits\(mention\)\[mention === pickFilter \? picked : 0\]/.test(line) && /const pickOverDraft = mention !== undefined && held\.length > 0;/.test(line), "picker: Enter picks only for a bare `@filter`, read from the line itself (typed with Enter in one chunk, it beat the re-filter and the text after the mention was dropped)");
+  assert(/name === f \? 0 : name\.startsWith\(f\) \? 1 : 2/.test(fn("const pickerHits = (")), "picker: the agent a filter names exactly is listed (and marked) first, then prefixes, then the rest");
+  assert(/rl\.write\(null, \{ ctrl: true, name: "u" \}\);\s*rl\.write\(null, \{ ctrl: true, name: "k" \}\);\s*closePicker\(\);/.test(fn("const dismissPicker = (")) && /if \(raw === ESC\) return void setImmediate\(dismissPicker\);/.test(src), "picker: Esc takes the `@filter` it wrote with it — nothing of the picker is sent as text");
+  assert(/if \(!overPickerRows\) stampTypedLine\(echo\);/.test(line) && /if \(!draft \|\| sent\) \{\s*painter\.lastSide = "you";/.test(line), "line: no time over the picker's rows left above a line, and a draft with nothing in it (erased whole) leaves the painter as it was");
 }
 
 rmSync(process.env.PAW_HOME as string, { recursive: true, force: true });

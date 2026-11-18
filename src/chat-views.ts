@@ -27,6 +27,7 @@
  * Pure: no tty, no readline, no mesh — chat.ts wires these in; check:chat asserts them.
  */
 import type { PeerMsg } from "./chat-peers.ts";
+import type { PasteBlock } from "./paste.ts";
 import type { Block } from "./transcript.ts";
 import type { Machine } from "./hosted.ts";
 import { displayWidth, fitWidth } from "./width.ts";
@@ -225,14 +226,21 @@ export interface FollowSource {
  *   target — another agent's traffic, captured before a switch, is not this conversation.
  * - `echo` — a line you typed, exactly as readline echoed it. readline prints it, not emit, so without
  *   recording it here your own half of the conversation would vanish on the first redraw.
+ * - `sent` — a multi-line message you sent (a draft, src/compose-view.ts draftRows): stored as typed — the
+ *   prompt its first line was typed at, its lines, its pastes — and laid out at PAINT time, at the width
+ *   then, as `peer` is: a redraw after a resize shows it as the live draft reads at that width.
  * - `log` — a batch of the target's transcript blocks, stored RAW: which blocks show depends on the view
  *   (logBlockVisible), so filtering happens at paint time, not at capture.
  */
+/** A draft as it was sent: what draftRows lays out. */
+export type SentDraft = { head: string; lines: readonly string[]; pastes: readonly PasteBlock[] };
+
 export type Entry =
   | { kind: "banner"; text: string }
   | { kind: "chat"; text: string; side: "you" | "peer" | "sys"; tight: boolean; from?: string; onlyLogs?: boolean; onlyMessages?: boolean; bannerDelta?: boolean; historical?: boolean; ts?: number }
   | { kind: "peer"; agent: string; msg: PeerMsg; historical?: boolean }
   | { kind: "echo"; text: string; ts?: number }
+  | { kind: "sent"; draft: SentDraft; ts: number }
   | { kind: "log"; agent: string; blocks: Block[]; backfill: boolean; note?: string };
 
 /**
@@ -256,6 +264,7 @@ export function entryVisible(e: Entry, view: ChatView, target: string | undefine
     case "log":
       return showsLogs(view) && e.agent === target;
     case "echo":
+    case "sent":
       return showsChat(view);
     case "chat":
       if (e.onlyLogs) return showsLogs(view); // a note about the logs themselves ("no logs for x")
@@ -330,6 +339,8 @@ export class Painter {
   /** An other-peer message as screen rows, at the width of the moment (chat.ts: peerRows). */
   private readonly peer: (p: PeerMsg) => string;
   private readonly stamps: StampOpts | undefined;
+  /** A sent draft as screen rows, at the width of the moment (chat.ts: draftRows). */
+  private readonly sent: (d: SentDraft) => string;
 
   constructor(
     render: (b: Block) => string,
@@ -338,6 +349,9 @@ export class Painter {
     attachesAbove: (rendered: string) => boolean = () => false,
     peer: (p: PeerMsg) => string = (p) => `${p.from} → ${p.to}: ${p.text}`,
     stamps?: StampOpts,
+    sent: (d: SentDraft) => string = () => {
+      throw new Error("Painter: a sent draft needs a layout (chat.ts passes draftRows)");
+    },
   ) {
     this.render = render;
     this.dim = dim;
@@ -345,6 +359,7 @@ export class Painter {
     this.attachesAbove = attachesAbove;
     this.peer = peer;
     this.stamps = stamps;
+    this.sent = sent;
   }
 
   reset(): void {
@@ -379,7 +394,8 @@ export class Painter {
         this.lastSide = undefined;
         this.trailingBlank = e.text.endsWith("\n\n");
         return e.text;
-      case "echo": {
+      case "echo":
+      case "sent": {
         // Your typed line takes the "you" side, and whatever blank preceded it is no longer adjacent —
         // the same two facts the line handler has always asserted after readline echoes a line. Its time
         // goes on that blank only when there is one: readline already drew the line, so live there is no
@@ -387,7 +403,7 @@ export class Painter {
         const row = e.ts !== undefined && this.trailingBlank ? this.stampFor(e.ts) : undefined;
         this.lastSide = "you";
         this.trailingBlank = false;
-        return (row === undefined ? "" : `${OVER_BLANK}${row}\n`) + e.text + "\n";
+        return (row === undefined ? "" : `${OVER_BLANK}${row}\n`) + (e.kind === "echo" ? e.text : this.sent(e.draft)) + "\n";
       }
       case "chat":
         return this.put(e.side, e.text.split("\n").join(`\n${this.pad}`), e.side === "sys" || e.tight, e.ts);

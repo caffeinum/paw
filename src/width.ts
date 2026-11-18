@@ -88,12 +88,48 @@ export function wrappedWidth(s: string, cols: number): number {
 /** Terminal rows one line (no newline in it) takes once written from column 0 and wrapped: at least one. */
 export const rowsAt = (line: string, cols: number): number => Math.max(1, Math.ceil(wrappedWidth(line, cols) / Math.max(1, cols)));
 
+const READLINE_ZERO = /[\p{Mn}\p{Me}\p{Cf}]/u;
+
+/** Columns readline gives one code point (node's getStringWidth, char by char): it has no VS16 look-ahead
+ *  and joins no ZWJ sequence — `❤️` is 1 column to readline and 2 on screen, `👩‍💻` 4 and 2. */
+function readlineCharWidth(ch: string): number {
+  const cp = ch.codePointAt(0)!;
+  if (EMOJI.test(ch) || wideCodePoint(cp)) return 2;
+  if (cp < 0x20 || (cp >= 0x7f && cp < 0xa0) || (READLINE_ZERO.test(ch) && cp !== 0xad)) return 0;
+  return 1;
+}
+
+/** The columns readline's own count (_getDisplayPos) moves the cursor for `s` — where it decides whether
+ *  the caret needs a row of its own. It disagrees with the terminal ({@link wrappedWidth}) on VS16 and
+ *  ZWJ emoji only. */
+export function readlineWidth(s: string, cols: number): number {
+  const w = Math.max(1, cols);
+  let at = 0;
+  for (const ch of s.replace(ANSI, "")) {
+    if (ch === "\t") {
+      at += TAB - (at % TAB);
+      continue;
+    }
+    const cw = readlineCharWidth(ch);
+    if (cw === 2 && (at + 1) % w === 0) at++;
+    at += cw;
+  }
+  return at;
+}
+
 /**
  * Rows readline's prompt + line takes — live, and as the echo it leaves on Enter (the cursor then sits on
- * the row under it). One more than {@link rowsAt} when the text ends exactly at the right edge: readline
- * writes a space there to make the terminal give the caret a row of its own (kRefreshLine).
+ * the row under it): the rows the terminal wraps it onto, and one more for the caret when it ends exactly
+ * at the right edge. That row is readline's: it writes a space to make the terminal give the caret a row
+ * of its own (kRefreshLine) only when ITS count ends at the edge too — a `❤️` filling the row is two
+ * columns on screen but one to readline, which then writes no space and the echo is one row.
  */
-export const echoRows = (line: string, cols: number): number => Math.floor(wrappedWidth(line, cols) / Math.max(1, cols)) + 1;
+export function echoRows(line: string, cols: number): number {
+  const w = Math.max(1, cols);
+  const at = wrappedWidth(line, w);
+  const caret = at > 0 && at % w === 0 && readlineWidth(line, w) % w === 0;
+  return Math.max(1, Math.ceil(at / w)) + (caret ? 1 : 0);
+}
 
 /** The longest prefix of `s` (plain text, no ANSI) that fits in `cols` columns. */
 export function sliceWidth(s: string, cols: number): string {

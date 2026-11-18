@@ -21,7 +21,7 @@
 import { appendFileSync, writeSync } from "node:fs";
 import { basename } from "node:path";
 import * as readline from "node:readline";
-import { renderBanner, paintedRows, type BannerState } from "./chat-banner.ts";
+import { CLEAR_BELOW, renderBanner, paintedRows, type BannerState } from "./chat-banner.ts";
 import { loading, LOADER, ok } from "./chat-boot.ts";
 import { DISABLE_BRACKETED_PASTE, ENABLE_BRACKETED_PASTE } from "./paste.ts";
 import { readRemoteMesh } from "./remote-mesh.ts";
@@ -160,7 +160,7 @@ export function paintPreshell(argv: string[]): void {
       erased = true;
       readline.cursorTo(process.stdout, 0);
       readline.moveCursor(process.stdout, 0, -rows);
-      readline.clearScreenDown(process.stdout);
+      process.stdout.write(CLEAR_BELOW);
     },
   };
   painted = frame;

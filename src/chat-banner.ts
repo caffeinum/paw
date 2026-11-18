@@ -125,6 +125,15 @@ export function paintedRows(text: string, cols: number): number {
 }
 
 /**
+ * Clear the screen from column 0 of the cursor's row down — that row as a LINE, the rest from the row
+ * under it, the cursor back where it was (DECSC/DECRC: on the last row there is no row under it). A
+ * clear-to-end from the HOME row is, to tmux (`scroll-on-clear`, on by default), clearing the whole
+ * screen, and it copies the screen into the scrollback first: a fresh pane's banner is on that row, so
+ * repainting it copied the banner, a draft under it and the hint row above everything after them.
+ */
+export const CLEAR_BELOW = "\x1b7\x1b[2K\x1b[1B\x1b[0J\x1b8";
+
+/**
  * May the banner be repainted where it stands (instead of appending a one-line delta)? Only when
  * nothing has been painted under it, the terminal was not resized since (rows re-wrap), it is a tty in
  * the chat view with no picker or paste open, and it fits on screen with the prompt (a banner partly in

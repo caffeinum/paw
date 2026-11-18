@@ -67,7 +67,7 @@ import { Outbox, type OutEvent } from "./outbox.ts";
 import { LinkProbe, PROBE_MS, isAckTimeout } from "./link-probe.ts";
 import { OFFLINE_DEBOUNCE_MS, PresenceHold, type PresenceLine } from "./presence-hold.ts";
 import { AwaitTracker } from "./chat-awaiting.ts";
-import { arrowRun, CLEAR_ALL, displayWidth, fitWidth, entryVisible, hintFor, hintWithTag, whereTag, History, type FooterCell, LogFollower, navKey, scrollKey, Painter, type Entry, type PaintState, pickerWindow, showsChat, showsLogs, showsPeers, stepView, VIEW_LABEL, viewNeedsTarget, type ChatView } from "./chat-views.ts";
+import { arrowRun, CLEAR_ALL, displayWidth, fitWidth, entryVisible, hintFor, hintWithTag, whereTag, History, type FooterCell, LogFollower, navKey, scrollKey, Painter, type Entry, type PaintState, pickerWindow, type SentDraft, showsChat, showsLogs, showsPeers, stepView, VIEW_LABEL, viewNeedsTarget, type ChatView } from "./chat-views.ts";
 import { classifyPeer, isPeerForwardOf, mergeByTs, peerRows, peerSummary, pickPeers, type PeerMsg, type RawMsg } from "./chat-peers.ts";
 import { agentBeads, agentInfo, CLOSED_RECENT_MS, hitAt, renderTasksPanel, type InfoFacts, type TasksHit } from "./chat-tasks.ts";
 import { MOUSE_OFF, MOUSE_ON, SELECT_MODE_KEY, stripMouse, type MouseEvent } from "./mouse.ts";
@@ -102,7 +102,7 @@ import { HUMAN_PEER, humanPeer } from "./names.ts";
 import { sameSpaceAddress } from "./dispatch.ts";
 import { describeInboxBindFailure, inboxLedgerDir, prepareHumanInbox, sweepOrphanInboxes, type HumanInbox } from "./human-inbox.ts";
 import { bootFailure, bootLabel, bootRetry, DeferredQueue, failed as failedSlot, failedLabel, LOADER, lineNeedsMesh, loading as loadingSlot, ok as okSlot, slotText, type BootPhase, type Slot } from "./chat-boot.ts";
-import { canRepaintInPlace, HELP_LINES, paintedRows, renderBanner, type BannerState } from "./chat-banner.ts";
+import { canRepaintInPlace, CLEAR_BELOW, HELP_LINES, paintedRows, renderBanner, type BannerState } from "./chat-banner.ts";
 import { PendingConsent } from "./chat-consent.ts";
 import { takeFrame } from "./chat-preshell.ts";
 import { localAgentFolder, otherSpaceHits, pawHome, suggestNames } from "./chat-lookup.ts";
@@ -696,7 +696,9 @@ async function chat(argv: string[]): Promise<void> {
   // Message times on the blank row above each message (src/chat-stamp.ts) — a terminal only: off a tty
   // the cursor moves would be garbage, and the old "(3h ago)" tag stays instead.
   const stamps = !!process.stdout.isTTY;
-  const painter = new Painter(renderBlock, c.dim, "  ", attachesAbove, layPeer, stamps ? { cols: () => process.stdout.columns || 80, now: () => Date.now() } : undefined);
+  // A sent draft too: laid out as the live draft reads at the width now (src/compose-view.ts).
+  const laySent = (d: SentDraft): string => draftRows(d.head, d.lines, d.pastes, viewOpts()).join("\n");
+  const painter = new Painter(renderBlock, c.dim, "  ", attachesAbove, layPeer, stamps ? { cols: () => process.stdout.columns || 80, now: () => Date.now() } : undefined, laySent);
   const follower = new LogFollower(
     (name) => {
       const away = awayOf(name);
@@ -745,8 +747,9 @@ async function chat(argv: string[]): Promise<void> {
     // Once we're shutting down (EOF/SIGINT/quit) the readline is closed — touching it throws
     // ERR_USE_AFTER_CLOSE. Still write the message, just skip the prompt redraw.
     // Everything below the conversation is the input area; the entry goes ABOVE all of it — above the
-    // whole draft, never between its rows — and the area is painted back under it.
-    if (rl && !closing && !eraseInput()) return redraw();
+    // whole draft, never between its rows — and the area is painted back under it. Off a tty there is
+    // no area to find: no cursor math, the entry follows the prompt line.
+    if (rl && !closing && process.stdout.isTTY && !eraseInput()) return redraw();
     process.stdout.write(text);
     lastPainted = e;
     paintInput();
@@ -797,7 +800,7 @@ async function chat(argv: string[]): Promise<void> {
     overlay()?.erase();
     readline.moveCursor(process.stdout, 0, -((cursorRow ?? r.getCursorPos().rows) + (drawnDraft?.rows ?? 0) + above));
     readline.cursorTo(process.stdout, 0);
-    readline.clearScreenDown(process.stdout);
+    process.stdout.write(CLEAR_BELOW); // its top may be the home row: the banner's, in a fresh pane
     drawnDraft = undefined;
     return true;
   }
@@ -880,19 +883,19 @@ async function chat(argv: string[]): Promise<void> {
 
   /**
    * Enter on a draft: its rows, the line readline just echoed for it (`echoed`) and the rest of the input
-   * area make way for the message as ONE `echo` entry (already in the history; none when nothing was
+   * area make way for the message as ONE `sent` entry (already in the history; none when nothing was
    * typed), painted like any entry — its time on the blank above its first row, the receipt right under
    * it, and a redraw shows the same block. A view that hides your lines (logs) gets it plain, once, as
    * readline's own echo of a single line stays there.
    */
-  function settleDraft(echoed: string, echo: (Entry & { kind: "echo" }) | undefined): void {
+  function settleDraft(echoed: string, sent: (Entry & { kind: "sent" }) | undefined): void {
     if (!rl || closing || view === "beads" || !process.stdout.isTTY) return;
     const cols = process.stdout.columns || 80;
     if (!eraseInput(0, echoRows(echoed, cols))) return redraw();
-    if (!echo) return;
-    if (!entryVisible(echo, view, curName, follower.readable(curName))) return void process.stdout.write(`${echo.text}\n`);
+    if (!sent) return;
+    if (!entryVisible(sent, view, curName, follower.readable(curName))) return void process.stdout.write(`${laySent(sent.draft)}\n`);
     const before = painter.state();
-    const text = painter.paint(echo, view);
+    const text = painter.paint(sent, view);
     process.stdout.write(text);
     lastPaint = { text, before, cols };
   }
@@ -1058,15 +1061,20 @@ async function chat(argv: string[]): Promise<void> {
     const foot = footerTag();
     const row = hintWithTag(hint, picking || bang ? [] : foot.cells, cols);
     const pos = rl.getCursorPos();
-    const shown = wrappedWidth(rl.getPrompt() + rl.line, cols);
-    const lastRow = Math.floor(Math.max(0, shown - 1) / cols);
+    const input = rl.getPrompt() + rl.line;
+    // The input's last row — readline's caret row when it forced one — and where the input ends on it.
+    const lastRow = echoRows(input, cols) - 1;
+    const end = wrappedWidth(input, cols) - lastRow * cols;
     const down = Math.max(0, lastRow - pos.rows);
     readline.moveCursor(process.stdout, 0, down);
     // The input may have just WRAPPED onto the row the hint occupied, overwriting its start and leaving
     // the rest ("…png mode · esc or backspace leaves", seen under a pty). readline writes characters, it
     // doesn't clear to the end of the row — so clear what's right of the input's end before redrawing.
-    readline.cursorTo(process.stdout, shown % cols);
-    readline.clearLine(process.stdout, 1);
+    // A row the input fills has nothing right of it (column 0 there would be the input's own start).
+    if (end < cols) {
+      readline.cursorTo(process.stdout, end);
+      readline.clearLine(process.stdout, 1);
+    }
     process.stdout.write("\n");
     readline.clearLine(process.stdout, 0);
     process.stdout.write(c.dim(row.left) + " ".repeat(row.pad) + row.painted);
@@ -1350,9 +1358,7 @@ async function chat(argv: string[]): Promise<void> {
         return;
       }
       emit(c.dim(said));
-      const lines = text.split("\n");
-      if (lines.length > 1) holdLines(lines.slice(0, -1));
-      rl.write(lines[lines.length - 1]!);
+      typeBack(text);
     });
   };
 
@@ -2421,6 +2427,15 @@ async function chat(argv: string[]): Promise<void> {
     repaintInput(echoed === undefined ? {} : { cursorRow: echoRows(echoed, process.stdout.columns || 80) });
   };
 
+  /** Put `text` back into the input as it was typed: a multi-line one as the draft it was (held lines +
+   *  the last one being edited). readline takes a "\n" written into it for Enter — the lines went out
+   *  again, each refused again, and what was left landed glued together in the wrong order. */
+  const typeBack = (text: string): void => {
+    const lines = text.split("\n");
+    if (lines.length > 1) holdLines(lines.slice(0, -1));
+    rl!.write(lines[lines.length - 1]!);
+  };
+
   /** Take the last `n` held lines back off the draft; the input area is repainted without them. */
   const unholdLines = (n: number): string[] => {
     const taken = held.splice(held.length - n, n);
@@ -2497,10 +2512,14 @@ async function chat(argv: string[]): Promise<void> {
     return true;
   };
 
-  /** The agents matching the current filter, in display order. */
-  const pickerHits = (): Array<{ name: string; note: string }> => {
+  /** The agents matching `filter`, in display order: the one it names exactly first, then the names it
+   *  starts, then the rest that contain it — typing `echo` marks `echo`, never the live `echoer`. */
+  const pickerHits = (filter = pickFilter): Array<{ name: string; note: string }> => {
     const all = pickerAgents();
-    return pickFilter ? all.filter((a) => a.name.toLowerCase().includes(pickFilter.toLowerCase())) : all;
+    if (!filter) return all;
+    const f = filter.toLowerCase();
+    const rank = (name: string): number => (name === f ? 0 : name.startsWith(f) ? 1 : 2);
+    return all.filter((a) => a.name.toLowerCase().includes(f)).sort((a, b) => rank(a.name.toLowerCase()) - rank(b.name.toLowerCase()));
   };
 
   /** Erase the rows the picker drew last time, leaving the cursor where the list should start. */
@@ -2508,7 +2527,7 @@ async function chat(argv: string[]): Promise<void> {
     if (!drawn || !rl || closing) return;
     readline.cursorTo(process.stdout, 0);
     readline.moveCursor(process.stdout, 0, -drawn);
-    readline.clearScreenDown(process.stdout);
+    process.stdout.write(CLEAR_BELOW);
     drawn = 0;
   };
 
@@ -2524,6 +2543,15 @@ async function chat(argv: string[]): Promise<void> {
     erasePicker();
     close();
     if (rl && !closing) rl.prompt(true);
+  };
+
+  /** Esc: the picker goes, and with it the `@filter` it put in the line — the line is as it was before
+   *  ↓ (empty), and nothing of the picker is left to be sent as text. */
+  const dismissPicker = (): void => {
+    if (!picking || !rl || closing) return;
+    rl.write(null, { ctrl: true, name: "u" });
+    rl.write(null, { ctrl: true, name: "k" });
+    closePicker();
   };
 
   /** A WINDOW around the selection, not the whole list: all 118 agents ran off the top of the screen and
@@ -2562,7 +2590,7 @@ async function chat(argv: string[]): Promise<void> {
       ...(end < hits.length ? [c.dim(`    ↓ ${hits.length - end} more`)] : []),
     ];
     readline.cursorTo(process.stdout, 0);
-    readline.clearScreenDown(process.stdout); // the hint row under the prompt too, or its tail shows after a short row
+    process.stdout.write(CLEAR_BELOW); // the hint row under the prompt too, or its tail shows after a short row
     const text = rows.join("\n") + "\n";
     process.stdout.write(text);
     drawn = paintedRows(text, cols); // a wrapped row is erased whole
@@ -2616,7 +2644,7 @@ async function chat(argv: string[]): Promise<void> {
     if (!chooserDrawn || !rl || closing) return;
     readline.cursorTo(process.stdout, 0);
     readline.moveCursor(process.stdout, 0, -chooserDrawn);
-    readline.clearScreenDown(process.stdout);
+    process.stdout.write(CLEAR_BELOW);
     chooserDrawn = 0;
   };
   const drawChooser = (): void => {
@@ -2624,7 +2652,7 @@ async function chat(argv: string[]): Promise<void> {
     eraseChooser();
     const rows = renderChooser(chooser, c);
     readline.cursorTo(process.stdout, 0);
-    readline.clearScreenDown(process.stdout); // the hint row under the prompt too, or it bleeds into row 1
+    process.stdout.write(CLEAR_BELOW); // the hint row under the prompt too, or it bleeds into row 1
     const text = rows.join("\n") + "\n";
     process.stdout.write(text);
     chooserDrawn = paintedRows(text, process.stdout.columns || 80); // a wrapped row is erased whole
@@ -3070,7 +3098,7 @@ async function chat(argv: string[]): Promise<void> {
       // chunk (key repeat) is one net step — see arrowRun.
       const step = arrowRun(raw);
       if (step !== undefined) return void setImmediate(() => step && movePicker(step));
-      if (raw === ESC) return void setImmediate(closePicker);
+      if (raw === ESC) return void setImmediate(dismissPicker);
       setImmediate(() => (syncFilter() ? drawPicker() : closePicker()));
     });
     process.stdin.prependListener("data", (chunk: Buffer | string) => {
@@ -3275,10 +3303,15 @@ async function chat(argv: string[]): Promise<void> {
     // your terminal sends it and there is no way to know that but to try. Checked before anything else
     // consumes the line, and never inside a paste (a payload line ending in `\\` is payload).
     const cont = peelContinuation(raw);
-    // Enter in the ↓ picker picks the agent it marks: the buffer shows only the filter until an arrow
-    // moves the selection, and a bare `@` picked nobody.
-    const pick = picking ? pickerHits()[picked]?.name : undefined;
-    const pickOverDraft = picking && held.length > 0 && !cont.continues;
+    // Enter in the ↓ picker picks the agent it marks — while the line is still the picker's bare `@filter`
+    // (the buffer shows only the filter until an arrow moves the selection, and a bare `@` picked nobody).
+    // The filter is read from the line itself: typed with Enter in ONE chunk, it arrives before the
+    // picker re-filters, and text typed after the mention is a message, sent as typed.
+    const mention = picking ? /^@([A-Za-z0-9_-]*)$/.exec(rawLine)?.[1] : undefined;
+    const pick = mention === undefined ? undefined : pickerHits(mention)[mention === pickFilter ? picked : 0]?.name;
+    const pickOverDraft = mention !== undefined && held.length > 0;
+    // A single line submitted from the picker keeps its rows above it — on the row where its time would go.
+    const overPickerRows = picking && drawn > 0;
     // Submitting ends the picker. A single line leaves its rows alone — readline has already echoed the
     // line and moved on, so they are scrollback now; erasing there would eat whatever sits there instead.
     // A draft's input area goes as a whole, picker rows included (erased first: the moves add up).
@@ -3297,9 +3330,9 @@ async function chat(argv: string[]): Promise<void> {
     // is printed once as unsent. Slash only — a bare `exit` there is as likely the text of the message.
     if (held.length && !bang && /^\/(quit|exit)$/i.test(rawLine.trim())) return void (await shutdown(undefined, echoRows(echoed, process.stdout.columns || 80)));
     // Everything held by a continuation joins THIS line into one message — on screen too, as ONE block
-    // laid out like the draft was (taken now, before the send consumes the staged pastes), from the lines
-    // the send keeps: an empty last (or first) line is no row of what was sent.
-    const draft = held.length ? draftRows(headOfDraft(), joinLines(held, rawLine).trim().split("\n"), stage().pastes, viewOpts()).join("\n") : undefined;
+    // laid out like the draft was (its pastes taken now, before the send consumes the stage), from the
+    // lines the send keeps: an empty last (or first) line is no row of what was sent.
+    const draft: SentDraft | undefined = held.length ? { head: headOfDraft(), lines: joinLines(held, rawLine).trim().split("\n"), pastes: [...stage().pastes] } : undefined;
     if (held.length) {
       raw = joinLines(held, raw);
       held = [];
@@ -3311,22 +3344,28 @@ async function chat(argv: string[]): Promise<void> {
     // Typing IS taking the "you" side, even though readline echoed the line rather than emit printing
     // it — so claim it here. Without this the first receipt reads as a side CHANGE (peer→you) and
     // opens with a blank, putting air after your own message instead of after the ⏳ receipt.
-    // (Recorded as an `echo` entry, so a redraw reproduces your line; the painter asserts both facts.)
-    const echo: (Entry & { kind: "echo" }) | undefined = typed ? { kind: "echo", text: draft ?? echoed, ts: Date.now() } : undefined;
-    if (echo) {
-      history.push(echo);
-      lastPainted = echo;
+    // (Recorded as an `echo` / `sent` entry, so a redraw reproduces it; the painter asserts both facts.)
+    const at = Date.now();
+    const sent: (Entry & { kind: "sent" }) | undefined = draft && typed ? { kind: "sent", draft, ts: at } : undefined;
+    const echo: (Entry & { kind: "echo" }) | undefined = !draft && typed ? { kind: "echo", text: echoed, ts: at } : undefined;
+    const mine = sent ?? echo;
+    if (mine) {
+      history.push(mine);
+      lastPainted = mine;
     }
-    if (draft !== undefined) settleDraft(echoed, echo);
+    if (draft) settleDraft(echoed, sent);
     else if (echo) {
-      stampTypedLine(echo);
+      if (!overPickerRows) stampTypedLine(echo);
       // A paste this line mentions shows right under it — where it sits in the message the agent gets.
       if (!bang) emitRows(railPastes(rawLine, stage().pastes, viewOpts()));
     }
-    painter.lastSide = "you";
-    // And a blank line the previous round ended on is no longer adjacent once a prompt and your typed
-    // line sit between it and the next output — leaving the flag set swallowed later gaps entirely.
-    painter.trailingBlank = false;
+    // A draft with nothing in it was erased whole: nothing of it is on screen to take a side or a gap.
+    if (!draft || sent) {
+      painter.lastSide = "you";
+      // And a blank line the previous round ended on is no longer adjacent once a prompt and your typed
+      // line sit between it and the next output — leaving the flag set swallowed later gaps entirely.
+      painter.trailingBlank = false;
+    }
     const startedAt = lineStartedAt;
     lineStartedAt = undefined;
     const pasted = pastedIntoLine;
@@ -3728,7 +3767,7 @@ async function chat(argv: string[]): Promise<void> {
           if (opts.replay) emit(c.red(why));
           else {
             emit(c.red(`${why} — text kept (↑ to recall)`));
-            if (rl && !closing) setImmediate(() => rl && !closing && rl.write(text));
+            if (rl && !closing) setImmediate(() => rl && !closing && typeBack(text));
           }
         } else sendDm(curName, curId, flush(text, curName));
       } else {
@@ -4273,8 +4312,11 @@ async function chat(argv: string[]): Promise<void> {
       if (drawnDraft) {
         if (!eraseInput(0, cursorRow)) redrawHistory();
       } else {
-        overlay()?.erase();
-        readline.clearScreenDown(process.stdout);
+        const o = overlay();
+        // An overlay's erase clears from its top down, the prompt and the hint with it. Without one the
+        // cursor is past the prompt, so this clear never starts on column 0 of the home row.
+        if (o) o.erase();
+        else readline.clearScreenDown(process.stdout);
         writeOut("\n");
       }
     }
