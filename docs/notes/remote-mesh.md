@@ -265,22 +265,20 @@ one-key `presence-probe` cred — [addressing.md#presence-latch-guard](addressin
 ## Test
 
 `scripts/check-remote.ts` (`pnpm check:remote`, hermetic unit checks) and `scripts/e2e-remote.ts`
-(`COTAL_BIN=<cotal-ai@0.100.0>/dist/cotal.js node scripts/e2e-remote.ts`): a private `cotal up
---no-manager` JWT + TLS broker with a self-signed cert, `auth signer`, `paw mesh add`, no-CA
-refusal, a real haiku claude spawned by `paw dm --space` (its cotal MCP carries `COTAL_TLS=1`, read
-with `ps -E`), reply read by `paw inbox`, who/status (the TLS-required presence probe reaches the broker),
-`paw restart`, second DM. Step 4a/4b attaches under node-pty: `paw attach` (grant issued +
-redeemed, claude's TUI streams, Ctrl-] exits 0, agent still live), `paw cotal attach --space R --creds
-<junk>` (the operator's failing shape), and an attach from a second root while a SECOND manager
-instance serves the space (cotal pins the session to the instance hosting the seat).
-INBOX lag a real number (cached 0600 lag cred); a SECOND machine (own
-PAW_HOME + root + signer copy + its own manager, driven through paw's library since both share one host's
-process table) spawns its agent — machine 1 never lists it or its lag, and sleeping across machines fails
-"hosted on another machine" (both directions, `--force` and `--after` too); then `paw sleep agent --now`,
-the stand-in raised under its own nkey, a raw DM by name resolves to the stand-in, wakes the agent and is
-re-delivered (reply in `paw inbox`); teardown. `E2E_HUMAN=<name>` runs it with `mesh add --as <name>` and asserts
-the mailbox appears under that name, nobody is `you`, and the replies still reach the inbox. PAW_SPACE
-is a decoy local space and PAW_SERVER a dead port, so
-any path that ignores `--space` fails instead of touching the live mesh. The cotal-ai package must
-be installed OUTSIDE the repo; run with `COTAL_SKIP_CONNECTOR_SEED=1` (the script sets it) or cotal
-touches the operator's `~/.config/cotal` seed store.
+(`COTAL_BIN=<cotal-ai@0.100.0>/dist/cotal.js node scripts/e2e-remote.ts`). The e2e asserts only
+USER-VISIBLE behavior (~16 checks, rewritten 2026-11-18 from ~83 that pinned internals — echo rendering,
+status JSON fields, process signatures — and broke on harmless changes): a private `cotal up --no-manager`
+JWT + TLS broker with a self-signed cert + `auth signer`; `paw mesh add` joins (refuses a 0644 signer),
+no CA → fails loud naming TLS trust and starts nothing; a DM to a folder spawns a real haiku agent and its
+reply reaches `paw inbox`; a `paw msg general` post reaches the agent (it answers the code word by DM);
+`paw attach` under node-pty streams claude's TUI and Ctrl-] exits 0; after `paw restart` DMs and channel
+posts still work; a SECOND machine (own PAW_HOME + root + signer copy + its own manager, driven through
+paw's library with NO mailbox — on one host a second home's ensure() trips the one-"you"-mailbox-per-space
+guard) runs its agent, machine 1 DMs it, the two agents DM each other, `paw sleep` across machines is
+refused both ways; `paw sleep --now` then a raw DM by name wakes the agent and is delivered; teardown
+(`cotal down --yes`, which newer cotal requires off a tty) leaves no process naming either space.
+`E2E_ALLOW_COTAL_VERSION=1` runs the BROKER on another cotal on purpose (paw's clients stay pinned) — the
+broker-upgrade question. `E2E_HUMAN=<name>` joins with `--as <name>`. PAW_SPACE is a decoy local space and
+PAW_SERVER a dead port, so any path that ignores `--space` fails instead of touching the live mesh. The
+cotal-ai package must be installed OUTSIDE the repo; run with `COTAL_SKIP_CONNECTOR_SEED=1` (the script
+sets it) or cotal touches the operator's `~/.config/cotal` seed store.
