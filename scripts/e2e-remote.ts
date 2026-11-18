@@ -28,7 +28,7 @@
  * clients stay on the pinned cotal) — the broker-upgrade question. E2E_HUMAN=<name> joins with `--as`.
  */
 import { spawn as ptySpawn } from "@lydell/node-pty";
-import { execFileSync, spawnSync, type SpawnSyncReturns } from "node:child_process";
+import { execFileSync, spawn, spawnSync, type SpawnSyncReturns } from "node:child_process";
 import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { createServer } from "node:net";
 import { dirname, join } from "node:path";
@@ -249,6 +249,30 @@ function cotalDown(): SpawnSyncReturns<string> {
   return r.status !== 0 && /unknown (option|flag|argument)/i.test(out(r)) ? cotal(["down"]) : r;
 }
 
+/** A `paw chat <args…> --space R` over piped stdin: type lines, wait for output, quit on EOF. */
+function startChat(args: string[]) {
+  const child = spawn(process.execPath, [join(REPO, "bin/paw.ts"), "chat", ...args, "--space", R], { env: withCa, cwd: REPO, stdio: ["pipe", "pipe", "pipe"] });
+  const s = { output: "", exited: false };
+  child.stdout.on("data", (d: Buffer) => (s.output += d.toString()));
+  child.stderr.on("data", (d: Buffer) => (s.output += d.toString()));
+  child.on("exit", () => (s.exited = true));
+  const until = async (want: RegExp, ms: number): Promise<boolean> => {
+    const deadline = Date.now() + ms;
+    while (!s.exited && Date.now() < deadline && !want.test(plain(s.output))) await sleep(500);
+    return want.test(plain(s.output));
+  };
+  return {
+    output: () => plain(s.output),
+    until,
+    type: (line: string) => void (!s.exited && child.stdin.write(`${line}\n`)),
+    quit: async () => {
+      child.stdin.end();
+      for (let i = 0; i < 20 && !s.exited; i++) await sleep(500);
+      if (!s.exited) child.kill("SIGKILL");
+    },
+  };
+}
+
 const name = "agent";
 const other = "other";
 let m2pid: number | undefined;
@@ -284,6 +308,22 @@ try {
   // ── 3. channel ─────────────────────────────────────────────────────────────────────────────────────
   const chan = await channelReaches(name, `mango${tag}`);
   ok("a #general post reaches the agent", chan.ok, chan.detail);
+
+  // ── 3b. two chat windows: what one sends, the other shows ──────────────────────────────────────────
+  {
+    const watcher = startChat(["--all"]);
+    const sender = startChat([`@${name}`]);
+    await sleep(10_000); // both connected
+    const dmTag = `plum${tag}`;
+    const postTag = `fig${tag}`;
+    sender.type(`reply with just the word: ${dmTag}`);
+    sender.type(`#general ${postTag}`);
+    const dmSeen = await watcher.until(new RegExp(`you \\(elsewhere\\) →[^\\n]*${name}[\\s\\S]*${dmTag}`), 30_000);
+    const postSeen = await watcher.until(new RegExp(`you \\(elsewhere\\) →[^\\n]*#general[\\s\\S]*${postTag}`), 30_000);
+    ok("a second paw chat window shows the DM and the #general post sent from the first", dmSeen && postSeen, dmSeen && postSeen ? "" : tail(watcher.output()));
+    await sender.quit();
+    await watcher.quit();
+  }
 
   // ── 4. attach ──────────────────────────────────────────────────────────────────────────────────────
   const att = await ptyAttach(["attach", name, "--space", R], withCa, 60_000);

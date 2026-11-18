@@ -535,7 +535,7 @@ agent BEFORE the chat started … not start from an empty screen", on open AND o
   addressed to the AGENT, not to "you", so other open sessions never received it and their transcripts
   silently diverged. chat now `ep.tap`s the space — a plain NATS subscribe, ephemeral, NO durable
   consumer, so it cannot contend with the inbox (the one-consumer rule) — and surfaces anything sent
-  by "you" that this process didn't send, as `↗ you → <agent> (other session): …`. Telling mine from
+  by "you" that this process didn't send, as `you (elsewhere) → <agent>: …` (until 2026-11 it read `↗ you → <agent> (other session): …`). Telling mine from
   theirs is EXACT, not heuristic: `unicast`/`multicast` mint a uuid per message and return it, so
   every send records its id in `ownIds` and the tap does a lookup rather than matching text and
   timestamps. **But the check cannot be made immediately** — the broker echoes a publish back to our
