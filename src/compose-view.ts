@@ -6,10 +6,13 @@
  * so a draft, the line you're typing and the sent echo read as ONE block. A paste is shown INLINE at its
  * placeholder (`📋 [Pasted text #1] 25 lines, 2 KB` + its first rows, wrapped, never clipped mid-line),
  * runs of blank lines fold to one, and a long paste is capped with a `… +N more lines` footer.
+ *
+ * The draft is INPUT, not history: chat paints {@link draftRows} above readline's prompt and repaints it
+ * under every message that arrives, and only Enter turns it into one entry of the conversation.
  */
 import { formatBytes } from "./images.ts";
 import { PASTE_ICON, type PasteBlock } from "./paste.ts";
-import { displayWidth, sliceWidth } from "./width.ts";
+import { displayWidth, rowsAt, sliceWidth } from "./width.ts";
 
 /** The message rail, and the continuation prompt that draws the same rail for the line being typed. */
 export const RAIL = "  │ ";
@@ -113,15 +116,54 @@ export function railPastes(line: string, blocks: readonly PasteBlock[], opts: Vi
 const railOf = (opts: ViewOpts): string => (opts.dim ?? plain)(opts.rail ?? RAIL);
 
 /**
+ * A draft as it reads, and the message it becomes once sent: the first line after the prompt it was
+ * typed at (`head`) with its pastes under it, every later line on the rail (a line that is only a
+ * placeholder becomes its `📋` block). The live draft and the sent echo are both this, so what was
+ * composed is what stays in the scrollback.
+ */
+export function draftRows(head: string, lines: readonly string[], blocks: readonly PasteBlock[], opts: ViewOpts): string[] {
+  const [first, ...rest] = lines;
+  if (first === undefined) throw new Error("draftRows: a draft has at least one line");
+  return [head + first, ...railPastes(first, blocks, opts), ...rest.flatMap((l) => railLine(l, blocks, opts))];
+}
+
+/**
+ * The rows of a live draft that fit in `room` terminal rows: all of them, or — a draft taller than that —
+ * its LAST rows under one `… +N more rows above` row (N terminal rows). Only what is on screen while
+ * composing is capped; the message sent, and its echo, are whole.
+ */
+export function fitRows(rows: readonly string[], room: number, opts: ViewOpts): string[] {
+  if (room < 1) throw new Error(`fitRows: room for ${room} rows — the caller keeps at least one, for the count`);
+  const tall = (r: string): number => rowsAt(r, opts.width);
+  if (rows.reduce((n, r) => n + tall(r), 0) <= room) return [...rows];
+  let used = 1;
+  let from = rows.length;
+  while (from > 0 && used + tall(rows[from - 1]!) <= room) used += tall(rows[--from]!);
+  const hidden = rows.slice(0, from).reduce((n, r) => n + tall(r), 0);
+  return [railOf(opts) + (opts.dim ?? plain)(`… +${hidden} more row${hidden === 1 ? "" : "s"} above`), ...rows.slice(from)];
+}
+
+/**
  * A whole message on the rail, as the agent receives it: blank runs folded, each paste inline at its
  * placeholder (one never mentioned in the text — pasted onto a line that was otherwise empty — goes at
  * the end, as it does on the wire).
  */
 export function railMessage(body: string, blocks: readonly PasteBlock[], opts: ViewOpts): string[] {
-  const out: string[] = [];
-  for (const line of foldBlanks(body.split("\n"))) out.push(...railLine(line, blocks, opts));
-  for (const b of blocks) if (!body.includes(b.placeholder)) out.push(...pasteRows(b, opts).map((r) => railOf(opts) + r));
-  return out;
+  return [...foldBlanks(body.split("\n")).flatMap((line) => railLine(line, blocks, opts)), ...strayPastes(body, blocks, opts)];
+}
+
+/** The rail rows of every paste `text` never mentions — they ride along at the end of the message all the same. */
+export function strayPastes(text: string, blocks: readonly PasteBlock[], opts: ViewOpts): string[] {
+  return blocks.filter((b) => !text.includes(b.placeholder)).flatMap((b) => pasteRows(b, opts).map((r) => railOf(opts) + r));
+}
+
+/**
+ * A message you sent, read back from the wire (the earlier block, another session's echo), under its
+ * `header`: one row when it is one line with no paste, else the header with the message on the rail.
+ */
+export function saidRows(header: string, sent: { body: string; blocks: readonly PasteBlock[] }, opts: ViewOpts): string[] {
+  const rows = railMessage(sent.body, sent.blocks, opts);
+  return rows.length === 1 && !sent.blocks.length ? [`${header} ${sent.body.trim()}`] : [header, ...rows];
 }
 
 /** The fence {@link composePastes} writes around each payload — read back so an echo of a SENT message

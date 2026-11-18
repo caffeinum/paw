@@ -107,7 +107,7 @@ assert(block.lines === 5 && block.chars === "alpha\nbeta\ngamma\ndelta\nepsilon"
 
 // --- compose-view: how a draft / sent message is SHOWN (src/compose-view.ts) ------------------------
 {
-  const { foldBlanks, parseComposed, pasteRows, RAIL, railLine, railMessage, railPastes, wrapLine } = await import("../src/compose-view.ts");
+  const { foldBlanks, parseComposed, pasteRows, RAIL, railLine, railMessage, railPastes, saidRows, strayPastes, wrapLine } = await import("../src/compose-view.ts");
   const opts = { width: 40 };
   assert(JSON.stringify(foldBlanks(["", "a", "", "", " ", "b", "", ""])) === '["a","","b"]', "foldBlanks: leading/trailing blanks dropped, a run of blanks becomes one");
   const w = wrapLine("the quick brown fox jumps over the lazy dog", 16);
@@ -143,6 +143,13 @@ assert(block.lines === 5 && block.chars === "alpha\nbeta\ngamma\ndelta\nepsilon"
   const unmentioned = railMessage("fix it", [p1], opts);
   assert(unmentioned[0] === `${RAIL}fix it` && unmentioned[1].includes("📋"), "railMessage: a paste the text never mentions goes at the end, as it does on the wire");
   assert(railMessage("a\nb", [], { width: 40, rail: "│ " })[0] === "│ a", "railMessage: the rail is the caller's (the echo's painter indents for it)");
+  assert(strayPastes("fix it", [p1], opts).length === 3 && strayPastes("[Pasted text #1] fix", [p1], opts).length === 0, "strayPastes: only the pastes the text never mentions (they ride along all the same)");
+  // A message read back (the earlier block, the cross-session echo) is laid out at the width it is painted
+  // at: stored laid out, a redraw after a resize wrapped its rows off the rail (2026-11-18).
+  const words = `two ${Array.from({ length: 30 }, (_, i) => `word${String(i).padStart(2, "0")}`).join(" ")} end`;
+  const said = (width: number) => saidRows("you → echoer:", { body: `one\n${words}`, blocks: [] }, { width: width - 2, rail: "│ " });
+  assert(said(120).length === 4 && said(60).length > 4 && said(60).slice(1).every((r) => r.startsWith("│ ") && r.length <= 58) && said(60).slice(1).map((r) => r.slice(2)).join(" ") === `one ${words}`, "saidRows: the header, then the message on the rail wrapped at the width given — words whole");
+  assert(JSON.stringify(saidRows("you → echoer:", { body: "hi", blocks: [] }, opts)) === '["you → echoer: hi"]' && saidRows("you → echoer:", { body: "hi", blocks: [p1] }, opts).length === 5, "saidRows: one short line with no paste is one row; a paste puts it on the rail");
 
   // An echo of a SENT message reads the wire text back: the fences become pastes again.
   const wire = composeMessageLike(composePastes(body, [big]));
@@ -152,6 +159,105 @@ assert(block.lines === 5 && block.chars === "alpha\nbeta\ngamma\ndelta\nepsilon"
   const two = parseComposed(composePastes("a [Pasted text #1] b [Pasted text #2]", [p1, makeBlock(2, "x\n--- not a fence ---\ny")]));
   assert(two.body === "a [Pasted text #1] b [Pasted text #2]" && two.blocks[1].text === "x\n--- not a fence ---\ny", "parseComposed: several pastes, each payload intact");
   assert(parseComposed("just text\n--- x ---").body === "just text\n--- x ---" && parseComposed("just text").blocks.length === 0, "parseComposed: text without fences passes through untouched");
+}
+
+// --- the draft is INPUT: laid out whole on every paint, capped to the screen (2026-11-17) -----------------
+{
+  const { draftRows, fitRows, RAIL } = await import("../src/compose-view.ts");
+  const { displayPos, echoRows, fitPainted, rowsAt, wrappedWidth } = await import("../src/width.ts");
+  const opts = { width: 40 };
+  const p1 = makeBlock(1, "pasted row one\npasted row two\npasted row three");
+  const head = "you → echoer> ";
+  const lines = ["1. corrcet", "2. looks good", "3. okay but [Pasted text #1] ", "4. the las"];
+  const rows = draftRows(head, lines, [p1], opts);
+  assert(rows[0] === `${head}1. corrcet` && rows[1] === `${RAIL}2. looks good`, "draftRows: the head row reads like readline's echo (prompt + first line), later lines on the rail");
+  assert(rows[2] === `${RAIL}3. okay but [Pasted text #1] ` && rows[3] === `${RAIL}📋 [Pasted text #1] 3 lines, 46 B` && rows[4] === `${RAIL}  pasted row one`, "draftRows: a paste sits inline, right under the line that mentions it (the operator's screenshot)");
+  assert(rows[rows.length - 1] === `${RAIL}4. the las` && rows.length === 8, "draftRows: the last line closes the block");
+  const onlyPaste = draftRows(head, ["a", "[Pasted text #1]"], [p1], opts);
+  assert(onlyPaste[1] === `${RAIL}📋 [Pasted text #1] 3 lines, 46 B` && !onlyPaste.some((r) => r.endsWith("│ [Pasted text #1]")), "draftRows: a later line that is only a placeholder becomes its 📋 block");
+  const headPaste = draftRows(head, ["[Pasted text #1] fix", "b"], [p1], opts);
+  assert(headPaste[0] === `${head}[Pasted text #1] fix` && headPaste[1]!.includes("📋") && headPaste[headPaste.length - 1] === `${RAIL}b`, "draftRows: the head line's paste goes right under the head row");
+  const live = draftRows(head, lines.slice(0, 3), [p1], opts);
+  const sent = draftRows(head, [...lines.slice(0, 3), "4. the last line"], [p1], opts);
+  assert(JSON.stringify(sent.slice(0, live.length)) === JSON.stringify(live), "draftRows: the live draft is a prefix of the echo it becomes — the scrollback shows what was composed");
+  let threw = "";
+  try { draftRows(head, [], [], opts); } catch (e) { threw = (e as Error).message; }
+  assert(threw.includes("at least one line"), "draftRows: an empty draft fails loud");
+
+  assert(rowsAt("x".repeat(40), 40) === 1 && rowsAt("x".repeat(41), 40) === 2 && rowsAt("", 40) === 1 && rowsAt("\x1b[2mab\x1b[0m", 1) === 2, "rowsAt: rows the terminal wraps a row onto (ANSI takes none, an empty row still one)");
+  // A wide glyph that would start in the last column wraps whole, leaving that column empty (the S25
+  // head row: 14-col prompt + `a` + 52×界 + `b` at 60 cols is THREE rows, not ceil(120/60) = 2).
+  const cjk = `${head}a${"界".repeat(52)}b`;
+  assert(wrappedWidth("x" + "界".repeat(2), 4) === 6 && wrappedWidth("界".repeat(2), 4) === 4 && rowsAt(cjk, 60) === 3, "rowsAt: a wide glyph starting in the last column wraps whole onto the next row");
+  // readline gives a line that ends exactly at the edge a row of its own for the caret (kRefreshLine's
+  // forced space) — its echo is one row taller than the text (the S12/S24 doubled head row).
+  assert(echoRows("x".repeat(59), 60) === 1 && echoRows("x".repeat(60), 60) === 2 && echoRows("x".repeat(61), 60) === 2 && echoRows("", 60) === 1, "echoRows: readline's echo of a line exactly the width takes the extra caret row");
+  assert(echoRows(`${head}${"x".repeat(44)}A\\`, 60) === 2 && echoRows(`${RAIL}${"y".repeat(54)}B\\`, 60) === 2 && echoRows(`${cjk}\\`, 60) === 3, "echoRows: the exact-width `\\` lines and the wide head row of the adversarial runs");
+  const ten = Array.from({ length: 10 }, (_, i) => `${RAIL}row ${i + 1}`);
+  assert(JSON.stringify(fitRows(ten, 10, opts)) === JSON.stringify(ten), "fitRows: a draft that fits is shown whole");
+  const capped = fitRows(ten, 4, opts);
+  assert(capped.length === 4 && capped[0] === `${RAIL}… +7 more rows above` && capped[3] === `${RAIL}row 10` && capped[1] === `${RAIL}row 8`, "fitRows: taller than the room → its LAST rows under one `… +N more rows above` row");
+  const wrapped = [`${head}${"w".repeat(60)}`, `${RAIL}b`, `${RAIL}c`];
+  const fitW = fitRows(wrapped, 3, opts);
+  assert(fitW.length === 3 && fitW[0] === `${RAIL}… +2 more rows above` && fitW[2] === `${RAIL}c`, "fitRows: a wrapped head row counts every terminal row it takes");
+  assert(fitW.reduce((n, r) => n + rowsAt(r, 40), 0) <= 3, "fitRows: what it returns fits in the room");
+  const wide = fitRows([cjk, `${RAIL}s25 two`], 3, { width: 60 });
+  assert(wide.length === 2 && wide[0] === `${RAIL}… +3 more rows above`, "fitRows: a wide glyph wrapping at the edge counts its extra row");
+  const one = fitRows(ten, 1, opts);
+  assert(one.length === 1 && one[0] === `${RAIL}… +10 more rows above`, "fitRows: room for one row → the count alone");
+  assert(fitRows(["only"], 1, { width: 40, dim: (s) => `<${s}>` })[0] === "only" && fitRows(ten, 2, { width: 40, dim: (s) => `<${s}>` })[0] === `<${RAIL}><… +9 more rows above>`, "fitRows: the count row is dimmed like the rail");
+  threw = "";
+  try { fitRows(ten, 0, opts); } catch (e) { threw = (e as Error).message; }
+  assert(threw.includes("room for 0 rows"), "fitRows: no room at all fails loud (the caller keeps one)");
+
+  // A tab moves to the next multiple of 8, as readline counts it (2026-11-18: counted as 0 columns, a
+  // 120-column `\t`-filled line was one row to paw and two to readline — the erase left a stale head row).
+  // Measured in tmux 3.8 at 60 columns (cursor after 59 × `x` + the glyph): a glyph wide only by its VS16
+  // is placed narrow, then widened — in the last column it stays (60); one wide by itself wraps whole (62).
+  const tmux59 = (g: string) => wrappedWidth(`${"x".repeat(59)}${g}`, 60);
+  assert(tmux59("⚠️") === 60 && tmux59("❤️") === 60 && wrappedWidth(`${"x".repeat(58)}⚠️`, 60) === 60 && tmux59("✅") === 62 && tmux59("界") === 62 && tmux59("👩‍💻") === 62 && wrappedWidth(`${"x".repeat(59)}⚠️y`, 60) === 61, "wrappedWidth: a VS16 glyph in the last column stays there; an emoji or CJK glyph wraps whole (tmux's own layout)");
+  assert(wrappedWidth("a\tb", 120) === 9 && wrappedWidth("\t", 120) === 8 && rowsAt(`${RAIL}${"a\t".repeat(15)}end`, 120) === 2, "wrappedWidth: a tab advances to the next tab stop");
+  // readline lays the line out by paw's count (chat hands it displayPos as its _getDisplayPos): its own put
+  // `❤️` at 1 column and `👩‍💻` at 4, so on a row of them its refresh climbed too few rows, left stale rows
+  // and the hint row in the line, and put the caret short of the text (2026-11-18). With the hook, readline
+  // agrees with the terminal everywhere — VS16/ZWJ/flags/keycaps/marks — and echoRows with readline.
+  const { createInterface } = await import("node:readline");
+  const { PassThrough, Writable } = await import("node:stream");
+  const emoji = ["❤️", "⚠️ warn", "👩‍💻 ok", "🏳️‍🌈", "👍🏽", "🇺🇸", "1️⃣", "e\u0301", "a\u200bb", "\u00ad", "ｱ한"];
+  for (const cols of [60, 120]) {
+    const out = Object.assign(new Writable({ write: (_c, _e, cb) => cb() }), { isTTY: true, columns: cols, rows: 40 });
+    const r = createInterface({ input: new PassThrough(), output: out, terminal: true });
+    const hooked = r as unknown as { _getDisplayPos: (s: string) => { cols: number; rows: number } };
+    hooked._getDisplayPos = (s) => displayPos(s, cols);
+    const at = (l: string): { rows: number; cols: number } => {
+      r.setPrompt(l);
+      return r.getCursorPos();
+    };
+    const edges = emoji.flatMap((e) => [e, `${"x".repeat(cols - 2)}${e}`, `${"x".repeat(cols - 1)}${e}`, `${"x".repeat(cols - 4)}${e}`]);
+    const lines = [`${RAIL}${"a\t".repeat(15)}end`, `${head}a${"界".repeat(52)}b`, "x".repeat(cols), "x".repeat(cols - 1), `${head}\tx\t${"y".repeat(70)}\t`, ...edges];
+    const off = lines.filter((l) => echoRows(l, cols) !== at(l).rows + 1 || wrappedWidth(l, cols) !== at(l).rows * cols + at(l).cols);
+    assert(off.length === 0, `displayPos: readline, given it, lays every line out as the terminal does, and echoRows agrees at ${cols} columns (off: ${JSON.stringify(off)})`);
+    r.close();
+  }
+  assert(JSON.stringify(displayPos("ab\ncd", 60)) === '{"cols":2,"rows":1}' && JSON.stringify(displayPos(`${"x".repeat(60)}\nab`, 60)) === '{"cols":2,"rows":1}' && JSON.stringify(displayPos("\n", 60)) === '{"cols":0,"rows":1}', "displayPos: a newline ends a row as readline's own count has it (a full row before it adds none)");
+  assert(JSON.stringify(displayPos("x".repeat(70), Infinity)) === '{"cols":70,"rows":0}', "displayPos: no width known (readline's Infinity) → one row");
+  // The caret row: readline writes one for any line ending exactly at the edge — now by the terminal's count.
+  // A `\` line on a 60-column rail ending in `❤️` fills the row (tmux draws it 2 wide): two rows, the caret's
+  // included. `👩‍💻` is 2 columns: 58, one row.
+  const heart = `${RAIL}${"y".repeat(53)}❤️\\`;
+  assert(wrappedWidth(heart, 60) === 60 && echoRows(heart, 60) === 2, "echoRows: a `❤️` that fills the row takes the caret row, like any line ending at the edge");
+  const zwj = `${"x".repeat(56)}👩‍💻`;
+  assert(wrappedWidth(zwj, 60) === 58 && echoRows(zwj, 60) === 1, "echoRows: a ZWJ emoji is one glyph, two columns: short of the edge, one row");
+  assert(echoRows(`${"x".repeat(58)}界`, 60) === 2 && echoRows(`${"x".repeat(59)}界`, 60) === 2, "echoRows: a wide glyph ending at the edge gets the caret row; one wrapped whole gets none");
+
+  // A painted row cut to one terminal row (the ↓ picker at a narrow width: a wrapped row made the area
+  // taller than the room the draft left for it).
+  const dim = (t: string) => `\x1b[2m${t}\x1b[0m`;
+  const row = `  ▸ \x1b[1m\x1b[36mlong-agent-name-x0\x1b[0m ${dim("○ offline — a message wakes it")}`;
+  const cut = fitPainted(row, 44);
+  assert(wrappedWidth(cut, 44) === 44 && cut.endsWith("…\x1b[0m") && cut.includes("\x1b[1m\x1b[36mlong-agent-name-x0\x1b[0m"), "fitPainted: a painted row too wide is cut to the width, its colours intact, `…` at the cut, the colour reset");
+  assert(fitPainted("short", 44) === "short" && fitPainted(row, 120) === row, "fitPainted: a row that fits is left as it is");
+  assert(wrappedWidth(fitPainted(`${"x".repeat(43)}界`, 44), 44) <= 44 && wrappedWidth(fitPainted("a👩‍💻bcdef", 5), 5) <= 5 && fitPainted("a👩‍💻bcdef", 5).includes("👩‍💻"), "fitPainted: a wide glyph at the edge and a ZWJ sequence are cut whole, within the width");
 }
 function composeMessageLike(s: string): string {
   return `${s}\n📷 [Image #1] /tmp/x.png`; // what composeMessage appends after the pastes
