@@ -16,6 +16,7 @@ import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { CONTROL_PROTOCOL_VERSION } from "@cotal-ai/core/control-exchange";
 
 // Short: the hub socket lives under PAW_HOME and unix socket paths are capped at 103 bytes.
 process.env.PAW_HOME = mkdtempSync("/tmp/pawhubchk-");
@@ -239,7 +240,7 @@ ok("shim builds with the system cc", spawnSync(shim, [], { stdio: "ignore" }).st
     ok(`hub survives: ${label}`, !exited);
   };
   const ctl = join(process.env.PAW_HOME!, "c");
-  mkdirSync(ctl, { recursive: true });
+  mkdirSync(ctl, { recursive: true, mode: 0o700 }); // cotal 0.170 binds a control socket only in a private dir
   const env = (name: string, extra: Record<string, string> = {}) => ({
     COTAL_NAME: name,
     COTAL_SPACE: space,
@@ -247,7 +248,9 @@ ok("shim builds with the system cc", spawnSync(shim, [], { stdio: "ignore" }).st
     COTAL_SERVERS: "nats://127.0.0.1:1",
     COTAL_CHANNEL: "1",
     COTAL_CONTROL_SOCKET: join(ctl, `${name}.sock`),
-    COTAL_CONTROL_TOKEN: `t-${name}`,
+    // cotal 0.170's control exchange: a key + protocol version (the bare COTAL_CONTROL_TOKEN is refused).
+    COTAL_CONTROL_KEY: `t-${name}`,
+    COTAL_CONTROL_VERSION: String(CONTROL_PROTOCOL_VERSION),
     ...extra,
   });
   const init = JSON.stringify({ jsonrpc: "2.0", id: 0, method: "initialize", params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "c", version: "0" } } }) + "\n";

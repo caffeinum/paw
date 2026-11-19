@@ -22,6 +22,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createInterface } from "node:readline";
+import { CONTROL_PROTOCOL_VERSION } from "@cotal-ai/core/control-exchange";
 
 const NATS = process.env.NATS_SERVER ?? "nats-server";
 const OUTAGE_MS = Number(process.env.OUTAGE_S ?? 90) * 1000;
@@ -63,7 +64,8 @@ const mcp = spawn(process.execPath, [MCP], {
     COTAL_SPACE: space,
     COTAL_SERVERS: `nats://127.0.0.1:${port}`,
     COTAL_CONTROL_SOCKET: join(home, "ctl.sock"),
-    COTAL_CONTROL_TOKEN: "t".repeat(32),
+    COTAL_CONTROL_KEY: "t".repeat(32),
+    COTAL_CONTROL_VERSION: String(CONTROL_PROTOCOL_VERSION),
     COTAL_CHANNEL: "1",
   },
 });

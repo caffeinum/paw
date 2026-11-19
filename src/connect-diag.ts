@@ -222,14 +222,20 @@ function hostHint(host: string): string {
   return fly ? ` — check \`fly status -a ${fly[1]}\` and the app's memory/CPU metrics` : " — check the broker host's memory/CPU";
 }
 
+/** The probeConnect failures a step-by-step re-check can explain (auth refusals are named before it runs). */
+export type ConnectFailReason = "timeout" | "unreachable" | "tls-unsupported";
+
 /**
  * The short verdict for a screen: a fixed reason word (src/ux.ts) and one plain hint, from the first
  * step of the re-check that failed. {@link explainConnectFailure} is the long form behind --verbose.
  */
-export function connectVerdict(reason: "timeout" | "unreachable", trace: ConnectTrace): { word: string; hint: string } {
+export function connectVerdict(reason: ConnectFailReason, trace: ConnectTrace): { word: string; hint: string } {
   const failed = trace.steps.find((s) => s.outcome !== "ok");
   const host = trace.host;
-  if (!failed) return reason === "timeout" ? { word: "no answer", hint: "the mesh server is stalled (overloaded or out of memory), or it recovered since — retry" } : { word: "hung up", hint: "the mesh server dropped the session (restarting?) — retry" };
+  if (!failed) {
+    if (reason === "tls-unsupported") return { word: "no tls", hint: "the first connect found no TLS there, a re-check did — another listener may answer at that address; retry" };
+    return reason === "timeout" ? { word: "no answer", hint: "the mesh server is stalled (overloaded or out of memory), or it recovered since — retry" } : { word: "hung up", hint: "the mesh server dropped the session (restarting?) — retry" };
+  }
   if (failed.step === "dns") return failed.outcome === "timeout" ? { word: "dns failed", hint: "this machine's network or resolver is down" } : { word: "dns failed", hint: `${host} doesn't resolve on this machine — a wrong address, or this machine's network` };
   if (failed.step === "tcp") {
     if (failed.outcome === "timeout") return { word: "no answer", hint: "the link or the server's host is down, or a firewall drops the traffic" };
@@ -249,11 +255,12 @@ export function connectVerdict(reason: "timeout" | "unreachable", trace: Connect
 }
 
 /**
- * Why a probeConnect `timeout`/`unreachable` happened, from a {@link diagnoseConnect} re-check:
+ * Why a probeConnect `timeout`/`unreachable`/`tls-unsupported` happened, from a {@link diagnoseConnect} re-check:
  * the first failed step and what that step failing means. Says only what the trace shows.
  */
-export function explainConnectFailure(reason: "timeout" | "unreachable", trace: ConnectTrace, timeoutMs: number): string {
-  const head = reason === "timeout" ? `the connect timed out after ${secs(timeoutMs)}` : `the connect failed`;
+export function explainConnectFailure(reason: ConnectFailReason, trace: ConnectTrace, timeoutMs: number): string {
+  const head =
+    reason === "timeout" ? `the connect timed out after ${secs(timeoutMs)}` : reason === "tls-unsupported" ? `the connect found a listener that does not offer the TLS paw requires` : `the connect failed`;
   const ok = timings(trace);
   const before = ok ? `${ok}; then ` : "";
   const failed = trace.steps.find((s) => s.outcome !== "ok");
@@ -267,7 +274,9 @@ export function explainConnectFailure(reason: "timeout" | "unreachable", trace: 
     verdict =
       reason === "timeout"
         ? `${ok} all answered on a re-check, so either the ${secs(timeoutMs)} stall was past TLS, on the authenticated CONNECT — the broker itself is stalled (overloaded or out of memory)${hostHint(trace.host)} — or it recovered between the two tries, so retry`
-        : `${ok} all answered on a re-check, but the NATS connect itself failed past TLS — the broker dropped the session (restarting?), or it recovered between the two tries, so retry`;
+        : reason === "tls-unsupported"
+          ? `${ok} all answered on a re-check, TLS included, so the listener that refused TLS is not the one the re-check reached — another service may share that address, or the broker changed between the two tries; retry`
+          : `${ok} all answered on a re-check, but the NATS connect itself failed past TLS — the broker dropped the session (restarting?), or it recovered between the two tries, so retry`;
   } else if (failed.step === "dns") {
     verdict =
       failed.outcome === "timeout"

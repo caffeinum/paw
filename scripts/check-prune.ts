@@ -10,13 +10,14 @@
  * covers `purgeTestSpace` (test teardown) and the `paw spaces` CLI dry run (deletes nothing).
  */
 import { spawn, spawnSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 process.env.PAW_HOME = mkdtempSync(join(tmpdir(), "paw-prune-home-"));
-process.env.COTAL_HOME = mkdtempSync(join(tmpdir(), "paw-prune-cotal-"));
+// The physical path: cotal 0.170 refuses a Cotal home reached through a symlink (macOS /var → /private/var).
+process.env.COTAL_HOME = realpathSync(mkdtempSync(join(tmpdir(), "paw-prune-cotal-")));
 process.env.PAW_SPACE = "prunetest-current";
 const port = 20000 + Math.floor(Math.random() * 20000);
 process.env.PAW_SERVER = `nats://127.0.0.1:${port}`;

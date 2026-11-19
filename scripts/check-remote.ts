@@ -507,7 +507,7 @@ await ctlNoMgr.close();
 assert(!psNoMgr.ok && /no manager of this machine has registered in remote space/.test(psNoMgr.error ?? ""), `before this machine's manager registered, control refuses to address any manager — ${psNoMgr.error}`);
 assert(localManagerInstanceId("remotetest-s") === undefined, "no local instance id before a manager registered");
 const LOCAL = "a".repeat(26);
-createManagerInstanceIdentity(sroot, "remotetest-s", { instanceId: LOCAL, serveIdentity: newIdentity() });
+createManagerInstanceIdentity(sroot, "remotetest-s", () => ({ instanceId: LOCAL, serveIdentity: newIdentity() }));
 assert(localManagerInstanceId("remotetest-s") === LOCAL, "the local instance id is cotal's persisted manager identity under the record root");
 const ours = { name: "a", id: "UAAA", instanceId: LOCAL, lifecycleUid: "b".repeat(26) };
 const theirs = { name: "x", id: "UXXX", instanceId: "c".repeat(26), lifecycleUid: "d".repeat(26) };

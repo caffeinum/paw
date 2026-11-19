@@ -9,7 +9,7 @@ import { createServer, type Server, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { TLSSocket } from "node:tls";
-import { diagnoseConnect, explainConnectFailure, serverHostPort, type ConnectTrace, type StepResult } from "../src/connect-diag.ts";
+import { connectVerdict, diagnoseConnect, explainConnectFailure, serverHostPort, type ConnectTrace, type StepResult } from "../src/connect-diag.ts";
 
 let failures = 0;
 function assert(cond: boolean, msg: string, got?: string): void {
@@ -77,6 +77,14 @@ console.log("explainConnectFailure");
 
   const past = explainConnectFailure("unreachable", fly([ok("dns", 3), ok("tcp", 20), ok("info", 22), ok("tls", 50)]), 10_000);
   assert(past.includes("the NATS connect itself failed past TLS"), "unreachable but every step answers", past);
+
+  // cotal ≥0.145 probeConnect names a listener without the required TLS `tls-unsupported` (it was `unreachable`).
+  const noTls = explainConnectFailure("tls-unsupported", fly([ok("dns", 3), ok("tcp", 20), ok("info", 22), { step: "tls", ms: 0, outcome: "not-offered" }], { info: { tlsRequired: false, authRequired: false } }), 10_000);
+  assert(noTls.startsWith("the connect found a listener that does not offer the TLS paw requires.") && noTls.includes("does not offer TLS, and paw requires TLS"), "tls-unsupported: the probe's reason and the re-check agree", noTls);
+  const noTlsPast = explainConnectFailure("tls-unsupported", fly([ok("dns", 3), ok("tcp", 20), ok("info", 22), ok("tls", 50)]), 10_000);
+  assert(noTlsPast.includes("TLS included, so the listener that refused TLS is not the one the re-check reached"), "tls-unsupported but the re-check got TLS", noTlsPast);
+  assert(connectVerdict("tls-unsupported", fly([ok("dns", 3), ok("tcp", 20), ok("info", 22), { step: "tls", ms: 0, outcome: "not-offered" }])).word === "no tls", "tls-unsupported verdict word: no tls");
+  assert(connectVerdict("tls-unsupported", fly([ok("dns", 3), ok("tcp", 20), ok("info", 22), ok("tls", 50)])).word === "no tls", "tls-unsupported, re-check through TLS: still no tls, never a guessed hung up");
 
   const other = explainConnectFailure("timeout", { host: "mesh.example.com", port: 4222, address: "10.0.0.2", steps: [ok("dns", 1), ok("tcp", 2), { step: "info", ms: 3000, outcome: "timeout" }], stepMs: 3000 }, 10_000);
   assert(other.includes("check the broker host's memory/CPU") && !other.includes("fly"), "non-fly host: generic host hint", other);
