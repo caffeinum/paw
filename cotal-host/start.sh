@@ -13,6 +13,9 @@ lego run --path "$ACME" --accept-tos --tls --domains "$PUBLIC_HOST"
 grep -q " $PUBLIC_HOST\$" /etc/hosts || echo "127.0.0.1 $PUBLIC_HOST" >> /etc/hosts
 # Process records from the previous boot point at pids of a dead container.
 rm -f /data/cotal/.cotal/*.pid /data/cotal/.cotal/*.pid.identity
+# cotal >= 0.100: the root's maintenance lock names the previous container's pid, which a fresh boot
+# can recycle (then `up` refuses LIFECYCLE_BLOCKED). Nothing else in this container holds it yet.
+rm -f /data/cotal/.cotal/maintenance/lock.json /data/cotal/.cotal/maintenance/lock-reaper.json
 
 # Renew twice a day; nats-server re-reads cert_file/key_file on SIGHUP.
 ( while sleep 43200; do
