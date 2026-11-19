@@ -223,7 +223,7 @@ agent holds or can mint it (`check:remote` fails if any other src module names i
   instead of an empty view that looks complete.
 - A failed sign/dial/read is a red line in the view (`! couldn't load kit's messages with other peers: …`,
   `! messages view: couldn't tap …`), never a silent empty view. An agent with >16 ids gets a yellow note
-  naming how many of its oldest aren't read. Live team2027 is untested (hermetic `check:remote`/`check:chat`
+  naming how many of its oldest aren't read — only when one of those was last seen inside the view's window. Live team2027 is untested (hermetic `check:remote`/`check:chat`
   with the real signer code and a faked dial). cotal feature request filed for a first-class scoped observer
   (`paw cotal feedback`). [chat.md#views](chat.md#views)
 

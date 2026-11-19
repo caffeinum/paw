@@ -194,14 +194,27 @@ export function remoteNoPastIdsNote(agent: string, space: string): string {
 export const MAX_PEER_IDS = 16;
 
 /** Pure: the principals to read for `ids` — every id that parses, live ones (not in the ledger) first,
- *  then by the ledger's `last` seen, capped at {@link MAX_PEER_IDS}. An id that is not an
- *  `<owner>.<actor>` principal fails loud: under auth every card id is one. */
-export function peerPrincipals(ids: Iterable<string>, ledger: Ledger): { principals: Principal[]; omitted: number } {
+ *  then by the ledger's `last` seen, capped at {@link MAX_PEER_IDS}. `omittedLastSeen` = when the newest
+ *  id left out was last seen (Infinity: a live one). An id that is not an `<owner>.<actor>` principal
+ *  fails loud: under auth every card id is one. */
+export function peerPrincipals(ids: Iterable<string>, ledger: Ledger): { principals: Principal[]; omitted: number; omittedLastSeen?: number } {
   const all = [...new Set(ids)];
   for (const id of all) if (!parsePrincipalKey(id)) throw new Error(`paw: "${id}" is not an <owner>.<actor> principal — can't scope a chat-peers cred to it`);
   const rank = (id: string): number => (ledger[id] ? ledger[id]!.last : Infinity);
   const sorted = all.sort((a, b) => rank(b) - rank(a));
-  return { principals: sorted.slice(0, MAX_PEER_IDS).map((id) => parsePrincipalKey(id)!), omitted: Math.max(0, sorted.length - MAX_PEER_IDS) };
+  const left = sorted.slice(MAX_PEER_IDS);
+  return {
+    principals: sorted.slice(0, MAX_PEER_IDS).map((id) => parsePrincipalKey(id)!),
+    omitted: left.length,
+    ...(left.length ? { omittedLastSeen: rank(left[0]!) } : {}),
+  };
+}
+
+/** Pure: may ids left out (the newest of them last seen at `lastSeen`) hold a message a view of `windowMs`
+ *  shows? An id last seen before the window opened can't — evals-intern had 29 ids, the 13 left out last
+ *  seen 5–19 days before a 24h view, and the warning said messages on them "aren't read" (2026-11-18). */
+export function omittedInView(lastSeen: number, windowMs: number | undefined, now: number): boolean {
+  return windowMs === undefined || lastSeen >= now - windowMs;
 }
 
 /** Pure: everything that is ONE agent's own traffic, per id — DMs addressed to it, DMs it sent, and its
@@ -243,7 +256,7 @@ function frameMessage(subject: string, data: unknown): (CotalMessage & RawMsg) |
  * REMOTE: a fresh `chat-peers` cred per call (signed from the space signer the operator holds, 5 min),
  * holding only name+filter-pinned consumers on {@link agentTrafficReads} for every id the agent has had.
  * A recipient is named from the stream's senders, paw's ledger, then the caller's live roster (a peer
- * that only ever received has no name in the stream). `onOmitted` hears how many older ids were left out.
+ * that only ever received has no name in the stream). `onOmitted` hears how many older ids were left out, and when the newest of them was last seen.
  */
 export async function readPeerTraffic(
   ep: CotalEndpoint,
@@ -252,7 +265,7 @@ export async function readPeerTraffic(
   agent: string,
   knownIds: ReadonlySet<string>,
   rosterName: (id: string) => string | undefined,
-  o: { onOmitted?: (n: number) => void; deps?: PeerDeps } = {},
+  o: { onOmitted?: (n: number, lastSeen: number) => void; deps?: PeerDeps } = {},
 ): Promise<PeerMsg[]> {
   const ledger = cachedLedger(space);
   const key = agent.toLowerCase();
@@ -290,12 +303,12 @@ async function readAgentTrafficRemote(
   agent: string,
   agentIds: ReadonlySet<string>,
   ledger: Ledger,
-  o: { onOmitted?: (n: number) => void; deps?: PeerDeps },
+  o: { onOmitted?: (n: number, lastSeen: number) => void; deps?: PeerDeps },
 ): Promise<Array<CotalMessage & RawMsg>> {
   const deps = o.deps ?? realDeps;
-  const { principals, omitted } = peerPrincipals(agentIds, ledger);
+  const { principals, omitted, omittedLastSeen } = peerPrincipals(agentIds, ledger);
   if (!principals.length) throw new Error(`no mesh id is known for ${agent} on ${space} — nothing to read its messages by`);
-  if (omitted) o.onOmitted?.(omitted);
+  if (omitted) o.onOmitted?.(omitted, omittedLastSeen!);
   const reads = agentTrafficReads(space, principals);
   const names = peerConsumerNames(space, agent, randomUUID(), reads.length);
   const creds = await deps.sign(space, "chat-peers", newIdentity(), pinnedReadGrants(reads.map((r, i) => ({ ...r, name: names[i]! }))), PEERS_TTL_SEC);
@@ -331,15 +344,15 @@ export async function tapAgentTraffic(
   handler: TapHandler,
   onError: (e: Error) => void,
   onGap: (connected: boolean) => void,
-  o: { deps?: PeerDeps; tickMs?: number; onOmitted?: (n: number) => void } = {},
+  o: { deps?: PeerDeps; tickMs?: number; onOmitted?: (n: number, lastSeen: number) => void } = {},
 ): Promise<() => Promise<void>> {
   if (!isRemoteSpace(space)) return async () => {};
   const deps = o.deps ?? realDeps;
   let stopped = false;
   const open = async (): Promise<{ nc: NatsConnection; creds: string }> => {
-    const { principals, omitted } = peerPrincipals(ids(), cachedLedger(space));
+    const { principals, omitted, omittedLastSeen } = peerPrincipals(ids(), cachedLedger(space));
     if (!principals.length) throw new Error(`no mesh id is known for ${agent} on ${space} — nothing to tap its messages by`);
-    if (omitted) o.onOmitted?.(omitted);
+    if (omitted) o.onOmitted?.(omitted, omittedLastSeen!);
     const subjects = agentTrafficReads(space, principals).map((r) => r.filter);
     const creds = await deps.sign(space, "chat-peers", newIdentity(), tapGrants(subjects), PEERS_TTL_SEC);
     const nc = await deps.connect({

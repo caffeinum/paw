@@ -802,7 +802,8 @@ column (CHA), so a copied line carries no run of blanks. The Painter decides whe
     (`ensurePeerTap` in chat.ts, `tapAgentTraffic` in chat-own.ts), subscribe-only, re-signed before expiry
     make-before-break; a retarget in the messages view retires it, and coming back to that agent reads
     the time it was off back (`peerTapOffAt` → `catchUpPeers(since, [agent])`). Failures stay loud (red
-    line); >16 ids = a yellow note. The ids come from paw's ledger, which the mailbox keeps on remote
+    line); >16 ids = a yellow note, only when one of the ids left out was last seen inside the view's window (24h by
+    default; `omittedInView` — evals-intern's 13 skipped ids, last seen 5–19 days earlier, raised it for nothing, 2026-11-18). The ids come from paw's ledger, which the mailbox keeps on remote
     spaces since the team2027 empty-read miss (src/ledger-recorder.ts); with none of the target's earlier
     ids known, a yellow `! only <agent>'s current mesh id is known …` sits under the summary. Anycasts aren't read remotely. The old yellow "not readable" note and
     `remotePeersNote` are gone.
