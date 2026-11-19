@@ -47,7 +47,7 @@
  *   editing;  AV. a wrapping line of `⚠️`;  AW. the picker over a tall draft at 44 columns;  AX. piped, a
  *   refused multi-line message;  AY. the not-found chooser's pick over a draft.
  * After #135 (the operator, 2026-11-18): AZ. a line typed in ONE chunk, then the `[N elsewhere]` badge redrawn
- *   under it (and a chunk ending at the right edge).
+ *   under it (and a chunk ending at the right edge). BA. Enter on an empty line stacks no prompt rows.
  * Every wire DM is asserted byte for byte (check:chat-tty 13 pins the same format).
  * Teardown always runs: tmux kill-server, echoer stop, `paw down`, purgeTestSpace, the space dir.
  */
@@ -1454,6 +1454,29 @@ async function main(): Promise<void> {
     } finally {
       await other.stop();
     }
+  }
+
+  // BA. Enter on an empty line: readline moved below the prompt and chat drew a fresh one there, so each
+  //     Enter left another empty `you → echoer>` row above it (operator, 2026-11-18). Spaces only are
+  //     no line either.
+  {
+    await startChat(40, { args: "@echoer --history 0", ready: /^you → echoer> ?$/ });
+    await sleep(800);
+    const before = screen();
+    for (let i = 0; i < 3; i++) {
+      key("Enter");
+      await sleep(250);
+    }
+    type("   ");
+    key("Enter");
+    await sleep(500);
+    const after = screen();
+    const prompts = (l: string[]) => l.filter((r) => r.startsWith("you → echoer>")).length;
+    ok("BA: empty Enters and a spaces-only line leave ONE prompt, the hint row under it, nothing above moved", prompts(after) === 1 && /^you → echoer> ?$/.test(after[after.length - 2] ?? "") && JSON.stringify(after.slice(0, -1)) === JSON.stringify(before.slice(0, -1)), shown(after.slice(-6)));
+    type("ba-one");
+    const { wire, lines } = await send();
+    ok("BA: …and the next line goes out once, shown once", JSON.stringify(wire) === JSON.stringify(["ba-one"]) && lines.filter((l) => l.includes("ba-one")).length === 1 && prompts(lines) === 2, shown(lines.slice(-8)));
+    await quit();
   }
 }
 

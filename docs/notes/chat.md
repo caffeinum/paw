@@ -471,7 +471,7 @@ decides how long the `◌` loaders stay up.
   `outbound` entries laid out at the paint width, the stamp and receipt, redraw == live, `pickerOpener`;
   source pins on the helpers, the mutes, `CLEAR_BELOW`, the picker, `giveBack`), and the real-terminal
   **`check:chat-draft`**: tmux on a private socket, an isolated space, a raw `echoer`, every screen read
-  with its scrollback, every wire DM byte for byte — scenarios A–AZ, each a screen a tester or reviewer
+  with its scrollback, every wire DM byte for byte — scenarios A–BA, each a screen a tester or reviewer
   saw wrong.
 - **A line typed in one chunk (2026-11-18).** The operator dictated a long message in `paw chat @code-review`;
   another agent's DM bumped the `[15 elsewhere]` badge while it sat in the input, and the line's first five
@@ -486,6 +486,13 @@ decides how long the `◌` loaders stay up.
   several code points (`⚠️`, a ZWJ emoji, an accent): keyed one at a time, a row's refresh fell between its
   halves and the terminal drew the first half alone (AV). Main before #135 did the same;
   check:chat-draft AZ (a chunk under a new badge, and one ending exactly at the right edge).
+- **An empty Enter (2026-11-18).** Enter on an empty line (or spaces only) stacked one more empty
+  `you → x>` row per press: readline's `clearLine` writes `\r\n` below the echoed line, and the line handler
+  then prompted on that new row. Outside a draft, the handler now climbs back over the echoed line
+  (`echoRows`, so a spaces-only line that wrapped counts every row) and lets the prompt's refresh redraw it in
+  place: the screen is as it was, so the painter's side and trailing blank stay as they were too. The wake
+  gate's restart question still takes that Enter as its "no" (the row stays then). The beads view repaints
+  over it anyway. check:chat-draft BA.
 
 ## earlier block
 
