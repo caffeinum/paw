@@ -88,11 +88,12 @@ Moved verbatim from CLAUDE.md (2026-10-02 split). Index: [CLAUDE.md](../../CLAUD
   servers record which claude listed their tools. Proves: alice (`--only`) has the server, bob doesn't
   but keeps the shared one, `only --all` restarts nobody and names bob, and a respawned bob gets it.
   ~2min. See [cli.md#paw-mcp](cli.md#paw-mcp).
-  `scripts/check-kv-consumer-perms.ts` (`pnpm check:kv-consumer-perms`) — a private JWT + TLS broker: each
-  KV-watching cotal role (agent, observer, admin, supervisor) rebuilds its watch with no Publish Violation
-  and no leftover consumer under the patched core, the unpatched grant reproduces both, and the patched cred
-  still cannot touch CHAT/DM/manager-KV consumers or purge a stream. ~5s. See
-  [cotal-dependency.md#kv-watch-consumer-delete-patch](cotal-dependency.md#kv-watch-consumer-delete-patch).
+  `scripts/check-kv-consumer-perms.ts` (`pnpm check:kv-consumer-perms`) — a private JWT broker, cotal 0.170
+  unpatched: no KV-watching role (agent, observer, admin, supervisor) holds a stream-wide CONSUMER.DELETE on
+  the presence/channels/membership KV (#691), a RAW nats.js watch rebuild on a minted agent cred still logs
+  the Publish Violation, and a real `CotalEndpoint` refuses the same delete of its own watch consumer locally
+  (#4123) so the broker logs nothing. ~2s. See [cotal-dependency.md#cotal-01700](cotal-dependency.md#cotal-01700)
+  (the 0.100 patch it replaced: [#kv-watch-consumer-delete-patch](cotal-dependency.md#kv-watch-consumer-delete-patch)).
   `scripts/check-office.ts` (`pnpm check:office`) — the agent-office bridge: mapping, link file, engine against a
   fake office; a real-office section when `PAW_OFFICE_TEST_URL` + `PAW_OFFICE_TEST_ADMIN_KEY` are set.
   `scripts/e2e-office.ts` (same env) — isolated stack + stub agents through the mailbox's bridge into a real

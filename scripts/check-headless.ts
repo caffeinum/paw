@@ -43,7 +43,9 @@ const tui = {
   confirm: "WARNING: Loading development channels",
   confirmBefore: [{ prompt: "❯ No, exit\nYes, I trust this folder", key: "Down" as const }],
   confirmReady: ["? for shortcuts"],
-  control: { path: "/c", token: "t" },
+  confirmBlockers: [{ prompt: "Choose the text style", reason: "first-run setup" }],
+  confirmNotice: "messages from server:cotal inject directly in this session",
+  control: { path: "/c", token: "t", version: 1 },
 };
 const hl = headlessLaunch(tui, "/d/a");
 ok("command is /bin/sh -c HEADLESS_SH", hl.command === "/bin/sh" && hl.args[0] === "-c" && hl.args[1] === HEADLESS_SH);
@@ -56,6 +58,8 @@ ok("drops confirm, keeps env + control", hl.confirm === undefined && hl.env?.COT
 ok("drops confirmBefore with it (cotal's runtimes refuse one without the other)", hl.confirmBefore === undefined);
 // cotal ≥0.85: `confirmReady` (the input-screen texts) is refused without a confirm too.
 ok("drops confirmReady with it (cotal ≥0.85 refuses it without a confirm)", hl.confirmReady === undefined);
+// cotal 0.170: `confirmBlockers` requires confirm too, and `confirmNotice` is read only after it.
+ok("drops confirmBlockers and confirmNotice with it (cotal 0.170 refuses blockers without a confirm)", hl.confirmBlockers === undefined && hl.confirmNotice === undefined);
 ok("refuses an initial prompt", throws(() => headlessLaunch({ ...tui, args: ["hello", ...tui.args] }, "/d"), /initial prompt/));
 ok("refuses a claudeArgs -p", throws(() => headlessLaunch({ ...tui, args: [...tui.args, "-p"] }, "/d"), /sets -p itself/));
 ok("refuses a launch without the mesh marker", throws(() => headlessLaunch({ ...tui, args: ["--model", "x"] }, "/d"), /dev-channels/));

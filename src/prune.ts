@@ -21,6 +21,7 @@ import { connect } from "@nats-io/transport-node";
 import { jetstreamManager } from "@nats-io/jetstream";
 import {
   aclBucket,
+  anycastBucket,
   artifactBucket,
   channelBucket,
   chatStream,
@@ -29,6 +30,7 @@ import {
   dlvStream,
   dmStream,
   endpointPlaneStreamNames,
+  eventPayloadStream,
   inboxStream,
   isTransferStream,
   managerBucket,
@@ -47,6 +49,7 @@ import { DEFAULT_SPACE, resolveSpace } from "./space.ts";
 export function spaceStreamNames(space: string): string[] {
   return [
     chatStream(space),
+    eventPayloadStream(space),
     dmStream(space),
     taskStream(space),
     inboxStream(space),
@@ -56,6 +59,7 @@ export function spaceStreamNames(space: string): string[] {
     `KV_${membersBucket(space)}`,
     `KV_${aclBucket(space)}`,
     `KV_${membershipBucket(space)}`,
+    `KV_${anycastBucket(space)}`,
     `KV_${deliveryBucket(space)}`,
     `KV_${managerBucket(space)}`,
     ...endpointPlaneStreamNames(space),

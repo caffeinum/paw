@@ -2,6 +2,168 @@
 
 Moved verbatim from CLAUDE.md (2026-10-02 split). Index: [CLAUDE.md](../../CLAUDE.md)
 
+## cotal 0.170.0
+
+**Bumped 0.100.0 → 0.170.0 on 2026-11-19, NOT rolled out** (operator's ask for the latest, inside the
+7-day min-release-age window: 0.170.0 published 2026-11-19T04:33Z). `minimumReleaseAgeExclude` lists the
+eleven 0.170.0 packages by EXACT version, replacing 0.100.0's — **delete it after 2026-11-26**. Same
+package set (no renames; core adds `json-schema-library`, drops `acorn`; nats.js deps now pinned exact
+3.4.0); bundled nats-server still `@eplightning/nats-server-*@^2.14.0`, broker floor still 2.12. Every
+package declares node `>=22.10` (0.115.4, `module.flushCompileCache()`); paw's `engines` follows.
+~300 tagged releases (0.100.1–0.170.0); read from `docs/UPGRADING.md` at v0.170.0, the release notes and
+the package diffs.
+
+### The three blockers (each needs the operator's decision)
+
+1. **Issued-authority stores created before 0.111 (SPEC 13.15).** Every manager boot runs
+   `createEndpointStreams` → `ensureIssuedStores` (open and static meshes alike), and since 0.111 that
+   refuses a `KV_cotal_issued_<s>`/`KV_cotal_accepted_<s>` created without `allow_msg_ttl`
+   (`IssuedStoreBeforeRetentionError`). 0.85–0.110 managers created exactly those, so every space a 0.100
+   paw manager has run — the live `paw` space on the local broker AND `team2027` on the Fly broker —
+   holds them, and a 0.170 manager there never comes up. Reproduced on a private broker: a copy of the
+   live 0.100 release booted a manager for a test space, `paw down`, then this branch's `paw status` →
+   "the manager didn't answer … the issued-authority store cotal_issued_<s> was created before bounded
+   retention … never adopted". The reverse is fine (a 0.100 manager boots on 0.170-created stores). The
+   upstream fix is a one-time, per-space migration: stop EVERY issuer and resolver of the space (every
+   manager on every machine), then `cotal up --space <s> --recreate-issued-stores <backup-dir>` (cotal
+   ≥0.113, on a broker that same `up` launches; an embedder calls `removeIssuedStoresBeforeRetention`
+   with an `issued-store-recreate` credential), then respawn every static agent — every generation
+   issued before is refused afterwards. For `paw` that means paw's own local broker restarted through
+   `cotal up` with the flag; for `team2027` the Fly broker runs cotal 0.84, which has no such flag, so
+   either the broker moves to ≥0.113 first (a `cotal-host/` change — merging it redeploys the broker)
+   or paw runs the embedder call with a cred minted from its signer, with this Mac's AND the MacBook's
+   team2027 managers stopped. paw has no command for either yet.
+2. **Persona frontmatter `cwd:` is refused (0.165).** `parseAgentFileSource` throws `"cwd" is not
+   supported in frontmatter` (and `worktree`) instead of sweeping it into `meta`. `cwd:` is paw's folder
+   key in every persona (src/addressing.ts, ~20 files read or write it), so every spawn, wake, restart and
+   `cotal_personas` read fails. The parser is in core's `dist/agent-file.js` AND bundled into the claude
+   connector's `dist/mcp.cjs` (the seat reads `COTAL_AGENT_FILE`), the hermes connector's
+   `dist/launch.js` and the codex connector's `dist/host.js`/`dist/personal.js`. Options: rename paw's
+   key (e.g. `folder:`) with a migration of every persona in every space — an older release then reads
+   every agent as an orphan, so a rollback needs the reverse migration; or a pnpm patch dropping the two
+   keys from the refusal in all five files (the mcp.cjs hunk adds another ~480 KB to the connector patch).
+3. **A managed claude launch needs a declared `cotal` MCP server (0.145, Cotal#5852).**
+   `claudeConnector.buildLaunch` throws unless `~/.claude.json`'s user-scope `mcpServers` or the seat
+   folder's `.mcp.json` names a server `cotal` (cotal: "Claude Code binds the `server:cotal` wake channel
+   only to a server its own configuration declares"; `cotal setup` registers it with `claude mcp add
+   --scope user`). This Mac's `~/.claude.json` has none, so every spawn is accepted by the manager and
+   then dies with nothing in manager.log (paw: "never reached the mesh within 61s — its process is gone").
+   Measured on claude 2.1.328 with paw's launch (`--strict-mcp-config` + the `--mcp-config` cotal entry +
+   dev-channels), isolated space, haiku: with the assert bypassed and NO declaration an idle agent woke
+   on a DM in 4s; with a folder `.mcp.json` declaring `cotal` (assert intact) it woke in 3s. So this
+   claude does not need the declaration for paw's launch shape, but cotal refuses without it. Options: a
+   user-scope `cotal` entry on every machine that spawns claude seats (global: every plain claude session
+   then starts that server too, and its command must point at a path that outlives paw releases), a
+   pnpm patch of the assert, or a paw-side launch shape cotal accepts.
+
+Behind both persona and wake bypasses (a scratch copy of the tree, never committed), the suites that
+those two block pass: `check:sandbox`, `check:sleep`, `check:kit`, `check:personality`, `check:hermes`,
+`check:trust`. So the three blockers are the whole of what stops the claude path; the sandbox item below
+is separate.
+
+### Also broken, not a decision
+
+- **Sandboxed seats' control socket.** 0.169 binds a seat's control socket only in a directory owned by
+  the user with no group/other bits (`assertControlSocketDir`); `SANDBOX_CONTROL_SOCKET` is
+  `/tmp/cotal-control.sock` in the VM, and the VM's `/tmp` is 1777, so a `sandbox: container` seat's
+  cotal MCP refuses to start (`check:hub` hit the same refusal on a 0755 fixture dir). Fix: a 0700 dir
+  made inside the VM before claude starts (e.g. the VM command wrapped in `sh -c 'mkdir -m 700 … && exec
+  "$@"'`). Not done here: it needs a real VM to verify.
+
+### What changed upstream, and what paw did
+
+- **Core patch dropped.** (a) The meta-validator perf fix shipped upstream (0.1xx `ProfileAjv`: one lazily
+  built, process-wide Ajv meta-validates; a custom `$schema` stays on the closure's instance — paw's
+  design). (b) KV watch consumer deletes: upstream KEPT #691 (no stream-wide `CONSUMER.DELETE` on the
+  presence/channels/membership KV for any role) but fixed the symptom differently — #4123: the endpoint
+  wraps its connection's `request` and refuses, locally, a delete of its own recorded watch consumer that
+  its credential's claims exclude, so nats.js's rebuild delete never reaches the broker (no Publish
+  Violation); the consumer is reaped at its 5-minute inactive threshold. #3914: a presence-watch rebind
+  now retires its predecessor (paw's endpoint.js hunk). Seats now read the roster and channel registry
+  with batched Direct Gets on demand (no watch). `check:kv-consumer-perms` is rewritten for this: the
+  grants carry no such delete; a RAW nats.js watch on a minted agent cred still logs the violation (paw
+  runs none); a real `CotalEndpoint`'s refused delete reaches the broker log zero times. Residual: a
+  rebuilt watch's old `oc_…` consumer lives up to 5 minutes, as upstream intends.
+- **Connector patch regenerated** for a MINIFIED `dist/mcp.cjs` (identifiers kept). Both changes are the
+  same as on 0.100: the bundled nats.js `_closed` bounds its goodbye flush to 1s, and the Stop hook reports
+  `working` + `background: …` via `PAW_BACKGROUND_PROBE` (`idleOrBackground`, `clearBackground`,
+  `leaveBackground` inserted after `let promptOpen=false;` inside `createClaudeHandle(deps)`). Made with
+  `pnpm patch` + string replacements that must each match exactly once; a unified diff carries whole
+  lines, and the transport sits on one 537 KB line, so the patch file is 1.3 MB. Re-key it on every bump
+  the same way. `check:nats-reconnect` and `check:sleep` H7 now read the INSTALLED bundle, not the patch
+  text; `scripts/e2e-stop-background.ts` (real mcp.cjs, fake claude) passes all six.
+- **`@nats-io/transport-node@3.4.0` patch kept.** nats.js 3.5.0 (2026-11-16) no longer awaits the flush on
+  a stale link, but cotal 0.170 pins 3.4.0 exactly. Drop both transport hunks when cotal moves to ≥3.5.0.
+- **Launch spec** (claude): new `confirmBlockers` (first-run style picker, login method, bypass warning —
+  never answered; 0.109.14) and `confirmNotice` (once seats). Runtimes refuse blockers without `confirm`,
+  so `headlessLaunch` now drops them with `confirm`/`confirmBefore`/`confirmReady` (`check:headless`).
+  `--allowedTools WebFetch(domain:github.com),…` is added; `--strict-mcp-config` still follows
+  `mcpServersExclusive`; `--permission-mode bypassPermissions` and the trust `confirmBefore` only when the
+  manager passes `cwd` (it does). The seat entry is `dist/seat.cjs` (compile cache under
+  `~/.cotal/compile-cache`, not redirected by `COTAL_HOME`; `NODE_DISABLE_COMPILE_CACHE=1` turns it off).
+- **Control exchange (0.164–0.169).** Seats get `COTAL_CONTROL_KEY` + `COTAL_CONTROL_VERSION` (in the launch
+  material); both ends prove the key and it never crosses the socket; `COTAL_CONTROL_TOKEN` is refused.
+  paw's code passes cotal's env through untouched; the test fixtures (`check:hub`, `e2e-stop-background`,
+  `e2e-mcp-reconnect`) moved to the key + version and `controlCall`, and the fixture dirs are 0700.
+- **`serveClaudeSession`** (the hub): same signature; `runClaudeSeat` added. `check:hub` green.
+- **Manager control contract**: cluster revision 37 → 51 (spawn `eventPayloads` input at 49,
+  `permissionRequests` gone at 51). paw sends neither; `check:rail` green (ps/inspect/despawn/input), and
+  spawns answered in the scratch smoke.
+- **Tool payload publication (0.16x)**: Claude seats with an event plane now publish tool inputs and
+  results on a separate `EVP_<space>` stream by default. On the open local mesh anyone who can reach the
+  broker can read them; persona `eventPayloads: false` (or spawn `--no-event-payloads`) keeps names and
+  timings only. paw changes nothing — operator's call. A space whose broker setup predates it has no
+  `EVP_` stream: the seat warns and keeps going.
+- **Streams**: a space now also has `EVP_<s>` and `KV_cotal_anycast_<s>`; `spaceStreamNames`
+  (src/prune.ts) mirrors cotal's `spaceDeletionStreams` again (check:prune caught the two unowned).
+- **`probeConnect`** gained `tls-unsupported` (a listener without the required TLS);
+  `connectVerdict`/`explainConnectFailure` take it (`check:connect-diag`).
+- **workspace**: `createManagerInstanceIdentity(root, space, mint)` takes a mint FUNCTION (check-remote);
+  a Cotal home reached through a symlink is refused (`PERMISSION_DENIED … use the physical path`) — macOS
+  `tmpdir()` is under `/var` → `/private/var`, so check-boot / check-prune realpath their temp dirs.
+  `~/.cotal` is physical; nothing live is affected.
+- **CLI**: help's usage line names the runner (`pnpm cotal <command> [options]`; check-spawn-env);
+  `supervise` prints a deprecation line (paw keeps it); `cotal up --detach` without `--no-manager` no
+  longer exits 1 under cotald (check:boot's canary NOTE) — paw keeps `--no-manager`. `cotal auth …`
+  (incl. `auth signer`) lives in `@cotal-ai/auth`, which `cotal-ai` ships and cotald never had — paw's
+  hints still point at the standalone `cotal`. The bundled nats-server must not be writable by others
+  (paw's releases are 0755 under `~/.paw`; it passes).
+- **Unchanged**: #1629 self-exec guard (under `PAW_AUTH=1` delivery still can't start via cotald); opt-out
+  telemetry (since 0.109.4 `COTAL_TELEMETRY_DISABLED`/`DO_NOT_TRACK` also reach the agents a manager
+  spawns); persona keys other than `cwd`/`worktree` still sweep into `meta`.
+
+### Verification (isolated: temp PAW_HOME/COTAL_HOME/PAW_COTAL_ROOT, PAW_RELEASE=dev, a private nats-server via PAW_SERVER)
+
+- `pnpm install` from an empty node_modules: both patches apply, no ERR_PNPM_PATCH_FAILED; `pnpm typecheck`.
+- All 76 `check:*` (final run on the pushed tree: 69 green): green except the blocked ones — `check:sandbox`, `check:sleep`, `check:kit`,
+  `check:personality`, `check:hermes` (persona `cwd:`), `check:trust` (wake declaration) — and
+  `check:doctor`'s "restart-free (A1)" pair, which compares the manager graph and package.json with
+  `origin/main` and fails on any PR that needs a full restart, as a bump does. `check:chat`/`check:commands`
+  only fail when the RUNNER sets `PAW_COTAL_ROOT` (they make remote spaces of their own); green without it.
+- `check:rail`, `check:loop`, `check:hub`, `check:boot`, `check:kv-consumer-perms`, `e2e-stop-background`: green.
+- Smoke (scratch copy with the persona + wake bypasses, haiku): cold `paw dm .` → reply in 7s, `paw status`
+  busy → online, idle DM woke it in 3–4s; `paw down` + `purgeTestSpace` left nothing. Unbypassed, the
+  same spawn dies silently (blocker 3). `e2e-hub` (same scratch copy, tmux, 3 haiku agents on shims): all 40
+  steps green — DMs, #general wake, hub SIGKILL gap, full hub+supervisor outage, status, sleep/wake,
+  `paw restart`, `paw down` (the three shim-count failures 0.100 showed are gone).
+- NOT run: `e2e-remote` / `e2e-attach-local` (need `COTAL_BIN` from a `cotal-ai@0.170.0` install), a real
+  sandbox VM, the live cutover.
+
+### Cross-host
+
+- The team2027 broker (cotal-ai 0.84, nats-server 2.14) meets 0.170's floor (2.12) and serves its
+  streams; no client feature needs a newer nats-server. What 0.170 needs from the SPACE is the
+  issued-store migration (blocker 1), which the 0.84 broker cannot run.
+- A 0.170 manager here beside the MacBook's 0.100 one: cotal's scattered reads (`paw cotal ps`, cotal's
+  `attach` locate for a seat on the other host) hit "pinned digests … do not match the served contract"
+  (revision 37 vs 51), as with 0.84/0.100 — src/contract-mismatch.ts names it; paw's own rail pins this
+  machine's instance and is unaffected. After the issued-store migration the MacBook's 0.100 manager still
+  boots (0.100 accepts the TTL'd stores, verified), but its agents' old generations are refused, so it
+  respawns them too.
+- 0.166: an agent on the new connector leaves a durable channel only through a ≥0.166 delivery daemon;
+  team2027's is 0.84, so such a leave is refused (said, not silent). 0.154: role-holder anycast takes need
+  a ≥0.154 delivery daemon; paw sets no roles.
+
 ## cotal 0.100.0
 
 **Bumped 0.84.0 → 0.100.0 on 2026-10-23** (operator-approved, inside the 7-day min-release-age window:

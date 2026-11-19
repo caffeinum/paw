@@ -141,7 +141,7 @@ could put an agent to sleep under its running subagents. It now reads `taskId ??
 ### The agent's own Stop hook says it, and the office shows `running` (beads-y1eg / beads-0riq, 2026-11-06)
 The first fix above only works where the bridge can read the agents' transcripts and processes. The Firegoat office
 is bridged from fly in ROSTER mode (presence only), so the agent itself now says it: paw's patch to cotal's claude
-connector (`patches/@cotal-ai__connector-claude-code@0.100.0.patch`, `idleOrBackground` in dist/mcp.cjs) runs on
+connector (`patches/@cotal-ai__connector-claude-code@0.170.0.patch`, `idleOrBackground` in dist/mcp.cjs) runs on
 Stop/StopFailure, loads `PAW_BACKGROUND_PROBE` (= `src/background-scan.ts` of the release, set by src/connector.ts)
 with `require()` and calls `stopBackground(transcript, process.ppid)`. Open work → presence `working` + activity
 `background: workflow + 2 subagents`, rechecked every 5 min (a backing shell can die silently); nothing → `idle` as

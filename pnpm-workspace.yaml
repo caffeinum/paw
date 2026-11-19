@@ -21,43 +21,37 @@ allowBuilds:
   esbuild: false
 # patchedDependencies — TEMPORARY. (The #2401 hub patch is gone: cotal 0.82.0 ships
 #   `serveClaudeSession` from `@cotal-ai/connector-claude-code/mcp` upstream, Cotal-AI/Cotal#3921.)
-# '@cotal-ai/core' — perf only, no behaviour change: dist/schema-profile.js meta-validates contract
-#   schemas with ONE process-wide Ajv (the 2020-12 meta-schema compiles once, not once per contract)
-#   while every closure still compiles in its own fresh Ajv with the exact profile options. A cold
-#   full manager resolve (66 compiles) went 441ms → 113ms. Re-key on every cotal bump; drop it when
-#   upstream ships the same fix. → docs/notes/cotal-dependency.md#core-meta-validator-patch
-#   The same core patch also adds CONSUMER.DELETE on the presence / channel-registry (/ membership) KV
-#   streams to the agent, observer, admin and supervisor profiles (dist/provision.js) and deletes the
-#   retired consumer on a presence-watch rebind (dist/endpoint.js): a KV watch's nats.js ordered consumer
-#   deletes its predecessor on every rebuild, which cotal 0.100 refused (#691) — broker Publish Violations
-#   + leftover `oc_…` consumers. → docs/notes/cotal-dependency.md#kv-watch-consumer-delete-patch
+# (The '@cotal-ai/core' patch is gone too, at 0.170: the meta-validator fix shipped upstream, and upstream's
+#   #4123 stops an endpoint publishing a KV watch delete its cred can't make, so the CONSUMER.DELETE grant
+#   paw added on the presence/channels KV is no longer needed. → docs/notes/cotal-dependency.md#cotal-01700)
 # '@nats-io/transport-node' + '@cotal-ai/connector-claude-code' — reconnect fix: nats.js's stale-connection
 #   close awaited a goodbye write that never completes when the link dies with the socket's write buffer
 #   backed up, so the client never reconnected until the kernel killed the socket (~15 min in a sandbox
 #   VM). Bounded to 1s. The connector's dist/mcp.cjs (the per-agent cotal MCP server) BUNDLES its own copy
-#   of the transport, hence two patches; re-key the connector one on every cotal bump. Drop when nats.js
-#   ships the fix. → docs/notes/sandbox.md#mesh-reconnect
+#   of the transport, hence two patches; re-key the connector one on every cotal bump. nats.js 3.5.0 ships the
+#   fix; drop both once cotal pins it. Since 0.170 mcp.cjs is MINIFIED (one line is 537 KB), so the connector
+#   patch file is ~1.3 MB: regenerate it with `pnpm patch` + exact-once string replacements, not by hand.
+#   → docs/notes/sandbox.md#mesh-reconnect
 #   The connector patch ALSO carries paw's Stop hook change (beads-y1eg): a turn ending with background work open
 #   reports `working` + "background: …" via PAW_BACKGROUND_PROBE (src/background-scan.ts) instead of idle.
 #   → docs/notes/office.md ("The agent's own Stop hook says it"); propose upstream, then drop the hunk.
 verifyDepsBeforeRun: false
-# minimumReleaseAgeExclude — the operator explicitly approved cotal 0.100.0 on 2026-10-23, inside
-#   the global 7-day minimum-release-age window. Exempted by EXACT version only (every other package
-#   and any other @cotal-ai version still waits out the gate). Safe to delete after 2026-10-30
-#   (0.100.0 published 2026-10-23T16:16Z, + 7d).
+# minimumReleaseAgeExclude — the operator explicitly asked for the latest cotal, 0.170.0, on 2026-11-19,
+#   inside the global 7-day minimum-release-age window. Exempted by EXACT version only (every other package
+#   and any other @cotal-ai version still waits out the gate). Safe to delete after 2026-11-26
+#   (0.170.0 published 2026-11-19T04:33Z, + 7d).
 minimumReleaseAgeExclude:
-  - '@cotal-ai/cli@0.100.0'
-  - '@cotal-ai/cmux@0.100.0'
-  - '@cotal-ai/connector-claude-code@0.100.0'
-  - '@cotal-ai/connector-codex@0.100.0'
-  - '@cotal-ai/connector-hermes@0.100.0'
-  - '@cotal-ai/connector-opencode@0.100.0'
-  - '@cotal-ai/core@0.100.0'
-  - '@cotal-ai/manager@0.100.0'
-  - '@cotal-ai/seat@0.100.0'
-  - '@cotal-ai/tmux@0.100.0'
-  - '@cotal-ai/workspace@0.100.0'
+  - '@cotal-ai/cli@0.170.0'
+  - '@cotal-ai/cmux@0.170.0'
+  - '@cotal-ai/connector-claude-code@0.170.0'
+  - '@cotal-ai/connector-codex@0.170.0'
+  - '@cotal-ai/connector-hermes@0.170.0'
+  - '@cotal-ai/connector-opencode@0.170.0'
+  - '@cotal-ai/core@0.170.0'
+  - '@cotal-ai/manager@0.170.0'
+  - '@cotal-ai/seat@0.170.0'
+  - '@cotal-ai/tmux@0.170.0'
+  - '@cotal-ai/workspace@0.170.0'
 patchedDependencies:
-  '@cotal-ai/core@0.100.0': patches/@cotal-ai__core@0.100.0.patch
-  '@cotal-ai/connector-claude-code@0.100.0': patches/@cotal-ai__connector-claude-code@0.100.0.patch
+  '@cotal-ai/connector-claude-code@0.170.0': patches/@cotal-ai__connector-claude-code@0.170.0.patch
   '@nats-io/transport-node@3.4.0': patches/@nats-io__transport-node@3.4.0.patch

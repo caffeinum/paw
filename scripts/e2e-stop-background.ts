@@ -12,10 +12,10 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
-import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { CotalEndpoint } from "@cotal-ai/core";
+import { CONTROL_PROTOCOL_VERSION, controlCall } from "@cotal-ai/core/control-exchange";
 import { ensure, stop } from "../src/lifecycle.ts";
 import { purgeTestSpace } from "../src/prune.ts";
 import { pawServer } from "../src/server.ts";
@@ -27,7 +27,7 @@ if (!/^test-/.test(space) || !process.env.PAW_HOME || process.env.PAW_RELEASE !=
 const pkg = realpathSync(join(import.meta.dirname, "..", "node_modules", "@cotal-ai", "connector-claude-code"));
 const mcp = process.env.PAW_E2E_MCP_CJS ?? join(pkg, "dist", "mcp.cjs");
 if (!readFileSync(mcp, "utf8").includes("idleOrBackground"))
-  throw new Error(`${mcp} is not patched (no idleOrBackground) — run \`pnpm install\` to apply patches/@cotal-ai__connector-claude-code@0.100.0.patch`);
+  throw new Error(`${mcp} is not patched (no idleOrBackground) — run \`pnpm install\` to apply patches/@cotal-ai__connector-claude-code@0.170.0.patch`);
 
 let fails = 0;
 const ok = (label: string, cond: boolean, detail = "") => {
@@ -71,7 +71,8 @@ process.stdin.pipe(c.stdin); c.on("exit", (code) => process.exit(code ?? 1));`);
       COTAL_ALLOW_SUBSCRIBE: ">",
       COTAL_ALLOW_PUBLISH: ">",
       COTAL_CONTROL_SOCKET: ctl,
-      COTAL_CONTROL_TOKEN: token,
+      COTAL_CONTROL_KEY: token,
+      COTAL_CONTROL_VERSION: String(CONTROL_PROTOCOL_VERSION),
       COTAL_TELEMETRY_DISABLED: "1",
       PAW_BACKGROUND_PROBE: join(import.meta.dirname, "..", "src", "background-scan.ts"),
     },
@@ -87,13 +88,10 @@ process.stdin.pipe(c.stdin); c.on("exit", (code) => process.exit(code ?? 1));`);
     console.error(`  timed out waiting for ${what}; presence = ${JSON.stringify(presence())}`);
     return false;
   };
-  const hook = (event: object) =>
-    new Promise<void>((resolve, reject) => {
-      const s = connect(ctl, () => s.write(JSON.stringify({ token, event }) + "\n"));
-      s.on("data", () => s.end());
-      s.on("close", () => resolve());
-      s.on("error", reject);
-    });
+  // cotal 0.170's control exchange (both ends prove the key, which never crosses the socket) — the hook relay's own shape.
+  const hook = async (event: object) => {
+    await controlCall({ path: ctl, token, version: CONTROL_PROTOCOL_VERSION }, { event, handoff: true }, { timeoutMs: 10_000, maxReplyBytes: 1 << 20 });
+  };
 
   ok("the agent joins the mesh", await waitFor("join", (p) => p !== undefined));
   await hook({ hook_event_name: "UserPromptSubmit", transcript_path: transcript });

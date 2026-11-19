@@ -22,7 +22,7 @@
  *      stderr once (onWait), and a timeout names the holder pid.
  */
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -42,7 +42,8 @@ if (process.env.PAW_CHECK_BOOT_CHILD) {
   }
 }
 
-const base = mkdtempSync(join(tmpdir(), "paw-boot-"));
+// The physical path: cotal 0.170 refuses a Cotal home reached through a symlink (macOS /var → /private/var).
+const base = realpathSync(mkdtempSync(join(tmpdir(), "paw-boot-")));
 process.env.PAW_HOME = join(base, "home");
 process.env.COTAL_HOME = join(base, "cotal-home");
 process.env.PAW_COTAL_ROOT = join(base, "root");
