@@ -1,6 +1,6 @@
 /**
  * The cotal roles that watch the presence / channel-registry / membership KV must be able to delete
- * their OWN ordered watch consumers, and nothing wider (patches/@cotal-ai__core@0.100.0.patch).
+ * their OWN ordered watch consumers, and nothing wider (patches/@cotal-ai__core@0.110.0.patch).
  *
  * The team2027 broker logged `Publish Violation` for `$JS.API.CONSUMER.DELETE.KV_cotal_presence_<s>.oc_…`
  * and `…KV_cotal_channels_<s>.oc_…` (2026-10-28): a KV watch is a nats.js ordered push consumer named

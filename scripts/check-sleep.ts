@@ -657,7 +657,7 @@ ok("G6 kitWakeBlocker: a resumable kit agent has no blocker", S.kitWakeBlocker(p
   // the CJS require path the patched hook uses
   const viaRequire = (await import("node:module")).createRequire(import.meta.url)(join(import.meta.dirname, "..", "src", "background-scan.ts"));
   ok("H6 the probe loads through require() (the patched mcp.cjs is CommonJS)", typeof viaRequire.stopBackground === "function");
-  const patch = readFileSync(join(import.meta.dirname, "..", "patches", "@cotal-ai__connector-claude-code@0.100.0.patch"), "utf8");
+  const patch = readFileSync(join(import.meta.dirname, "..", "patches", "@cotal-ai__connector-claude-code@0.110.0.patch"), "utf8");
   ok("H7 the connector patch wires the probe into Stop", patch.includes("PAW_BACKGROUND_PROBE") && patch.includes("+          await idleOrBackground(agent, ev.transcript_path);"));
 }
 

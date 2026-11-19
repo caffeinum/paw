@@ -27,7 +27,7 @@ if (!/^test-/.test(space) || !process.env.PAW_HOME || process.env.PAW_RELEASE !=
 const pkg = realpathSync(join(import.meta.dirname, "..", "node_modules", "@cotal-ai", "connector-claude-code"));
 const mcp = process.env.PAW_E2E_MCP_CJS ?? join(pkg, "dist", "mcp.cjs");
 if (!readFileSync(mcp, "utf8").includes("idleOrBackground"))
-  throw new Error(`${mcp} is not patched (no idleOrBackground) — run \`pnpm install\` to apply patches/@cotal-ai__connector-claude-code@0.100.0.patch`);
+  throw new Error(`${mcp} is not patched (no idleOrBackground) — run \`pnpm install\` to apply patches/@cotal-ai__connector-claude-code@0.110.0.patch`);
 
 let fails = 0;
 const ok = (label: string, cond: boolean, detail = "") => {

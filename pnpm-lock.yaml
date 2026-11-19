@@ -5,8 +5,8 @@ settings:
   excludeLinksFromLockfile: false
 
 patchedDependencies:
-  '@cotal-ai/connector-claude-code@0.100.0': e728246890570e44196b00c3bafbe8ed3718b1b0ce82c7659648e03b68b522f8
-  '@cotal-ai/core@0.100.0': f206d14976154ac035546b79574db97a85dde4dfea39aa84748d26d8c1b3653b
+  '@cotal-ai/connector-claude-code@0.110.0': 7f418dcaba9baea4f2fa53a42432f6bc7e1630ef602e78f023d375c8e67195e7
+  '@cotal-ai/core@0.110.0': 5803deab5a437edf15edd0f0eee9e2c29a941d3c35fda299ea9de810e1e6e5ea
   '@nats-io/transport-node@3.4.0': ede15edbd9f8a1316e377cfd578eabd75f247211c205eb756a7d4b6edcb4217e
 
 importers:
@@ -14,35 +14,35 @@ importers:
   .:
     dependencies:
       '@cotal-ai/cli':
-        specifier: 0.100.0
-        version: 0.100.0
+        specifier: 0.110.0
+        version: 0.110.0
       '@cotal-ai/cmux':
-        specifier: 0.100.0
-        version: 0.100.0(@cotal-ai/core@0.100.0(patch_hash=f206d14976154ac035546b79574db97a85dde4dfea39aa84748d26d8c1b3653b))
+        specifier: 0.110.0
+        version: 0.110.0(@cotal-ai/core@0.110.0(patch_hash=5803deab5a437edf15edd0f0eee9e2c29a941d3c35fda299ea9de810e1e6e5ea))
       '@cotal-ai/connector-claude-code':
-        specifier: 0.100.0
-        version: 0.100.0(patch_hash=e728246890570e44196b00c3bafbe8ed3718b1b0ce82c7659648e03b68b522f8)(@cotal-ai/core@0.100.0(patch_hash=f206d14976154ac035546b79574db97a85dde4dfea39aa84748d26d8c1b3653b))
+        specifier: 0.110.0
+        version: 0.110.0(patch_hash=7f418dcaba9baea4f2fa53a42432f6bc7e1630ef602e78f023d375c8e67195e7)(@cotal-ai/core@0.110.0(patch_hash=5803deab5a437edf15edd0f0eee9e2c29a941d3c35fda299ea9de810e1e6e5ea))
       '@cotal-ai/connector-codex':
-        specifier: 0.100.0
-        version: 0.100.0(@cotal-ai/core@0.100.0(patch_hash=f206d14976154ac035546b79574db97a85dde4dfea39aa84748d26d8c1b3653b))
+        specifier: 0.110.0
+        version: 0.110.0(@cotal-ai/core@0.110.0(patch_hash=5803deab5a437edf15edd0f0eee9e2c29a941d3c35fda299ea9de810e1e6e5ea))
       '@cotal-ai/connector-hermes':
-        specifier: 0.100.0
-        version: 0.100.0(@cotal-ai/core@0.100.0(patch_hash=f206d14976154ac035546b79574db97a85dde4dfea39aa84748d26d8c1b3653b))
+        specifier: 0.110.0
+        version: 0.110.0(@cotal-ai/core@0.110.0(patch_hash=5803deab5a437edf15edd0f0eee9e2c29a941d3c35fda299ea9de810e1e6e5ea))
       '@cotal-ai/connector-opencode':
-        specifier: 0.100.0
-        version: 0.100.0(@cotal-ai/core@0.100.0(patch_hash=f206d14976154ac035546b79574db97a85dde4dfea39aa84748d26d8c1b3653b))
+        specifier: 0.110.0
+        version: 0.110.0(@cotal-ai/core@0.110.0(patch_hash=5803deab5a437edf15edd0f0eee9e2c29a941d3c35fda299ea9de810e1e6e5ea))
       '@cotal-ai/core':
-        specifier: 0.100.0
-        version: 0.100.0(patch_hash=f206d14976154ac035546b79574db97a85dde4dfea39aa84748d26d8c1b3653b)
+        specifier: 0.110.0
+        version: 0.110.0(patch_hash=5803deab5a437edf15edd0f0eee9e2c29a941d3c35fda299ea9de810e1e6e5ea)
       '@cotal-ai/manager':
-        specifier: 0.100.0
-        version: 0.100.0
+        specifier: 0.110.0
+        version: 0.110.0
       '@cotal-ai/tmux':
-        specifier: 0.100.0
-        version: 0.100.0(@cotal-ai/core@0.100.0(patch_hash=f206d14976154ac035546b79574db97a85dde4dfea39aa84748d26d8c1b3653b))
+        specifier: 0.110.0
+        version: 0.110.0(@cotal-ai/core@0.110.0(patch_hash=5803deab5a437edf15edd0f0eee9e2c29a941d3c35fda299ea9de810e1e6e5ea))
       '@cotal-ai/workspace':
-        specifier: 0.100.0
-        version: 0.100.0
+        specifier: 0.110.0
+        version: 0.110.0
       '@nats-io/jetstream':
         specifier: ^3.4.0
         version: 3.4.0
@@ -57,7 +57,7 @@ importers:
         version: 3.4.0(patch_hash=ede15edbd9f8a1316e377cfd578eabd75f247211c205eb756a7d4b6edcb4217e)
       cotal-connector-acp:
         specifier: file:vendor/cotal-connector-acp-0.1.0.tgz
-        version: file:vendor/cotal-connector-acp-0.1.0.tgz(@cotal-ai/core@0.100.0(patch_hash=f206d14976154ac035546b79574db97a85dde4dfea39aa84748d26d8c1b3653b))
+        version: file:vendor/cotal-connector-acp-0.1.0.tgz(@cotal-ai/core@0.110.0(patch_hash=5803deab5a437edf15edd0f0eee9e2c29a941d3c35fda299ea9de810e1e6e5ea))
     devDependencies:
       '@lydell/node-pty':
         specifier: 1.2.0-beta.12
@@ -86,51 +86,51 @@ packages:
     resolution: {integrity: sha512-EYlRokl8szrP9Z25qT5aepMdBjzBvHF9ZEhzIiUBc9guz/T31EqRgvD0QSgZcpE93xiwrr+OkB4nz0BZyF6fSA==}
     engines: {node: '>= 20.12.0'}
 
-  '@cotal-ai/cli@0.100.0':
-    resolution: {integrity: sha512-f/G2NIon4XiikeUiIU/5knQTskiQL753Dso0z8CzBVvLh6v5TYVNA/1yX/+ID96VzBpqWn0oTP46mLmGyFI4Gw==}
+  '@cotal-ai/cli@0.110.0':
+    resolution: {integrity: sha512-AyLFNbbuhLI/D/pcDIglhdc7V6+ZJS+uex9Ty6/guG93t7vUlLqBWhf25/lcGXAAXsSY3b7+Km0Dc6UQZZZO6g==}
 
-  '@cotal-ai/cmux@0.100.0':
-    resolution: {integrity: sha512-UfTsx6FnTAIuSey8DXRqO/x9ishg4dUyAwxml57VlDYkOmsf4k28RYKz2f5cLJbqfU6MOVgHAFkIi8EcpwNiQg==}
+  '@cotal-ai/cmux@0.110.0':
+    resolution: {integrity: sha512-6rZf7YD2GDm3ji5YPDF/HobMcJJ3M+XmLmSnhIFCmqoCq0xUYl/PqlzThlhSufc3iy2rR5EgX9+oUy4BAMQs9g==}
     peerDependencies:
       '@cotal-ai/core': '*'
 
-  '@cotal-ai/connector-claude-code@0.100.0':
-    resolution: {integrity: sha512-IloTBf+EdePuzF/fMPOq2abRuyZznlbZyK14MGCIcik5dwiK7d+4GFP2o4wg4HB8ixQOMcM1mlXCKwM9hGboIg==}
+  '@cotal-ai/connector-claude-code@0.110.0':
+    resolution: {integrity: sha512-zvkEfeXAVHMJ4Yo+8rnc5crwZxTVyt1wyQ/b9CGgPcKFGpcXw14R3qn3Usj9hM3Lr8ZEXwXzJToTEJR8In8+Fw==}
     peerDependencies:
       '@cotal-ai/core': '>=0.1.0'
 
-  '@cotal-ai/connector-codex@0.100.0':
-    resolution: {integrity: sha512-L9NDxqjWX2hBENBmie3vvM3JAZ7pgdSEMlnvu3poWfR6JNoXGRpV83wRN6zYC5Sv2bqihv0HiX4Y+qy+7G7QHA==}
+  '@cotal-ai/connector-codex@0.110.0':
+    resolution: {integrity: sha512-e5CvtbN0ZTBnDEazVlngmikPJ7gvOcSJf9GlXcJgLTHD0YSGKWs5UQCI925grI8ERI1iZb5NCIuuQ6Fr70NbXg==}
     peerDependencies:
       '@cotal-ai/core': '>=0.1.0'
 
-  '@cotal-ai/connector-hermes@0.100.0':
-    resolution: {integrity: sha512-njvyBJtqhyb/dI9DYSxRvvmc2eEnGhYvbmlE7f+LaV+7oHjWvtOAflazBtsOX7RVJ6DJ8NBkFW0fmykrN0FSeA==}
+  '@cotal-ai/connector-hermes@0.110.0':
+    resolution: {integrity: sha512-ovcF6TIVgochkYHRoOwT1Zi+mhPxo9HRt16rHB0Rh68Tqh9pvaRz0RSeu9vG0zKNK8l752LdeUdSe8maXPxkKg==}
     hasBin: true
     peerDependencies:
       '@cotal-ai/core': '>=0.1.0'
 
-  '@cotal-ai/connector-opencode@0.100.0':
-    resolution: {integrity: sha512-CQjXzOtvS/D4TFlxRrpEhkz5dPb3wuLoiPC1eDK3HZ0fTTHVgzs/SeN1roK0jaalCzLmCx2gBIMJpNI9Gi8DmA==}
+  '@cotal-ai/connector-opencode@0.110.0':
+    resolution: {integrity: sha512-mk2b75/r1iaLcypaKso8uTSfB7C9nyQF/R4el06eeclynPRqTAiSxMGXqijZKAPV8LMGNR4UEpQueLDPotp8ZA==}
     peerDependencies:
       '@cotal-ai/core': '>=0.1.0'
 
-  '@cotal-ai/core@0.100.0':
-    resolution: {integrity: sha512-R/juDVz3v02EwCBhG2wz5GLkRjB9t6tKVwgZAx2FU4HoN8yjpw6ejHnT1pKn+CQ1B4q6RrqBJ6FqziK4i7tY1A==}
+  '@cotal-ai/core@0.110.0':
+    resolution: {integrity: sha512-4xZVp/Zlxo4zOpdDREvwV701WF+TlVlsoLtYa+KWRHUoxUWCKHlDYgo5GJuaVc++72380cWMbcOKlx2mmaURuA==}
 
-  '@cotal-ai/manager@0.100.0':
-    resolution: {integrity: sha512-IGv+LzOtlHi68FKz+Irzb5lzCbaZfIw4mJR1sjWd5fiZEZlbk/wIGUwDS4K8Y/r1KMEiTUkTYtD2eZXAtZXJNg==}
+  '@cotal-ai/manager@0.110.0':
+    resolution: {integrity: sha512-BfreE9UkoH0zPpQexe9BXvrW8+f/3ji5huR/OJqHILfa7433A+vpB5EOdmfZzJd+YZdJVwiGPwjbNWNONSe4JQ==}
 
-  '@cotal-ai/seat@0.100.0':
-    resolution: {integrity: sha512-f5gTlCThvfCu7DMm36nBMQp8fWHxHLfsx0tVR6lnDtOzkjebuERyjdoXSBLohzlA2OU27sDZ5m6tXvV9VFzzqw==}
+  '@cotal-ai/seat@0.110.0':
+    resolution: {integrity: sha512-tRwZMSOq1tLpF5BF2aeIE9ZA4MaLFotsJQQpieUPTNL9RJz0evZB7W6hGIae3GHD4qcy4lq8773smM2LdArZlA==}
 
-  '@cotal-ai/tmux@0.100.0':
-    resolution: {integrity: sha512-gjMiKI2GF0fW++26bVvbafEfFaK36ihTYb+Ljl/PAWDRIpLVeqOo8YocAthBg+GDPg1YHpg8tZSCvFW1CjGXHw==}
+  '@cotal-ai/tmux@0.110.0':
+    resolution: {integrity: sha512-Rl8eTBuZiwCOIopT9i5TkxplCbfbZT9P2KFlVqOyW2H/4uwsbZUA88aPCSck4g3n7Z8zoUcnRtcKgaw0PX8n3Q==}
     peerDependencies:
       '@cotal-ai/core': '*'
 
-  '@cotal-ai/workspace@0.100.0':
-    resolution: {integrity: sha512-cpFAGduKDia8z6X9CIre3Pz6VBWCd65Hpufzci61lADDozcNn1lpYxEyJ8xJRyBQHRzpxhe0lPt7i7qeA2Tv/g==}
+  '@cotal-ai/workspace@0.110.0':
+    resolution: {integrity: sha512-M7JslmtXXIFgo9CbzBVf53VO73lX8nmtMAMiZGi4kJ8VdcJPdfeqFYah2HIztmATvfEqHwkB6gwyvlfSI9KQ2A==}
 
   '@eplightning/nats-server-darwin-arm64@2.14.0':
     resolution: {integrity: sha512-tBCOf4anrlTnbQimh3KSz6C+0IbdJTyfTFLcol2YfGWzfmMgsXqjfrSZvnRnqMK2hWD/TJ6eIhsv3/UlfdTzEg==}
@@ -682,11 +682,11 @@ snapshots:
       fast-wrap-ansi: 0.2.2
       sisteransi: 1.0.5
 
-  '@cotal-ai/cli@0.100.0':
+  '@cotal-ai/cli@0.110.0':
     dependencies:
       '@clack/prompts': 1.6.0
-      '@cotal-ai/core': 0.100.0(patch_hash=f206d14976154ac035546b79574db97a85dde4dfea39aa84748d26d8c1b3653b)
-      '@cotal-ai/workspace': 0.100.0
+      '@cotal-ai/core': 0.110.0(patch_hash=5803deab5a437edf15edd0f0eee9e2c29a941d3c35fda299ea9de810e1e6e5ea)
+      '@cotal-ai/workspace': 0.110.0
       '@nats-io/jetstream': 3.4.0
       '@nats-io/kv': 3.4.0
       '@nats-io/obj': 3.4.0
@@ -709,27 +709,27 @@ snapshots:
       - react-devtools-core
       - utf-8-validate
 
-  '@cotal-ai/cmux@0.100.0(@cotal-ai/core@0.100.0(patch_hash=f206d14976154ac035546b79574db97a85dde4dfea39aa84748d26d8c1b3653b))':
+  '@cotal-ai/cmux@0.110.0(@cotal-ai/core@0.110.0(patch_hash=5803deab5a437edf15edd0f0eee9e2c29a941d3c35fda299ea9de810e1e6e5ea))':
     dependencies:
-      '@cotal-ai/core': 0.100.0(patch_hash=f206d14976154ac035546b79574db97a85dde4dfea39aa84748d26d8c1b3653b)
+      '@cotal-ai/core': 0.110.0(patch_hash=5803deab5a437edf15edd0f0eee9e2c29a941d3c35fda299ea9de810e1e6e5ea)
 
-  '@cotal-ai/connector-claude-code@0.100.0(patch_hash=e728246890570e44196b00c3bafbe8ed3718b1b0ce82c7659648e03b68b522f8)(@cotal-ai/core@0.100.0(patch_hash=f206d14976154ac035546b79574db97a85dde4dfea39aa84748d26d8c1b3653b))':
+  '@cotal-ai/connector-claude-code@0.110.0(patch_hash=7f418dcaba9baea4f2fa53a42432f6bc7e1630ef602e78f023d375c8e67195e7)(@cotal-ai/core@0.110.0(patch_hash=5803deab5a437edf15edd0f0eee9e2c29a941d3c35fda299ea9de810e1e6e5ea))':
     dependencies:
-      '@cotal-ai/core': 0.100.0(patch_hash=f206d14976154ac035546b79574db97a85dde4dfea39aa84748d26d8c1b3653b)
+      '@cotal-ai/core': 0.110.0(patch_hash=5803deab5a437edf15edd0f0eee9e2c29a941d3c35fda299ea9de810e1e6e5ea)
 
-  '@cotal-ai/connector-codex@0.100.0(@cotal-ai/core@0.100.0(patch_hash=f206d14976154ac035546b79574db97a85dde4dfea39aa84748d26d8c1b3653b))':
+  '@cotal-ai/connector-codex@0.110.0(@cotal-ai/core@0.110.0(patch_hash=5803deab5a437edf15edd0f0eee9e2c29a941d3c35fda299ea9de810e1e6e5ea))':
     dependencies:
-      '@cotal-ai/core': 0.100.0(patch_hash=f206d14976154ac035546b79574db97a85dde4dfea39aa84748d26d8c1b3653b)
+      '@cotal-ai/core': 0.110.0(patch_hash=5803deab5a437edf15edd0f0eee9e2c29a941d3c35fda299ea9de810e1e6e5ea)
 
-  '@cotal-ai/connector-hermes@0.100.0(@cotal-ai/core@0.100.0(patch_hash=f206d14976154ac035546b79574db97a85dde4dfea39aa84748d26d8c1b3653b))':
+  '@cotal-ai/connector-hermes@0.110.0(@cotal-ai/core@0.110.0(patch_hash=5803deab5a437edf15edd0f0eee9e2c29a941d3c35fda299ea9de810e1e6e5ea))':
     dependencies:
-      '@cotal-ai/core': 0.100.0(patch_hash=f206d14976154ac035546b79574db97a85dde4dfea39aa84748d26d8c1b3653b)
+      '@cotal-ai/core': 0.110.0(patch_hash=5803deab5a437edf15edd0f0eee9e2c29a941d3c35fda299ea9de810e1e6e5ea)
 
-  '@cotal-ai/connector-opencode@0.100.0(@cotal-ai/core@0.100.0(patch_hash=f206d14976154ac035546b79574db97a85dde4dfea39aa84748d26d8c1b3653b))':
+  '@cotal-ai/connector-opencode@0.110.0(@cotal-ai/core@0.110.0(patch_hash=5803deab5a437edf15edd0f0eee9e2c29a941d3c35fda299ea9de810e1e6e5ea))':
     dependencies:
-      '@cotal-ai/core': 0.100.0(patch_hash=f206d14976154ac035546b79574db97a85dde4dfea39aa84748d26d8c1b3653b)
+      '@cotal-ai/core': 0.110.0(patch_hash=5803deab5a437edf15edd0f0eee9e2c29a941d3c35fda299ea9de810e1e6e5ea)
 
-  '@cotal-ai/core@0.100.0(patch_hash=f206d14976154ac035546b79574db97a85dde4dfea39aa84748d26d8c1b3653b)':
+  '@cotal-ai/core@0.110.0(patch_hash=5803deab5a437edf15edd0f0eee9e2c29a941d3c35fda299ea9de810e1e6e5ea)':
     dependencies:
       '@nats-io/jetstream': 3.4.0
       '@nats-io/jwt': 0.0.10-5
@@ -743,12 +743,12 @@ snapshots:
       json-canonicalize: 2.0.0
       yaml: 2.9.0
 
-  '@cotal-ai/manager@0.100.0':
+  '@cotal-ai/manager@0.110.0':
     dependencies:
       '@clack/prompts': 1.6.0
-      '@cotal-ai/core': 0.100.0(patch_hash=f206d14976154ac035546b79574db97a85dde4dfea39aa84748d26d8c1b3653b)
-      '@cotal-ai/seat': 0.100.0(@xterm/xterm@5.5.0)
-      '@cotal-ai/workspace': 0.100.0
+      '@cotal-ai/core': 0.110.0(patch_hash=5803deab5a437edf15edd0f0eee9e2c29a941d3c35fda299ea9de810e1e6e5ea)
+      '@cotal-ai/seat': 0.110.0(@xterm/xterm@5.5.0)
+      '@cotal-ai/workspace': 0.110.0
       '@lydell/node-pty': 1.2.0-beta.12
       '@nats-io/jetstream': 3.4.0
       '@nats-io/kv': 3.4.0
@@ -765,7 +765,7 @@ snapshots:
       - bufferutil
       - utf-8-validate
 
-  '@cotal-ai/seat@0.100.0(@xterm/xterm@5.5.0)':
+  '@cotal-ai/seat@0.110.0(@xterm/xterm@5.5.0)':
     dependencies:
       '@lydell/node-pty': 1.2.0-beta.12
       '@xterm/addon-serialize': 0.13.0(@xterm/xterm@5.5.0)
@@ -773,13 +773,13 @@ snapshots:
     transitivePeerDependencies:
       - '@xterm/xterm'
 
-  '@cotal-ai/tmux@0.100.0(@cotal-ai/core@0.100.0(patch_hash=f206d14976154ac035546b79574db97a85dde4dfea39aa84748d26d8c1b3653b))':
+  '@cotal-ai/tmux@0.110.0(@cotal-ai/core@0.110.0(patch_hash=5803deab5a437edf15edd0f0eee9e2c29a941d3c35fda299ea9de810e1e6e5ea))':
     dependencies:
-      '@cotal-ai/core': 0.100.0(patch_hash=f206d14976154ac035546b79574db97a85dde4dfea39aa84748d26d8c1b3653b)
+      '@cotal-ai/core': 0.110.0(patch_hash=5803deab5a437edf15edd0f0eee9e2c29a941d3c35fda299ea9de810e1e6e5ea)
 
-  '@cotal-ai/workspace@0.100.0':
+  '@cotal-ai/workspace@0.110.0':
     dependencies:
-      '@cotal-ai/core': 0.100.0(patch_hash=f206d14976154ac035546b79574db97a85dde4dfea39aa84748d26d8c1b3653b)
+      '@cotal-ai/core': 0.110.0(patch_hash=5803deab5a437edf15edd0f0eee9e2c29a941d3c35fda299ea9de810e1e6e5ea)
       ajv: 8.20.0
       string-width: 8.2.1
       yaml: 2.9.0
@@ -1006,9 +1006,9 @@ snapshots:
 
   convert-to-spaces@2.0.1: {}
 
-  cotal-connector-acp@file:vendor/cotal-connector-acp-0.1.0.tgz(@cotal-ai/core@0.100.0(patch_hash=f206d14976154ac035546b79574db97a85dde4dfea39aa84748d26d8c1b3653b)):
+  cotal-connector-acp@file:vendor/cotal-connector-acp-0.1.0.tgz(@cotal-ai/core@0.110.0(patch_hash=5803deab5a437edf15edd0f0eee9e2c29a941d3c35fda299ea9de810e1e6e5ea)):
     dependencies:
-      '@cotal-ai/core': 0.100.0(patch_hash=f206d14976154ac035546b79574db97a85dde4dfea39aa84748d26d8c1b3653b)
+      '@cotal-ai/core': 0.110.0(patch_hash=5803deab5a437edf15edd0f0eee9e2c29a941d3c35fda299ea9de810e1e6e5ea)
 
   emoji-regex@10.6.0: {}
 

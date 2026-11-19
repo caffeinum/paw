@@ -8,7 +8,7 @@
  *  2. "elsewhere" — no persona here (another machine's agent): `add` is refused, a hand-written job is
  *     NOT delivered, the tick logs why, and nothing is spawned for it.
  *
- *   COTAL_BIN=<cotal-ai@0.100.0>/dist/cotal.js node scripts/e2e-cron-remote.ts
+ *   COTAL_BIN=<cotal-ai@0.110.0>/dist/cotal.js node scripts/e2e-cron-remote.ts
  */
 import { execFileSync, spawnSync } from "node:child_process";
 import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync } from "node:fs";
