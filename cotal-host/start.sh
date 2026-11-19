@@ -92,7 +92,8 @@ if [ -n "${OFFICE_URL:-}" ] || [ -n "${OFFICE_JOIN_KEY:-}" ]; then
 fi
 
 cd /data/cotal
-exec cotal up $ROTATE --no-manager --space "$COTAL_SPACE" \
+# --foreground: since cotal 0.100 `up` detaches by default and exits 0, which ends the container.
+exec cotal up $ROTATE --foreground --no-manager --space "$COTAL_SPACE" \
   --server "tls://$PUBLIC_HOST:4222" --host 0.0.0.0 \
   --store-dir /data/cotal/.cotal/nats \
   --tls-cert "$CERT" --tls-key "$KEY"
