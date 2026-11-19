@@ -60,10 +60,15 @@ next_renewal() {
 ROTATE_DAYS=10
 ROTATE_FLAG=/data/cotal/.rotate-sys-now   # touch it + restart the machine to force a rotation
 sys_days_left() {
-  exp=$(cd /data/cotal && cotal doctor auth --space "$COTAL_SPACE" 2>&1 \
-    | sed -n 's/.*\(membership-observer\|connection-evictor\)\.creds.* expires \([0-9T:.Z-]*\).*/\2/p' | sort | head -1)
-  [ -n "$exp" ] || { echo "start: can't read the \$SYS creds expiry from cotal doctor auth" >&2; return 1; }
-  echo $(( ($(date -d "$exp" +%s) - $(date +%s)) / 86400 ))
+  # cotal >= 0.100 prints a table; read the structured form (expiresAt = unix seconds).
+  exp=$(cd /data/cotal && cotal doctor auth --space "$COTAL_SPACE" --json 2>/dev/null | node -e '
+    let s = ""; process.stdin.on("data", (d) => (s += d)).on("end", () => {
+      const sys = JSON.parse(s).result.items.filter((i) => i.kind === "membership-observer" || i.kind === "connection-evictor");
+      if (sys.length !== 2) process.exit(1);
+      console.log(Math.min(...sys.map((i) => i.expiresAt)));
+    });')
+  [ -n "$exp" ] || { echo "start: can't read the \$SYS creds expiry from cotal doctor auth --json" >&2; return 1; }
+  echo $(( (exp - $(date +%s)) / 86400 ))
 }
 ROTATE=""
 if [ -e "$ROTATE_FLAG" ]; then

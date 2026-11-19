@@ -1,6 +1,8 @@
 FROM node:24.21.0-bookworm-slim
 
-ARG COTAL_VERSION=0.84.0
+# 0.100.x is the newest line that boots this broker: from 0.101.0 `up` refuses a hostname --server
+# (cotal feedback 0eccae1d). Rehearsed 2026-11-19 on a copy of /data: boots, history intact, renewal works.
+ARG COTAL_VERSION=0.100.2
 ARG LEGO_VERSION=5.5.2
 ARG LEGO_SHA256=2a35505089e7772c92e1e9ac144df91151ef2eca8568630db0ff91fca06d9bef
 
