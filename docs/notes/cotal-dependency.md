@@ -135,7 +135,7 @@ is separate.
 ### Verification (isolated: temp PAW_HOME/COTAL_HOME/PAW_COTAL_ROOT, PAW_RELEASE=dev, a private nats-server via PAW_SERVER)
 
 - `pnpm install` from an empty node_modules: both patches apply, no ERR_PNPM_PATCH_FAILED; `pnpm typecheck`.
-- All 76 `check:*`: green except the blocked ones — `check:sandbox`, `check:sleep`, `check:kit`,
+- All 76 `check:*` (final run on the pushed tree: 69 green): green except the blocked ones — `check:sandbox`, `check:sleep`, `check:kit`,
   `check:personality`, `check:hermes` (persona `cwd:`), `check:trust` (wake declaration) — and
   `check:doctor`'s "restart-free (A1)" pair, which compares the manager graph and package.json with
   `origin/main` and fails on any PR that needs a full restart, as a bump does. `check:chat`/`check:commands`
@@ -143,7 +143,9 @@ is separate.
 - `check:rail`, `check:loop`, `check:hub`, `check:boot`, `check:kv-consumer-perms`, `e2e-stop-background`: green.
 - Smoke (scratch copy with the persona + wake bypasses, haiku): cold `paw dm .` → reply in 7s, `paw status`
   busy → online, idle DM woke it in 3–4s; `paw down` + `purgeTestSpace` left nothing. Unbypassed, the
-  same spawn dies silently (blocker 3). `e2e-hub` (scratch, tmux): see the PR.
+  same spawn dies silently (blocker 3). `e2e-hub` (same scratch copy, tmux, 3 haiku agents on shims): all 40
+  steps green — DMs, #general wake, hub SIGKILL gap, full hub+supervisor outage, status, sleep/wake,
+  `paw restart`, `paw down` (the three shim-count failures 0.100 showed are gone).
 - NOT run: `e2e-remote` / `e2e-attach-local` (need `COTAL_BIN` from a `cotal-ai@0.170.0` install), a real
   sandbox VM, the live cutover.
 
