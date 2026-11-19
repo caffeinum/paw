@@ -3418,22 +3418,32 @@ async function chat(argv: string[]): Promise<void> {
       // A paste this line mentions shows right under it — where it sits in the message the agent gets.
       if (!bang) emitRows(railPastes(rawLine, stage().pastes, viewOpts()));
     }
-    // A draft with nothing in it was erased whole: nothing of it is on screen to take a side or a gap.
-    if (!draft || sent) {
+    // An empty Enter (spaces only too) outside a draft is no line: the prompt is redrawn where it was,
+    // unless the restart question takes that Enter as its answer.
+    const empty = !draft && !typed;
+    const claimSide = (): void => {
       painter.lastSide = "you";
       // And a blank line the previous round ended on is no longer adjacent once a prompt and your typed
       // line sit between it and the next output — leaving the flag set swallowed later gaps entirely.
       painter.trailingBlank = false;
-    }
+    };
+    // A draft with nothing in it was erased whole: nothing of it is on screen to take a side or a gap.
+    if ((!draft || sent) && !empty) claimSide();
     const startedAt = lineStartedAt;
     lineStartedAt = undefined;
     const pasted = pastedIntoLine;
     pastedIntoLine = false;
     // The wake gate's restart question takes only a line typed AS its answer (src/chat-consent.ts) —
     // y/yes, or n/no/an empty Enter; any other line is a message and the question stays open.
-    if (!bang && consent.offer({ text: typed, startedAt, pasted, replay: false })) return;
+    if (!bang && consent.offer({ text: typed, startedAt, pasted, replay: false })) {
+      if (empty) claimSide();
+      return;
+    }
     if (!typed) {
-      if (!closing) rl!.prompt();
+      if (closing) return;
+      // readline has moved below the line it echoed: back up over it, so its refresh draws the prompt there.
+      if (empty && rl!.terminal && view !== "beads") process.stdout.write(`\u001b[${echoRows(echoed, process.stdout.columns || 80)}A\r`);
+      rl!.prompt();
       return;
     }
     // Not connected yet: a line that needs the mesh waits, in order, with what was staged for it. While
