@@ -463,8 +463,7 @@ decides how long the `◌` loaders stay up.
   [echo and picker](#echo-and-picker). The wire text is byte-identical (`joinLines` + `composePastes`;
   check:chat-tty 13).
 - **Not changed:** a line and a paste in ONE stdin chunk during the boot (`t-one\` + Enter + a paste at
-  `◌>`) lose the held line (eaff988 too — splitting the chunk at the START marker would fix it). A typed
-  multi-character chunk is written raw by readline (`tallest` catches it). With a line exactly the width,
+  `◌>`) lose the held line (eaff988 too — splitting the chunk at the START marker would fix it). With a line exactly the width,
   the hint sits under readline's caret row; a second message sent mid-turn gets no receipt of its own
   (the one-receipt design).
 - Tests: `check:paste` (draftRows, fitRows, saidRows, strayPastes, wrappedWidth/echoRows against tmux's
@@ -472,8 +471,21 @@ decides how long the `◌` loaders stay up.
   `outbound` entries laid out at the paint width, the stamp and receipt, redraw == live, `pickerOpener`;
   source pins on the helpers, the mutes, `CLEAR_BELOW`, the picker, `giveBack`), and the real-terminal
   **`check:chat-draft`**: tmux on a private socket, an isolated space, a raw `echoer`, every screen read
-  with its scrollback, every wire DM byte for byte — scenarios A–AY, each a screen a tester or reviewer
+  with its scrollback, every wire DM byte for byte — scenarios A–AZ, each a screen a tester or reviewer
   saw wrong.
+- **A line typed in one chunk (2026-11-18).** The operator dictated a long message in `paw chat @code-review`;
+  another agent's DM bumped the `[15 elsewhere]` badge while it sat in the input, and the line's first five
+  rows stayed above a second copy of it, the time stamp drawn over the last of them. node's keypress decoder
+  switches readline's completion OFF for every character of a stdin chunk but its last, and readline then
+  appends those with a bare write — no refresh, no row count (`prevRows`), even across a wrap. A chunk is what
+  a dictation tool or keys an ssh link delivers together. The next refresh (the chunk's last character
+  crossing a row, the badge's `rl.prompt(true)`, any prompt redraw) climbed rows short. chat keeps completion
+  ON outside a bracketed paste (a getter over `isCompletionEnabled`, fail-loud if node drops it), so every key
+  takes readline's counting path: a refresh per row crossed, ~0.3s for a 3000-character chunk. Inside a paste
+  node's switch stands (its tabs are payload; readline is muted there), and in a chunk holding a glyph of
+  several code points (`⚠️`, a ZWJ emoji, an accent): keyed one at a time, a row's refresh fell between its
+  halves and the terminal drew the first half alone (AV). Main before #135 did the same;
+  check:chat-draft AZ (a chunk under a new badge, and one ending exactly at the right edge).
 
 ## earlier block
 

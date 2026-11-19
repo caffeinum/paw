@@ -2272,6 +2272,30 @@ async function chat(argv: string[]): Promise<void> {
       const [hits] = completer(r.line.slice(0, r.cursor));
       if (hits.length > 1) emit(c.dim(hits.join("  ")));
     };
+    // node's keypress decoder switches completion OFF for every character of a stdin chunk but its last, and
+    // readline then appends those with a bare write: no refresh, no row count, even across a wrap. A chunk
+    // is what a dictation tool or a laggy ssh link delivers. The next refresh — the chunk's last character
+    // crossing a row, the `[N elsewhere]` badge, any prompt redraw — climbed rows short and left the line's
+    // first rows above a second copy of it, the time stamp drawn over the last of them (operator,
+    // 2026-11-18). Kept ON, every key takes readline's counting path (a refresh per row crossed; ~0.3s for a
+    // 3000-character chunk). Inside a bracketed paste node's switch stands: its tabs are payload, never a
+    // completion, and readline is muted there anyway. It stands too for a chunk holding a glyph made of
+    // several code points (`⚠️`, `👩‍💻`, an accent): keyed one at a time, the refresh for a row crossed
+    // landed between its halves and the terminal drew the first half alone (check:chat-draft AV).
+    const completion = r as unknown as { isCompletionEnabled?: boolean };
+    if (typeof completion.isCompletionEnabled !== "boolean") throw new Error("paw chat: readline.isCompletionEnabled is gone — counting a typed chunk's rows needs a new hook");
+    let completionFromNode = completion.isCompletionEnabled;
+    let keyByKey = true;
+    process.stdin.prependListener("data", (chunk: Buffer | string) => {
+      keyByKey = !/[‍︎️⃣\u{1f3fb}-\u{1f3ff}]|\p{M}/u.test(typeof chunk === "string" ? chunk : chunk.toString("utf8"));
+    });
+    Object.defineProperty(r, "isCompletionEnabled", {
+      configurable: true,
+      get: () => (pasting() || !keyByKey ? completionFromNode : true),
+      set: (on: boolean) => {
+        completionFromNode = on;
+      },
+    });
     r.on("line", (line) => void onLine(line));
     // readline echoed the submitted line below the beads panel; repaint over it whatever the send does.
     r.on("line", () => {
