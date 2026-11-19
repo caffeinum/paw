@@ -91,7 +91,7 @@ import {
 import { FRESH_SPAWN_MS, LIVE_AGENT_MS } from "./dm.ts";
 import { messageText as textOf, type Entry as FeedEntry } from "./feed.ts";
 import { forwardedFrom, isForwardOf, withoutForwardNote } from "./forward-mark.ts";
-import { MAX_PEER_IDS, peerMsg, remoteNoPastIdsNote, readOwnConversation, readPeerTraffic, startEcho, tapAgentTraffic, tapOwnSubject, tapPeerTraffic } from "./chat-own.ts";
+import { MAX_PEER_IDS, omittedInView, peerMsg, remoteNoPastIdsNote, readOwnConversation, readPeerTraffic, startEcho, tapAgentTraffic, tapOwnSubject, tapPeerTraffic } from "./chat-own.ts";
 import { backlogSize, earlierDivider, moreCount, moreInsertAt, NOW_DIVIDER, nothingEarlier, pickBacklog } from "./chat-backlog.ts";
 import { dedupeRoster } from "./commands/who.ts";
 import { isContinueKey, joinLines, LEAKED_TAIL, leaksTail, peelContinuation } from "./multiline.ts";
@@ -1908,9 +1908,11 @@ async function chat(argv: string[]): Promise<void> {
   };
   const peerEntry = (agent: string, p: PeerMsg, historical: boolean): Entry => ({ kind: "peer", agent, msg: p, ...(historical ? { historical: true } : {}) });
   const peerNote = (text: string): Entry & { kind: "chat" } => ({ kind: "chat", text, side: "sys", tight: true, onlyMessages: true });
-  /** Agents already told that their oldest ids are past the chat-peers cap — said once each. */
+  /** Agents already told that their oldest ids are past the chat-peers cap — said once each, and only
+   *  when one of those ids may hold a message this view shows (src/chat-own.ts omittedInView). */
   const peerOmittedSaid = new Set<string>();
-  const onPeerOmitted = (agent: string) => (n: number): void => {
+  const onPeerOmitted = (agent: string) => (n: number, lastSeen: number): void => {
+    if (!omittedInView(lastSeen, historySize.windowMs, Date.now())) return;
     if (peerOmittedSaid.has(agent.toLowerCase())) return;
     peerOmittedSaid.add(agent.toLowerCase());
     show(peerNote(c.yellow(`! ${agent} has had more than ${MAX_PEER_IDS} mesh ids — messages on its ${n} oldest aren't read`)));

@@ -365,6 +365,16 @@ console.log("paw chat messages view on a remote space: the chat-peers cred");
   const many = Array.from({ length: own.MAX_PEER_IDS + 3 }, (_, i) => `${DEV_OWNER}.UK${i}`);
   const capped = own.peerPrincipals(many, {});
   assert(capped.principals.length === own.MAX_PEER_IDS && capped.omitted === 3, `…bounded at ${own.MAX_PEER_IDS} ids, the rest counted (said in the view), never silently`);
+  const H = 3_600_000;
+  const now = 1_000 * H;
+  const aged = Object.fromEntries(many.map((id, i) => [id, { name: "kit", first: 0, last: now - i * H }]));
+  const old = own.peerPrincipals(many, aged);
+  assert(old.omitted === 3 && old.omittedLastSeen === now - own.MAX_PEER_IDS * H, `…and when the newest id left out was last seen — ${old.omittedLastSeen}`);
+  const DAY = 24 * H;
+  assert(
+    !own.omittedInView(now - 5 * DAY, DAY, now) && own.omittedInView(now - 2 * H, DAY, now) && own.omittedInView(now - 5 * DAY, undefined, now),
+    "…ids left out matter to a 24h view only when one was seen inside it; with no window, always (the 29-id warning for ids last seen days ago)",
+  );
   throws(() => own.peerPrincipals(["UKIT"], {}), /not an <owner>\.<actor> principal/, "…a non-principal id fails loud instead of widening the filter");
 
   // The read: a fresh cred per read, signed from the space signer, holding ONLY pinned consumers on
