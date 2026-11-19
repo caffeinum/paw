@@ -46,6 +46,8 @@
  *   clearing a draft with a paste in it, and a paste no line mentions;  AU. Ctrl+L with no draft, then
  *   editing;  AV. a wrapping line of `⚠️`;  AW. the picker over a tall draft at 44 columns;  AX. piped, a
  *   refused multi-line message;  AY. the not-found chooser's pick over a draft.
+ * After #135 (the operator, 2026-11-18): AZ. a line typed in ONE chunk, then the `[N elsewhere]` badge redrawn
+ *   under it (and a chunk ending at the right edge).
  * Every wire DM is asserted byte for byte (check:chat-tty 13 pins the same format).
  * Teardown always runs: tmux kill-server, echoer stop, `paw down`, purgeTestSpace, the space dir.
  */
@@ -139,7 +141,7 @@ function draftUnder(name: string, lines: string[], tag: string | undefined, draf
   const end = tag ? replyEnd(tag)(lines) : -1;
   const s = shown(lines.slice(-(rows.length + 12)));
   if (tag) ok(`${name}: the message is ABOVE the whole draft`, end >= 0 && at > end, s);
-  ok(`${name}: the draft rows and the line being typed stand together, the hint row last`, at >= 0 && at + rows.length === lines.length - 1 && /^draft · \d+ lines/.test(lines[lines.length - 1]!), s);
+  ok(`${name}: the draft rows and the line being typed stand together, the hint row last`, at >= 0 && at + rows.length === lines.length - 1 && /^draft · \d+\b/.test(lines[lines.length - 1]!), s);
   ok(`${name}: each draft row shows once — no row twice, no \`\\\` echo left behind`, once(lines, draft) && !lines.some((l) => /\\$/.test(l)), s);
 }
 /** After Enter: ONE block, one stamp right above its first row, the receipt right under its last. */
@@ -209,8 +211,9 @@ async function send(receipt = WAITING): Promise<{ wire: string[]; lines: string[
   await sleep(300); // a second DM (a split) would land now
   return { wire: dms.slice(before), lines: screen() };
 }
-/** Lines in the draft, as its hint row counts them (held + the one being typed; 1 = no draft). */
-const draftLines = (l: string[]): number => Number(/^draft · (\d+) lines/.exec(l[l.length - 1] ?? "")?.[1] ?? 1);
+/** Lines in the draft, as its hint row counts them (held + the one being typed; 1 = no draft). A footer
+ *  of some lengths cuts a narrow row to `draft · 10 lin…` — the count is still there. */
+const draftLines = (l: string[]): number => Number(/^draft · (\d+)\b/.exec(l[l.length - 1] ?? "")?.[1] ?? 1);
 /** Type `line` with a trailing `\` and Enter: held, once the hint row counts it. */
 async function hold(line: string): Promise<void> {
   const n = draftLines(screen());
@@ -1404,6 +1407,53 @@ async function main(): Promise<void> {
     ok("AY: ONE DM to echoer, text unchanged", JSON.stringify(wire) === JSON.stringify(["ay-one\nay-two\nay-three"]), JSON.stringify(wire));
     ok("AY: …the sent block headed for echoer", blockAt(lines, [`${HEAD}ay-one`, rail("ay-two"), rail("ay-three")]) >= 0, shown(lines.slice(-8)));
     await quit();
+  }
+
+  // AZ. a long line typed in ONE chunk (a dictation tool, an ssh link), then another agent's DM in an
+  //     `@echoer` session bumps the `[N elsewhere]` badge: readline appended the chunk without counting its
+  //     rows, so the badge's refresh climbed none and the line's first rows stayed above a second copy of
+  //     it, the time stamp over the last of them (operator, 2026-11-18). Then a chunk ending exactly at the
+  //     right edge, and another badge.
+  {
+    youId = undefined;
+    await startChat(40, { args: "@echoer --history 0", ready: /^you → echoer> ?$/ });
+    const until = Date.now() + 15_000;
+    while (!youId && Date.now() < until) await sleep(100);
+    if (!youId) throw new Error("echoer never saw `you` on the roster");
+    await sleep(1500);
+    const other = new CotalEndpoint({ space: space!, servers: server, creds: await controlCreds(space!), card: { name: "other", kind: "agent" }, registerPresence: true, consume: true });
+    other.on("error", (e: Error) => console.error("other:", e.message));
+    other.on("warning", () => {});
+    other.on("message", (_m: CotalMessage, d: Delivery) => d.ack());
+    await other.start();
+    try {
+      const long = `az-start ${Array.from({ length: 50 }, (_, i) => `word${i}`).join(" ")} az-end`;
+      type(long);
+      await waitFor(has(/az-end$/));
+      await other.unicast(youId!, "az hidden one");
+      const badged = await waitFor(has(/^you → echoer \[1 elsewhere\]> az-start/));
+      const firstRows = (l: string[]) => l.filter((r) => r.includes("az-start")).length;
+      ok("AZ: a chunk-typed line under a new badge shows ONCE, under the new prompt", firstRows(badged) === 1 && has(/^you → echoer \[1 elsewhere\]> az-start/)(badged), shown(badged.slice(-8)));
+      const { wire, lines } = await send();
+      ok("AZ: ONE DM, text unchanged", JSON.stringify(wire) === JSON.stringify([long]), JSON.stringify(wire));
+      const at = lines.findIndex((l) => l.includes("az-start"));
+      ok("AZ: …after Enter the line is on screen once, its time on the row above it", firstRows(lines) === 1 && at > 0 && STAMP.test(lines[at - 1]!), shown(lines.slice(-10)));
+
+      const prompt = "you → echoer [1 elsewhere]> ";
+      const edge = `ae-start ${"e".repeat(2 * COLS - prompt.length - "ae-start ".length - " ae-end".length)} ae-end`;
+      type(edge);
+      await waitFor(has(/ae-end$/));
+      await other.unicast(youId!, "az hidden two");
+      const edged = await waitFor(has(/^you → echoer \[2 elsewhere\]> ae-start/));
+      await sleep(300);
+      const now = screen();
+      const top = now.findIndex((l) => l.startsWith("you → echoer [2 elsewhere]> ae-start"));
+      ok("AZ: a chunk ending at the right edge: once under the new badge, both rows whole, the hint row under them", now.filter((l) => l.includes("ae-start")).length === 1 && top >= 0 && now[top + 1]?.endsWith(" ae-end") && /^chat /.test(now[now.length - 1] ?? "") && has(/\[2 elsewhere\]/)(edged), shown(now.slice(-8)));
+      key("C-u");
+      await quit();
+    } finally {
+      await other.stop();
+    }
   }
 }
 
