@@ -43,6 +43,30 @@ last release before (1), and none of the four is in it — proved below, not ass
   the KV delete (#691), the endpoint still SENDS a refused watch delete (no local avoidance until #4123 in a
   later release) and a rebind still only `stop()`s the old watch (#3914 later). Same content; pnpm's applier
   refused the 0.100 hunks' offsets, so it was regenerated (`pnpm patch` + `patch -p1` + `pnpm patch-commit`).
+- **core KV-delete hunks after "seats read presence on demand" (0.106, Cotal-AI/Cotal#4864), audited 2026-11-20:
+  none is dead.** Seats no longer watch any KV: the seat endpoint in `mcp.cjs` (and the codex/hermes/opencode
+  bundles) passes `watchPresence: false`, and `connectAndBind` watches channels only when `watchPresence && watchChannels`,
+  so a seat binds no `oc_…` consumer on presence OR channels and reads the roster with `readPresence` (a batched
+  Direct Get). The grants are still exercised by everything else that watches presence:
+  - **agent** (presence + channels): paw's "you" endpoints on a REMOTE space, minted `agent` by `humanEndpointAuth`:
+    `paw chat` (src/chat.ts, `watchPresence: true`), the mailbox (`watchPresence: !!creds`), `paw bind`. Each also
+    watches the channel registry (watchChannels defaults true).
+  - **observer/admin** (presence + channels + membership): `observerEndpoint({watchPresence: true})` (src/feed.ts) for
+    `paw web`, the office daemon, teleport, `paw watch`; membership is watched by cotal's own `view`
+    (`mesh-view.js`) and `channel members` (`watchMembership`), reachable as `paw cotal …`.
+  - **supervisor** (presence): every manager (`manager.js`: `consume: false, watchChannels: false`, presence watched).
+  - **endpoint.js rebind delete**: runs in any of the above (`rebindStalePresenceWatch`, `doWatch && !readOnce`).
+
+  Proof (a private JWT broker, 0.110 `setupSpaceStreams`, real `CotalEndpoint`s, one stale presence key, the watch
+  consumers deleted from a root conn to force nats.js's rebuild): seat shape, either grant → 0 `oc_` consumers, 0
+  violations. Mailbox/chat shape (agent cred): grant minus the rows → 4 `CONSUMER.DELETE.KV_cotal_{presence,channels}`
+  Publish Violations (one rebind, three channel rebuilds); patched → 0. Supervisor shape: minus → 1, patched → 0.
+  Observer rebind (admin): minus → 2, patched → 0 and only the live consumer left; with the endpoint.js hunk removed
+  from node_modules, 0 violations but every retired `oc_…_1` stayed on the broker (3 after 5s) — the hunk is what
+  deletes them. `endpoint.stop()` itself sends no delete (the broker reaps at the inactive threshold), with or
+  without the patch. Gap the patch never covered: `operator` creds also watch presence + channels (`paw who`,
+  `paw dm`'s wait, `paw status`'s roster snapshot, `paw archive`'s 30-min `turnReader`) and hold no KV delete, so a
+  rebind/rebuild there still logs a violation on a remote space; left as is (short-lived, upstream territory).
 - **connector** (bundled-nats goodbye-flush bound + Stop-hook background report): still needed (0.110's
   `mcp.cjs` still awaits the unbounded flush; the Stop hook is paw's). Not minified at 0.110; regenerated the
   same way, same content.
@@ -209,6 +233,8 @@ agent named `vercel`. A manager watches presence only, under its own card name.
   old watch and never deleted its consumer. It now deletes it the way `retireDeliveryLeaseWatch` already
   does (#3966). The seat's cotal MCP server (`mcp.cjs`) bundles its own endpoint code and does not get
   this hunk. Its nats.js rebuild deletes do work, because the permission lives in the JWT the manager mints.
+  (Since cotal 0.106 a seat watches neither bucket at all, so this is moot for seats; see "core KV-delete hunks
+  after seats read presence on demand" under cotal 0.110.0.)
 - **Proof:** `pnpm check:kv-consumer-perms` runs a private JWT + TLS broker (cotal `serverConfig`, a
   self-signed cert, its own log file). For each role it opens a watch the way `kv.watch()` does and drives
   nats.js's own `reset()`:
