@@ -31,6 +31,10 @@ export const KIT_DEFAULTS_FEATURE = "kit-defaults";
  *  `sleep/<name>.yielded`; a spawner waits for it. An older host yields on its tick but never acks. */
 export const SLEEP_YIELD_ACK_FEATURE = "sleep-yield-ack";
 
+/** A persona `runtime:` sent as the spawn's per-seat runtime (cotal >=0.107). An older manager's spawn
+ *  schema has no `runtime` and refuses the op; its pty manager also kept the launching shell's TMUX. */
+export const SEAT_RUNTIME_FEATURE = "seat-runtime";
+
 /** The tree a manager process runs: `<root>/bin/cotald.ts supervise …` from its command line. Pure. */
 export function codeRootFromCommand(cmd: string): string | undefined {
   return /(?:^|\s)(\/\S+)\/bin\/cotald\.ts supervise\b/.exec(cmd)?.[1];

@@ -1146,13 +1146,11 @@ function startManagerDaemon(space: string, server: string, runtime: Runtime): vo
     ...(runtime === "pty" ? [] : ["--runtime", runtime]),
     ...seatCapArgs(resolveSeatCap(space)),
   ]);
-  let env = loggedDaemonEnv();
-  if (runtime === "tmux") {
-    // Pin the manager's tmux to the standard default socket (see defaultTmuxEnv) so its
-    // `cotal-<space>` session is visible to the operator's plain shell + `paw attach`, not stranded
-    // on the launching shell's/surface's inherited socket.
-    env = defaultTmuxEnv(env);
-  }
+  // Pin the manager's tmux to the standard default socket (see defaultTmuxEnv) so its
+  // `cotal-<space>` session is visible to the operator's plain shell + `paw attach`, not stranded
+  // on the launching shell's/surface's inherited socket. EVERY runtime: a pty/cmux manager still
+  // launches a persona `runtime: tmux` seat through cotal's tmux runtime (src/seat-runtime.ts).
+  let env = defaultTmuxEnv(loggedDaemonEnv());
   if (runtime === "cmux") {
     // A manager launched from INSIDE a cmux surface inherits that window's whole anchor —
     // CMUX_SOCKET/SURFACE_ID/PANEL_ID/TAB_ID/WORKSPACE_ID/PORT/AGENT_LAUNCH_* — which goes stale the
@@ -1289,13 +1287,14 @@ function cmuxSocketPassword(): string | undefined {
  *  - pty: no visible UI — no-op.
  */
 export function reapRuntimeUi(space: string, runtime: Runtime | undefined, agentNames: string[] = []): void {
-  if (runtime === "tmux") {
-    // Reap on the SAME (default) socket the manager was pinned to (defaultTmuxEnv) — else a paw
-    // launched with a surface-specific TMUX_TMPDIR would kill-session on the wrong socket and leave
-    // the real cotal-<space> session orphaned.
-    spawnSync("tmux", ["kill-session", "-t", `cotal-${space}`], { stdio: "ignore", env: withToolPath(defaultTmuxEnv(process.env)) });
-    return;
-  }
+  // tmux, for EVERY manager runtime: a persona `runtime: tmux` seat (src/seat-runtime.ts) opens the same
+  // `cotal-<space>` session under a pty/cmux manager, and its shell window outlives the despawn just the
+  // same. Every caller has stopped the manager (which despawned its seats) first, so the session holds
+  // nothing live. Reap on the SAME (default) socket the manager was pinned to (defaultTmuxEnv) — else a
+  // paw launched with a surface-specific TMUX_TMPDIR would kill-session on the wrong socket and leave
+  // the real cotal-<space> session orphaned. Exact-match target (`=`): never a prefix of another space's.
+  spawnSync("tmux", ["kill-session", "-t", `=cotal-${space}`], { stdio: "ignore", env: withToolPath(defaultTmuxEnv(process.env)) });
+  if (runtime === "tmux") return;
   if (runtime === "cmux") {
     if (!agentNames.length) return; // no known agents → nothing safe to close (labels carry no space)
     const bin = cmuxBin();

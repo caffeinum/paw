@@ -254,6 +254,33 @@ Moved verbatim from CLAUDE.md (2026-10-02 split). Index: [CLAUDE.md](../../CLAUD
   connector edit → release C → `paw restart`: "manager code changed (release A → C)", full bounce,
   agent revived as 71535.
 
+## per-seat runtime
+
+(2026-11-20, prototype.) cotal 0.107 (#4867) lets ONE seat run on a runtime other than its manager's:
+the spawn op takes `runtime` (`SPAWN_INPUT_KEYS`), `Manager.runtimeFor(kind)` creates that runtime once
+beside its own and caches it, and the seat's launch records `runtime`, so the manager's own supervise
+restarts, adoption by a successor and reaping all go through the right backend. paw's direct-library
+manager (`installedExtensions: false`) resolves it from the registry bin/cotald.ts already fills
+(`@cotal-ai/tmux`, `@cotal-ai/cmux`), so no `cotal ext add` is needed.
+
+- Persona `runtime: pty|tmux` (src/session.ts `readSeatRuntime`): sent as the spawn's `runtime` by
+  `ensureAgentSpawned`, so every wake/revival path relaunches it there. `cmux` is refused (a detached
+  manager reaches the app only with the env `paw runtime cmux` gives it); a typo fails loud. Gated on
+  the manager feature `seat-runtime`: an older release's spawn schema has no `runtime`.
+- Readers that ask "is there a pane" use `seatRuntimeOf` (src/seat-runtime.ts) = persona over the space's
+  runtime: `paw attach` (tmux window vs cotal's pty attach), `paw status` RUNTIME, `paw type`/`unstick`,
+  the tmux startup-prompt watch. ps rows carry NO runtime, so the persona is paw's only record.
+- The manager is started with `defaultTmuxEnv` for every runtime now (a pty manager launched from inside
+  tmux would otherwise put a tmux seat on the launcher's server), and `reapRuntimeUi` kills the
+  `cotal-<space>` session for every runtime with an exact `=` target (the tmux runtime leaves the
+  session's shell window behind under a pty manager too; without `=` tmux prefix-matches, so a space
+  `pa` would have reaped `cotal-paw`).
+- Proven in an isolated space (`PAW_SEAT_RUNTIME_LIVE=1 pnpm check:seat-runtime`): a pty manager put a
+  `runtime: tmux` haiku agent in a `cotal-<space>` window on the default socket, it answered a DM,
+  `paw type` drove its pane, `paw restart --full` brought it back in tmux, and the reverse (`runtime: pty`
+  under `paw runtime tmux`) ran as a pty seat. Not exercised: a tty `paw attach` into a pty seat of a
+  tmux manager, and `doctor`'s tmux rows (still keyed off the manager's runtime).
+
 ## cotal root
 
 - `src/cotal-root.ts` — `pawCotalRoot(space)`: THE cotal root for a space, replacing every bare

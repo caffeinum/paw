@@ -118,6 +118,10 @@ Each entry: what it is + the most load-bearing rule. Full notes behind the link.
   an equal one (one answering manager, release roots, same runtime) restarts ONLY the mailbox — manager + agents
   keep running on the older release. `--full` = always bounce; `<runtime>` stays full. `check:smart-restart`.
   → [lifecycle.md#smart-restart](docs/notes/lifecycle.md#smart-restart)
+- `src/seat-runtime.ts` — persona `runtime: pty|tmux` = ONE agent on another runtime than its space's manager
+  (cotal ≥0.107 spawn `runtime`, feature `seat-runtime`); every pane reader asks `seatRuntimeOf` (persona over
+  the space's runtime — ps rows carry none). `check:seat-runtime` (+ `PAW_SEAT_RUNTIME_LIVE=1`).
+  → [lifecycle.md#per-seat-runtime](docs/notes/lifecycle.md#per-seat-runtime)
 - `src/cotal-root.ts` — `pawCotalRoot(space)`: one root for a space from any cwd; every daemon spawns
   with that cwd (the team2027 foreign-auth incident). → [lifecycle.md#cotal-root](docs/notes/lifecycle.md#cotal-root)
 - `nodeBin`/`viaTsx`/`withToolPath` — node resolved absolutely; tool dirs backfilled (appended) for
