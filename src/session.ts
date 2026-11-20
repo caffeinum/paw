@@ -125,6 +125,19 @@ export function readSandbox(configPath: string | undefined): SandboxKind | undef
   throw new Error(`paw: sandbox: in ${configPath} is "${v}" — the only sandbox is \`container\` (Apple's container)`);
 }
 
+/** The persona's `runtime:` key — which runtime runs THIS seat, whatever the space's manager runs
+ *  (cotal ≥0.107 picks a runtime per seat; docs/notes/lifecycle.md#per-seat-runtime). `pty` | `tmux`;
+ *  absent ⇒ the manager's own. cmux is refused: a detached manager reaches the app only with the env
+ *  `paw runtime cmux` gives it. Anything else throws: a typo must never boot it somewhere unexpected. */
+export type SeatRuntime = "pty" | "tmux";
+export function readSeatRuntime(configPath: string | undefined): SeatRuntime | undefined {
+  const v = scalar(configPath, "runtime");
+  if (v === undefined) return undefined;
+  if (v === "pty" || v === "tmux") return v;
+  if (v === "cmux") throw new Error(`paw: runtime: cmux in ${configPath} — a single cmux seat isn't supported; \`paw runtime cmux\` runs the whole space there`);
+  throw new Error(`paw: runtime: in ${configPath} is "${v}" — expected pty or tmux`);
+}
+
 /** A sandboxed agent's own state on the host: `$PAW_HOME/spaces/<space>/sandbox/<name>`, beside the
  *  persona `…/spaces/<space>/personas/<name>.md` it is derived from. */
 export function sandboxStateDir(configPath: string): string {

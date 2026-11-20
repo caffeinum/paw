@@ -11,6 +11,7 @@ import { withManagerControl } from "../control.ts";
 import { readForeground } from "../foreground.ts";
 import { actualManagerRuntime, resolveSpace, type Runtime } from "../lifecycle.ts";
 import { readResumeId } from "../session.ts";
+import { seatRuntimeOf } from "../seat-runtime.ts";
 import { ago, readTurnState, toolLabel } from "../status.ts";
 import { interruptTool, sendEscape } from "../unstick.ts";
 import { resolveStopName } from "./stop.ts";
@@ -47,7 +48,8 @@ export async function requireTmuxPane(space: string, name: string, verb: string,
 export function notTmuxMessage(name: string, runtime: Runtime | undefined, verb: string, action: string): string {
   return (
     `paw: "${name}" runs under the ${runtime ?? "unknown"} runtime — ${verb} needs tmux, the only runtime with a pane paw can ${action} ` +
-    `(pty seats have no reachable terminal; cmux tabs belong to the app). \`paw runtime tmux\` switches.`
+    `(pty seats have no reachable terminal; cmux tabs belong to the app). \`paw runtime tmux\` switches the space, ` +
+    `\`runtime: tmux\` in its persona (then a restart) just this agent.`
   );
 }
 
@@ -62,7 +64,7 @@ export async function liveSeatRuntime(space: string, name: string, action: strin
     return ((ps.data as PsRow[]) ?? []).find((r) => r.name === name);
   });
   if (!row || !psRowAlive(row)) throw new Error(`paw: "${name}" isn't live — there is no terminal to ${action} (\`paw status\`)`);
-  return actualManagerRuntime(space);
+  return seatRuntimeOf(space, name, actualManagerRuntime(space));
 }
 
 async function unstick(argv: string[]): Promise<void> {

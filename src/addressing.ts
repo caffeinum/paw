@@ -48,12 +48,12 @@ import { checkKitArgs, ensureKitBinary, isKitProvider, KIT_AGENT, preflightKitAr
 import { HERMES_AGENT } from "./hermes-profile.ts";
 import { ACP_AGENT } from "./acp-agent.ts";
 import { resolveAcpHost } from "./acp-host.ts";
-import { isClaudeHarness, personaTranscriptRoots, personaValue, readAgentType, readClaudeArgs, readCwd, readKitArgs, readResumeId, readSandbox, readShareTools, transcriptMtime } from "./session.ts";
+import { isClaudeHarness, personaTranscriptRoots, personaValue, readAgentType, readClaudeArgs, readCwd, readKitArgs, readResumeId, readSandbox, readSeatRuntime, readShareTools, transcriptMtime } from "./session.ts";
 import { assertSandboxable, assertSandboxHostReady, sandboxSpawnFields } from "./sandbox.ts";
 import { defaultTmuxEnv, managerLogPath, readRuntimeMarker } from "./lifecycle.ts";
 import { logOffset, seatDiagnostic, seatExit, seatRetirement } from "./manager-log.ts";
 import { pidAlive, seatPids } from "./seat-witness.ts";
-import { assertManagerFeature, codeRootFeatures, describeCodeRoot, KIT_ARGS_FEATURE, KIT_DEFAULTS_FEATURE, runningManagerRoot, SLEEP_YIELD_ACK_FEATURE } from "./manager-features.ts";
+import { assertManagerFeature, codeRootFeatures, describeCodeRoot, KIT_ARGS_FEATURE, KIT_DEFAULTS_FEATURE, runningManagerRoot, SEAT_RUNTIME_FEATURE, SLEEP_YIELD_ACK_FEATURE } from "./manager-features.ts";
 import { ensureBypassConsent, managedLaunchesBypass } from "./bypass-consent.ts";
 import { readStartupPrompt, tmuxSplit, tmuxSplitAdvice, type StartupScreen } from "./native-attach.ts";
 import { HOST_RE } from "./url.ts";
@@ -1355,6 +1355,14 @@ export async function ensureAgentSpawned(
     // Which CONNECTOR runs this agent (`agent:` in the persona; absent = the default claude). Sent as
     // the spawn op's `agent` so a codex/opencode agent respawns as ITSELF on every wake/revival path.
     if (agentType) args.agent = agentType;
+    // Which RUNTIME runs this seat (`runtime:` in the persona; absent = the manager's own). Durable in the
+    // persona so every wake/revival path relaunches it there, and the manager's own supervise restart
+    // reuses the runtime its launch recorded.
+    const seatRuntime = readSeatRuntime(config);
+    if (seatRuntime) {
+      assertManagerFeature(opts.space, SEAT_RUNTIME_FEATURE, `"${opts.name}" (runtime: ${seatRuntime} in ${config})`);
+      args.runtime = seatRuntime;
+    }
     if (kit) {
       // kit publishes no AG-UI event plane (the manager refuses an armed spawn on a connector without
       // one), and the manager only resolves its binary — building it is the CLI's job, here.
@@ -2072,7 +2080,7 @@ export function startupWatch(
           pretrustFolder(folder);
           once("erased", `paw: "${name}": ~/.claude.json had lost the trust entry for ${folder} (a concurrent claude rewrite) — re-wrote it`);
         }
-        if ((deps.runtime ?? readRuntimeMarker(space)) !== "tmux") return;
+        if ((deps.runtime ?? readSeatRuntime(personaFilePath(space, name)) ?? readRuntimeMarker(space)) !== "tmux") return;
         const seen = readStartupPrompt(space, name, deps.tmuxEnv ?? defaultTmuxEnv(process.env));
         if (!seen) return;
         last = seen.screen;

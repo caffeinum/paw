@@ -17,6 +17,7 @@ import { agentNamesForFolder, canonicalDir, humanEndpointAuth, listAgents, perso
 import { withManagerControl, type ManagerControl } from "./control.ts";
 import { listForeground } from "./foreground.ts";
 import { ensure, ensureSpaceFor, formatHubLine, hubState, READY_PROBE_MS, readRuntimeMarker, resolveSpace, type HubState, type Runtime } from "./lifecycle.ts";
+import { seatRuntimeOf } from "./seat-runtime.ts";
 import { writeJson } from "./stdout.ts";
 import { liveSessionProcs, liveSessionProcsMany, nameForSession, readIndex as readSessionIndex, type LiveSessionProc } from "./named.ts";
 import { KIT_AGENT } from "./kit.ts";
@@ -1089,7 +1090,7 @@ export async function collectStatus(space: string, ctl?: ManagerControl, opts: C
       // A hibernated agent (`paw sleep`) is offline on purpose and a DM wakes it — say so, not "offline".
       mesh = (!s.live && sleepState(space, name)) || s.text;
       live = s.live;
-      rowRuntime = live ? runtime : undefined;
+      rowRuntime = live ? seatRuntimeOf(space, name, runtime) : undefined;
     }
     const ros = rosterByName.get(name);
     const host = machineOf({

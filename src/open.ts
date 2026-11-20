@@ -26,6 +26,7 @@ import { contractMismatchHint } from "./contract-mismatch.ts";
 import { runTeed } from "./cotal-tee.ts";
 import { isAddressHandle, resolveAddress } from "./address.ts";
 import { cotaldViaNode, ensure, readRuntimeMarker, resolveSpace } from "./lifecycle.ts";
+import { seatRuntimeOf } from "./seat-runtime.ts";
 import { findMesh } from "@cotal-ai/workspace";
 import { pawCotalRoot } from "./cotal-root.ts";
 import { remoteCotalArgv } from "./dispatch.ts";
@@ -166,8 +167,8 @@ export async function attachResolved(
   }
 
   // The manager watches tmux/cmux agents natively (no ws pty — its `attach` op throws there), so the
-  // attach path is per-runtime. paw records what runtime it started the manager under; branch on it.
-  const runtime = readRuntimeMarker(space);
+  // attach path is per-runtime: the seat's own (persona `runtime:`), else the one paw started the manager under.
+  const runtime = seatRuntimeOf(space, name, readRuntimeMarker(space));
 
   // A window for this agent is already open in tmux → attach to IT, without asking the manager first.
   // Attaching is about a terminal, and the terminal is right there; routing through the manager's
