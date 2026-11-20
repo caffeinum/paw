@@ -100,6 +100,10 @@ Moved verbatim from CLAUDE.md (2026-10-02 split). Index: [CLAUDE.md](../../CLAUD
   and no leftover consumer under the patched core, the unpatched grant reproduces both, and the patched cred
   still cannot touch CHAT/DM/manager-KV consumers or purge a stream. ~5s. See
   [cotal-dependency.md#kv-watch-consumer-delete-patch](cotal-dependency.md#kv-watch-consumer-delete-patch).
+  `scripts/e2e-echo-renewal.ts` (`COTAL_BIN=… node scripts/e2e-echo-renewal.ts`, `E2E_TTL` default 20) — a
+  private JWT + TLS broker: a static paw-signed connection is cut at its cred's `exp`, while chat's `chat-echo`
+  (`startEcho`, a `CotalEndpoint` with a creds SOURCE) still delivers after 2×TTL — cotal renews it, paw has no
+  timer. ~60s. Verified against a cotal-ai@0.100.2 broker (team2027's).
   `scripts/check-office.ts` (`pnpm check:office`) — the agent-office bridge: mapping, link file, engine against a
   fake office; a real-office section when `PAW_OFFICE_TEST_URL` + `PAW_OFFICE_TEST_ADMIN_KEY` are set.
   `scripts/e2e-office.ts` (same env) — isolated stack + stub agents through the mailbox's bridge into a real
