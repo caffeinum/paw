@@ -344,6 +344,23 @@ manager that agrees with itself. What changed:
   leftover manager is answering and `paw restart --space <s>` leaves one.
 Test: `check:contract-mismatch` (the live texts, the pin decision, the `--on` argv, the tee).
 
+**Re-checked at cotal 0.110 (2026-11-19): keep `localSeatPin` and the hint.** cotal 0.102 (#4815) and
+0.109.21 (#4946) "ask each live manager instead of the exchange" live ONLY on the user-auth arm:
+`locateSeat` (`@cotal-ai/cli/dist/commands/agents.js` ~L204) asks each manager pinned (`askYourManagers`)
+only after `resolveControlTarget` throws the exchange's `N live remote manager candidates` refusal
+(`severalLive`, `lib/manager-choice.js` L10/L240), which only a `user` mesh produces. paw's meshes are
+`open` (local) or `auth` (a remote record root resolves through `localTarget` → `mode: auth`,
+`@cotal-ai/workspace/dist/mesh-target.js`), so `cotal attach|stop|input` without `--on` still take the
+0.100 path: `scatterManager` → `askManagerScatterEp` (`lib/control.js` L580) → a CLASS `resolveService`
+(no instanceId) and every instance gets the first answerer's digests. What 0.110 changed on that path is
+`locateSeatIn`: a refusing instance makes the locate `unknown` and a name held on two managers is
+`several`, both now an `AgentManagerUnsettled` — a manager QUESTION on a tty (`pickManager`), a refusal
+off one — where 0.100 picked the first host. `localSeatPin`'s `--on` skips all of it for a seat this
+machine hosts. Mixed paw releases on 0.100 + 0.110 don't mismatch (`ps` digest identical); a ≤0.84
+manager still does. paw's own rail (`pinFor`, src/control.ts: despawn/input/inspect for `paw stop`/
+`paw type`) is a POLICY pin — never act on another machine's seat — not a locate, so cotal's change
+doesn't touch it either.
+
 ## native attach
 
 - `src/native-attach.ts` — `attachTmux(space, name)` + `tmuxSession(space)` (= `cotal-<space>`): the

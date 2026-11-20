@@ -69,7 +69,9 @@ last release before (1), and none of the four is in it — proved below, not ass
   `supervise` prints a deprecation line again (0.105, paw keeps it); telemetry still opt-out (0.109.4: the
   opt-out env also reaches spawned agents); #1629 self-exec guard; `--no-manager` mesh boot; the stream list
   `deleteSpace` removes (prune's mirror unchanged); spaces selected inside a project folder (0.100.2/0.105 —
-  paw passes `--space`/`--server`; `e2e-remote`'s attach from a record root passes).
+  paw passes `--space`/`--server`; `e2e-remote`'s attach from a record root passes); 0.102/0.109.21's
+  "stop/attach/input ask each live manager" (#4815/#4946) is user-auth only, so paw's `--on` pin for
+  `paw attach` stays ([agents.md#contract-mismatch-mixed-cotal-versions-in-one-space-2026-10-28](agents.md#contract-mismatch-mixed-cotal-versions-in-one-space-2026-10-28)).
 
 ### Verification
 
