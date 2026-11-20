@@ -513,6 +513,8 @@ hub.log was already stamped by the hub itself. Readers that match line STARTS go
 - `PAW_PERMISSION` — override the default `bypassPermissions` (one of default/acceptEdits/bypassPermissions/plan).
 - `PAW_MODEL` — default model for spawned agents (cotal's per-agent `--model`); a `--model` flag on
   `paw chat`/`paw open` overrides it. Blank = unset (no fabricated default).
+- `PAW_MAX_SEATS` — opt-in manager seat cap ([seat cap](#seat-cap)): `PAW_MAX_SEATS` > `~/.paw/spaces/<s>/max-seats`
+  > unlimited; set-but-empty or garbage fails loud.
 - `PAW_RUNTIME` — one-shot override of the manager runtime: `pty` (default; headless warm agents),
   `tmux`, or `cmux` (each agent in its own tab/pane). `bin/cotald.ts` imports `@cotal-ai/{tmux,cmux}`
   so the runtimes register. **Precedence: `PAW_RUNTIME` env > the space's sticky preference file
@@ -658,3 +660,21 @@ ssh can reach as the same user. The job runs in the "Aqua" session, with the key
 
 Verified live on the mini from ssh: a test agent in an isolated space answered, which means it was logged
 in. After `paw restart` it answered again.
+
+## seat cap
+`src/seat-cap.ts` (2026-11-20). cotal 0.103's per-owner live-seat ceiling (Cotal-AI/Cotal#4822, `Manager`'s
+`seatCap` option; `manager/dist/manager.js` `seatCapRefusal`/`ownerSeats`/`launchOwner`). On every paw mesh the
+owner is cotal's one `local` owner (`DEV_OWNER`: open mesh, static JWT and the signer-authed remote spaces; only a
+user-auth mesh splits owners), so for paw it reads "at most N live seats on THIS machine's manager for this space"
+— `global` included, and reservations count, so a concurrent burst cannot overshoot. A brake on a runaway spawn
+loop (paw's own revivals, an agent's `cotal_spawn` loop); `awaitSpawnHeadroom` paces by load, this bounds count.
+- `PAW_MAX_SEATS` env > `~/.paw/spaces/<s>/max-seats` (a file, so a launchd/keeper start keeps it) > unlimited.
+  `startManagerDaemon` adds `--seat-cap <n>` only when set (an uncapped command line is unchanged); bin/cotald.ts
+  parses it with cotal's `parseSeatCapFlag` and passes `seatCap` to `new Manager`. NOT cotal's own sticky
+  `manager.<s>.seat-cap.json` record — paw's supervise is a direct `Manager`, paw's setting is the one source.
+- A manager option, not a live knob: `ensure()` warns (never bounces) when the running cap (read off its command
+  line) differs; `paw restart` plans a FULL restart for it; `paw restart --full` applies it.
+- Refusal: `resource-exhausted` + `ai.cotal.ep.seat-cap {owner, seats, cap}`, stated `not-executed` (no name, creds
+  or process). `control.ts` carries it as `ManagerReply.seatCap`; the spawn path throws `seatCapRefusal`'s ✕ problem
+  line (stop one, or raise the cap + `paw restart --full`). `check:seat-cap` (pure), `scripts/e2e-seat-cap.ts` (live,
+  isolated, real haiku: cap 2, third refused, stop one → admitted).

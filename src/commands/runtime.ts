@@ -29,6 +29,7 @@ import {
   RUNTIMES,
   type Runtime,
   actualManagerRuntime,
+  actualManagerSeatCap,
   agentSelfName,
   assertRuntimeUsable,
   ensure,
@@ -53,6 +54,7 @@ import { assertManagerFeature, KIT_ARGS_FEATURE, KIT_DEFAULTS_FEATURE, runningMa
 import { planRestart, releaseManagerFingerprint, type RestartFacts } from "../manager-fingerprint.ts";
 import { daemonRoot, releaseIdOfRoot } from "../release.ts";
 import { resolveStopName } from "./stop.ts";
+import { resolveSeatCap } from "../seat-cap.ts";
 import {
   clearReviveList,
   describeFailedRestart,
@@ -173,6 +175,8 @@ async function restartFacts(space: string, full: boolean, runtime: Runtime | und
     managerRoot: attempt(() => runningManagerRoot(space, managerPids), "no supervise process"),
     runningRuntime: managerPids.length ? actualManagerRuntime(space, managerPids) : undefined,
     preferredRuntime: resolveRuntime(space),
+    runningSeatCap: managerPids.length ? actualManagerSeatCap(space, managerPids) : undefined,
+    preferredSeatCap: resolveSeatCap(space),
     targetRoot: attempt(daemonRoot, "none"),
     releaseOf: (root) => releaseIdOfRoot(root),
     fingerprintOf: (root) => releaseManagerFingerprint(root).fingerprint,

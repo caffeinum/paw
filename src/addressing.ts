@@ -61,6 +61,7 @@ import { personalityFor, readPersonality } from "./personality.ts";
 import { GRANT_KEY, readOptIn, shareSelection } from "./mcp-select.ts";
 import type { ManagerControl, ManagerReply } from "./control.ts";
 import { resolveSpace } from "./space.ts";
+import { seatCapRefusal } from "./seat-cap.ts";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -1402,6 +1403,10 @@ export async function ensureAgentSpawned(
       // restartAgent before calling us) has left it OFFLINE; say that first, then the one command.
       const stopped = restartedFrom ?? (opts.reuseUnmanaged === false ? {} : undefined);
       throw new Error(retirementRefusal({ space: opts.space, name: opts.name, stopped, waitedMs: retireMs, error: reply.error ?? "", opId: reply.blocked?.opId }));
+    }
+    if (!reply.ok && reply.seatCap) {
+      // Refused before any effect (cotal states `not-executed`): no name, no creds, no process.
+      throw new Error(seatCapRefusal({ space: opts.space, name: opts.name, facts: reply.seatCap, defaultSpace: opts.space === resolveSpace() }));
     }
     if (!reply.ok) {
       const err = reply.error ?? "no reply";

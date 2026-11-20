@@ -96,6 +96,7 @@ export interface EnsureOpts {
 /** The single space all paw agents share unless explicitly overridden. */
 import { resolveSpace } from "./space.ts";
 import { PS_ENV } from "./ps-env.ts";
+import { resolveSeatCap, seatCapArgs, seatCapOfCommands, seatCapText, MAX_SEATS_ENV } from "./seat-cap.ts";
 export { resolveSpace };
 
 /** The manager runtimes bin/cotald.ts registers (pty ships with the manager; tmux/cmux are the
@@ -1143,6 +1144,7 @@ function startManagerDaemon(space: string, server: string, runtime: Runtime): vo
     "--server",
     server,
     ...(runtime === "pty" ? [] : ["--runtime", runtime]),
+    ...seatCapArgs(resolveSeatCap(space)),
   ]);
   let env = loggedDaemonEnv();
   if (runtime === "tmux") {
@@ -1441,12 +1443,17 @@ export function classifyDaemonListing(space: string, stdout: string): { manager:
  * manager proc is alive.
  */
 export function actualManagerRuntime(space: string, pids: number[] = managerProcs(space)): Runtime | undefined {
-  return runtimeOfCommands(
-    pids.map((pid) => {
-      const res = spawnSync("ps", ["-o", "command=", "-p", String(pid)], { encoding: "utf8" });
-      return res.status === 0 ? res.stdout : "";
-    }),
-  );
+  return runtimeOfCommands(commandsOf(pids));
+}
+/** The seat cap the manager ACTUALLY runs with, off its live command line (undefined = unlimited). */
+export function actualManagerSeatCap(space: string, pids: number[] = managerProcs(space)): number | undefined {
+  return seatCapOfCommands(commandsOf(pids));
+}
+function commandsOf(pids: number[]): string[] {
+  return pids.map((pid) => {
+    const res = spawnSync("ps", ["-o", "command=", "-p", String(pid)], { encoding: "utf8" });
+    return res.status === 0 ? res.stdout : "";
+  });
 }
 /** {@link actualManagerRuntime} over command lines already in hand (a {@link scanDaemons} listing). */
 export function runtimeOfCommands(cmds: Iterable<string>): Runtime | undefined {
@@ -1818,6 +1825,16 @@ async function ensureManagerUp(space: string, server: string, switchRuntime = fa
           `paw: adopting an existing manager paw doesn't own — its runtime may not be ${runtime}. ` +
             `\`paw down\` then re-run to force ${runtime}.`,
         );
+      }
+      // A seat cap is a manager option: like the runtime, never bounce the fleet implicitly to apply it.
+      if (ownedByUs) {
+        const want = resolveSeatCap(space);
+        const has = seatCapOfCommands(scan.manager.values());
+        if (want !== has)
+          console.error(
+            `paw: ⚠ the manager runs with seat cap ${seatCapText(has)} but ${MAX_SEATS_ENV} / the space's max-seats says ${seatCapText(want)} — ` +
+              `NOT restarting implicitly. \`paw restart --full --space ${space}\` applies it.`,
+          );
       }
       return scan.mailbox;
     }
