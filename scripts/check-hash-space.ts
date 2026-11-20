@@ -215,7 +215,7 @@ assert(eq(h("stop", ["x", "--", "y#team2027"]), ["x", "--", "y#team2027"]), "not
 // every listed command's slot table is exercised by the CLI pass below
 const CLI_ADDRESS: Record<string, string[]> = {
   chat: ["@x#nosuch"], dm: ["x#nosuch", "hi"], open: ["x#nosuch"], attach: ["x#nosuch"], log: ["x#nosuch"],
-  sessions: ["x#nosuch"], stop: ["x#nosuch"], rm: ["x#nosuch"], rename: ["x#nosuch", "y"], adopt: ["./x#nosuch"],
+  sessions: ["x#nosuch"], stop: ["x#nosuch"], rm: ["x#nosuch"], archive: ["x#nosuch"], unarchive: ["x#nosuch"], rename: ["x#nosuch", "y"], adopt: ["./x#nosuch"],
   status: ["x#nosuch"], start: ["x#nosuch"], sleep: ["x#nosuch"], inbox: ["x#nosuch"], restart: ["x#nosuch"],
   unstick: ["x#nosuch"], type: ["@x#nosuch", "hi"], nice: ["x#nosuch", "5"], persona: ["x#nosuch"], optimize: ["x#nosuch"],
   top: ["x#nosuch"], tidy: ["x#nosuch"], launchd: ["install", "x#nosuch"], ask: ["role#nosuch", "q"],

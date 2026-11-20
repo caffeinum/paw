@@ -445,6 +445,78 @@ CLI-side only (ensureAgentSpawned runs in the caller) — live without a release
   Fails loud if the target matches none. In NEEDS_MANAGER (to stop a live agent; no-op if offline).
   Test: `check:rm`. Pairs with the always-new birth semantics: `paw rm` then `paw chat --fresh` for a
   clean reset.
+- **Run by an agent on itself** (`scripts/e2e-archive.ts` part A, 2026-11-20, pty runtime — what the live spaces run;
+  three runs): the guess was that the stop kills the command before it deletes the persona. Refuted: the seat is
+  reaped (`seat reaped: rm-self … this manager stopped it`) in the same second the command prints `✓ removed …
+  persona deleted` and exits 0 — the Bash child outlives the reap. What it does do is stop the agent inside its own
+  turn, keep nothing to restore from, and leave its folder, cron jobs and GitHub watches; an agent retiring itself
+  uses `paw archive` (below). tmux/cmux runtimes were not measured.
+
+## paw archive
+
+- `src/archive.ts` (+ `archive-store.ts`, `archive-worktree.ts`) — `paw archive [<name|folder>] [--keep-worktree]
+  [--now]`, `paw archive --list`, `paw unarchive <name>` (2026-11-20): **retire** an agent whose task is done — the
+  `/hire` flow's last step (a bead agent owns its task through PR, merge and a prod check, then archives itself).
+  rm = forget; archive = retire, with everything kept to bring it back.
+- **Self vs outside.** No name inside an agent = itself (`COTAL_NAME`/`COTAL_SPACE`, else the registered agent whose
+  pinned session an ancestor process holds — `selfIn`/`callerIs`; an agent of another space is told to name
+  itself). Self: every refusal runs in the caller, which prints "archived once THIS turn ends — the reply you write
+  now is your last" + a PREVIEW of the folder verdict (so it can still push/clean), then `spawnDetachedHandoff(space,
+  "archive", …, {key: name, cwd: $PAW_HOME})` — keyed per agent (`archive.<name>.pid|log`: two agents may retire at
+  once; the HandoffKind helpers gained `key` + `cwd`), cwd outside the folder it may remove. `--now` on yourself is
+  refused. From outside (a shell, or another agent such as the hirer) archive runs inline.
+- **Space.** A defaulted space yields to the caller's `COTAL_SPACE` (`archiveSpace`); `--space`/`#space`/PAW_SPACE
+  stand. Done in archive.ts, NOT by adding the verbs to `CALLER_SPACE_VERBS`: src/space.ts is in the manager's
+  import graph, and touching it makes the release need a full restart (check:doctor's A1 caught it).
+- **The wait.** The child (and an outside archive without `--now`) waits until the turn has ENDED: `collectStatus`'s
+  row over ONE presence watch for the whole wait (a fresh observer per poll leaves KV consumers behind — beads-eic),
+  i.e. presence `idle` and not `busy` (the transcript's turn markers; kit/hermes/acp by presence). Ended must hold
+  `IDLE_SETTLE_MS` (8s); a `paw restart` in flight counts as not ended; bound `IDLE_WAIT_MS` (30m). Past it nothing
+  is stopped or archived; the child DMs the agent "gave up" and logs it. Never a stop mid-turn.
+- **Retire** (`retire`, injectable deps): drop it from `restart-revive.json` BEFORE the stop's ensure() (an ensure
+  that brings the manager up revives that list) → stop (`stopAgent`, or SIGTERM + unregister a foreground `paw
+  claude`; sandbox reaped) → wait ≤30s for its session to be let go → under the registry lock the persona MOVES to
+  `spaces/<s>/personas/archived/<name>.<stamp>.md` beside `<name>.<stamp>.json` (at, by, folder, extra, harness,
+  session, transcript path, stopped, worktree verdict, what came off the revival paths). The persona IS the
+  registration (its `cwd:` is the folder mapping), so this alone unregisters it; every personas-dir reader lists
+  top-level `*.md` only. The transcript is never touched.
+- **Nothing brings it back by itself** (each proven in `check:archive`):
+  - `live.json` — the name is dropped (`dropFromLiveRecord`); the keeper only re-records names with a persona.
+    `paw start --boot` therefore never wants it; a fleet plist that BAKES the name skips it as "not registered"
+    (said in the archive output — after an unarchive the plist would start it at login again).
+  - `restart-revive.json` — dropped (`dropFromReviveList`; a leftover name would make the next revive fail loud).
+    An archive is refused while a `paw restart` is in flight.
+  - cron — its jobs move into the record (`takeCronJobs`); a stray fire would be `unfireable` (not registered).
+  - GitHub relay — its watches + mutes move into the record; its follower rows and queued DMs are dropped under the
+    sweep lock (`forgetAgent`); branch/author follows read registered personas.
+  - sleep — its sleep record is cleared (a DM to a stand-in can't wake it; the host's wake also checks
+    `agentRecord`).
+  - office — nothing to do: the bridge walks a row-less agent out and forgets its token on its next pass.
+  - keeper revive paths, `paw start [<name>]`, DM/chat wakes, the artil relay, `paw status` — all read registered
+    personas; there is none. `paw restart` revives only what ps shows running.
+  - refused: a teleported / another machine's record (`assertMutableByName`), a persona `machine:`-stamped for another
+    machine on a remote space, and the keeper's own `global` (its tick re-creates it every minute).
+- **The folder** (`judgeWorktree`) is removed only when ALL hold, else kept with every failing rule said: a LINKED git
+  worktree at its root (never a main checkout, a subfolder, a non-git folder; not `locked`); `git status --porcelain`
+  clean apart from untracked `node_modules` (a symlinked one shows as untracked; ignored files are git's business —
+  `git worktree remove` takes them too); HEAD in `origin/<default>` (origin/HEAD, else `ls-remote --symref`; fetched
+  first, best-effort) OR exactly the `headRefOid` of a merged PR of its branch (`gh pr list --head <b> --state
+  merged`; the branch name alone never counts); nothing unpushed (`rev-list HEAD --not --remotes` empty, or HEAD is
+  that merged PR's head — GitHub has it though it deleted the branch); no live process with its cwd in it (`lsof -d
+  cwd`, after ≤15s for the stopped agent's processes to leave); no registered agent in any space with its folder
+  there or below. Removal = `git worktree remove [--force only for node_modules]` + `git worktree prune`, branch kept;
+  the record keeps main checkout, branch, head and a node_modules link target. `--keep-worktree` skips it.
+- **`paw unarchive <name>`** restores the NEWEST archive of that name; refused (nothing changed) when the name is
+  taken now, another machine runs it on the mesh, its session is pinned by another persona now (two writers), or its
+  folder has another default agent now. A folder paw removed is put back with `git worktree add <path> <branch>`
+  (detached: `--detach <head>`) + the node_modules link; a deleted branch or a folder removed by hand fails loud with
+  the exact command. Persona back under the registry lock; the record moves to `archived/restored/`. Left OFFLINE:
+  cron jobs and GitHub watches stay in the record (said), so nothing schedules it; `paw start <name>` / a chat
+  resumes its pinned session.
+- Tests: `check:archive` (hermetic: args, self/outside/child, the wait + bound, every folder rule on real git repos
+  with a local bare origin and a faked gh, every revival path, unarchive and its refusals) and `scripts/e2e-archive.ts`
+  (own nats, real haiku agents in merged worktrees: A = self-`rm`, B = self-archive as the last step, restart / start /
+  start --boot / keeper tick don't revive it, C = unarchive + start resumes the session, still knows a word).
 
 ## named sessions
 

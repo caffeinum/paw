@@ -360,6 +360,18 @@ export function moveCronJobs(fromSpace: string, from: string, toSpace: string, t
   return taken.map((j) => j.id);
 }
 
+/** Take every job of `agent` out of `space`'s store (`paw archive`: the keeper must not keep firing at a
+ *  retired name — those fires fail as "not registered", and after an unarchive they would wake it). Returns
+ *  the jobs, kept by the caller in the archive record. No store → nothing to take, nothing written. */
+export function takeCronJobs(space: string, agent: string): CronJob[] {
+  if (!existsSync(cronPath(space))) return [];
+  return updateStore(space, (s) => {
+    const mine = s.jobs.filter((j) => j.agent === agent);
+    s.jobs = s.jobs.filter((j) => j.agent !== agent);
+    return mine;
+  });
+}
+
 /** Every space under $PAW_HOME that has a cron store. */
 export function spacesWithCron(): string[] {
   const dir = join(pawHomeDir(), "spaces");

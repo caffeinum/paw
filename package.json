@@ -43,6 +43,7 @@
     "check:rail": "node scripts/check-rail.ts",
     "check:rename": "node scripts/check-rename.ts",
     "check:rm": "node scripts/check-rm.ts",
+    "check:archive": "node scripts/check-archive.ts",
     "check:spawn-env": "node scripts/check-spawn-env.ts",
     "check:status": "node scripts/check-status.ts",
     "check:stdout": "node scripts/check-stdout.ts",

@@ -729,3 +729,35 @@ export async function flushOutbox(deps: Pick<SweepDeps, "send" | "log">): Promis
   if (out.length) updateStore((s) => void (s.outbox = [...kept, ...s.outbox.slice(out.length)]));
   return { sent, failed };
 }
+
+/**
+ * `paw archive`: drop everything the relay holds for `agent` in `space` — its watches and mutes (returned, kept
+ * in the archive record), its follower rows on every PR, and the DMs still queued for it. The outbox and the PR
+ * rows belong to a sweep ({@link flushOutbox} writes back by position), so those go under the sweep lock; a sweep
+ * still running after `lockWaitMs` leaves them (`queuedLeft`): such a DM fails as "not registered" and is dropped
+ * after {@link MAX_ATTEMPTS}. Branch and author follows need nothing: they are read off registered personas.
+ */
+export async function forgetAgent(space: string, agent: string, lockWaitMs = 60_000): Promise<{ watches: Watch[]; mutes: Follow[]; queued: number; queuedLeft: number }> {
+  if (!existsSync(storePath())) return { watches: [], mutes: [], queued: 0, queuedLeft: 0 };
+  const mine = (f: { space: string; agent: string }) => f.space === space && f.agent === agent;
+  const drop = (withSweepState: boolean) =>
+    updateStore((s) => {
+      const watches = s.watches.filter(mine);
+      const mutes = s.mutes.filter(mine);
+      s.watches = s.watches.filter((w) => !mine(w));
+      s.mutes = s.mutes.filter((m) => !mine(m));
+      let queued = 0;
+      if (withSweepState) {
+        queued = s.outbox.filter(mine).length;
+        s.outbox = s.outbox.filter((o) => !mine(o));
+        for (const pr of Object.values(s.prs)) pr.subs = pr.subs.filter((x) => !mine(x));
+      }
+      return { watches, mutes, queued, queuedLeft: withSweepState ? 0 : s.outbox.filter(mine).length };
+    });
+  try {
+    return await withFileLockAsync(`${storePath()}.sweep.lock`, async () => drop(true), { maxWaitMs: lockWaitMs });
+  } catch (e) {
+    if (!/timed out after \d+s acquiring lock/.test((e as Error).message)) throw e;
+    return drop(false);
+  }
+}

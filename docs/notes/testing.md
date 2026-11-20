@@ -30,6 +30,13 @@ Moved verbatim from CLAUDE.md (2026-10-02 split). Index: [CLAUDE.md](../../CLAUD
   malformed/unsafe; pure `ghCloneArgs`; `ensureBranch` against a pre-created local repo (hermetic, no clone).
   `scripts/check-rm.ts` (`pnpm check:rm`) — `removeFolder` (registry RMW + idempotent) and `resolveRemoval`
   by name / folder / orphaned-persona, fail-loud on an unknown target (hermetic, no daemons).
+  `scripts/check-archive.ts` (`pnpm check:archive`) — `paw archive`/`unarchive`: args, self vs outside vs the
+  detached child, the idle wait + its bound (fake clock), every worktree-safety rule on real git repos (local bare
+  origin, gh faked, a real `lsof`), retire against every revival path (live.json, revive list, cron, GitHub relay,
+  sleep, office, `paw start --boot`), unarchive + each refusal, the CLI. Temp HOME + PAW_HOME, no daemons, no network.
+  `scripts/e2e-archive.ts` — real haiku agents on an own nats-server: self-`rm` measured, self-archive as the last
+  step, nothing revives it, unarchive + start resumes the session. Needs a SHORT PAW_HOME (`mktemp -d /tmp/pah.XXXX`:
+  the hub socket path must fit 103 bytes).
   `scripts/check-foreground.ts` (`pnpm check:foreground`) — the foreground registry (register/read/list +
   stale-pid self-reap), the `ensureAgentSpawned` reuse-guard ({spawned:false} for a live foreground name),
   and `paw claude`'s pure helpers (`peelArgs`, `deriveSessionIntent`, `stripSessionFlags`); hermetic, no daemons.
