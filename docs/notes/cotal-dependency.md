@@ -2,6 +2,107 @@
 
 Moved verbatim from CLAUDE.md (2026-10-02 split). Index: [CLAUDE.md](../../CLAUDE.md)
 
+## cotal 0.110.0
+
+**Bumped 0.100.0 → 0.110.0 on 2026-11-19** (operator's pick). 0.110.0 was published 2026-10-27, past the
+7-day min-release-age gate, so there is no `minimumReleaseAgeExclude` any more (0.100.0's went with it).
+Same eleven packages (no renames), nats.js still `^3.4.0`, bundled nats-server still
+`@eplightning/nats-server-*@^2.14.0`, node floor unchanged (`>=22`; the 22.10 floor arrives at 0.115.4).
+
+**Why 0.110 and not the latest.** The operator asked for the latest (0.170.0) first; that bump is the draft
+caffeinum/paw#138, whose `docs/notes/cotal-dependency.md` lists what 0.111–0.170 need before paw can take
+them. In short: (1) 0.111 refuses a space whose `KV_cotal_issued_<s>`/`accepted` stores predate bounded
+retention, which every space a 0.100 manager ran has (`paw`, `team2027`) — a per-space
+`--recreate-issued-stores` migration with every manager stopped, which the team2027 broker (0.84) can't
+run; (2) 0.145 refuses a managed claude launch unless `~/.claude.json` or the folder's `.mcp.json` declares
+an MCP server `cotal`; (3) 0.165 refuses persona frontmatter `cwd:`, paw's folder key; (4) 0.169 binds a
+seat's control socket only in a 0700 directory, which a sandboxed seat's VM `/tmp` is not. 0.110.0 is the
+last release before (1), and none of the four is in it — proved below, not assumed.
+
+### The four 0.170 blockers are absent at 0.110 (proof)
+
+1. **Issued stores.** 0.110's `ensureIssuedStores` has no retention check (no `allow_msg_ttl` /
+   `IssuedStoreBeforeRetentionError` in core). On a private broker: 0.100's `createEndpointStreams`, then
+   0.110's, on one space → both ok, `allow_msg_ttl=false` kept. End to end (below): a copy of the live 0.100
+   release booted the space and an agent, `paw down`, then this branch booted the manager on the same space
+   and the agent answered.
+2. **Persona `cwd:`.** No "not supported in frontmatter" in core or any connector bundle; the smoke resumes a
+   0.100-written persona that carries `cwd:`.
+3. **No declared `cotal` server.** No `assertChannelServerDeclared` in the claude connector; the smoke ran with
+   no `cotal` entry in `~/.claude.json` and no `.mcp.json`, and an idle agent woke on a DM.
+4. **Sandbox control socket.** Read, not run (no VM here): 0.110's seat MCP still takes `COTAL_CONTROL_TOKEN`
+   (or the material's `controlToken`) and `server.listen(path)`s the socket with no directory check, as 0.100
+   did, so `/tmp/cotal-control.sock` in the VM binds. The one private-directory check in 0.110's `mcp.cjs` is
+   for cotal's own wake-feed dir (`<tmpdir>/cotal-claude-wake-<uid>`, made 0700 by cotal itself), unchanged
+   since 0.100. `check:sandbox` green.
+
+### Patches (all three kept; both cotal ones regenerated)
+
+- **core** (meta-validator perf + KV watch CONSUMER.DELETE grants + presence-rebind delete): still needed at
+  0.110 — `compileWithinBudget` builds a fresh `Ajv2020`, the agent/observer/admin/supervisor grants still omit
+  the KV delete (#691), the endpoint still SENDS a refused watch delete (no local avoidance until #4123 in a
+  later release) and a rebind still only `stop()`s the old watch (#3914 later). Same content; pnpm's applier
+  refused the 0.100 hunks' offsets, so it was regenerated (`pnpm patch` + `patch -p1` + `pnpm patch-commit`).
+- **connector** (bundled-nats goodbye-flush bound + Stop-hook background report): still needed (0.110's
+  `mcp.cjs` still awaits the unbounded flush; the Stop hook is paw's). Not minified at 0.110; regenerated the
+  same way, same content.
+- **`@nats-io/transport-node@3.4.0`**: kept (nats.js 3.5.0 fixes it; cotal 0.110 resolves 3.4.0).
+- `pnpm install` from an empty node_modules applies all three; `grep -c "paw patch"`: core provision.js 6,
+  endpoint.js 1, schema-profile.js 1; connector mcp.cjs 2; transport 1.
+
+### What changed upstream that touches paw, and what paw did
+
+- **0.109.14 `confirmBlockers`** (claude: first-run style picker, login method, bypass warning — screens the
+  startup watch never answers). Runtimes refuse it without `confirm`, so `headlessLaunch` drops it with
+  `confirm`/`confirmBefore`/`confirmReady` (`check:headless`).
+- **A Cotal home reached through a symlink is refused** (0.101; `PERMISSION_DENIED … use the physical path`). macOS
+  `tmpdir()` is under `/var` → `/private/var`, so `check:boot` and `check:prune` realpath their temp dirs.
+  `~/.cotal` is physical; nothing live is affected.
+- **Manager contract** revision 37 → 39: `spawn`, `turn-pending`, `run-status`, `run-ps` changed digests;
+  `ps`, `inspect`, `despawn`, `attach`, `input` are byte-identical to 0.100's. `check:rail` green.
+- **nkeys hazard (no paw change):** 0.110's core imports `@nats-io/nkeys/lib/codec.js` under a `^2.0.3`
+  range, and nkeys 2.1.0 (2026-11-16) no longer exports that path. paw's lockfile resolves 2.0.3, so paw is
+  fine; but `npm i cotal-ai@0.110.0` today resolves 2.1.0 and the CLI dies at startup with
+  `ERR_PACKAGE_PATH_NOT_EXPORTED` (seen installing the e2e broker; an npm `overrides` pin fixes it). A broker
+  image built from `cotal-ai@0.110.0` needs that pin.
+- Audited, no change: `mintCreds` (expiry defaults unchanged; only the CLI's `auth mint` defaults to 24h now);
+  `supervise` prints a deprecation line again (0.105, paw keeps it); telemetry still opt-out (0.109.4: the
+  opt-out env also reaches spawned agents); #1629 self-exec guard; `--no-manager` mesh boot; the stream list
+  `deleteSpace` removes (prune's mirror unchanged); spaces selected inside a project folder (0.100.2/0.105 —
+  paw passes `--space`/`--server`; `e2e-remote`'s attach from a record root passes).
+
+### Verification
+
+Isolated throughout: temp PAW_HOME/COTAL_HOME/PAW_COTAL_ROOT (physical paths), `PAW_RELEASE=dev`, a private
+nats-server via `PAW_SERVER`, haiku.
+
+- `pnpm install` from an empty node_modules (no ERR_PNPM_PATCH_FAILED); `pnpm typecheck`; all 76 `check:*`:
+  green except `check:doctor`'s "restart-free (A1)" pair, which compares the manager graph and package.json with
+  `origin/main` and so fails on any change that needs a full restart, as a bump does. `check:chat-tty` failed
+  once (item 4, a DM in the first instant of a join) while two real-agent e2e runs loaded the machine, and passed
+  on the rerun. `check:rail` with `PAW_RAIL_SPAWN=1` (a real claude spawned, typed into, despawned over the
+  rail), `check:loop`, `check:hub`, `check:kv-consumer-perms`, `check:nats-reconnect`, `check:sandbox` green;
+  `e2e-stop-background` (the connector patch's Stop hook on the real mcp.cjs) 6/6.
+- Upgrade smoke, NO bypasses: a copy of the live 0.100 release creates the space and agent `alpha` (cold DM
+  reply 3s), `paw down`; this branch then cold-starts the manager on the same space and stores, resumes
+  `alpha` (reply 3s), `paw status` shows it online, an idle DM wakes it (4s), a fresh folder `bravo` cold-starts
+  (reply 4s); `paw chat alpha` under a real pty connects (target online in 0.5s), a typed line got alpha's
+  reply, `/quit` exit 0; `paw down` + `purgeTestSpace` left nothing.
+- `e2e-remote` (JWT + TLS remote broker, two "machines"): against a 0.110 broker 17 checks, 0 failures;
+  against a cotal-ai **0.84** broker + its delivery daemon (team2027's shape; `E2E_ALLOW_COTAL_VERSION=1` and a
+  throwaway copy exporting the signer with 0.84's `mint --signer`): 17 checks, 0 failures. The temp `cotal-ai@0.110.0`
+  install needed the nkeys 2.0.3 override (see the nkeys hazard).
+- NOT run: a real sandbox VM; `e2e-hub` (ran green on the 0.170 scratch tree, not re-run here); the live cutover.
+
+### Cross-host
+
+- **team2027 broker (cotal-ai 0.84, nats-server 2.14)**: serves 0.110 clients (`e2e-remote` above). 0.110 adds
+  no broker-side requirement — no issued-store migration, no new stream a client refuses without.
+- **MacBook on 0.100 + this Mac on 0.110 in one space**: the commands cotal scatters across managers (`ps`,
+  attach's locate) have identical digests in 0.100 and 0.110, so no "pinned digests … do not match" between
+  the two (a manager still on ≤0.84 still mismatches, as before). Each machine mints its own seats' creds with
+  the same patched grants. The issued stores stay in the 0.100 shape, which both accept.
+
 ## cotal 0.100.0
 
 **Bumped 0.84.0 → 0.100.0 on 2026-10-23** (operator-approved, inside the 7-day min-release-age window:

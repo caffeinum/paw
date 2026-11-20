@@ -43,6 +43,7 @@ const tui = {
   confirm: "WARNING: Loading development channels",
   confirmBefore: [{ prompt: "❯ No, exit\nYes, I trust this folder", key: "Down" as const }],
   confirmReady: ["? for shortcuts"],
+  confirmBlockers: [{ prompt: "Choose the text style", reason: "first-run setup" }],
   control: { path: "/c", token: "t" },
 };
 const hl = headlessLaunch(tui, "/d/a");
@@ -56,6 +57,8 @@ ok("drops confirm, keeps env + control", hl.confirm === undefined && hl.env?.COT
 ok("drops confirmBefore with it (cotal's runtimes refuse one without the other)", hl.confirmBefore === undefined);
 // cotal ≥0.85: `confirmReady` (the input-screen texts) is refused without a confirm too.
 ok("drops confirmReady with it (cotal ≥0.85 refuses it without a confirm)", hl.confirmReady === undefined);
+// cotal ≥0.109.14: `confirmBlockers` (screens the watch never answers) is refused without a confirm too.
+ok("drops confirmBlockers with it (cotal ≥0.109.14 refuses it without a confirm)", hl.confirmBlockers === undefined);
 ok("refuses an initial prompt", throws(() => headlessLaunch({ ...tui, args: ["hello", ...tui.args] }, "/d"), /initial prompt/));
 ok("refuses a claudeArgs -p", throws(() => headlessLaunch({ ...tui, args: [...tui.args, "-p"] }, "/d"), /sets -p itself/));
 ok("refuses a launch without the mesh marker", throws(() => headlessLaunch({ ...tui, args: ["--model", "x"] }, "/d"), /dev-channels/));

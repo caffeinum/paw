@@ -20,11 +20,11 @@
  *   7. `paw sleep` → a DM to the sleeping agent wakes it and is delivered;
  *   8. teardown leaves no process naming either space.
  *
- *   COTAL_BIN=<cotal-ai@0.100.0>/dist/cotal.js node scripts/e2e-remote.ts
+ *   COTAL_BIN=<cotal-ai@0.110.0>/dist/cotal.js node scripts/e2e-remote.ts
  *
  * COTAL_BIN must be the `cotal-ai` package at the repo's @cotal-ai/cli version (it runs the broker and
  * its delivery daemon). Install it OUTSIDE the repo, e.g. `npm i --prefix /tmp/cotal100 --ignore-scripts
- * cotal-ai@0.100.0`. E2E_ALLOW_COTAL_VERSION=1 runs the BROKER on another version on purpose (paw's own
+ * cotal-ai@0.110.0`. E2E_ALLOW_COTAL_VERSION=1 runs the BROKER on another version on purpose (paw's own
  * clients stay on the pinned cotal) — the broker-upgrade question. E2E_HUMAN=<name> joins with `--as`.
  */
 import { spawn as ptySpawn } from "@lydell/node-pty";

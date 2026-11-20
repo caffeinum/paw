@@ -7,7 +7,7 @@
  * grant-based attach (open mesh ⇒ bare redemption, cotal #1205). Asserts cotal says "attached", the
  * claude TUI streams, Ctrl-] exits 0 with "detached", and the agent is still on the mesh afterwards.
  *
- *   COTAL_BIN=<cotal-ai@0.100.0>/dist/cotal.js node scripts/e2e-attach-local.ts
+ *   COTAL_BIN=<cotal-ai@0.110.0>/dist/cotal.js node scripts/e2e-attach-local.ts
  *
  * cotal-ai must be installed OUTSIDE the repo (see scripts/e2e-remote.ts).
  */

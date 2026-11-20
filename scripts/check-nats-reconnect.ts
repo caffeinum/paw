@@ -1,6 +1,6 @@
 /**
  * Hermetic check for the nats.js reconnect patch (patches/@nats-io__transport-node@3.4.0.patch and the
- * bundled copy in patches/@cotal-ai__connector-claude-code@0.100.0.patch). A fake NATS server on loopback
+ * bundled copy in patches/@cotal-ai__connector-claude-code@0.110.0.patch). A fake NATS server on loopback
  * accepts the client, then black-holes it (stops reading, never closes) while 32MB of publishes back up the
  * socket's write buffer. The client's PING timeout must still close that connection and redial — unpatched,
  * the close awaited a goodbye write that never drains and the client sat on the dead link (the sandboxed

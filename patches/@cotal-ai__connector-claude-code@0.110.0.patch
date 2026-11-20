@@ -1,7 +1,8 @@
 diff --git a/dist/mcp.cjs b/dist/mcp.cjs
+index 4c926172ad62cd998ded839bff173c48d10218c9..1447f031e91beb4de73938fea50ae6300e1a124f 100644
 --- a/dist/mcp.cjs
 +++ b/dist/mcp.cjs
-@@ -20523,12 +20523,22 @@
+@@ -20523,12 +20523,22 @@ var require_node_transport = __commonJS({
          }
          this.closeError = err3;
          if (!err3 && this.socket && internal) {
@@ -25,7 +26,7 @@ diff --git a/dist/mcp.cjs b/dist/mcp.cjs
            }
          }
          try {
-@@ -77442,6 +77452,43 @@
+@@ -78219,6 +78229,43 @@ function createClaudeHandle(deps = {}) {
    let pendingTool;
    let turnOpen = false;
    let promptOpen = false;
@@ -69,7 +70,7 @@ diff --git a/dist/mcp.cjs b/dist/mcp.cjs
    const inFlight = /* @__PURE__ */ new WeakMap();
    const unconfirmed = /* @__PURE__ */ new Set();
    const markUnconfirmed = (ids) => {
-@@ -77509,11 +77556,12 @@
+@@ -78286,11 +78333,12 @@ ${body}` : body;
            return withContext(parts.length ? parts.join("\n\n") : void 0);
          }
          case "UserPromptSubmit": {
@@ -83,7 +84,7 @@ diff --git a/dist/mcp.cjs b/dist/mcp.cjs
            const parts = [surfaceAutomatic(agent, ev), surfaceTurns(agent, ev)].filter(Boolean);
            return withContext(parts.length ? parts.join("\n\n") : void 0);
          }
-@@ -77550,10 +77598,11 @@
+@@ -78327,10 +78375,11 @@ ${body}` : body;
            flushEvents(ev.transcript_path);
            await closeEvents(Date.now(), stopFailure(ev));
            if (event === "StopFailure") await safeCondition(agent, failureCondition(ev) ?? null);

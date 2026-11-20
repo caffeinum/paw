@@ -37,8 +37,9 @@ export function headlessLaunch(spec: LaunchSpec, dir: string): LaunchSpec {
   for (const f of ["-p", "--print", "--input-format", "--output-format"])
     if (args.includes(f)) throw new Error(`paw: a headless agent sets ${f} itself — remove it from the agent's claudeArgs`);
   // No TUI ⇒ no dev-channels gate, no workspace-trust dialog and no input screen for a runtime to
-  // watch. All three go: cotal's runtimes refuse `confirmBefore` (≥0.80, the trust replies) and
-  // `confirmReady` (≥0.85, the input-screen texts) without a final `confirm`.
-  const { confirm: _confirm, confirmBefore: _confirmBefore, confirmReady: _confirmReady, ...rest } = spec;
+  // watch. Every startup-watch field goes with `confirm`: cotal's runtimes refuse `confirmBefore` (≥0.80,
+  // the trust replies), `confirmReady` (≥0.85, the input-screen texts) and `confirmBlockers` (≥0.109.14,
+  // the screens it never answers) without a final `confirm`.
+  const { confirm: _confirm, confirmBefore: _confirmBefore, confirmReady: _confirmReady, confirmBlockers: _confirmBlockers, ...rest } = spec;
   return { ...rest, command: "/bin/sh", args: ["-c", HEADLESS_SH, "paw-headless", dir, spec.command, ...PRINT_FLAGS, ...args] };
 }

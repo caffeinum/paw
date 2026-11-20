@@ -32,25 +32,27 @@ This file is the INDEX. The full design notes, incident narratives and rationale
 - **`ensure()` never switches the manager runtime implicitly** — only `paw runtime <r>` / explicit
   `PAW_RUNTIME` (a switch despawns the whole fleet; 802ad0d).
 
-## cotal 0.100.0 (2026-10-23)
-Pinned **0.100.0** (all `@cotal-ai/*` exact; age-gate exemption in pnpm-workspace.yaml, delete after
-2026-10-30). pnpm patches re-keyed every bump: the core meta-validator perf patch (regenerated for
-0.100's dist — a stale hunk offset fails `pnpm install` with ERR_PNPM_PATCH_FAILED) and the connector's
-bundled-nats reconnect patch (+ `@nats-io/transport-node@3.4.0`: a stale link with a backed-up write
-buffer never redialed — the sandboxed 15-min mesh outages; `check:nats-reconnect`,
-[sandbox.md#mesh-reconnect](docs/notes/sandbox.md#mesh-reconnect)). The core patch also grants
-agent/observer/admin/supervisor CONSUMER.DELETE on the presence/channels(/membership) KV streams only, so
-a watch rebuild deletes its own `oc_…` predecessor instead of a broker Publish Violation (reverses #691
-there; `check:kv-consumer-perms`, [cotal-dependency.md#kv-watch-consumer-delete-patch](docs/notes/cotal-dependency.md#kv-watch-consumer-delete-patch)). Since 0.85 the claude
-launch carries `confirmReady` (input-screen texts), which runtimes refuse without `confirm` — headless
-launches drop `confirm`, `confirmBefore` AND `confirmReady`. Since 0.95 the embedded cotal CLI sends
-opt-out usage telemetry (`COTAL_TELEMETRY_DISABLED=1` turns it off; paw leaves it to the operator) and
-writes `~/.cotal/telemetry.json` even under a test `COTAL_HOME`. #1629's self-exec guard is unchanged, so
-under `PAW_AUTH=1` cotal's delivery daemon still can't start via cotald. Since 0.84 `pawConnector` passes
-`mcpServersExclusive: true`; since 0.80 cotal's runtimes answer both claude startup prompts; a manager
-SIGTERM spares its agents, so `stopOwnedManager` despawns every agent first.
-→ [cotal-dependency.md#cotal-01000](docs/notes/cotal-dependency.md#cotal-01000), older bumps (0.84.0,
-0.81.1, 0.72.1…) in the same note; [sleep.md](docs/notes/sleep.md)
+## cotal 0.110.0 (2026-11-19)
+Pinned **0.110.0** (all `@cotal-ai/*` exact; published 2026-10-27, past the 7-day age gate, so
+pnpm-workspace.yaml carries NO `minimumReleaseAgeExclude`). It is the last cotal before three breaks paw
+can't take yet (0.111 issued-store retention refusal, 0.145 declared-`cotal`-server launch refusal, 0.165
+persona `cwd:` refusal) — the 0.170 migration is drafted in caffeinum/paw#138 (its notes list what
+0.111–0.170 need). pnpm patches re-keyed every
+bump and REGENERATED for 0.110's dist (stale hunk offsets fail `pnpm install` with ERR_PNPM_PATCH_FAILED):
+the core patch (meta-validator perf + agent/observer/admin/supervisor CONSUMER.DELETE on the
+presence/channels(/membership) KV streams, reversing #691 there, + the presence-rebind consumer delete;
+`check:kv-consumer-perms`, [cotal-dependency.md#kv-watch-consumer-delete-patch](docs/notes/cotal-dependency.md#kv-watch-consumer-delete-patch))
+and the connector's bundled-nats reconnect patch + Stop-hook background report (+ `@nats-io/transport-node@3.4.0`:
+a stale link with a backed-up write buffer never redialed; `check:nats-reconnect`,
+[sandbox.md#mesh-reconnect](docs/notes/sandbox.md#mesh-reconnect)). Since 0.109.14 the claude launch also
+carries `confirmBlockers`, refused without `confirm` like `confirmBefore`/`confirmReady` — headless launches
+drop all four. Since 0.101 a Cotal home reached through a symlink (macOS `/var`, `/tmp`) is refused, so tests realpath their
+temp dirs. Since 0.95 the embedded cotal CLI sends opt-out usage telemetry (`COTAL_TELEMETRY_DISABLED=1`; paw
+leaves it to the operator; since 0.109.4 the opt-out also reaches spawned agents). #1629's self-exec guard is
+unchanged (under `PAW_AUTH=1` cotal's delivery daemon still can't start via cotald). Since 0.84 `pawConnector`
+passes `mcpServersExclusive: true`; a manager SIGTERM spares its agents, so `stopOwnedManager` despawns every
+agent first. → [cotal-dependency.md#cotal-01100](docs/notes/cotal-dependency.md#cotal-01100), older bumps
+(0.100.0, 0.84.0, 0.81.1…) in the same note; [sleep.md](docs/notes/sleep.md)
 
 ## Layout
 Each entry: what it is + the most load-bearing rule. Full notes behind the link.
@@ -434,7 +436,7 @@ Each entry: what it is + the most load-bearing rule. Full notes behind the link.
 | [docs/notes/lifecycle.md](docs/notes/lifecycle.md) | lifecycle.ts, releases, cotal root, node/tsx, manager failures, env hygiene, locks, full Env knobs (cmux socket gate), full Dev |
 | [docs/notes/remote-mesh.md](docs/notes/remote-mesh.md) | remote spaces: records, routing, ensure(), human identity, cotal gaps, e2e |
 | [docs/notes/control-rail.md](docs/notes/control-rail.md) | the manager control rail (src/control.ts) |
-| [docs/notes/cotal-dependency.md](docs/notes/cotal-dependency.md) | cotal 0.58, 0.48 bump, version history back to 0.9 |
+| [docs/notes/cotal-dependency.md](docs/notes/cotal-dependency.md) | cotal 0.110 and every bump back to 0.9; the 0.170 migration's blockers (#138) |
 | [docs/notes/agents.md](docs/notes/agents.md) | connector, cwd, paw claude, foreground, open/attach, waking |
 | [docs/notes/cron.md](docs/notes/cron.md) | paw cron: interface, store, keeper-tick firing, catch-up, tests |
 | [docs/notes/sleep.md](docs/notes/sleep.md) | paw sleep / sleep host |
