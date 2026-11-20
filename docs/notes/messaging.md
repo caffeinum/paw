@@ -216,15 +216,37 @@ new process (a reconnect reopens the subs WITHOUT re-backfilling; only a fresh p
 every restart replays a channel's entire retained history, and each replayed message fires its own
 wake nudge.
 
-**The lever** (`paw cotal channels …`, verified live):
+**The lever** (cotal 0.110 spelling: `channel` singular, `defaults` plural — the older `paw cotal
+channels default …` now fails "unknown command: channels"):
 ```
-paw cotal channels list                          # space default + per-channel entries
-paw cotal channels default --replay --window 1h  # bound it space-wide
-paw cotal channels set general --window 24h      # or per channel
-paw cotal channels default --no-replay           # or no backfill at all
+paw cotal channel defaults                          # show the space-wide defaults
+paw cotal channel defaults --replay --window 1h     # bound it space-wide
+paw cotal channel set general --replay --window 24h # or per channel
+paw cotal channel defaults --no-replay              # or no backfill at all
 ```
 **`--window` is a DURATION, never a count** — `parseDuration` accepts only `<n><s|m|h|d>` and THROWS
 otherwise, so "the last 10 messages" is not expressible. Set to `1h` for this space.
+
+**cotal 0.104.2 (#4851, "keep replayed mentions from waking agents") fixed the wake storm, not the
+replay** (read in 0.110's `connector-claude-code/dist/mcp.cjs`, verified 2026-11-19 on an isolated
+space with a haiku agent). A restarted seat still RECEIVES the whole backfill: every replayed message
+is marked `historical` and buffered **pull-only** (`ingest`: `snapshottedPullOnly = item.historical ||
+…`, ~l.70660) — @mentions included. Pull-only never wakes (`inboxWake` skips `pullOnly` and historical
+channel items, ~l.71226) and never rides the inline hook delivery (that reads `peekInbox("automatic")`,
+~l.78289). It surfaces only when the agent calls `cotal_inbox` (scope `all`), as `(history) …` lines
+ranked after DMs and live channel traffic (`renderInbox`, ~l.76360), up to `INBOX_WINDOW_CHARS` =
+48k per call; the buffer holds `MAX_INBOX` = 200, pull-only evicted first. Observed: 2 #general posts
+handled live, agent stopped, 5 more posted (one `@replaybot … reply PINEAPPLE`), `paw start` → no turn
+at all (transcript +1 line); a later DM arrived inline with no history attached; an explicit
+`cotal_inbox` peek then listed all 7 as `(history)` — including the 2 it had already handled.
+DMs are unaffected: they ride the agent's durable DM consumer, not join replay, and keep waking.
+
+So the window is no longer about wake nudges; it is about **context**: unbounded, the first
+`cotal_inbox` after a restart can pull up to 48k chars of old (partly already-handled) channel traffic
+into the session. Keep `1h`. paw's brief (`CHANNELS_BRIEF`) tells agents a `(history)` message is
+catch-up, not work — `cotal_inbox` prints the tag without the "not new work" note the inline path adds.
+A manager PRESERVATION restart also passes `COTAL_BACKFILL_FLOOR` (the chat frontier it recorded), so
+those seats backfill only what came after; a per-agent stop/start has no floor and replays the window.
 
 **The cost of a short window, and why it's a real trade:** this space's channel `deliveryClass` is
 `live`, and in open mode there is no durable backstop for channels (Plane-3 needs the delivery daemon,

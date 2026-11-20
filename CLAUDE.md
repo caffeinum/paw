@@ -297,7 +297,8 @@ Each entry: what it is + the most load-bearing rule. Full notes behind the link.
 - `src/cursor.ts` — forward-only unread cursor shared by inbox + chat. → [messaging.md#srccursorts](docs/notes/messaging.md#srccursorts)
 - `paw cotal send dm|ask` sends from a one-shot principal with no inbox — a reply reaches nobody (only
   `paw history`); paw warns on stderr. Headless `cotal join` DOES print DMs to it. → [messaging.md#replies-to-a-one-shot-cotal-send-the-headless-join-missing-dms](docs/notes/messaging.md#replies-to-a-one-shot-cotal-send-the-headless-join-missing-dms)
-- Channel replay on restart; bound it with `paw cotal channels default --window 1h`. → [messaging.md#channel-replay-why-a-restarted-agent-gets-flooded](docs/notes/messaging.md#channel-replay-why-a-restarted-agent-gets-flooded)
+- Channel replay on restart: since cotal 0.104.2 replayed history (mentions too) is pull-only `(history)`, never a wake —
+  still bound it (`paw cotal channel defaults --replay --window 1h`) so `cotal_inbox` doesn't pull it all into context. → [messaging.md#channel-replay-why-a-restarted-agent-gets-flooded](docs/notes/messaging.md#channel-replay-why-a-restarted-agent-gets-flooded)
 
 ### paw chat → [chat.md](docs/notes/chat.md)
 - `src/chat.ts` — the headline REPL as a persistent human peer; bare `paw chat` = `.`, `--all` global,
