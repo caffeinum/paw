@@ -162,3 +162,12 @@ export function restampLiveRecord(space: string, now = Date.now(), bootAt = curr
   const r = readLiveRecord(space);
   if (r && !sameBoot(r.bootAt, bootAt)) writeRecord({ ...r, bootAt });
 }
+
+/** Take `name` out of `space`'s record (`paw archive`): the login fleet job must not bring back an agent that
+ *  was retired after the last keeper tick. Returns whether it was listed. Everything else in the record stays. */
+export function dropFromLiveRecord(space: string, name: string): boolean {
+  const r = readLiveRecord(space);
+  if (!r || !r.names.includes(name)) return false;
+  writeRecord({ ...r, names: r.names.filter((n) => n !== name) });
+  return true;
+}

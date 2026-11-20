@@ -300,6 +300,8 @@ export const ADDRESS_ARGS: Readonly<Record<string, AddressSpec>> = {
   sessions: { values: V, slots: [0] },
   stop: { values: [...V, "--name"], names: ["--name"], slots: [0] },
   rm: { values: V, slots: [0] },
+  archive: { values: V, slots: [0] },
+  unarchive: { values: V, slots: [0] },
   rename: { values: V, slots: "all" },
   adopt: { values: [...V, "--resume", "--session", "--name"], names: ["--name"], slots: [0] },
   status: { values: V, slots: "all" },
@@ -335,7 +337,7 @@ export const ADDRESS_ARGS: Readonly<Record<string, AddressSpec>> = {
  * inbox), and ones whose slot is a channel or a session (msg, history, ask, adopt).
  */
 export const AT_SIGIL_VERBS: ReadonlySet<string> = new Set([
-  "start", "restart", "stop", "rm", "log", "sessions", "status", "teleport", "move", "relocate", "sleep", "unstick", "nice", "persona", "rename",
+  "start", "restart", "stop", "rm", "archive", "unarchive", "log", "sessions", "status", "teleport", "move", "relocate", "sleep", "unstick", "nice", "persona", "rename",
 ]);
 
 const bareAddress = (token: string, deps: AddressDeps): boolean => {

@@ -15,6 +15,7 @@ const open: Loader = () => import("./open.ts"); // "open" + "attach" (attach its
 const adopt: Loader = () => import("./adopt.ts"); // "adopt" (resume a past claude session)
 const rename: Loader = () => import("./rename.ts"); // "rename" (relabel an agent, keep its session)
 const rm: Loader = () => import("./rm.ts"); // "rm" (forget an agent; always keeps its transcript)
+const archive: Loader = () => import("./archive.ts"); // "archive" + "unarchive" (retire an agent once its task is done)
 const persona: Loader = () => import("./persona.ts"); // "persona" (show/reroll/backfill personalities)
 const status: Loader = () => import("./status.ts"); // "status" (durability + two-writer health view)
 const sessions: Loader = () => import("./sessions.ts"); // "sessions" (a folder's transcripts)
@@ -67,6 +68,8 @@ export const COMMAND_LOADERS: Readonly<Record<string, Loader>> = {
   adopt,
   rename,
   rm,
+  archive,
+  unarchive: archive,
   persona,
   status,
   ps: status,

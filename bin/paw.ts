@@ -85,7 +85,7 @@ const NEEDS_MANAGER = new Set(["dm", "tidy"]); // status, chat, open, attach, re
  *  shell's PAW_SPACE must not narrow it (an explicit --space still does). */
 const ALL_SPACE_VERBS = new Set(["doctor"]);
 /** Verbs that write agent state (personas, pins, folders) — they name the space when PAW_SPACE picked it. */
-const SPACE_WRITING_VERBS = new Set(["adopt", "rename", "rm", "move", "relocate", "nice", "sleep", "claude", "teleport", "cron"]);
+const SPACE_WRITING_VERBS = new Set(["adopt", "rename", "rm", "archive", "unarchive", "move", "relocate", "nice", "sleep", "claude", "teleport", "cron"]);
 
 /** Raw cotal verbs that drive the control plane — the passthrough must bring the manager up too,
  *  or a cold-machine `paw cotal ps`/`start` dead-ends on a mesh with no manager answering. */

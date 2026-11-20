@@ -511,20 +511,22 @@ export function finishDetachedRestart(space: string, agent: string): void {
   }
 }
 
-// ---- detached self-handoffs: a verb that would kill its own caller (adopt, relocate) ---------------
+// ---- detached self-handoffs: a verb that would kill its own caller (adopt, relocate, archive) -------
 /** A verb run from INSIDE the agent/claude it is about to stop: it hands the work to a detached child
- *  (see {@link spawnDetachedHandoff}) whose progress lands in `<kind>.log`, guarded by `<kind>.pid`. */
-export type HandoffKind = "adopt" | "relocate";
-function handoffPidPath(space: string, kind: HandoffKind): string {
-  return join(pawDir(space), `${kind}.pid`);
+ *  (see {@link spawnDetachedHandoff}) whose progress lands in `<kind>.log`, guarded by `<kind>.pid`.
+ *  A `key` scopes one to an agent (`archive.<name>.pid`): two agents may archive themselves at once. */
+export type HandoffKind = "adopt" | "relocate" | "archive";
+const handoffBase = (kind: HandoffKind, key?: string): string => (key ? `${kind}.${key}` : kind);
+function handoffPidPath(space: string, kind: HandoffKind, key?: string): string {
+  return join(pawDir(space), `${handoffBase(kind, key)}.pid`);
 }
 /** Where a detached handoff streams progress (its caller is dead by the time it finishes — this log is the record). */
-export function handoffLogPath(space: string, kind: HandoffKind): string {
-  return join(pawDir(space), `${kind}.log`);
+export function handoffLogPath(space: string, kind: HandoffKind, key?: string): string {
+  return join(pawDir(space), `${handoffBase(kind, key)}.log`);
 }
 /** True while a detached handoff of `kind` is in flight (its pidfile names a LIVE process). */
-export function handoffInFlight(space: string, kind: HandoffKind): boolean {
-  const pid = readPid(handoffPidPath(space, kind));
+export function handoffInFlight(space: string, kind: HandoffKind, key?: string): boolean {
+  const pid = readPid(handoffPidPath(space, kind, key));
   return pid !== undefined && alive(pid);
 }
 /** The env var a detached handoff child carries, so it knows not to hand off again and to drop its pidfile. */
@@ -536,20 +538,27 @@ export function handoffEnvKey(kind: HandoffKind): string {
  * COTAL_* stripped (it isn't an agent, so it can't re-detach), `PAW_<KIND>_INFLIGHT=1` set so it drops
  * the pidfile when done. The in-flight CHECK + pidfile WRITE run under a lock so two near-simultaneous
  * calls can't both spawn (TOCTOU) — a caller's own handoffInFlight check is advisory, this one is
- * authoritative. Returns false if one is already in flight.
+ * authoritative. `cwd` moves the child out of a folder it may remove (archive). Returns false if one is
+ * already in flight.
  */
-export function spawnDetachedHandoff(space: string, kind: HandoffKind, sub: string[], extraEnv: NodeJS.ProcessEnv = {}): boolean {
-  return withFileLock(`${handoffPidPath(space, kind)}.lock`, () => {
-    if (handoffInFlight(space, kind)) return false;
-    const out = openSync(handoffLogPath(space, kind), "a");
+export function spawnDetachedHandoff(
+  space: string,
+  kind: HandoffKind,
+  sub: string[],
+  extraEnv: NodeJS.ProcessEnv = {},
+  opts: { key?: string; cwd?: string } = {},
+): boolean {
+  return withFileLock(`${handoffPidPath(space, kind, opts.key)}.lock`, () => {
+    if (handoffInFlight(space, kind, opts.key)) return false;
+    const out = openSync(handoffLogPath(space, kind, opts.key), "a");
     try {
       const [cmd, args] = pawViaNode(sub);
       const env = loggedDaemonEnv({ ...extraEnv, [handoffEnvKey(kind)]: "1" });
       for (const k of Object.keys(env)) if (k.startsWith("COTAL_")) delete env[k]; // child isn't an agent
-      const child = spawn(cmd, args, { detached: true, stdio: ["ignore", out, out], env });
+      const child = spawn(cmd, args, { detached: true, stdio: ["ignore", out, out], env, ...(opts.cwd ? { cwd: opts.cwd } : {}) });
       child.unref();
-      if (!child.pid) throw new Error(`paw: couldn't spawn the detached ${kind} (no pid) — see ${handoffLogPath(space, kind)}`);
-      writePid(handoffPidPath(space, kind), child.pid);
+      if (!child.pid) throw new Error(`paw: couldn't spawn the detached ${kind} (no pid) — see ${handoffLogPath(space, kind, opts.key)}`);
+      writePid(handoffPidPath(space, kind, opts.key), child.pid);
       return true;
     } finally {
       closeSync(out);
@@ -557,8 +566,8 @@ export function spawnDetachedHandoff(space: string, kind: HandoffKind, sub: stri
   });
 }
 /** A detached handoff child's final step: drop the in-flight pidfile. */
-export function finishDetachedHandoff(space: string, kind: HandoffKind): void {
-  rmSync(handoffPidPath(space, kind), { force: true });
+export function finishDetachedHandoff(space: string, kind: HandoffKind, key?: string): void {
+  rmSync(handoffPidPath(space, kind, key), { force: true });
 }
 
 /** Where a detached self-adopt streams progress (the claude that launched it is dead by the time the

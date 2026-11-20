@@ -84,6 +84,24 @@ export function writeReviveList(space: string, names: string[], now = new Date()
   return list;
 }
 
+/** Take `name` out of a pending revive list (`paw archive`): a retired agent is owed no revival, and one left
+ *  listed would make the next revive pass fail loud on "no folder registered". Returns whether it was listed;
+ *  an emptied list is removed. The caller refuses while a restart is in flight (it holds the list). */
+export function dropFromReviveList(space: string, name: string): boolean {
+  const list = readReviveList(space);
+  if (!list || !list.names.includes(name)) return false;
+  const names = list.names.filter((n) => n !== name);
+  if (!names.length) {
+    clearReviveList(space);
+    return true;
+  }
+  const p = reviveListPath(space);
+  const tmp = `${p}.${process.pid}.tmp`;
+  writeFileSync(tmp, JSON.stringify({ ...list, names }, null, 2) + "\n");
+  renameSync(tmp, p);
+  return true;
+}
+
 /** Which of the seats a bounce despawns come back: every one whose process was running, mesh presence
  *  or not (an off-mesh seat is still up — see psRowRunning). A seat whose process had already exited
  *  is left down — the operator stopped it, or it died — and NAMED, never silently dropped. Pure. */
