@@ -38,6 +38,10 @@ export const CHANNELS_BRIEF: readonly string[] = [
     `or you were asked to act. Do not post acknowledgements ("got it", "noted", "👍"), do not repeat`,
     `what others said, and do not reply just to show you read it. If you do need to respond to one`,
     `person, a DM to them is usually better than a channel post.`,
+    // cotal 0.104.2+ replays channel history on (re)start as pull-only `(history)` items; cotal_inbox
+    // lists them without the "not new work" note its inline delivery adds (docs/notes/messaging.md).
+    `A channel message marked "(history)" is catch-up replayed from before you (re)started, not new`,
+    `work: do not act on it or reply to it, even if it names you.`,
 ];
 
 /** Address peers by name — ids are per-incarnation. Shared by every paw harness. */
