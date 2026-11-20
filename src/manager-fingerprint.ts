@@ -263,6 +263,9 @@ export interface RestartFacts {
   managerRoot: string | { error: string };
   runningRuntime?: string;
   preferredRuntime: string;
+  /** The live manager's seat cap and the one paw would start it with (src/seat-cap.ts); undefined = unlimited. */
+  runningSeatCap?: number;
+  preferredSeatCap?: number;
   /** daemonRoot(): the tree a restart would start daemons from, or why it can't be named. */
   targetRoot: string | { error: string };
   /** `releaseId` of a root under the releases dir, undefined for anything else (the dev checkout). */
@@ -285,6 +288,8 @@ export async function planRestart(f: RestartFacts): Promise<RestartPlan> {
   if (typeof f.managerRoot !== "string") return full(`can't tell which code the manager runs (${f.managerRoot.error})`);
   if (typeof f.targetRoot !== "string") return full(`can't name the release to restart onto (${f.targetRoot.error})`);
   if ((f.runningRuntime ?? "pty") !== f.preferredRuntime) return full(`the manager runs ${f.runningRuntime ?? "pty"} but this space prefers ${f.preferredRuntime}`);
+  if (f.runningSeatCap !== f.preferredSeatCap)
+    return full(`the manager runs seat cap ${f.runningSeatCap ?? "unlimited"} but this space asks for ${f.preferredSeatCap ?? "unlimited"}`);
   const from = f.releaseOf(f.managerRoot);
   const to = f.releaseOf(f.targetRoot);
   if (from === undefined) return full(`the manager runs ${f.managerRoot}, not a release — its loaded code can't be known`);

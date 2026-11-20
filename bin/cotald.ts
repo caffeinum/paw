@@ -28,6 +28,7 @@ import "@cotal-ai/connector-codex"; // self-registers the `codex` connector (hos
 import "@cotal-ai/connector-opencode"; // self-registers the `opencode` connector (in-process plugin)
 import "@cotal-ai/connector-hermes"; // self-registers cotal's `hermes` connector (gateway + plugin), replaced below
 import { isReachable, registry } from "@cotal-ai/core";
+import { parseSeatCapFlag } from "@cotal-ai/workspace";
 import { pawServer } from "../src/server.ts";
 import { pawConnector } from "../src/connector.ts"; // importing this self-registers the VANILLA `claude` connector (0.12) + paw's `paw`
 import { kitConnector } from "../src/kit.ts";
@@ -65,11 +66,15 @@ async function supervise(argv: string[]): Promise<void> {
   if (!space) throw new Error("cotald: supervise needs --space <s>");
   const server = flag("--server") ?? pawServer(space);
   const runtime = flag("--runtime") ?? "pty"; // paw's default; tmux/cmux resolve from the imported runtime exts
+  // The per-owner live-seat ceiling (src/seat-cap.ts). Absent = cotal's default (unlimited); a bad value
+  // fails loud here rather than becoming a cap nobody asked for. Not cotal's `manager.<s>.seat-cap.json`
+  // record: paw's own setting is the one source, so nothing sticky hides in the cotal root.
+  const seatCap = parseSeatCapFlag("--seat-cap", flag("--seat-cap"));
   if (!(await isReachable(server))) throw new Error(`cotald: can't reach NATS at ${server} — run \`cotal up\` first`);
 
-  const mgr = new Manager({ space, servers: server, runtime, installedExtensions: false });
+  const mgr = new Manager({ space, servers: server, runtime, installedExtensions: false, ...(seatCap !== undefined ? { seatCap } : {}) });
   await mgr.start();
-  console.log(`✓ manager up (space ${space} · ${runtime})`);
+  console.log(`✓ manager up (space ${space} · ${runtime}${seatCap !== undefined ? ` · seat cap ${seatCap}` : ""})`);
 
   // Tear the manager + its spawned teammates down on a clean signal (mirrors runManager's shutdown).
   const shutdown = (): void => {

@@ -413,6 +413,8 @@ Each entry: what it is + the most load-bearing rule. Full notes behind the link.
 - `PAW_AUTH=1` — JWT-authed mesh (default open localhost).
 - `PAW_PERMISSION` — override `bypassPermissions`.
 - `PAW_MODEL` — default model for spawned agents (`--model` overrides).
+- `PAW_MAX_SEATS` — opt-in cap on live seats this machine's manager admits per space (> `spaces/<s>/max-seats`; a
+  refused spawn is a ✕ line; applying a change = `paw restart --full`). → [lifecycle.md#seat-cap](docs/notes/lifecycle.md#seat-cap)
 - `PAW_RUNTIME` — `pty`|`tmux`|`cmux`; env > sticky `spaces/<s>/runtime` (`paw runtime <r>`) > pty.
   `paw restart [<r>]` force-bounces; from inside an agent it detaches a child. cmux needs `fullOpenAccess`.
 - `PAW_ROOT` / `PAW_ALLOW_ANY_CWD=1` — cwd confinement.

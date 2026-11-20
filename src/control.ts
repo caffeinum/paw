@@ -48,6 +48,7 @@ import {
   newIdentity,
   parseClusterDocument,
   resolveService,
+  seatCapFrom,
   standaloneConnectOpts,
   unansweredRequest,
   type EpCaller,
@@ -67,7 +68,10 @@ import { isRemoteSpace } from "./server.ts";
  *  so callers branch on `blockedOp`/`remedy` instead of parsing the rendered `[lifecycle …]` suffix. */
 export type LifecycleBlock = { blockedOp: string; opId?: string; remedy?: string };
 
-export type ManagerReply = { ok: boolean; data?: unknown; error?: string; code?: string; blocked?: LifecycleBlock };
+/** A spawn refused at the manager's per-owner seat cap (cotal's `ai.cotal.ep.seat-cap` detail, src/seat-cap.ts). */
+export type SeatCapBlock = { owner: string; seats: number; cap: number };
+
+export type ManagerReply = { ok: boolean; data?: unknown; error?: string; code?: string; blocked?: LifecycleBlock; seatCap?: SeatCapBlock };
 
 /** How long a `resolveService` may take. Generous because it is not one round trip: a describe, a
  *  store fetch per visible cluster, and a recompile. Matches cotal's own 10s. */
@@ -537,7 +541,13 @@ function replyOf(reply: { ok?: boolean; data?: unknown; error?: { code?: string;
     error: reply.error?.message ?? reply.error?.code ?? "error",
     ...(reply.error?.code ? { code: reply.error.code } : {}),
     ...(d ? { blocked: { blockedOp: d.blockedOp, ...(d.opId ? { opId: d.opId } : {}), ...(d.remedy ? { remedy: d.remedy } : {}) } } : {}),
+    ...seatCapOf(reply.error),
   };
+}
+
+function seatCapOf(source: unknown): { seatCap?: SeatCapBlock } {
+  const d = seatCapFrom(source);
+  return d ? { seatCap: { owner: d.owner, seats: d.seats, cap: d.cap } } : {};
 }
 
 /**
@@ -553,5 +563,5 @@ function railFailure(e: unknown): ManagerReply {
   if (!(e instanceof EpEnvelopeError)) return { ok: false, error: e instanceof Error ? e.message : String(e) };
   const detail = `${e.code}: ${e.message}`;
   if (unansweredRequest(e)) return { ok: false, error: `no manager answered on the endpoint rails (${detail})`, code: e.code };
-  return { ok: false, error: detail, code: e.code };
+  return { ok: false, error: detail, code: e.code, ...seatCapOf(e) };
 }
