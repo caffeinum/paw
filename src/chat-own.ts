@@ -10,7 +10,8 @@
  *  - channel echo: "you"'s own posts, `chat.<o>.<you>.>` — inside the agent cred's `chat.*.*.>` grant,
  *    so it rides the chat endpoint's own connection;
  *  - DM echo: "you"'s own outbound DMs, `inst.*.*.<o>.<you>` — a paw-signed `chat-echo` cred holding
- *    ONLY that subscription (src/remote-creds.ts), TLS required, re-signed before it expires;
+ *    ONLY that subscription (src/remote-creds.ts), TLS required, renewed by cotal's endpoint creds
+ *    source ({@link startEcho});
  *  - history seed: DMs to and from "you", read through named filter-pinned consumers with a one-shot
  *    `chat-history` cred. Never another agent's mail.
  *
@@ -21,7 +22,7 @@
  * expires. Never the space wildcard, never `admin`.
  */
 import { createHash, randomUUID } from "node:crypto";
-import { chatStream, chatSubject, type CotalMessage, dmStream, idFromCreds, newIdentity, parsePrincipalKey, parseSubject, unicastRecvFilter, unicastSubject, type CotalEndpoint } from "@cotal-ai/core";
+import { chatStream, chatSubject, type CotalMessage, dmStream, idFromCreds, newIdentity, parsePrincipalKey, parseSubject, unicastRecvFilter, unicastSubject, CotalEndpoint } from "@cotal-ai/core";
 import { connect, credsAuthenticator, type NatsConnection } from "@nats-io/transport-node";
 import { classifyPeer, dropPairedPeerForwards, type PeerMsg, type RawMsg } from "./chat-peers.ts";
 import { forwardedFrom, withoutForwardNote } from "./forward-mark.ts";
@@ -32,7 +33,6 @@ import {
   FORWARD_TTL_SEC,
   PEERS_RENEW_BEFORE_SEC,
   PEERS_TTL_SEC,
-  RENEW_BEFORE_SEC,
   credsSecondsLeft,
   echoGrants,
   filteredReadGrants,
@@ -40,7 +40,7 @@ import {
   signScopedCreds,
   tapGrants,
 } from "./remote-creds.ts";
-import { isRemoteSpace, natsTls } from "./server.ts";
+import { isRemoteSpace, meshTls, natsTls } from "./server.ts";
 import { readFiltered } from "./sleep-dial.ts";
 
 type TapHandler = (subject: string, m: unknown) => void;
@@ -95,46 +95,44 @@ export function tapOwnSubject(ep: CotalEndpoint, space: string, handler: TapHand
  * critical path — started once the chat is ready, never awaited by it — so a DM another session sends
  * in chat's first moments is not echoed (it is still in `paw history`). A no-op on an open mesh, where
  * the space-wide tap already sees them.
+ *
+ * The connection is a bare {@link CotalEndpoint} (no presence, no consume) whose `creds` is a SOURCE:
+ * cotal's standing-renewal seam re-signs the same nkey at 75% of each cred's life, proves it on a
+ * throwaway connection and moves the live one onto it — so paw keeps no renewal timer of its own. A
+ * failed renewal surfaces as the endpoint's `warning`, which goes to `onError` (chat's conn state).
  */
-export async function startEcho(ep: CotalEndpoint, space: string, server: string, handler: TapHandler, onError: (e: Error) => void): Promise<() => Promise<void>> {
+export async function startEcho(
+  ep: CotalEndpoint,
+  space: string,
+  server: string,
+  handler: TapHandler,
+  onError: (e: Error) => void,
+  o: { ttlSec?: number } = {},
+): Promise<() => Promise<void>> {
   if (!isRemoteSpace(space)) return async () => {};
   const { dm } = ownSendSubjects(space, principalOfId(ep.card.id));
   const identity = newIdentity();
-  const sign = () => signScopedCreds(space, "chat-echo", identity, echoGrants(dm), ECHO_TTL_SEC);
-  let creds = await sign();
-  const nc: NatsConnection = await connect({
+  const echo = new CotalEndpoint({
+    space,
     servers: server,
-    ...natsTls(space),
-    authenticator: credsAuthenticator(() => enc.encode(creds)),
-    inboxPrefix: `_INBOX_${idFromCreds(creds)}`,
+    ...meshTls(space),
+    creds: () => signScopedCreds(space, "chat-echo", identity, echoGrants(dm), o.ttlSec ?? ECHO_TTL_SEC),
+    card: { id: identity.id, name: "chat-echo", kind: "endpoint" },
+    registerPresence: false,
+    consume: false,
+    watchPresence: false,
   });
-  const sub = nc.subscribe(dm);
-  void (async () => {
-    for await (const m of sub) {
-      let decoded: unknown;
-      try {
-        decoded = m.json();
-      } catch {
-        decoded = undefined;
-      }
-      handler(m.subject, decoded);
-    }
-  })().catch((e: Error) => onError(new Error(`paw: chat's echo of your own DMs stopped: ${e.message}`)));
-  // Re-sign the same nkey before the broker expires it, then reconnect onto it (the authenticator
-  // reads `creds` at every connect).
-  const renew = setInterval(() => {
-    if (credsSecondsLeft(creds) > RENEW_BEFORE_SEC) return;
-    sign()
-      .then((fresh) => {
-        creds = fresh;
-        return nc.reconnect();
-      })
-      .catch((e: Error) => onError(new Error(`paw: couldn't renew chat's echo cred: ${e.message}`)));
-  }, 10 * 60_000);
-  renew.unref();
+  echo.on("warning", (e: Error) => onError(new Error(`paw: chat's echo of your own DMs: ${e.message}`)));
+  echo.on("error", (e: Error) => onError(new Error(`paw: chat's echo of your own DMs stopped: ${e.message}`)));
+  echo.tap(handler, { subject: dm });
+  try {
+    await echo.start();
+  } catch (e) {
+    await echo.stop().catch(() => {});
+    throw e;
+  }
   return async () => {
-    clearInterval(renew);
-    await nc.close().catch(() => {});
+    await echo.stop().catch(() => {});
   };
 }
 

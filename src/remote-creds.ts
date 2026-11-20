@@ -16,7 +16,8 @@
  *    subjects from the exact senders found in the backlog — the re-delivery under the original sender
  *    an open mesh allows implicitly, and nothing wider.
  *  - `chat-echo` (`paw chat`): subscribe to "you"'s OWN outbound DM subject (`inst.*.*.<o>.<you>`), so
- *    one chat session mirrors what another sent. Nobody else's mail. 24h, re-signed in place.
+ *    one chat session mirrors what another sent. Nobody else's mail. 24h, renewed by cotal's endpoint
+ *    creds source (src/chat-own.ts startEcho) — no paw timer.
  *  - `chat-history` (`paw chat` tasks view): one-shot, 5 minutes. Read "you"'s own conversation (DMs
  *    to and from "you") through named, filter-pinned consumers — the same shape as `sleep-watch`.
  *  - `chat-peers` (`paw chat` messages view, operator-only): the SELECTED agent's own traffic — DMs to

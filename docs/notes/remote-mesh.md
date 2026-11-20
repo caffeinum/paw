@@ -96,7 +96,8 @@ untouched: a space with no record resolves exactly as before.
     AND their filter (a stream-wide MSG.NEXT could drain an agent's durable); `STREAM.INFO DM_<s>`.
   - `sleep-forward` (per wake, 5 min) — pub ONLY `inst.<woken seat>.<sender>` for the backlog's senders.
   - `dm-cursor` (per `paw sleep`, 5 min) — `STREAM.INFO DM_<s>` only.
-  - `chat-echo` (per `paw chat`, memory only, 24h, re-signed + reconnected in place) — sub ONLY "you"'s
+  - `chat-echo` (per `paw chat`, memory only, 24h; a `CotalEndpoint` whose `creds` is a source, so cotal re-signs it at
+    75% of its life and moves the connection onto it — no paw timer, 2026-11-19) — sub ONLY "you"'s
     own outbound DM subject `inst.*.*.<o>.<you>`; publishes nothing.
   - `chat-history` (per tasks-view seed and per earlier-block read — chat open, `@name` switch, `/more`; 5 min) — DMs to and from "you" through two name- and
     filter-pinned consumers (`pawch_<hash>_<i>`), the `sleep-watch` read shape without the live sub.
@@ -108,6 +109,15 @@ untouched: a space with no record resolves exactly as before.
     publishes nothing, re-signed 90s before expiry onto a new connection opened before the old closes.
   - the stand-in presence — cotal's own `agent` mint for a persisted stand-in nkey
     (`sleep/<name>.standin.nkey`, 0600), never the agent's seat identity.
+- **Who renews what (2026-11-19, cotal 0.110):** cotal renews only connections a `CotalEndpoint` owns whose
+  `creds` (or user-mode `bearer`) is a FUNCTION — a creds source is re-signed at a fixed 75% of its life,
+  proved on a throwaway connection, then `nc.reconnect()`; the jittered 50–80% point (#4795) is the
+  bearer/callout path and the issuer plane only. A raw `connect()` paw dials itself gets nothing (the broker
+  cuts it at `exp`: "User Authentication Expired"). An endpoint with `registerPresence/consume/watchPresence:
+  false` runs fine on paw's narrow sub-only cred, so `chat-echo` is one (no paw timer). `chat-peers`' tap
+  stays paw's: each renewal re-reads the ledger, so it changes nkey AND subjects, which the endpoint's
+  identity pin refuses. sleep-watch / inbox-lag re-sign per use; the rest are one-shot. `armRenewal` is
+  exported from core if a paw loop ever wants cotal's jittered point. Test: `scripts/e2e-echo-renewal.ts`.
 - **INBOX lag**: per hosted seat, `consumers.info(DM_<s>, dm_<owner>-<actor>-<lifecycleUid>)` (all three
   from our ps row) with the `inbox-lag` cred and its scoped `inboxPrefix` (the old listing used the
   default `_INBOX.` → `Permissions Violation for Subscription to "_INBOX.<…>.*"`, and `CONSUMER.LIST` is
