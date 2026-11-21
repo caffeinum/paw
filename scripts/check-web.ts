@@ -76,6 +76,21 @@ for (const bad of [["--port", "0"], ["--port", "70000"], ["--port", "http"], ["-
   }
   assert(threw, `\`paw web ${bad.join(" ")}\` fails loud rather than falling back to a default port`);
 }
+// #142: `cotal web --creds <participant.creds>` habits get a dedicated refusal, never the generic
+// unknown-argument line, and never the creds path echoed back.
+for (const bad of [["--creds", "/tmp/p.creds"], ["--creds=/tmp/p.creds"], ["--lifecycle-uid", "u1"], ["--lifecycle-uid=u1"], ["--space", "s", "--creds", "/tmp/p.creds"]]) {
+  let msg = "";
+  try {
+    parseArgs(bad);
+  } catch (e) {
+    msg = (e as Error).message;
+  }
+  assert(
+    /admin observer/.test(msg) && /paw mesh add/.test(msg) && /cotal join/.test(msg) && !/unknown argument/.test(msg),
+    `\`paw web ${bad.join(" ")}\` is refused with what paw web needs instead (admin observer, paw mesh add, cotal join)`,
+  );
+  assert(!msg.includes("/tmp/p.creds"), `…and the refusal never echoes the creds path (${bad[0]})`);
+}
 
 /* ── Origin and Host, as pure rules ───────────────────────────────────────────────────────────── */
 

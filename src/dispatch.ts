@@ -136,6 +136,17 @@ export function explicitSpace(args: string[]): string | undefined {
   return v && !v.startsWith("-") ? v : undefined;
 }
 
+/** The operator's explicit `--server <url>` / `--server=<url>` (before any `--` terminator), else undefined.
+ *  A `--server` with no value is the verb's own parser's to refuse. */
+export function explicitServer(args: string[]): string | undefined {
+  const argv = expandEqFlags(args);
+  const end = argv.indexOf("--");
+  const mine = end === -1 ? argv : argv.slice(0, end);
+  const i = mine.indexOf("--server");
+  const v = i >= 0 ? mine[i + 1] : undefined;
+  return v && !v.startsWith("-") ? v : undefined;
+}
+
 /**
  * The space `paw down` tears down: `--space <s>` / `--space=<s>`, else `fallback` (resolveSpace —
  * PAW_SPACE or the default). `down` used to ignore its args entirely, so `paw down --space test-x`

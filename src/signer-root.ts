@@ -21,7 +21,8 @@ export function checkSignerRoot(space: string, rootArg: string): string {
   if (!auth)
     throw new Error(
       `paw: no signer for space "${space}" under ${dir} — on the broker's box run \`cotal auth signer --out signer.json\` (\`cotal mint --signer --out signer.json\` before cotal 0.100), ` +
-        `copy it to ${join(dir, "auth.json")} (chmod 600)`,
+        `copy it to ${join(dir, "auth.json")} (chmod 600). A participant .creds file (what \`cotal join --creds\` uses) is not a signer — ` +
+        "paw mints every role it needs from the signer, so it can't run on a participant credential alone",
     );
   if (!auth.account?.signingSeed) throw new Error(`paw: the auth under ${dir} for "${space}" carries no account signing seed — it cannot mint agent creds`);
   for (const f of [join(dir, "auth.json")]) {
