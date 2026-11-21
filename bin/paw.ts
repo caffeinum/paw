@@ -17,7 +17,7 @@ import "../src/log-stamp-boot.ts"; // first: timestamps a log-redirected daemon'
 // in @cotal-ai/* is a dynamic import after it, so `paw chat` paints its first frame before ~200ms of
 // module loading instead of after.
 import type { Command } from "@cotal-ai/core";
-import { downSpace, explicitServer, explicitSpace, expandEqFlags, expandShortForm, failureLine, helpRequested, hoistAddressSpace, oneShotReplyNote, remoteCotalArgv, SHORT_FORMS, stripCotalNamespace, verbHelp, withDefaultSpace } from "../src/dispatch.ts";
+import { downSpace, explicitServer, explicitSpace, expandEqFlags, expandShortForm, failureLine, helpRequested, hoistAddressSpace, oneShotReplyNote, remoteCotalArgv, SHORT_FORMS, stripCotalNamespace, verbHelp, withDefaultSpace, withServer } from "../src/dispatch.ts";
 import { readRemoteMesh } from "../src/remote-mesh.ts";
 import { runCotalPassthrough } from "../src/cotal-tee.ts";
 import { defaultSpaceFor, noteSpaceChoice, spaceChoiceOf } from "../src/space.ts";
@@ -249,18 +249,19 @@ try {
     // A verb that WRITES agent state names the space when PAW_SPACE picked it: an `export PAW_SPACE=…` in a
     // shell rc is invisible, and it routed `paw adopt .` into another machine's space (2026-11-11).
     if (choice.how === "env" && SPACE_WRITING_VERBS.has(cmd)) process.stderr.write(`paw: space ${space} (from PAW_SPACE)\n`);
-    // Before anything boots or dials: a `--server` that isn't this space's broker (a tls:// URL on a space
-    // with no remote record, or another broker than the record's) is refused here (#142). `mesh` writes
+    // Before anything boots or dials: a `--server` that isn't this space's broker (on a space with no
+    // remote record, anything but a local nats:// broker; on a recorded one, any other broker) is refused
+    // here (#142), and the verb is handed the vetted value, so it dials what was checked. `mesh` writes
     // the record, so its --server is the one being recorded. Only an explicit --server is checked: a verb
     // without one must not start failing on a malformed PAW_SERVER or record it never reads.
     const serverFlag = explicitServer(args);
-    if (cmd !== "mesh" && serverFlag !== undefined) serverFlagFor(space, serverFlag);
+    const vetted = cmd !== "mesh" && serverFlag !== undefined ? withServer(args, serverFlagFor(space, serverFlag)) : args;
     const gate = isRemoteSpace(space) ? { space } : {};
-    if (cmd === "dm") await gateDm(() => ensure({ needMesh: true, needManager: true, ...gate }), args, space);
+    if (cmd === "dm") await gateDm(() => ensure({ needMesh: true, needManager: true, ...gate }), vetted, space);
     else if (NEEDS_MANAGER.has(cmd)) await ensure({ needMesh: true, needManager: true, ...gate });
     else if (NEEDS_MESH.has(cmd)) await ensure({ needMesh: true, ...gate });
 
-    const argv = expandEqFlags(withDefaultSpace(args, space));
+    const argv = expandEqFlags(withDefaultSpace(vetted, space));
     await command.run({ values: {}, positionals: [], raw: argv });
   }
 } catch (err) {

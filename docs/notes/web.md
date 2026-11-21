@@ -316,9 +316,10 @@ Moved verbatim from CLAUDE.md (2026-10-02 split). Index: [CLAUDE.md](../../CLAUD
   participant credential (cotal's `agent` role + a lifecycle uid, what `cotal join --creds … --lifecycle-uid …`
   uses). `paw web --creds …` / `--lifecycle-uid …` is refused in `parseArgs` with one actionable line
   (`PARTICIPANT_CREDS_REFUSAL`: admin observer from the signer via `paw mesh add`, keep the `cotal join`
-  session or ask for the signer), never echoing the path. `paw web --server tls://…` on a space with no
-  remote record is refused by bin/paw.ts's gate (`serverFlagFor`) before ensure() boots anything — it used
-  to start local daemons for the space and then dial the remote broker with local creds.
+  session or ask for the signer), never echoing the path. `paw web --server <non-local>` (tls://, a
+  non-loopback nats://, …) on a space with no remote record, another broker than a recorded space's, or two
+  `--server` flags are refused by bin/paw.ts's gate (`serverFlagFor`) before ensure() boots anything — it
+  used to start local daemons for the space and then dial the remote broker with local creds.
 - No participant view: the manager, roster, send and invite need the signer, and a participant view next
   to a live join would split its `dm_` durable or share its `chathist_` consumer name. `cotal web` (0.110:
   `cotal service start web --creds`) is upstream and still reads admin-shaped subjects with any credential.

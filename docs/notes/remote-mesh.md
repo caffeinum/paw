@@ -262,14 +262,23 @@ history read. The cred allows only `chat.*.*.>` and the single-filter
     admin observer from the signer, that a participant cred reads only its own channels and history, and
     to keep the `cotal join` session or ask for the signer (`PARTICIPANT_CREDS_REFUSAL`, src/web.ts). It
     never echoes the path.
-  - A `--server tls://…` for a space with NO record used to fall through as local: ensure() booted a local
+  - A remote `--server` for a space with NO record used to fall through as local: ensure() booted a local
     mesh, manager and mailbox for the space, then the command dialled the remote URL with local creds and
     no TLS requirement. Now bin/paw.ts's gate runs `serverFlagFor(space, --server)` (src/server-flag.ts)
-    for every verb but `mesh` (which writes the record) and `cotal` (own branch). An unrecorded space with a
-    tls:// broker is refused, naming `paw mesh add <s> --server … --root <dir>` and why a participant cred
-    can't run paw. A recorded space with another broker is refused too. A `nats://` second local broker is
-    unchanged. It lives outside src/server.ts on purpose: server.ts is in the manager's import graph, and
-    editing it moves the manager fingerprint (`check:doctor` A1).
+    for every verb but `mesh` (which writes the record) and `cotal` (own branch), then hands the verb the
+    value it returned in place of the flag (`withServer`), so the verb dials exactly what was checked.
+    - An unrecorded space takes only a local broker: a loopback `nats://` URL (localhost, 127.x, [::1]) or
+      PAW_SERVER as given. Anything else (tls://, a non-loopback nats://, a bare host:port, ws(s)://) is
+      refused, naming `paw mesh add <s> --server tls://… --root <dir>` and why a participant cred can't run paw.
+    - A recorded space takes only its record's server, the host compared case-insensitively and without a
+      trailing dot (WHATWG URL keeps a `tls:` host as typed); the verb gets the record's spelling.
+    - More than one `--server` (before `--`) is refused (`explicitServer`): every verb parser keeps the LAST,
+      so vetting the first let `--server <ok> --server <other>` dial the other.
+    - A flag with userinfo (`user:pass@`, `token@`) is refused without echoing it; the other refusals show
+      only its scheme and host:port, and the suggested `paw mesh add` carries the canonical `tls://host:port`
+      (or a `tls://host:port` placeholder), never the raw flag.
+    It lives outside src/server.ts on purpose: server.ts is in the manager's import graph, and editing it
+    moves the manager fingerprint (`check:doctor` A1).
   - A root whose `.cotal/auth` holds only a participant `.creds` gets `checkSignerRoot`'s "no signer"
     error, which now says a participant `.creds` is not a signer (`paw mesh add` and `paw doctor` share it).
 - **Why there is no participant mode in paw.** Roster (control-rail instrument creds), send-as-you, the
@@ -286,10 +295,13 @@ history read. The cred allows only `chat.*.*.>` and the single-filter
   channels, reads history with `channelHistoryPage`, labels its scope honestly and reports DMs, anycast
   and membership as unavailable once. paw has no `@cotal-ai/web` dependency (it comes through
   `cotal ext add`), so a pnpm patch can't reach it.
-- Tests: `check:remote` (the `serverFlagFor` matrix; a participant cred minted offline from a throwaway
-  account dropped into a root; `paw web`/`paw chat --server tls://…` on an unrecorded space exit 1 with
+- Tests: `check:remote` (the `serverFlagFor` matrix, including host case, userinfo never echoed and every
+  non-local spelling; `explicitServer` refusing two flags and `withServer`; a participant cred minted
+  offline from a throwaway account dropped into a root, asserting the refusal's own sentence; `paw web`/
+  `paw chat` with a tls://, a non-loopback nats:// or two `--server` flags on an unrecorded space exit 1 with
   nothing under PAW_HOME/COTAL_HOME naming the space and no process started; `paw mesh add` still passes
-  the gate), `check:web` (the `--creds`/`--lifecycle-uid` refusals, path never echoed).
+  the gate; a recorded space refuses another broker and a second flag), `check:web` (the
+  `--creds`/`--lifecycle-uid` refusals, path never echoed).
 
 ## Off on a remote space
 

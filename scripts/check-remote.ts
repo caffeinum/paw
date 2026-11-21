@@ -162,16 +162,45 @@ assert(explicitSpace(["x", "--", "--space", "team"]) === undefined && explicitSp
 console.log("--server is checked against the space's broker before anything boots (#142)");
 {
   const { serverFlagFor } = await import("../src/server-flag.ts");
-  const { explicitServer } = await import("../src/dispatch.ts");
+  const { explicitServer, withServer } = await import("../src/dispatch.ts");
   assert(explicitServer(["--server", "tls://h:1"]) === "tls://h:1" && explicitServer(["x", "--server=tls://h:1"]) === "tls://h:1", "explicitServer reads --server / --server=");
   assert(explicitServer(["x", "--", "--server", "tls://h:1"]) === undefined && explicitServer(["x"]) === undefined, "explicitServer ignores args after -- and absence");
+  throws(() => explicitServer(["--server", "nats://127.0.0.1:1", "--server", "tls://h:9"]), /--server given 2 times/, "two --server flags are refused (a verb keeps the last, the gate must not vet another)");
+  throws(() => explicitServer(["--server=nats://127.0.0.1:1", "x", "--server", "tls://h:9"]), /--server given 2 times/, "…in either spelling");
+  assert(explicitServer(["--server", "tls://h:1", "--", "--server", "x"]) === "tls://h:1", "…but one after -- is the child's, not a second");
+  assert(
+    JSON.stringify(withServer(["@a", "--server=TLS://H:1", "--", "--server", "x"], "tls://h:1")) === JSON.stringify(["@a", "--server", "tls://h:1", "--", "--server", "x"]),
+    "withServer hands the verb the vetted value in place of the flag's, leaving args after -- alone",
+  );
   const srv = "tls://127.0.0.1:14322";
   rm.writeRemoteMesh({ space: "remotetest-r", server: srv, root, ts: new Date().toISOString() });
   assert(serverFlagFor("remotetest-local", undefined) === pawServer("remotetest-local") && serverFlagFor("remotetest-r", undefined) === srv, "no --server ⇒ pawServer(space), local or remote");
   assert(serverFlagFor("remotetest-r", srv) === srv, "a recorded space with its own server ⇒ returned");
-  assert(serverFlagFor("remotetest-r", "TLS://127.0.0.1:14322") === srv, "…in any spelling of that same tls://host:port");
+  assert(serverFlagFor("remotetest-r", "TLS://127.0.0.1:14322") === srv, "…with an upper-case scheme too");
   throws(() => serverFlagFor("remotetest-r", "tls://198.51.100.1:4222"), /not space .* broker/, "a recorded space with another tls:// broker is refused");
   throws(() => serverFlagFor("remotetest-r", "nats://127.0.0.1:4223"), /not space .* broker/, "…and a plaintext one too (a remote space is TLS-only)");
+  rm.writeRemoteMesh({ space: "remotetest-r", server: "tls://broker.example:4222", root, ts: new Date().toISOString() });
+  for (const same of ["tls://Broker.Example:4222", "tls://broker.example.:4222", "TLS://BROKER.EXAMPLE:4222"])
+    assert(serverFlagFor("remotetest-r", same) === "tls://broker.example:4222", `a recorded host in another case or with a trailing dot (${same}) ⇒ the record's server`);
+  throws(() => serverFlagFor("remotetest-r", "tls://broker.example:4223"), /not space .* broker/, "…but another port is another broker");
+  const secret = "S3CRET-TOKEN";
+  for (const space of ["remotetest-r", "remotetest-local"])
+    for (const flag of [`tls://alice:${secret}@203.0.113.5:4222`, `nats://${secret}@127.0.0.1:4222`, `alice:${secret}@203.0.113.5:4222`]) {
+      let m = "";
+      try {
+        serverFlagFor(space, flag);
+      } catch (e) {
+        m = (e as Error).message;
+      }
+      assert(/must not embed credentials/.test(m) && !m.includes(secret) && !m.includes("alice"), `--server with userinfo on ${space === "remotetest-r" ? "a recorded" : "an unrecorded"} space is refused without echoing it (${flag.replace(secret, "…")})`);
+    }
+  let q = "";
+  try {
+    serverFlagFor("remotetest-r", `tls://198.51.100.1:4222/?token=${secret}`);
+  } catch (e) {
+    q = (e as Error).message;
+  }
+  assert(/tls:\/\/198\.51\.100\.1:4222 is not space/.test(q) && !q.includes(secret), "a refusal shows only the flag's scheme and host:port, never its path or query");
   rm.removeRemoteMesh("remotetest-r");
   let msg = "";
   try {
@@ -181,9 +210,20 @@ console.log("--server is checked against the space's broker before anything boot
   }
   assert(/no remote record/.test(msg) && /paw mesh add remotetest-local --server tls:\/\/198\.51\.100\.1:4222 --root/.test(msg), "an unrecorded space with a tls:// broker is refused, naming `paw mesh add`");
   assert(/participant credential/.test(msg) && /cotal join/.test(msg) && /admin observer/.test(msg), "…and says why a participant credential can't run paw");
-  assert(serverFlagFor("remotetest-local", "nats://127.0.0.1:4223") === "nats://127.0.0.1:4223", "an unrecorded space with a second LOCAL nats:// broker ⇒ returned unchanged");
-  process.env.PAW_SERVER = "nats://127.0.0.1:14998";
-  assert(serverFlagFor("remotetest-local", "nats://127.0.0.1:14998") === "nats://127.0.0.1:14998", "PAW_SERVER as the flag ⇒ returned");
+  for (const remote of ["nats://198.51.100.7:4222", "nats://broker.example.invalid:4222", "broker.example.invalid:4222", "198.51.100.7:4222", "wss://broker.example.invalid:443", "ws://127.0.0.1:8080", "nats+tls://x:1"]) {
+    let m = "";
+    try {
+      serverFlagFor("remotetest-local", remote);
+    } catch (e) {
+      m = (e as Error).message;
+    }
+    assert(/is not a local broker/.test(m) && /no remote record/.test(m) && /paw mesh add remotetest-local --server tls:\/\/host:port --root/.test(m), `an unrecorded space with a non-local broker (${remote}) is refused, not booted as local`);
+  }
+  for (const local of ["nats://127.0.0.1:4223", "nats://localhost:4223", "nats://[::1]:4223", "NATS://127.0.0.2:4223"])
+    assert(serverFlagFor("remotetest-local", local) === local, `an unrecorded space with a second LOCAL loopback broker (${local}) ⇒ returned unchanged`);
+  process.env.PAW_SERVER = "nats://192.0.2.10:14998";
+  assert(serverFlagFor("remotetest-local", "nats://192.0.2.10:14998") === "nats://192.0.2.10:14998", "PAW_SERVER as the flag ⇒ returned, even off loopback (the operator's own local broker)");
+  throws(() => serverFlagFor("remotetest-local", "nats://192.0.2.10:14999"), /is not a local broker .*PAW_SERVER: nats:\/\/192\.0\.2\.10:14998/, "…but another host:port beside it is refused, naming PAW_SERVER");
   process.env.PAW_SERVER = "tls://127.0.0.1:14998";
   throws(() => serverFlagFor("remotetest-local", undefined), /PAW_SERVER.*nats:\/\//, "a tls:// PAW_SERVER is still refused by localServer() (paw's local broker is never TLS)");
   delete process.env.PAW_SERVER;
@@ -284,13 +324,15 @@ chmodSync(signerFile, 0o600);
 {
   // #142: a participant credential — cotal's `agent` role paired with a lifecycle uid, the shape
   // `cotal join --creds … --lifecycle-uid …` runs on — dropped where the signer belongs. Minted offline
-  // from a throwaway account; never printed.
+  // from a throwaway account; never printed. loadSpaceAuth ignores a .creds file, so this is the
+  // operator's scenario as a fixture: the assertions are on the refusal's own sentence, never on the path
+  // (the temp dir's prefix names no "participant" or "signer" for a regex to match by accident).
   const { mintCreds, mintLifecycleUid, newIdentity: participantIdentity } = await import("@cotal-ai/core");
   const pAuth = await createSpaceAuth("remotetest-p");
   const participant = await mintCreds(pAuth, participantIdentity(), "agent", { lifecycleUid: mintLifecycleUid() });
   const jwt = /-----BEGIN NATS USER JWT-----\s*(\S+)\s*-/.exec(participant)?.[1];
-  assert(jwt !== undefined && jwt.length > 40, "the participant cred carries a user JWT (shape check only)");
-  const proot = mkdtempSync(join(tmpdir(), "paw-remote-participant-"));
+  assert(jwt !== undefined && jwt.length > 40, "fixture: the minted participant cred carries a user JWT");
+  const proot = mkdtempSync(join(tmpdir(), "paw-remote-p-"));
   mkdirSync(join(proot, ".cotal", "auth"), { recursive: true });
   writeFileSync(join(proot, ".cotal", "auth", "participant.creds"), participant, { mode: 0o600 });
   let msg = "";
@@ -299,7 +341,10 @@ chmodSync(signerFile, 0o600);
   } catch (e) {
     msg = (e as Error).message;
   }
-  assert(/no signer for space "remotetest-p"/.test(msg) && /participant/.test(msg) && /signer/.test(msg), "a root holding only a participant .creds is refused, saying a participant cred is not a signer");
+  assert(
+    /no signer for space "remotetest-p"/.test(msg) && /A participant \.creds file \(what `cotal join --creds` uses\) is not a signer/.test(msg) && /can't run on a participant credential alone/.test(msg),
+    "a root holding only a participant .creds is refused, saying a participant cred is not a signer",
+  );
   assert(!msg.includes("BEGIN NATS") && !msg.includes(jwt ?? "<no jwt>") && !msg.includes("participant.creds"), "…and the refusal carries none of the cred (no JWT, no seed, no filename)");
   rmSync(proot, { recursive: true, force: true });
 }
@@ -617,7 +662,7 @@ assert(sAuth.kind === "endpoint", "…registered as kind `endpoint` (an authed `
 assert(!(credsClaims(sAuth.creds!).nats?.pub?.allow ?? []).some((p) => p.includes(".chat.")), "…with no channel publish rows");
 rm.removeRemoteMesh("remotetest-s");
 
-console.log("the CLI refuses a remote --server with no record before it boots or dials anything (#142)");
+console.log("the CLI refuses a non-local --server with no record, or two --server flags, before it boots or dials anything (#142)");
 {
   const { spawnSync } = await import("node:child_process");
   const { existsSync, readdirSync, realpathSync } = await import("node:fs");
@@ -670,6 +715,12 @@ console.log("the CLI refuses a remote --server with no record before it boots or
   const c = paw("chat", "--space", "remotetest-w", "--server", remote);
   assert(c.status === 1 && /has no remote record here/.test(c.stderr), `paw chat --server tls://… on an unrecorded space exits 1 with the guard line — ${c.stderr.trim().split("\n")[0]?.slice(0, 120)}`);
   noTrace("paw chat");
+  const dup = paw("web", "--space", "remotetest-w", "--server", `nats://127.0.0.1:${deadPort}`, "--server", remote, "--no-open");
+  assert(dup.status === 1 && /--server given 2 times/.test(dup.stderr), `paw web with a local --server and then a tls:// one exits 1 at the gate — ${dup.stderr.trim().split("\n")[0]?.slice(0, 120)}`);
+  noTrace("paw web --server ×2");
+  const plain = paw("web", "--space", "remotetest-w", "--server", "nats://198.51.100.7:4222", "--no-open");
+  assert(plain.status === 1 && /is not a local broker/.test(plain.stderr) && /has no remote record here/.test(plain.stderr), `paw web --server nats://<non-loopback> on an unrecorded space exits 1 with the guard line — ${plain.stderr.trim().split("\n")[0]?.slice(0, 120)}`);
+  noTrace("paw web --server nats://<non-loopback>");
 
   // `paw mesh add` writes the record, so its --server must pass the gate (offline: it dials nothing).
   const wroot = realpathSync(mkdtempSync(join(tmpdir(), "paw-remote-cli-signer-")));
@@ -688,6 +739,8 @@ console.log("the CLI refuses a remote --server with no record before it boots or
   assert(m.status === 0 && saved?.server === remote, `paw mesh add … --server tls://… still passes the gate and records the space — ${(m.stderr || m.stdout).trim().split("\n")[0]?.slice(0, 120)}`);
   const other = paw("chat", "--space", "remotetest-w", "--server", "tls://127.0.0.1:10");
   assert(other.status === 1 && /is not space "remotetest-w"'s broker \(tls:\/\/127\.0\.0\.1:9\)/.test(other.stderr), `a recorded space with another --server is refused at the gate — ${other.stderr.trim().split("\n")[0]?.slice(0, 120)}`);
+  const dupR = paw("chat", "--space", "remotetest-w", "--server", remote, "--server", "tls://127.0.0.1:10");
+  assert(dupR.status === 1 && /--server given 2 times/.test(dupR.stderr), `a recorded space with its own --server and then another is refused at the gate — ${dupR.stderr.trim().split("\n")[0]?.slice(0, 120)}`);
   const ps = spawnSync("pgrep", ["-f", "remotetest-w"], { encoding: "utf8" });
   assert(ps.status === 1, "…and nothing was started for it");
   for (const d of [home, cotalHome, wroot]) rmSync(d, { recursive: true, force: true });

@@ -151,9 +151,10 @@ Each entry: what it is + the most load-bearing rule. Full notes behind the link.
   manager instance; `paw sleep` + INBOX lag only for agents hosted HERE (local persona + our instance),
   with paw-signed narrow creds; others fail loud "hosted on another machine". → [remote-mesh.md](docs/notes/remote-mesh.md)
 - `src/server-flag.ts` — participant credentials (#142): paw runs only on a space's signer, never a `cotal join`
-  participant cred; `paw web --creds|--lifecycle-uid` and a `--server tls://…` on a space with no record are refused
-  at bin/paw.ts's gate (`serverFlagFor`, every verb but `mesh`/`cotal`) before anything boots or dials. Kept out of
-  src/server.ts (manager graph). `cotal web`'s admin-only reads are upstream. → [remote-mesh.md#participant-credentials-142](docs/notes/remote-mesh.md#participant-credentials-142)
+  participant cred; `paw web --creds|--lifecycle-uid`, a non-local `--server` (anything but loopback nats:// or
+  PAW_SERVER) on a space with no record, another broker than the record's, and two `--server` flags are refused at
+  bin/paw.ts's gate (`serverFlagFor`, every verb but `mesh`/`cotal`) before anything boots or dials; the verb gets the
+  vetted value. Kept out of src/server.ts (manager graph). `cotal web`'s admin-only reads are upstream. → [remote-mesh.md#participant-credentials-142](docs/notes/remote-mesh.md#participant-credentials-142)
 
 ### Control rail → [control-rail.md](docs/notes/control-rail.md)
 - `src/control.ts` — the ONE door to the manager: v0.4 service endpoint (`resolveService` once, invoke
