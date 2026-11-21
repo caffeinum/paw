@@ -245,6 +245,52 @@ hosted here` (`bangNoFolder`, src/hosted.ts; the host only when the card reports
 connector doesn't). Never remote execution. e2e-remote drives `paw chat @<machine 2's agent>` from
 machine 1: DM round-trip, `!pwd` gives that line, no permission line.
 
+## Participant credentials (#142)
+
+#142 ran `cotal web --space S --server tls://host:4222 --creds participant.creds` beside a live
+`cotal join … --creds … --lifecycle-uid …`. A participant credential is cotal's `agent` role paired with
+a lifecycle uid. The dashboard said "god-view - DMs + anycast visible", then every read was denied: the
+`chat.>`/`inst.>`/`svc.>` taps, the membership KV watch, and the aggregate `CONSUMER.CREATE.CHAT_<s>`
+history read. The cred allows only `chat.*.*.>` and the single-filter
+`chathist_<owner>-<actor>-<lifecycleUid>` reader.
+
+- **paw's remote meshes are signer-only.** `paw mesh add` needs the account signer
+  (`checkSignerRoot`), and every role paw uses is minted from it. `paw web` holds cotal's `admin` observer,
+  so its DM/anycast/membership scope is real, and no paw surface ever runs on a participant credential.
+- **Refused up front, before anything boots or dials:**
+  - `paw web --creds …` / `--lifecycle-uid …` (and the `=` forms) get one line saying paw web mints the
+    admin observer from the signer, that a participant cred reads only its own channels and history, and
+    to keep the `cotal join` session or ask for the signer (`PARTICIPANT_CREDS_REFUSAL`, src/web.ts). It
+    never echoes the path.
+  - A `--server tls://…` for a space with NO record used to fall through as local: ensure() booted a local
+    mesh, manager and mailbox for the space, then the command dialled the remote URL with local creds and
+    no TLS requirement. Now bin/paw.ts's gate runs `serverFlagFor(space, --server)` (src/server-flag.ts)
+    for every verb but `mesh` (which writes the record) and `cotal` (own branch). An unrecorded space with a
+    tls:// broker is refused, naming `paw mesh add <s> --server … --root <dir>` and why a participant cred
+    can't run paw. A recorded space with another broker is refused too. A `nats://` second local broker is
+    unchanged. It lives outside src/server.ts on purpose: server.ts is in the manager's import graph, and
+    editing it moves the manager fingerprint (`check:doctor` A1).
+  - A root whose `.cotal/auth` holds only a participant `.creds` gets `checkSignerRoot`'s "no signer"
+    error, which now says a participant `.creds` is not a signer (`paw mesh add` and `paw doctor` share it).
+- **Why there is no participant mode in paw.** Roster (control-rail instrument creds), send-as-you, the
+  manager, channel create and invite all need the signer, so almost nothing of paw web would be left.
+  The two reads a participant view could add are unsafe beside the live join:
+  - binding its `dm_<id>` durable would split that session's DMs between two pull fetchers;
+  - reusing its lifecycle uid shares the fixed `chathist_` name. The legacy join/recall reader deletes and
+    recreates that consumer, and core's `channelHistoryPage` only detects that, it doesn't fence it.
+- **`cotal web` is upstream.** In cotal 0.110 the command is retired (the ext loader refuses it); the
+  dashboard is `cotal service start web --creds <file>`, with the same admin-shaped reads: an `admin`
+  connect, the membership watch, the three plane taps and the aggregate dmHistory/channelHistory. Only the
+  god-view banner is skipped in service mode. Neither version accepts `--lifecycle-uid`. The ask for cotal:
+  detect a non-observer credential and refuse before serving, or a participant mode that taps the granted
+  channels, reads history with `channelHistoryPage`, labels its scope honestly and reports DMs, anycast
+  and membership as unavailable once. paw has no `@cotal-ai/web` dependency (it comes through
+  `cotal ext add`), so a pnpm patch can't reach it.
+- Tests: `check:remote` (the `serverFlagFor` matrix; a participant cred minted offline from a throwaway
+  account dropped into a root; `paw web`/`paw chat --server tls://…` on an unrecorded space exit 1 with
+  nothing under PAW_HOME/COTAL_HOME naming the space and no process started; `paw mesh add` still passes
+  the gate), `check:web` (the `--creds`/`--lifecycle-uid` refusals, path never echoed).
+
 ## Off on a remote space
 
 The stale-id forwarder (re-publishes ANY peer's DM under its sender — no narrow grant for that; the peer
