@@ -24,7 +24,7 @@ const { parseUnstickArgs } = await import("../src/commands/unstick.ts");
 const { tmuxTarget } = await import("../src/unstick.ts");
 await import("../src/commands/msg.ts");
 await import("../src/commands/ask.ts");
-const { folderToName } = await import("../src/addressing.ts");
+const { folderToName, setPersonaKeys } = await import("../src/addressing.ts");
 const { isStaleRefusal } = await import("../src/control.ts");
 
 // A manager refusal that names a gone incarnation must drop the shared handle; an ordinary refusal must not.
@@ -87,6 +87,15 @@ const unmapped = realpathSync(mkdtempSync(join(tmpdir(), "paw-commands-unmapped-
 assert(throws(() => resolveStopName(space, unmapped)), "resolveStopName: an unmapped folder throws");
 assert(resolveStopName(space, "never-existed-xyz") === "never-existed-xyz", "resolveStopName: an unregistered NAME goes to the manager as-is (a cotal_spawn peer is stoppable)");
 assert(throws(() => resolveStopName(space, "no/such/path")), "resolveStopName: a token that is neither a name nor a folder throws");
+// A folder whose only agent is an EXTRA (a worktree opened with --name) resolves to that extra; two
+// extras and no default fail loud naming both, never a guess.
+const extraDir = realpathSync(mkdtempSync(join(tmpdir(), "paw-commands-extra-")));
+setPersonaKeys(space, "solo-extra", { cwd: extraDir, "paw-extra": "true" });
+assert(resolveStopName(space, extraDir) === "solo-extra", "resolveStopName: a folder whose one agent is an extra resolves to it");
+setPersonaKeys(space, "second-extra", { cwd: extraDir, "paw-extra": "true" });
+let twoExtras = "";
+try { resolveStopName(space, extraDir); } catch (e) { twoExtras = (e as Error).message; }
+assert(/2 agents and no default/.test(twoExtras) && twoExtras.includes("@solo-extra") && twoExtras.includes("@second-extra"), `resolveStopName: two extras and no default throw naming both (got: ${twoExtras})`);
 
 // history: stripChannel / formatWhen / idNames.
 assert(stripChannel("#general") === "general", "stripChannel: strips one leading #");

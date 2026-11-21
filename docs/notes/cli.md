@@ -83,7 +83,10 @@ Moved verbatim from CLAUDE.md (2026-10-02 split). Index: [CLAUDE.md](../../CLAUD
 ## src/commands
 
 - `src/commands/` — the native command modules (one file each, self-registering core `Command`s),
-  all speaking the endpoint API directly: `stop.ts` (folder-aware positional via the registry — `resolveStopName`; `--name` is the
+  all speaking the endpoint API directly: `stop.ts` (folder-aware positional via the registry — `resolveStopName`, shared by
+  type/unstick/runtime; a folder with NO default whose one agent is an extra — a worktree opened with `--name` — resolves to
+  that extra, two extras fail loud naming both (2026-11-21: `paw type /compact` from code-review's worktree said "no agent
+  registered"); `--name` is the
   raw cotal-parity escape hatch that goes STRAIGHT to the manager, reaching registry-less agents like
   an auto-numbered `web-2`), `msg.ts` (multicast), `ask.ts` (anycast), `who.ts` (roster), `history.ts`
   (channelHistory / dmHistory god-view tail; positional `clear` fail-louds toward
