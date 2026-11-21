@@ -309,6 +309,22 @@ Moved verbatim from CLAUDE.md (2026-10-02 split). Index: [CLAUDE.md](../../CLAUD
   including what must NOT retire a row: another agent's identical post, an inbound DM with the same text,
   and a FAILED send (the operator's only handle to retry it).
 
+## participant credentials (#142)
+
+- `paw web` is cotal's `admin` observer, minted from the space signer (`observerEndpoint` →
+  `humanEndpointAuth(space, "admin")`), so its DMs, anycast and membership are real. paw never runs on a
+  participant credential (cotal's `agent` role + a lifecycle uid, what `cotal join --creds … --lifecycle-uid …`
+  uses). `paw web --creds …` / `--lifecycle-uid …` is refused in `parseArgs` with one actionable line
+  (`PARTICIPANT_CREDS_REFUSAL`: admin observer from the signer via `paw mesh add`, keep the `cotal join`
+  session or ask for the signer), never echoing the path. `paw web --server <non-local>` (tls://, a
+  non-loopback nats://, …) on a space with no remote record, another broker than a recorded space's, or two
+  `--server` flags are refused by bin/paw.ts's gate (`serverFlagFor`) before ensure() boots anything — it
+  used to start local daemons for the space and then dial the remote broker with local creds.
+- No participant view: the manager, roster, send and invite need the signer, and a participant view next
+  to a live join would split its `dm_` durable or share its `chathist_` consumer name. `cotal web` (0.110:
+  `cotal service start web --creds`) is upstream and still reads admin-shaped subjects with any credential.
+  → [remote-mesh.md#participant-credentials-142](remote-mesh.md#participant-credentials-142)
+
 ## node re-exec
 
 - **`paw web` RE-EXECS ITSELF UNDER NODE when the CLI is bun (`reexecUnderNode`, 2026-08-19)** — paw's

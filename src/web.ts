@@ -213,6 +213,15 @@ export interface Args {
   open: boolean;
 }
 
+/** `cotal web --creds <participant.creds>` habits (#142), refused with what paw web IS instead of the
+ *  generic unknown-argument line. Names no path: a creds file is a bearer secret's location. */
+export const PARTICIPANT_CREDS_REFUSAL =
+  "paw: web takes no --creds — it mints cotal's admin observer from the space signer (`paw mesh add <space> --server tls://host:port --root <dir>`) " +
+  "so it can show DMs, anycast and membership. A participant credential reads only its own channels and history; paw has no participant view of a mesh — " +
+  "keep using your `cotal join` session, or ask the mesh operator for the signer.";
+
+const PARTICIPANT_FLAGS = ["--creds", "--lifecycle-uid"];
+
 /** Exported so the flags can be checked without standing anything up. A bad `--port` THROWS rather
  *  than falling back to the default: a port the operator did not choose is a fabricated value, and the
  *  daemon it silently lands on is one they will debug for an hour. */
@@ -220,6 +229,7 @@ export function parseArgs(argv: string[]): Args {
   const out: Args = { port: DEFAULT_PORT, open: true };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
+    if (PARTICIPANT_FLAGS.some((f) => a === f || a.startsWith(`${f}=`))) throw new Error(PARTICIPANT_CREDS_REFUSAL);
     if (a === "--space") out.space = argv[++i];
     else if (a === "--server") out.server = argv[++i];
     else if (a === "--no-open") out.open = false;

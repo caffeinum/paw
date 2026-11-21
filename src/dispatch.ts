@@ -136,6 +136,30 @@ export function explicitSpace(args: string[]): string | undefined {
   return v && !v.startsWith("-") ? v : undefined;
 }
 
+/** The operator's explicit `--server <url>` / `--server=<url>` (before any `--` terminator), else undefined.
+ *  More than one is refused: every verb parser keeps the LAST, so a gate that vetted one of several
+ *  would let the verb dial another. A `--server` with no value is the verb's own parser's to refuse. */
+export function explicitServer(args: string[]): string | undefined {
+  const argv = expandEqFlags(args);
+  const end = argv.indexOf("--");
+  const mine = end === -1 ? argv : argv.slice(0, end);
+  const count = mine.filter((a) => a === "--server").length;
+  if (count > 1) throw new Error(`paw: --server given ${count} times — name one broker`);
+  const i = mine.indexOf("--server");
+  const v = i >= 0 ? mine[i + 1] : undefined;
+  return v && !v.startsWith("-") ? v : undefined;
+}
+
+/** `args` with its one explicit `--server` value (see explicitServer) replaced by `server`, the broker
+ *  the gate vetted, so the verb dials exactly what was checked. `--server=` comes back two-token. */
+export function withServer(args: string[], server: string): string[] {
+  const argv = expandEqFlags(args);
+  const i = argv.indexOf("--server");
+  const end = argv.indexOf("--");
+  if (i === -1 || (end !== -1 && i > end)) throw new Error("paw: withServer called on args with no --server before any --");
+  return [...argv.slice(0, i + 1), server, ...argv.slice(i + 2)];
+}
+
 /**
  * The space `paw down` tears down: `--space <s>` / `--space=<s>`, else `fallback` (resolveSpace —
  * PAW_SPACE or the default). `down` used to ignore its args entirely, so `paw down --space test-x`
