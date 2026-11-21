@@ -11,11 +11,13 @@
  */
 import { registry, type Command } from "@cotal-ai/core";
 import {
+  agentNamesForFolder,
   agentRecord,
   assertUnambiguousTarget,
   canonicalDir,
   elsewhereHint,
   folderForName,
+  isTeleportedHere,
   lookupFolderName,
   personaFilePath,
   stopAgent,
@@ -78,6 +80,14 @@ export function resolveStopName(space: string, raw: string): string {
   if (folder) {
     const name = lookupFolderName(space, folder);
     if (name) return name;
+    // A folder with no default whose agents are all extras (`paw open <worktree> --name code-review`) has
+    // no "folder's agent" to spawn into, but a verb acting on an EXISTING one (type, stop, unstick) means
+    // the one living here: `paw type /compact` from code-review's own worktree said "no agent registered".
+    const extras = agentNamesForFolder(space, folder).filter((n) => !isTeleportedHere(space, n));
+    if (extras.length === 1) return extras[0]!;
+    if (extras.length > 1) {
+      throw new Error(`paw: ${folder} has ${extras.length} agents and no default (${extras.join(", ")}) — name one: ${extras.map((n) => `@${n}`).join(" or ")}`);
+    }
     throw new Error(`paw: no agent registered for ${folder} (\`paw status\` to list)`);
   }
   // Not paw's — but the MANAGER may hold it (a `cotal_spawn` peer, an auto-numbered `web_2`), so the
