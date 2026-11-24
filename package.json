@@ -12,6 +12,7 @@
     "check:acp": "node scripts/check-acp.ts",
     "check:sandbox": "node scripts/check-sandbox.ts",
     "check:sandbox-bang": "node scripts/check-sandbox-bang.ts",
+    "check:sandbox-kit": "node scripts/check-sandbox-kit.ts",
     "check:sandbox-forward": "node scripts/check-sandbox-forward.ts",
     "check:sandbox-wedge": "node scripts/check-sandbox-wedge.ts",
     "check:handoff-relay": "node scripts/check-handoff-relay.ts",

@@ -405,7 +405,9 @@ console.log("refusals");
     throwsLike(() => pawConnector.buildLaunch({ space: "localsp", name: "l", configPath: join(home, ".paw", "spaces", "localsp", "personas", "l.md"), workspaceRoot: root }), /LOCAL space/),
     "…and the manager-side buildLaunch refuses it too",
   );
-  assert(throwsLike(() => launch("kitty", SPACE, "agent: kit\n"), /only claude agents/), "a non-claude harness is refused");
+  for (const h of ["acp", "hermes", "codex", "opencode"])
+    assert(throwsLike(() => launch(`h-${h}`, SPACE, `agent: ${h}\n`), /only claude and kit agents run in a sandbox.*unsandboxed/), `agent: ${h} is refused (it would run on the host, unsandboxed)`);
+  assert(throwsLike(() => launch("kitty", SPACE, "agent: kit\n"), /not claude — the claude connector won't launch it/), "the claude connector never wraps a kit persona (kit's own connector does — check:sandbox-kit)");
   assert(throwsLike(() => launch("hl", SPACE, "headless: true\n"), /headless/), "headless is refused (the hub's host socket)");
   writeFileSync(join(personas, "nocwd.md"), "---\nname: nocwd\nsandbox: container\n---\n");
   assert(

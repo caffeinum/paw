@@ -30,6 +30,7 @@ import { KIT_AGENT, kitAgentDir, kitBinPath, preflightKitArgs, readKitPersona } 
 import { PS_ALL_ENV } from "./ps-env.ts";
 import { containerBin, reapSandbox, SANDBOX_CLAUDE_BIN } from "./sandbox.ts";
 import { liveSandboxContainer } from "./sandbox-exec.ts";
+import { kitLinuxBinPath, SANDBOX_KIT_BIN } from "./sandbox-kit.ts";
 import { hostedElsewhereError, hosting } from "./hosted.ts";
 import { presenceLive, readMeshRoster } from "./roster.ts";
 import { dmLastSeqOn, openStreamInfo } from "./sleep-dial.ts";
@@ -215,19 +216,46 @@ export function vmSessionProcs(psText: string, now = Date.now()): SessionProcs {
   };
 }
 
+/**
+ * Pure: a sandboxed KIT agent's VM process table → {@link SessionProcs}. The seat is the mounted linux kit
+ * ({@link SANDBOX_KIT_BIN} `run …`), exactly one; running work = anything under it but its persistent shell (as
+ * on the host, {@link kitSessionProcs}), and anything else parented to the VM's init is work it detached, which
+ * dies with the VM. ppid 0 = `container exec` sessions (this ps, the port forwarder), never the agent's.
+ */
+export function vmKitSessionProcs(psText: string, now = Date.now()): SessionProcs {
+  const rows = parseVmPs(psText);
+  if (!rows.length) return { ok: false, unknown: "its VM's ps printed nothing" };
+  const seats = rows.filter((r) => r.argv.startsWith(`${SANDBOX_KIT_BIN} run `));
+  if (seats.length !== 1) return { ok: false, unknown: `${seats.length} \`kit run\` processes in its VM` };
+  const kit = seats[0];
+  const kids = new Map<number, typeof rows>();
+  for (const r of rows) if (r.pid !== r.ppid) kids.set(r.ppid, [...(kids.get(r.ppid) ?? []), r]);
+  const running: string[] = [];
+  const walk = (pid: number) => {
+    for (const k of kids.get(pid) ?? []) {
+      const plumbing = (pid === kit.pid && KIT_PERSISTENT_SHELL.test(k.argv.trim())) || COTAL_RECLAIM_WATCHER.test(k.argv);
+      if (!plumbing) running.push(procLabel(k));
+      walk(k.pid);
+    }
+  };
+  walk(kit.pid);
+  const detached = rows.filter((r) => r.ppid === 1 && r.pid !== kit.pid && !COTAL_RECLAIM_WATCHER.test(r.argv)).map(procLabel);
+  return { ok: true, where: "vm", startedAt: now - kit.elapsedS * 1000, shells: running, detached };
+}
+
 /** The live inspector: one `ps -axE` per sweep for host agents (taken on first use), `container exec … ps`
  *  per sandboxed agent. A VM that can't be read is "unknown", never "nothing running". */
 export function liveInspector(): ProcInspector {
   let table: Proc[] | undefined;
   const hostTable = () => (table ??= parsePs(execFileSync("ps", [...PS_ALL_ENV, "-o", "pid=,ppid=,pgid=,etime=,time=,command="], { encoding: "utf8", maxBuffer: 256 * 1024 * 1024 })));
   return ({ space, name, pin, sandboxed, harness }) => {
-    if (harness === KIT_AGENT) return sandboxed ? { ok: false, unknown: "a sandboxed kit seat (paw sandboxes claude only)" } : kitSessionProcs(space, name, hostTable());
+    if (harness === KIT_AGENT && !sandboxed) return kitSessionProcs(space, name, hostTable());
     if (!sandboxed) return hostSessionProcs(space, name, pin, hostTable());
     try {
       const bin = containerBin();
       const id = liveSandboxContainer(space, name, bin);
       const out = execFileSync(bin, ["exec", id, "ps", "-eo", "pid=,ppid=,etimes=,args="], { encoding: "utf8", timeout: 20_000, maxBuffer: 16 * 1024 * 1024 });
-      return vmSessionProcs(out);
+      return harness === KIT_AGENT ? vmKitSessionProcs(out) : vmSessionProcs(out);
     } catch (e) {
       return { ok: false, unknown: `its VM can't be inspected: ${(e as Error).message.split("\n")[0]}` };
     }
@@ -267,13 +295,16 @@ export function kitSchedules(space: string, name: string): string[] {
  * connector accepts (pin, provider, storage, kitArgs), a kit binary, the kitArgs kit's own parse accepts, and
  * a transcript in the persona's store so the launch is `--resume <pin>` — not a fresh `--session-id`.
  */
-export function kitWakeBlocker(file: string, pin: string, roots: string[], deps: { bin?: string; preflight?: typeof preflightKitArgs } = {}): string | undefined {
+export function kitWakeBlocker(file: string, pin: string, roots: string[], deps: { bin?: string; linuxBin?: string; preflight?: typeof preflightKitArgs } = {}): string | undefined {
   try {
     const persona = readKitPersona(file);
     if (persona.pin !== pin) return `its persona's resume pin (${persona.pin ?? "none"}) is not the session paw reads (${pin})`;
     if (!transcriptPath(pin, roots)) return `no transcript for ${pin} in ${roots.join(" or ")} — a wake would start a fresh session`;
     const bin = deps.bin ?? kitBinPath();
     if (!existsSync(bin)) return `no kit binary at ${bin} to relaunch it`;
+    // A sandboxed kit relaunches the LINUX kit in its VM (src/sandbox-kit.ts); the host one only parses the flags.
+    const linux = deps.linuxBin ?? kitLinuxBinPath();
+    if (readSandbox(file) && !existsSync(linux)) return `no linux kit at ${linux} to relaunch it in its sandbox`;
     (deps.preflight ?? preflightKitArgs)(bin, persona.kitArgs, `kitArgs in ${file}`);
     return undefined;
   } catch (e) {

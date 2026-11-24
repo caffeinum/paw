@@ -24,10 +24,11 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { loadAgentFile, type Connector, type LaunchOpts, type LaunchSpec } from "@cotal-ai/core";
 import { beadsDir } from "./beads-dir.ts";
-import { ADDRESSING_BRIEF, CRON_BRIEF, GITHUB_BRIEF, CHANNELS_BRIEF, OPERATOR_REQUESTS_BRIEF, TASKS_BRIEF, UNATTENDED_BRIEF, WAKE_BRIEF, whereBrief, type BriefWhere } from "./brief.ts";
+import { ADDRESSING_BRIEF, CRON_BRIEF, SANDBOX_KIT_BRIEF, GITHUB_BRIEF, CHANNELS_BRIEF, OPERATOR_REQUESTS_BRIEF, TASKS_BRIEF, UNATTENDED_BRIEF, WAKE_BRIEF, whereBrief, type BriefWhere } from "./brief.ts";
 import { briefWhere } from "./names.ts";
 import { voiceLineFor } from "./personality.ts";
-import { readKitArgs, readKitStorage, readResumeId, transcriptExists, transcriptRoots, type KitStorage } from "./session.ts";
+import { SANDBOX_KIT_BIN, sandboxKitLaunch, sandboxKitProvider } from "./sandbox-kit.ts";
+import { personaTranscriptRoots, readKitArgs, readKitStorage, readResumeId, readSandbox, transcriptExists, type KitStorage } from "./session.ts";
 
 export const KIT_AGENT = "kit";
 
@@ -245,14 +246,20 @@ export const kitConnector: Connector = {
     const persona = readKitPersona(opts.configPath);
     const bin = kitBinPath();
     if (!existsSync(bin)) throw new Error(`paw: no kit binary at ${bin} — \`paw start ${opts.name}\` builds it (or set KIT_BIN)`);
+    // `sandbox: container`: the same launch, run by a linux kit INSIDE the agent's VM (src/sandbox-kit.ts).
+    const sandboxed = readSandbox(opts.configPath) !== undefined;
+    const provider = sandboxed ? sandboxKitProvider({ provider: persona.provider, model: opts.model?.trim() || persona.model, kitArgs: persona.kitArgs }, opts.name) : undefined;
     const dir = kitAgentDir(opts.space, opts.name);
     mkdirSync(dir, { recursive: true });
     const brief = join(dir, "system.md");
-    writeFileSync(`${brief}.tmp`, [persona.body, kitBrief(opts.name, persona.voice, briefWhere(opts.space))].filter(Boolean).join("\n\n") + "\n");
+    writeFileSync(`${brief}.tmp`, [persona.body, kitBrief(opts.name, persona.voice, briefWhere(opts.space)), ...(sandboxed ? [SANDBOX_KIT_BRIEF.join(" ")] : [])].filter(Boolean).join("\n\n") + "\n");
     renameSync(`${brief}.tmp`, brief);
     // kit refuses `--session-id` for an id it can already find in the stores it reads (kit's, then
     // claude's; claude's alone under --overwrite) — so a transcript in EITHER means --resume.
-    const roots = transcriptRoots(KIT_AGENT, persona.storage);
-    return kitLaunch(opts, persona, { bin, brief, sessionExists: (id) => transcriptExists(id, roots) });
+    // A sandboxed agent's stores are its own (sandbox/<n>/claude, its home's .kit) — personaTranscriptRoots knows.
+    const roots = personaTranscriptRoots(opts.configPath);
+    const spec = kitLaunch(opts, persona, { bin: sandboxed ? SANDBOX_KIT_BIN : bin, brief, sessionExists: (id) => transcriptExists(id, roots) });
+    if (!sandboxed) return spec;
+    return sandboxKitLaunch(spec, { space: opts.space, name: opts.name, configPath: opts.configPath!, provider: provider!, kitDir: dir, hostKitBin: bin });
   },
 };

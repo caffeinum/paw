@@ -243,9 +243,14 @@ export function transcriptRoots(agentType: string | undefined, storage: KitStora
 /** {@link transcriptRoots} for a persona file (its `agent:` + `storage:`). No file ⇒ claude-only. */
 export function personaTranscriptRoots(configPath: string | undefined): string[] {
   if (!configPath || !existsSync(resolve(configPath))) return [claudeProjectsRoot()];
-  // A sandboxed claude writes ONLY into its own mounted config dir — never ~/.claude on the host.
-  if (readSandbox(configPath)) return [join(sandboxClaudeDir(configPath), "projects")];
   const agent = readAgentType(configPath);
+  // A sandboxed agent writes ONLY into its own mounted stores — never ~/.claude or ~/.kit on the host: its claude
+  // config dir (/paw/claude), and for kit on kit's own store its private home's `.kit/sessions` (KIT_HOME=/root/.kit).
+  if (readSandbox(configPath)) {
+    const claude = join(sandboxClaudeDir(configPath), "projects");
+    if (agent !== "kit" || readKitStorage(configPath) === "claude") return [claude];
+    return [join(process.env.PAW_HOME?.trim() || join(homedir(), ".paw"), "containers", basename(configPath, ".md"), ".kit", "sessions"), claude];
+  }
   return transcriptRoots(agent, agent === "kit" ? readKitStorage(configPath) : undefined);
 }
 

@@ -234,7 +234,7 @@ export async function runClaude(argv: string[]): Promise<void> {
   if (sandbox) {
     if (fg) throw new Error("paw: --sandbox runs the agent as a managed agent in its VM, never in this terminal — drop --fg");
     assertSandboxSpace(space, nameArg ?? folder);
-    assertSandboxHostReady(nameArg ? personaFilePath(space, nameArg) : undefined);
+    assertSandboxHostReady(nameArg ? personaFilePath(space, nameArg) : undefined, process.env, { harness: "claude" });
   }
   const name = nameArg ?? folderToName(space, folder);
   if (fg && readSandbox(personaFilePath(space, name)))
