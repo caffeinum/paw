@@ -35,6 +35,10 @@ export const SLEEP_YIELD_ACK_FEATURE = "sleep-yield-ack";
  *  schema has no `runtime` and refuses the op; its pty manager also kept the launching shell's TMUX. */
 export const SEAT_RUNTIME_FEATURE = "seat-runtime";
 
+/** `agent: kit` + `sandbox: container`: the kit connector launches kit INSIDE the agent's VM (src/sandbox-kit.ts).
+ *  An older manager's kit connector ignores `sandbox:` and would run the agent on the HOST, unsandboxed. */
+export const SANDBOX_KIT_FEATURE = "sandbox-kit";
+
 /** The tree a manager process runs: `<root>/bin/cotald.ts supervise …` from its command line. Pure. */
 export function codeRootFromCommand(cmd: string): string | undefined {
   return /(?:^|\s)(\/\S+)\/bin\/cotald\.ts supervise\b/.exec(cmd)?.[1];

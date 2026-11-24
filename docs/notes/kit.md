@@ -221,6 +221,10 @@ then the ordinary `restartAgent`. Principle: transparent, no inventions.
   so, names the manager's release and `manager.log`. `paw attach` of an offline agent prints the same
   lines on stderr while it wakes it.
 
+- **A sandboxed agent** (`sandbox: container`) swaps too and stays sandboxed: kit runs inside its VM, and the swap
+  refuses BEFORE writing when that launch couldn't happen (no linux kit, no provider named, no host login for it, a
+  manager without `sandbox-kit`) — [sandbox.md#kit-in-the-vm](sandbox.md#kit-in-the-vm). `check:sandbox-kit`.
+
 Test: `check:kit` (kitArgs, preflight with stub binaries, planSwap), `check:commands` (parseArgs), and
 `scripts/lean/kit/e2e-kit-swap.ts` (below).
 

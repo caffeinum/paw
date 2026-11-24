@@ -23,7 +23,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "
 import { dirname, join } from "node:path";
 import type { McpServerSpec } from "@cotal-ai/core";
 import { personaFilePath } from "./addressing.ts";
-import { readCwd, readSandbox, sandboxClaudeDir } from "./session.ts";
+import { readAgentType, readCwd, readSandbox, sandboxClaudeDir } from "./session.ts";
 import { SANDBOX_CLAUDE_BIN, containerBin, listSandboxContainers } from "./sandbox.ts";
 import { sandboxBashArgv } from "./sandbox-exec.ts";
 import { assertMutableByName } from "./namespace.ts";
@@ -55,6 +55,7 @@ export function sandboxTarget(space: string, name: string): SandboxTarget {
       `paw: "${name}" is not sandboxed — host agents get MCP servers from the shared config, chosen per persona (shareTools:/mcpOptIn:). ` +
         `Use \`paw mcp add <server> --only ${name} -- <cmd|url>\` for a new one, or \`paw mcp share <server> ${name}\` for an existing one`,
     );
+  if (readAgentType(persona) === "kit") throw new Error(`paw: "${name}" runs on kit, which has no MCP client — an MCP server can't reach it`);
   return { space, name, persona, cwd, claudeJson: join(sandboxClaudeDir(persona), ".claude.json") };
 }
 

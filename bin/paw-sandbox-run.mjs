@@ -5,7 +5,9 @@
  *   node paw-sandbox-run.mjs --container <bin> --token-file <f> --name <id> --space <s> --agent <n> --log <f> -- run …
  *
  * 1. Reads the Claude OAuth token from its 0600 file into CLAUDE_CODE_OAUTH_TOKEN for `container run -e
- *    CLAUDE_CODE_OAUTH_TOKEN` — so the token is never on any argv, in the LaunchSpec or in a log line.
+ *    CLAUDE_CODE_OAUTH_TOKEN` — so the token is never on any argv, in the LaunchSpec or in a log line. A kit seat
+ *    (src/sandbox-kit.ts) has no Claude token: its provider's access token is MIRRORED into a read-only file
+ *    instead and kept fresh (./paw-sandbox-kitauth.mjs startKitAuthMirror).
  * 2. Removes this agent's leftover containers (a predecessor that was SIGKILLed before it could clean up) —
  *    bounded, escalating to a SIGKILL of the VM process (./paw-sandbox-kill.mjs); one that won't go fails loud.
  * 3. Runs `container run` on the seat's pty (stdin/stdout — the VM's tty) and exits with its code. The run
@@ -28,6 +30,7 @@ import { fileURLToPath } from "node:url";
 import { containerTransport, startForwarder } from "./paw-sandbox-forward.mjs";
 import { forceRemoveContainers, stillListed } from "./paw-sandbox-kill.mjs";
 import { diagnoseInstallRoot, installRootOf, systemStartCommand } from "./paw-container-root.mjs";
+import { startKitAuthMirror } from "./paw-sandbox-kitauth.mjs";
 
 const KILLER = fileURLToPath(new URL("./paw-sandbox-kill.mjs", import.meta.url));
 const argv = process.argv.slice(2);
@@ -43,9 +46,17 @@ for (; i < argv.length; i++) {
 }
 const run = argv.slice(i);
 const { container, "token-file": tokenFile, name, space, agent, log, forward = "on" } = opt;
+const kitProvider = opt["kit-provider"];
+const kitMirror = opt["kit-auth-mirror"];
+const kitHostBin = opt["kit-host-bin"];
 if (forward !== "on" && forward !== "off") die(`--forward is on|off, not "${forward}"`);
-if (!container || !tokenFile || !name || !space || !agent || !log || run[0] !== "run")
-  die("usage: --container <bin> --token-file <f> --name <id> --space <s> --agent <n> --log <f> -- run …");
+// A claude seat signs in with the Claude token (--token-file); a kit seat with its provider's login, mirrored
+// (--kit-provider/--kit-auth-mirror/--kit-host-bin, ./paw-sandbox-kitauth.mjs) — or, with neither, kit's
+// own login in the agent's home / its offline fake provider.
+if (!container || !name || !space || !agent || !log || run[0] !== "run")
+  die("usage: --container <bin> [--token-file <f>] --name <id> --space <s> --agent <n> --log <f> -- run …");
+if (!!kitProvider !== !!kitMirror || !!kitProvider !== !!kitHostBin) die("--kit-provider, --kit-auth-mirror and --kit-host-bin come together");
+if (tokenFile && kitProvider) die("--token-file (claude) and --kit-provider (kit) are different seats");
 mkdirSync(dirname(log), { recursive: true });
 
 function note(msg) {
@@ -62,12 +73,14 @@ function die(msg) {
 }
 
 let token;
-try {
-  token = readFileSync(tokenFile, "utf8").trim();
-} catch (e) {
-  die(`can't read the Claude OAuth token file ${tokenFile} (${e.code ?? e.message})`);
+if (tokenFile) {
+  try {
+    token = readFileSync(tokenFile, "utf8").trim();
+  } catch (e) {
+    die(`can't read the Claude OAuth token file ${tokenFile} (${e.code ?? e.message})`);
+  }
+  if (!token) die(`the Claude OAuth token file ${tokenFile} is empty`);
 }
-if (!token) die(`the Claude OAuth token file ${tokenFile} is empty`);
 
 // Leftovers of this agent: same labels, any state. One container per launch id, so this never races
 // a live sibling of the same agent — there is none (one seat per name per manager).
@@ -123,8 +136,12 @@ if (mirrorSrc) {
   }, 5_000).unref();
 }
 
+// A kit seat's provider login: mirrored now (refreshed first on the host if it is about to lapse), then kept
+// fresh — the host refreshes kit's own login before it expires, and every change is copied in.
+const kitAuth = kitProvider ? startKitAuthMirror({ provider: kitProvider, mirror: kitMirror, hostBin: kitHostBin, note, die }) : undefined;
+
 note(`starting ${name} (${agent}#${space})`);
-const child = spawn(container, run, { stdio: ["inherit", "inherit", openSync(log, "a")], env: { ...process.env, CLAUDE_CODE_OAUTH_TOKEN: token } });
+const child = spawn(container, run, { stdio: ["inherit", "inherit", openSync(log, "a")], env: token ? { ...process.env, CLAUDE_CODE_OAUTH_TOKEN: token } : process.env });
 token = undefined;
 
 const forwarder =
@@ -206,6 +223,7 @@ const stop = (sig) => {
   if (stopping) return;
   stopping = true;
   forwarder?.stop();
+  kitAuth?.stop();
   note(`${sig}: stopping ${name}`);
   watchdog.stop();
   // Detached: it outlives the manager's SIGKILL of this launcher 3s later. stop → delete --force → SIGKILL of
@@ -221,6 +239,7 @@ for (const sig of ["SIGTERM", "SIGHUP", "SIGINT"]) process.on(sig, () => stop(si
 child.on("error", (e) => die(`couldn't start ${container}: ${e.message}`));
 child.on("exit", (code, signal) => {
   forwarder?.stop();
+  kitAuth?.stop();
   watchdog.stop();
   note(`${name} exited (${signal ?? `code ${code}`})`);
   // The run CLI dying (a crash, a SIGKILL) leaves the VM running — an unmanaged agent still on the mesh.

@@ -247,15 +247,22 @@ export function assertSandboxSpace(space: string, name: string): void {
     );
 }
 
+/** The harnesses that run INSIDE the VM: claude (its image binary) and kit (a linux kit, src/sandbox-kit.ts).
+ *  Every other one (acp, hermes, codex, opencode…) would run on the host, unsandboxed — refused. */
+export const SANDBOX_HARNESSES = "claude and kit";
+export function sandboxHarnessRefusal(name: string, harness: string | undefined, configPath: string): string | undefined {
+  if (isClaudeHarness(harness) || harness === "kit") return undefined;
+  return `paw: "${name}" is \`agent: ${harness}\` — only ${SANDBOX_HARNESSES} agents run in a sandbox (a ${harness} seat would run on the host, unsandboxed); drop \`sandbox:\` from ${configPath} or the agent: pin`;
+}
+
 /**
  * Everything that must hold before a sandboxed agent may launch — checked on the CLI side (ensureAgentSpawned,
  * for a clear error at the prompt) and again in the manager's buildLaunch. Returns the agent's folder.
  */
-export function assertSandboxable(space: string, name: string, configPath: string | undefined): string {
+export function assertSandboxable(space: string, name: string, configPath: string | undefined, harness: string | undefined = configPath ? readAgentType(configPath) : undefined): string {
   if (!configPath) throw new Error(`paw: "${name}" is sandboxed but has no persona file to read its folder from`);
-  const agent = readAgentType(configPath);
-  if (!isClaudeHarness(agent))
-    throw new Error(`paw: "${name}" is \`agent: ${agent}\` — only claude agents run in a sandbox; drop \`sandbox:\` from ${configPath} or the agent: pin`);
+  const refusal = sandboxHarnessRefusal(name, harness, configPath);
+  if (refusal) throw new Error(refusal);
   if (readHeadless(configPath))
     throw new Error(`paw: "${name}" is headless, which needs the cotal hub's host socket — a sandboxed agent can't reach it; drop one of headless:/sandbox:`);
   assertSandboxSpace(space, name);
@@ -270,9 +277,11 @@ export function assertSandboxable(space: string, name: string, configPath: strin
 export function assertSandboxHostReady(
   configPath: string | undefined,
   env: NodeJS.ProcessEnv = process.env,
-  o: { plistPath?: string; outsideGui?: boolean } = {},
+  o: { plistPath?: string; outsideGui?: boolean; harness?: string } = {},
 ): void {
   const plistPath = o.plistPath ?? apiserverPlistPath();
+  // The Claude token is claude's; a sandboxed kit signs in with its provider's login (src/sandbox-kit.ts).
+  const claude = isClaudeHarness("harness" in o ? o.harness : configPath ? readAgentType(configPath) : undefined);
   // Over ssh `container` can't see its apiserver (a GUI-domain XPC service), so both probes below are false
   // negatives there — and paw never starts it from here: `system start` over ssh registers it in user/<uid>, which
   // the login session can't see. The manager runs in the login session (src/gui-session.ts) and its launcher fails loud.
@@ -285,7 +294,7 @@ export function assertSandboxHostReady(
       bin = undefined; // an ssh PATH without it: the diagnosis names the bad root without the real one
     }
     assertApiserverRoot(bin, plistPath);
-    claudeTokenFile(env);
+    if (claude) claudeTokenFile(env);
     return;
   }
   const bin = containerBin(env);
@@ -294,7 +303,7 @@ export function assertSandboxHostReady(
   const image = readSandboxImage(configPath);
   const inspect = spawnSync(bin, ["image", "inspect", image], { encoding: "utf8", timeout: 20_000 });
   if (inspect.status !== 0) throw new Error(`paw: the sandbox image ${image} is not built — \`paw sandbox build\``);
-  claudeTokenFile(env);
+  if (claude) claudeTokenFile(env);
 }
 
 function containerStatus(bin: string): { ok: boolean; out: string } {
@@ -422,6 +431,8 @@ export interface SandboxLaunchOpts {
 export function sandboxLaunch(spec: LaunchSpec, o: SandboxLaunchOpts): LaunchSpec {
   const env = o.env ?? process.env;
   const cwd = assertSandboxable(o.space, o.name, o.configPath);
+  // The claude connector must never wrap another harness' persona: a kit agent's launch is sandbox-kit.ts'.
+  if (!isClaudeHarness(readAgentType(o.configPath))) throw new Error(`paw: "${o.name}" is \`agent: ${readAgentType(o.configPath)}\`, not claude — the claude connector won't launch it`);
   const bin = containerBin(env);
   const tokenFile = claudeTokenFile(env);
   const configPath = o.configPath!;

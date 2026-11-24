@@ -2,7 +2,7 @@
 
 Index: [CLAUDE.md](../../CLAUDE.md)
 
-A claude agent that runs inside its own Linux VM (Apple's [`container`](https://github.com/apple/container),
+A claude (or [kit](#kit-in-the-vm)) agent that runs inside its own Linux VM (Apple's [`container`](https://github.com/apple/container),
 macOS 26+, Apple silicon) and is still the same peer on the cotal mesh: `paw dm`/`chat`/`status`/`log`/
 `attach`/`restart` all work unchanged. It can change only its own folder.
 
@@ -167,13 +167,116 @@ fail to start. Verified (claude 2.1.304, throwaway VM): without the flag, a `--m
 
 - a LOCAL space (v1, below) — at `paw claude --sandbox` before anything is written, at the spawn site
   (`ensureAgentSpawned`) and in the manager's `buildLaunch`;
-- a non-claude harness (`agent: kit|acp|…` would silently run unsandboxed), `headless: true` (needs the hub's
-  host socket), no persona `cwd:`, `--fg`;
+- a harness that can't run in the VM: `agent: acp|hermes|codex|opencode|…` (it would silently run unsandboxed). claude
+  and kit run inside it ([kit in the VM](#kit-in-the-vm)). Also `headless: true` (needs the hub's host socket), no
+  persona `cwd:`, `--fg`;
+- a swap that couldn't launch: `paw restart <sandboxed> --agent kit|claude` checks the TARGET harness against all of
+  the above, the host side (image, `container`, the Claude token or the linux kit + provider login) and the manager's
+  `sandbox-kit` feature BEFORE it writes the persona ([below](#swapping-a-sandboxed-agent));
 - `container` missing / services down / image not built / token file missing, empty or group/other-readable;
 - `paw move` and `paw teleport` of a sandboxed agent (its store under `spaces/<s>/sandbox/<n>` and its home
   aren't carried yet); `paw rename` moves the store AND the home with the persona, refusing if
   `containers/<new>` (or its owner file) already exists;
 - a sandboxed agent whose NAME already owns a home on another space (below).
+
+## kit in the VM
+
+`agent: kit` + `sandbox: container` (src/sandbox-kit.ts, 2026-11-24): kit runs INSIDE the agent's VM the way claude
+does, so a sandboxed agent that hit Claude's usage limit keeps working on codex or grok and stays sandboxed.
+
+**Why kit, of the non-claude harnesses** (the operator's "choose one that's easier to integrate"): kit is one static
+Go binary — `CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build` gives a 13 MB linux/arm64 ELF on this Mac, no image
+change; it speaks cotal itself (no MCP/hub to carry into the VM), takes the manager-minted `--creds` file, reads
+tokens from files only, and with `storage: claude` keeps appending to the SAME claude transcript claude left in the
+agent's sandbox store — so the swap continues the conversation. The others need more: acp's seat host is a Rust
+binary built from a private git dep (`cotal-rs`) plus a node agent and its own home; hermes is a Python venv via `uv`
+plus a per-profile OAuth login; codex/opencode would need their CLIs in the image and their own session stores.
+
+How it launches — the kit connector builds kit's launch exactly as for a host agent, then `sandboxKitLaunch` wraps it
+in the same launcher (`bin/paw-sandbox-run.mjs`) as claude's: `container run … <image> /paw/kit/kit run <same args>`.
+
+| host | in the VM | mode | why |
+|---|---|---|---|
+| the agent's folder | same path | rw | as for claude |
+| `$PAW_HOME/containers/<n>` | `/root` (`HOME`; `KIT_HOME=/root/.kit`) | rw | its private home: kit's config, models cache, own store, own `kit auth` login |
+| `…/sandbox/<n>/claude` | `/paw/claude` (= `CLAUDE_CONFIG_DIR`) | rw | `storage: claude` → kit `--overwrite` appends to the claude transcript there |
+| `$PAW_HOME/spaces/<s>/kit/<n>` | same path | rw | kit's brief (`system.md`) + `schedules.json` (paw sleep reads it) |
+| `$PAW_HOME/bin/linux-arm64/` (`KIT_LINUX_BIN` overrides) | `/paw/kit` | ro | the linux kit; the dir must hold nothing else (refused otherwise) |
+| `…/sandbox/<n>/creds/` | the creds dir's own path | ro | ONLY its mesh creds, re-copied on renewal — as for claude |
+| `…/sandbox/<n>/kit-auth/` | `/paw/kit-auth` | ro | ONE provider's access token ([below](#the-provider-login)) |
+| `…/sandbox/<n>/seat/` | `/paw/seat` | ro | `bashenv.sh` (kit's persistent shell is a non-interactive bash, so `~/.env` + `~/.bashrc` reach it), a CA |
+
+Env by name only: `TERM`/`COLORTERM`/`LANG`/`LC_*`/`TZ`, `COTAL_SPACE`/`COTAL_NAME`; the paths (`HOME`, `KIT_HOME`,
+`CLAUDE_CONFIG_DIR`, `PATH`, `BASH_ENV`) from the per-launch env file. A broker on a private CA: the manager's
+`NODE_EXTRA_CA_CERTS` goes into `/paw/seat/ca` with `SSL_CERT_DIR=/etc/ssl/certs:/paw/seat/ca` (Go keeps the public
+roots); `SSL_CERT_FILE` is copied as a whole bundle. The brief gets `SANDBOX_KIT_BRIEF` (no claude skills/MCP lines:
+kit gets no skills mounted and has no MCP client — `paw mcp add --to <kit agent>` is refused).
+
+**The linux kit.** Built by paw on the CLI side before the spawn when missing: `ensureKitLinuxBinary` cross-builds
+from `$KIT_SRC` (the same checkout the host kit comes from; default `~/Github/caffeinum/kit`). No checkout → fail loud
+with the command: `cd <kit> && CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o ~/.paw/bin/linux-arm64/kit ./cmd/kit`.
+Like the host kit it is not part of a release; rebuild both from one commit when upgrading. The host kit still parses
+`kitArgs` (`preflightKitArgs`) and refreshes the host login.
+
+### The provider login
+
+kit reads its bearer from FILES and re-reads them on every call, so the token reaches the VM as a file (never argv,
+never an env var — a running process could never be handed a renewed one): `bin/paw-sandbox-kitauth.mjs`.
+- **Which provider**: `sandboxKitProvider` — `-P`, else what `-m` implies (`grok-*` → grok; `gpt-*`/`codex-*`/`o<n>`/
+  `codex/…` → codex), from kitArgs (last wins), a spawn `--model`, the persona's `provider:`/`model:`. Nothing named
+  (kit's own defaults) or a model paw can't place is REFUSED — paw mirrors exactly one provider. `fake[:…]` needs none.
+- **What crosses**: `…/sandbox/<n>/kit-auth/auth.json` = `{"<xai|openai>": {access, expires[, accountId]}}`, 0600,
+  mounted read-only; the agent's `~/.kit/auth.json` is a symlink to `/paw/kit-auth/auth.json` (made only when it has
+  no login file of its own). Never a refresh token, never the host's `~/.kit`, `~/.codex` or opencode dir. Source =
+  what the HOST kit would use: kit's own store (`$KIT_HOME|~/.kit/auth.json`), else the borrowed codex/opencode login.
+- **Fresh**: the launcher polls the host login every 5 s and copies each change in. When kit's OWN host login is within
+  10 min of expiry it runs the HOST kit — `kit models <grok|codex> --refresh`, which goes through kit's own token
+  source and saves the rotated pair in the host store, as a host kit agent would — synchronously before the first
+  mirror, in the background after (≤ once per 2 min). A borrowed login is never refreshed (kit never does either); a
+  lapsing one is logged. `launcher.log` names the origin and each renewal, never the value.
+- **Its own login instead**: `paw sandbox shell <n>#<s>` → `kit auth grok` writes `/root/.kit/auth.json` over the
+  symlink; from then on paw mounts nothing and kit refreshes that login itself. An own login without the agent's
+  provider is refused (never mixed with the host's).
+- Refused before launch (spawn site, swap, launcher): no host login, a lapsed borrowed one, an unreadable or
+  group-readable kit store.
+
+Threat model: the agent can read the access token (inherent, as with claude's), not the refresh token, so it can't
+mint new ones or log the host out; another host agent can read `…/kit-auth/auth.json` like any of the user's files.
+
+### Readers
+
+`paw log`/status/`attach`'s kit view/the wake gate: `personaTranscriptRoots` = the sandbox claude store
+(`storage: claude`) or `containers/<n>/.kit/sessions` then it (kit's store). `paw sleep`: the VM's ps
+(`vmKitSessionProcs`: the seat is `/paw/kit/kit run`, kit's persistent shell is plumbing) + `schedules.json`; a wake
+blocker if the linux kit is gone. `paw status` busy = presence (as every kit agent). `!cmd`, `paw sandbox shell`,
+`stop`, `rename`, `rm` work unchanged (they are the VM's, not the harness').
+
+### Swapping a sandboxed agent
+
+```
+cd ~/Code/caffeinum/kit && go build -o ~/.paw/bin/kit ./cmd/kit && CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o ~/.paw/bin/linux-arm64/kit ./cmd/kit
+kit auth grok                                   # once, if `kit auth status` has no grok login on this Mac
+paw restart neon#team2027 --agent kit -- -m grok-4.7
+paw restart neon#team2027 --agent claude        # back, once Claude's limit resets
+```
+
+The swap sets `storage: claude` and keeps `sandbox:`. **A swap that can't launch never writes** (`assertSwapLaunchable`,
+src/swap.ts): before 2026-11-24 the persona was flipped to `agent: kit` and the agent stopped, and only then did the
+spawn site refuse a sandboxed kit — the agent stayed down on a flipped persona. Now the target harness, the host side
+and the manager's `sandbox-kit` feature are checked against the persona as it WILL be; any refusal says "nothing was
+changed; <n> keeps running on <harness>". Needs a manager on a release that has `sandbox-kit` (an older kit connector
+ignores `sandbox:` and would run the agent on the host) — refused otherwise, naming `paw release` + the restart.
+
+Verified (2026-11-24, this Mac, container 1.6.0, image `paw-sandbox:df0569e40d03` unchanged): `scripts/e2e-sandbox-kit.ts`,
+22/22 — isolated PAW_HOME, a throwaway JWT+TLS broker on 192.168.64.1, real manager (PAW_RELEASE=dev), kit 273f4ee
+cross-built by paw itself. A sandboxed claude persona → `paw restart --agent kit -- -P fake:codex` started kit in a
+VM (`/paw/kit/kit run … --creds …` in the VM's ps, none on the host), a DM was answered from it over the mesh (its
+shell: `Linux aarch64`, `KIT_HOME=/root/.kit`, `CLAUDE_CONFIG_DIR=/paw/claude`, no `~/.paw`), the transcript landed
+in `sandbox/<n>/claude/projects/…/<pin>.jsonl` and not in `~/.claude`, `paw log` read it, `paw restart` resumed it
+(history 3 → 9) in a fresh container, `paw stop` left none. A second agent on `-m grok-4.7` with a FAKE grok login in
+the test kit home: `kit auth status` in the VM said `kit auth (/root/.kit/auth.json) … refreshable=false`, the mount
+was read-only and held no refresh token, launcher.log and host argv carried no token. NOT run: a real codex/grok turn
+from a VM (no real token used in tests), and nothing on team2027.
 
 ## Private home
 

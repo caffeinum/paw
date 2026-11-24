@@ -18,6 +18,9 @@ import { randomUUID } from "node:crypto";
  */
 import { existsSync } from "node:fs";
 import { personaFilePath, setPersonaKeys } from "./addressing.ts";
+import { assertManagerFeature, SANDBOX_KIT_FEATURE } from "./manager-features.ts";
+import { assertSandboxable, assertSandboxHostReady } from "./sandbox.ts";
+import { assertSandboxKitReady } from "./sandbox-kit.ts";
 import { checkKitArgs, ensureKitBinary, KIT_AGENT, preflightKitArgs } from "./kit.ts";
 import {
   claudeProjectsRoot,
@@ -29,6 +32,7 @@ import {
   readKitArgs,
   readModel,
   readResumeId,
+  readSandbox,
   readShareTools,
   transcriptPath,
 } from "./session.ts";
@@ -195,6 +199,7 @@ export function applySwap(space: string, name: string, req: SwapRequest, log: (l
   const plan = planSwap(name, cur, req);
   const kitArgs = plan.set.kitArgs !== undefined ? (JSON.parse(plan.set.kitArgs) as string[]) : "kitArgs" in plan.set ? [] : cur.kitArgs;
   if (req.agent.trim() === KIT_AGENT) preflightKitArgs(ensureKitBinary(), kitArgs, `"${name}"`);
+  assertSwapLaunchable(space, name, cur, plan, req.agent.trim(), kitArgs);
   if (!Object.keys(plan.set).length) {
     log(plan.summary);
     return false;
@@ -203,6 +208,38 @@ export function applySwap(space: string, name: string, req: SwapRequest, log: (l
   log(`${plan.summary} (saved; undo: ${plan.undo})`);
   for (const n of plan.notes) log(`  ${n}`);
   return true;
+}
+
+/**
+ * A swap that can't launch never writes (docs/notes/sandbox.md#swapping-a-sandboxed-agent): a SANDBOXED agent's
+ * target harness must run in its VM, its host side must be ready for it, and the manager must know how — all
+ * checked against the persona AS IT WILL BE, before setPersonaKeys. Before this, `paw restart neon --agent kit`
+ * wrote `agent: kit`, stopped neon, and only then hit the spawn site's sandbox refusal: neon stayed down on a
+ * flipped persona. A host agent needs none of it (the spawn's own checks still run).
+ */
+export function assertSwapLaunchable(
+  space: string,
+  name: string,
+  cur: SwapPersona,
+  plan: SwapPlan,
+  target: string,
+  kitArgs: string[],
+  deps: { hostReady?: typeof assertSandboxHostReady; kitReady?: typeof assertSandboxKitReady; feature?: typeof assertManagerFeature } = {},
+): void {
+  if (!readSandbox(cur.file)) return;
+  const after = (k: "provider" | "model") => (k in plan.set ? plan.set[k] : cur[k]);
+  const why = (e: unknown) =>
+    new Error(`${(e as Error).message.replace(/^paw: /, `paw: can't swap sandboxed "${name}" to ${target} — `)} (nothing was changed; ${name} keeps running on ${isClaudeHarness(cur.agent) ? "claude" : cur.agent})`);
+  try {
+    assertSandboxable(space, name, cur.file, target);
+    (deps.hostReady ?? assertSandboxHostReady)(cur.file, process.env, { harness: target });
+    if (target === KIT_AGENT) {
+      (deps.feature ?? assertManagerFeature)(space, SANDBOX_KIT_FEATURE, `restart ${name} --agent kit (a sandboxed agent)`);
+      (deps.kitReady ?? assertSandboxKitReady)(name, { provider: after("provider"), model: after("model"), kitArgs });
+    }
+  } catch (e) {
+    throw why(e);
+  }
 }
 
 /** The command (or edit) that restores this kit persona's harness settings. */

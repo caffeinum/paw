@@ -50,10 +50,11 @@ import { ACP_AGENT } from "./acp-agent.ts";
 import { resolveAcpHost } from "./acp-host.ts";
 import { isClaudeHarness, personaTranscriptRoots, personaValue, readAgentType, readClaudeArgs, readCwd, readKitArgs, readResumeId, readSandbox, readSeatRuntime, readShareTools, transcriptMtime } from "./session.ts";
 import { assertSandboxable, assertSandboxHostReady, sandboxSpawnFields } from "./sandbox.ts";
+import { assertSandboxKitReady } from "./sandbox-kit.ts";
 import { defaultTmuxEnv, managerLogPath, readRuntimeMarker } from "./lifecycle.ts";
 import { logOffset, seatDiagnostic, seatExit, seatRetirement } from "./manager-log.ts";
 import { pidAlive, seatPids } from "./seat-witness.ts";
-import { assertManagerFeature, codeRootFeatures, describeCodeRoot, KIT_ARGS_FEATURE, KIT_DEFAULTS_FEATURE, runningManagerRoot, SEAT_RUNTIME_FEATURE, SLEEP_YIELD_ACK_FEATURE } from "./manager-features.ts";
+import { assertManagerFeature, codeRootFeatures, describeCodeRoot, KIT_ARGS_FEATURE, KIT_DEFAULTS_FEATURE, runningManagerRoot, SANDBOX_KIT_FEATURE, SEAT_RUNTIME_FEATURE, SLEEP_YIELD_ACK_FEATURE } from "./manager-features.ts";
 import { ensureBypassConsent, managedLaunchesBypass } from "./bypass-consent.ts";
 import { readStartupPrompt, tmuxSplit, tmuxSplitAdvice, type StartupScreen } from "./native-attach.ts";
 import { HOST_RE } from "./url.ts";
@@ -1325,7 +1326,7 @@ export async function ensureAgentSpawned(
     // knows only the trust dialog + dev-channels gate): pre-accept it like the folder trust (#1).
     if (isClaudeHarness(agentType) && managedLaunchesBypass(readClaudeArgs(config))) ensureBypassConsent();
     // `sandbox: container` (src/sandbox.ts): refuse HERE, at the prompt, what the manager's buildLaunch would
-    // refuse anyway — a local space, a non-claude harness, no folder, no `container`, no image, no token.
+    // refuse anyway — a local space, a harness that can't run in the VM, no folder, no `container`, no image, no token.
     if (readSandbox(config)) {
       assertSandboxable(opts.space, opts.name, config);
       assertSandboxHostReady(config);
@@ -1388,6 +1389,12 @@ export async function ensureAgentSpawned(
       if (!persona.provider && !named.model && !named.provider)
         assertManagerFeature(opts.space, KIT_DEFAULTS_FEATURE, `kit agent "${opts.name}" (no provider:/-m/-P — kit's own defaults, in ${config})`);
       preflightKitArgs(ensureKitBinary(), persona.kitArgs, `kitArgs in ${config}`);
+      // In a sandbox: the linux kit and the ONE provider login mirrored into the VM (src/sandbox-kit.ts).
+      if (readSandbox(config)) {
+        // An older manager's kit connector ignores `sandbox:` — it would boot the agent on the host, unsandboxed.
+        assertManagerFeature(opts.space, SANDBOX_KIT_FEATURE, `sandboxed kit agent "${opts.name}" (agent: kit + sandbox: in ${config})`);
+        assertSandboxKitReady(opts.name, { provider: persona.provider, model: model ?? persona.model, kitArgs: persona.kitArgs });
+      }
     }
     // Hermes publishes no AG-UI event plane either (cotal's connector has no eventChannel).
     if (hermes) args.events = false;

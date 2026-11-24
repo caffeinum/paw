@@ -184,6 +184,12 @@ Each entry: what it is + the most load-bearing rule. Full notes behind the link.
   from the SAME plugin commit as the vendored tgz (`ACP_HOST_REV`; `paw acp-host install` = git archive +
   cargo --locked, never the working tree; missing → fail loud, `acpHost: ts` = node host); re-vendor = bump
   `ACP_HOST_REV` + `ACP_PLUGIN_INTEGRITY` together; `check:acp`. → [agents.md#acp](docs/notes/agents.md#acp)
+- `src/sandbox-kit.ts` + `bin/paw-sandbox-kitauth.mjs` — `agent: kit` + `sandbox: container`: a linux/arm64 kit
+  (`$PAW_HOME/bin/linux-arm64/kit`, cross-built from KIT_SRC) runs in the VM, `/paw/kit` ro; ONE provider's ACCESS token
+  mirrored ro at `/paw/kit-auth` (`~/.kit/auth.json` symlink; never a refresh token; the launcher refreshes kit's own
+  HOST login via the host kit and re-mirrors); `storage: claude` appends in the sandbox claude store; nothing named
+  → refused. A swap of a sandboxed agent refuses BEFORE writing (`assertSwapLaunchable`); manager feature `sandbox-kit`.
+  acp/hermes/codex stay refused. `check:sandbox-kit`, `scripts/e2e-sandbox-kit.ts` (real VM). → [sandbox.md#kit-in-the-vm](docs/notes/sandbox.md#kit-in-the-vm)
 - `src/sandbox.ts` + `bin/paw-sandbox-run.mjs` + `src/commands/sandbox.ts` — persona `sandbox: container`: the claude
   launch runs in an Apple `container` VM (folder rw; own claude store at /paw/claude; node_modules + launch dirs ro;
   only ITS creds via a mirror; token file → env, never argv; persistent private HOME `$PAW_HOME/containers/<name>` → /root,

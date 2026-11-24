@@ -16,9 +16,9 @@ import { existsSync, readdirSync } from "node:fs";
 import { agentNamesForFolder, assertUnambiguousTarget, canonicalDir, cleanAgentName, cliRestartConsent, ensureAgentSpawned, folderForName, personaFilePath, registerInstance, resolveFolderAgent, setFolderName, type Kind } from "./addressing.ts";
 import { KIT_AGENT, kitBinPath } from "./kit.ts";
 import { agentSummary } from "./agent-summary.ts";
-import { personaTranscriptRoots, readAgentType, readCwd, readHeadless, readKitStorage, readResumeId, transcriptPath } from "./session.ts";
+import { personaTranscriptRoots, readAgentType, readCwd, readHeadless, readKitStorage, readResumeId, readSandbox, transcriptPath } from "./session.ts";
 import { claudeProjectDir } from "./adopt.ts";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { withManagerControl } from "./control.ts";
 import { readForeground } from "./foreground.ts";
 import { elsewhereAttach, localManagerInstanceId, seatElsewhere, seenNotHere } from "./hosted.ts";
@@ -376,7 +376,11 @@ export function kitViewSession(persona: string): string[] {
   const found = transcriptPath(pin, personaTranscriptRoots(persona));
   if (found) return ["--session", found];
   const cwd = readCwd(persona);
-  if (readKitStorage(persona) === "claude" && cwd) return ["--session", join(claudeProjectDir(cwd), `${pin}.jsonl`)];
+  if (readKitStorage(persona) === "claude" && cwd) {
+    // A sandboxed kit writes into its own claude store (sandbox/<n>/claude), never ~/.claude — same slug.
+    const dir = readSandbox(persona) ? join(personaTranscriptRoots(persona)[0], basename(claudeProjectDir(cwd))) : claudeProjectDir(cwd);
+    return ["--session", join(dir, `${pin}.jsonl`)];
+  }
   return [];
 }
 
