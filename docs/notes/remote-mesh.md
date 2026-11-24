@@ -176,6 +176,17 @@ The gate still ensures THIS machine's manager on the space first (as for every N
 the runtime branch reads THIS machine's runtime marker — an agent in another machine's tmux/cmux can't
 be attached from here (no grant-based attach for those runtimes).
 
+**Another machine's agent, no persona here (2026-11-24).** `paw attach agent-scan` on the mini (PAW_SPACE=team2027)
+said `no agent "agent-scan" in space team2027` while agent-scan ran on aleks-macbook and `paw chat @agent-scan`
+knew it: attach's no-persona guard (src/open.ts) only looked for a persona in another LOCAL space. Now
+`seatElsewhere` (src/hosted.ts) answers first — the teleport marker, else the peer ledger's newest
+host-carrying sighting (`readLedgerHosts`, the mailbox keeps it) when that host isn't this one — and attach says
+`paw: agent-scan runs on aleks-macbook — attach there (\`paw attach agent-scan\` on that machine); from here
+\`paw chat @agent-scan\` messages it over the mesh`, checked in `open()` BEFORE this machine's manager is ensured.
+A ledger name with no host says the mesh has seen it but not where (never a guessed machine); a name unknown
+everywhere still says `no agent`. Same lookup in `paw log <name>` (`no logs for "x" here — logs live on <m>`) and
+`liveSeatRuntime` (`paw type` / `paw unstick`). `check:namespace` covers it.
+
 ## paw chat / paw web taps
 
 `paw chat` tapped the whole space (`cotal.<s>.>`) to mirror what another chat session sent; chat's

@@ -9,6 +9,7 @@ import { registry, type Command } from "@cotal-ai/core";
 import { personaFilePath, psRowAlive, type PsRow } from "../addressing.ts";
 import { withManagerControl } from "../control.ts";
 import { readForeground } from "../foreground.ts";
+import { elsewhereTerminal, seatElsewhere, seenNotHere } from "../hosted.ts";
 import { actualManagerRuntime, resolveSpace, type Runtime } from "../lifecycle.ts";
 import { readResumeId } from "../session.ts";
 import { seatRuntimeOf } from "../seat-runtime.ts";
@@ -58,6 +59,9 @@ export async function liveSeatRuntime(space: string, name: string, action: strin
   if (readForeground(space, name)) {
     throw new Error(`paw: "${name}" runs as a foreground claude in another terminal — use that window; paw has no pane to ${action}`);
   }
+  const away = seatElsewhere(space, name);
+  if (away === "seen") throw new Error(seenNotHere(name, space, "its terminal"));
+  if (away) throw new Error(elsewhereTerminal(name, away, action, space));
   const row = await withManagerControl(space, pawServer(space), async (ctl) => {
     const ps = await ctl.ps();
     if (!ps.ok) throw new Error(`paw: manager isn't answering (${ps.error ?? "no reply"})`);

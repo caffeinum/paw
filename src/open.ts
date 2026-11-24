@@ -21,7 +21,7 @@ import { claudeProjectDir } from "./adopt.ts";
 import { dirname, join } from "node:path";
 import { withManagerControl } from "./control.ts";
 import { readForeground } from "./foreground.ts";
-import { elsewhereAttach, localManagerInstanceId, runsElsewhere } from "./hosted.ts";
+import { elsewhereAttach, localManagerInstanceId, seatElsewhere, seenNotHere } from "./hosted.ts";
 import { contractMismatchHint } from "./contract-mismatch.ts";
 import { runTeed } from "./cotal-tee.ts";
 import { isAddressHandle, resolveAddress } from "./address.ts";
@@ -121,9 +121,33 @@ async function open(argv: string[]): Promise<void> {
       nameTarget ?? (nameFlag !== undefined ? registerInstance(space, folder as string, nameFlag) : resolveFolderAgent(space, folder as string));
   }
 
+  // Another machine's agent (or no agent anywhere): say so before booting this machine's manager for it.
+  const noSeat = noSeatHereRefusal(space, name, folder);
+  if (noSeat) throw new Error(noSeat);
   // The mesh + manager come up only now, once this open may go ahead (a remote space needs its own).
   await ensure({ needMesh: true, needManager: true, ...(isRemoteSpace(space) ? { space } : {}) });
   await attachResolved(space, name, { folder, model, brief, kind, noAttach });
+}
+
+/**
+ * Why `name` can't be attached from THIS machine, checked before anything boots:
+ *  - it runs on another machine — teleported away (its marker here), or a remote space's agent with no
+ *    persona here that the peer ledger last saw on another host (src/hosted.ts seatElsewhere). Its
+ *    terminal is there; attaching here could only start a second copy. `paw attach agent-scan` on the
+ *    mini said `no agent "agent-scan" in space team2027` while it ran on aleks-macbook (2026-11-24).
+ *  - no persona here and nothing to spawn from: the agent lives in another LOCAL space (say which), or
+ *    nowhere (`no agent`) — instead of a tmux attach that dies reading the missing persona file.
+ */
+export function noSeatHereRefusal(space: string, name: string, folder?: string): string | undefined {
+  const where = seatElsewhere(space, name);
+  if (where === "seen") return seenNotHere(name, space, "its terminal");
+  if (where) return elsewhereAttach(name, where, space);
+  if (folder || existsSync(personaFilePath(space, name)) || (readRuntimeMarker(space) === "tmux" && tmuxWindowExists(space, name))) return undefined;
+  const spacesDir = dirname(dirname(dirname(personaFilePath(space, name))));
+  const elsewhere = readdirSync(spacesDir).filter((s) => s !== space && existsSync(personaFilePath(s, name)));
+  return elsewhere.length
+    ? `paw: no agent "${name}" in space ${space} — it's in ${elsewhere.join(", ")}: \`paw attach ${name}#${elsewhere[0]}\``
+    : `paw: no agent "${name}" in space ${space} (\`paw status\` lists them)`;
 }
 
 /**
@@ -141,21 +165,9 @@ export async function attachResolved(
 
   // A FOREGROUND `paw claude` agent lives in the operator's OWN terminal, not under the manager — there's
   // no pty to stream and no tmux/cmux window to enter. Point at that terminal instead of trying to attach.
-  // No persona here and nothing to spawn from: the agent lives in another space (or nowhere). Say which,
-  // instead of falling through to a tmux attach that dies reading the missing persona file.
-  if (!folder && !existsSync(personaFilePath(space, name)) && !(readRuntimeMarker(space) === "tmux" && tmuxWindowExists(space, name))) {
-    const spacesDir = dirname(dirname(dirname(personaFilePath(space, name))));
-    const elsewhere = readdirSync(spacesDir).filter((s) => s !== space && existsSync(personaFilePath(s, name)));
-    throw new Error(
-      elsewhere.length
-        ? `paw: no agent "${name}" in space ${space} — it's in ${elsewhere.join(", ")}: \`paw attach ${name}#${elsewhere[0]}\``
-        : `paw: no agent "${name}" in space ${space} (\`paw status\` lists them)`,
-    );
-  }
-
-  // Teleported: its terminal is on the other machine — attaching here could only start a second copy.
-  const away = existsSync(personaFilePath(space, name)) ? runsElsewhere(space, name) : undefined;
-  if (away) throw new Error(elsewhereAttach(name, away));
+  // Another machine's agent, another space's, or nobody's: say which (noSeatHereRefusal).
+  const noSeat = noSeatHereRefusal(space, name, folder);
+  if (noSeat) throw new Error(noSeat);
 
   const fg = readForeground(space, name);
   if (fg) {

@@ -406,7 +406,7 @@ console.log("persona keys + wake gate");
   const away = runsElsewhere(space, name);
   assert(away?.how === "teleported" && away.where === "fly:2027-agents" && away.cwd === "/data/home/.paw/repos/o/proj", "runsElsewhere: where + the folder there");
   throws(() => openAgentLog(space, name, cwd), /no logs for "proj" here — logs live on fly:2027-agents, where it runs — the transcript on this machine stopped when it left/, "paw log / web trace / chat logs refuse the frozen transcript");
-  await rejects(attachResolved(space, name, { folder: cwd }), /"proj" runs on fly:2027-agents — attach to it there; from here `paw chat @proj` messages it/, "attach refuses, pointing at chat");
+  await rejects(attachResolved(space, name, { folder: cwd }), /^paw: proj runs on fly:2027-agents — attach there \(`paw attach proj` on that machine\); from here `paw chat @proj(#[\w-]+)?` messages it over the mesh$/, "attach refuses, pointing at chat");
   const now = Date.now();
   const { rows } = await collectStatus(space, undefined, { git: false, ps: new Map(), roster: () => [{ card: { id: "peer-proj", name }, status: "working", ts: now } as never] });
   const row = rows.find((r) => r.name === name)!;
