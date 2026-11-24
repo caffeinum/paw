@@ -185,6 +185,28 @@ assert(renameAgentOnDisk(SPACE, FOLDER, "api2", "queue2").from === "api", "a for
   assert(defaultedSpace("nobody", "rn-default", false, retry).space === "rn-default", "nowhere → the default stays (rename says no agent named …)");
 }
 
+// The rename trail: every on-disk rename records old → new, so a chat filtered to the old name follows it
+// (`paw hire`: the new agent renames itself while the operator is already chatting with it).
+{
+  const { readRenameTrail, followTrail, renamedSince, recordRename } = await import("../src/rename-trail.ts");
+  const { assertRenamable, renamedWakeText } = await import("../src/rename.ts");
+  const trail = readRenameTrail(SPACE);
+  assert(trail.web?.to === "api" && typeof trail.web.at === "number", "trail: the first rename (web → api) is recorded");
+  assert(trail["web-alt"]?.to === "web-beta", "trail: an extra's rename is recorded too");
+  assert(renamedSince(SPACE, "web", 0) === "api2", `trail: web → api → api2 is followed to the end (${renamedSince(SPACE, "web", 0)})`);
+  assert(renamedSince(SPACE, "web", Date.now() + 60_000) === undefined, "trail: a rename from before `since` is not followed");
+  assert(renamedSince(SPACE, "never-renamed", 0) === undefined, "trail: a name never renamed → undefined");
+  assert(followTrail({ a: { to: "b", at: 5 }, b: { to: "a", at: 6 } }, "a", 0) === "b", "trail: a cycle stops instead of looping");
+  assert(followTrail({ a: { to: "b", at: 5 }, b: { to: "c", at: 1 } }, "a", 3) === "b", "trail: an older hop out of the new name is not taken");
+  recordRename(SPACE, "api2", "web");
+  assert(readRenameTrail(SPACE).web === undefined, "trail: a name held again drops its stale trail out");
+  assert(throws(() => assertRenamable(SPACE, "web-beta", "web-beta")), "self-rename precheck: the same name fails loud");
+  assert(throws(() => assertRenamable(SPACE, "web-beta", "!!!")), "self-rename precheck: no usable characters fails loud");
+  assert(throws(() => assertRenamable(SPACE, "web-beta", "queue2")), "self-rename precheck: a name another agent holds fails loud");
+  assert(assertRenamable(SPACE, "web-beta", "login redirect") === "login-redirect", "self-rename precheck: a free name passes, cleaned");
+  assert(renamedWakeText("hire-ab12", "login-redirect").includes('"login-redirect"'), "self-rename wake DM names the new name");
+}
+
 if (failures > 0) {
   console.error(`\n${failures} paw rename check(s) failed`);
   process.exit(1);

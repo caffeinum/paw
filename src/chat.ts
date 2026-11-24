@@ -129,6 +129,7 @@ import {
   type PasteBlock,
 } from "./paste.ts";
 import { isRemoteSpace, pawServer } from "./server.ts";
+import { renamedSince } from "./rename-trail.ts";
 import { draftRows, fitRows, parseComposed, RAIL, railMessage, railPastes, saidRows, strayPastes, type ViewOpts } from "./compose-view.ts";
 import { displayPos, echoRows, fitPainted, wrappedWidth } from "./width.ts";
 
@@ -3958,6 +3959,38 @@ async function chat(argv: string[]): Promise<void> {
     syncPrompt();
     refreshFooter();
   };
+  // A target that renames itself (`paw rename`, the first thing a `paw hire` agent does) is FOLLOWED, not
+  // lost: the rename trail (src/rename-trail.ts) says where its name went. Only renames since this process
+  // began — an old trail out of a name that was reused later must not pull the chat away.
+  const followRename = (): void => {
+    if (!curName || closing) return;
+    let to: string | undefined;
+    try {
+      to = renamedSince(space, curName, performance.timeOrigin);
+    } catch (e) {
+      clearInterval(renameTimer);
+      emit(c.red(`! can't follow renames any more: ${(e as Error).message}`));
+      return;
+    }
+    if (!to) return;
+    const from = curName;
+    const live = findPeer(to);
+    curName = to;
+    curId = live && live.status !== "offline" ? live.card.id : undefined; // onPresence fills it in when it joins
+    bang = false;
+    targetLost = undefined;
+    if (filter?.kind === "agent") filter = { kind: "agent", name: to };
+    lookup = "found";
+    fields.status = okSlot(undefined);
+    fields.info = loadingSlot();
+    syncPrompt();
+    flushBanner();
+    loadInfo();
+    refreshFooter();
+    emit(c.dim(`↪ ${from} is "${to}" now (renamed) — following it`));
+  };
+  const renameTimer = setInterval(followRename, 1000);
+  renameTimer.unref();
   /**
    * Forget an endpoint that is gone (stopped after a failed startup, or never started): its roster,
    * "you"'s id and the presence seed all described IT. Left set, a `/reconnect` trusted the dead

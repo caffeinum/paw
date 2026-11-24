@@ -324,6 +324,9 @@ CLI-side only (ensureAgentSpawned runs in the caller) — live without a release
   with no `--space`/`#space`/PAW_SPACE that isn't in the default space but is in exactly one other local
   space uses that space, with a note (`defaultedSpace`, shared with relocate); two spaces → fail loud with
   both commands.
+  **Self-rename (2026-11-24):** inside an agent, `paw rename <newname>` (or naming yourself) hands off to a detached
+  child that waits for the turn to end, then renames + respawns + DMs it under the new name; every rename is
+  recorded in `spaces/<s>/renamed.json`, which `paw chat` follows. → [cli.md#paw-hire](cli.md#paw-hire)
 
 ## paw move
 

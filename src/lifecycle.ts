@@ -516,7 +516,7 @@ export function finishDetachedRestart(space: string, agent: string): void {
 /** A verb run from INSIDE the agent/claude it is about to stop: it hands the work to a detached child
  *  (see {@link spawnDetachedHandoff}) whose progress lands in `<kind>.log`, guarded by `<kind>.pid`.
  *  A `key` scopes one to an agent (`archive.<name>.pid`): two agents may archive themselves at once. */
-export type HandoffKind = "adopt" | "relocate" | "archive";
+export type HandoffKind = "adopt" | "relocate" | "archive" | "rename";
 const handoffBase = (kind: HandoffKind, key?: string): string => (key ? `${kind}.${key}` : kind);
 function handoffPidPath(space: string, kind: HandoffKind, key?: string): string {
   return join(pawDir(space), `${handoffBase(kind, key)}.pid`);

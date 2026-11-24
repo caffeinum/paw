@@ -81,12 +81,12 @@ const NEEDS_MESH = new Set(["inbox", "msg", "ask", "who", "history", "watch", "f
  *  deciding they may — off a tty they refuse to create an agent, and that refusal must not boot a mesh.)
  *  (`sessions`/`log` are local reads; `adopt` runs its own ensure once it decides to start;
  *  `mailbox` is the daemon ensure() itself spawns — gating it would recurse into the lock.) */
-const NEEDS_MANAGER = new Set(["dm", "tidy"]); // status, chat, open, attach, rename, rm and stop ensure() themselves — each shares ensure()'s probe rail (lifecycle.ts ensureManagerOn)
+const NEEDS_MANAGER = new Set(["dm", "tidy"]); // status, chat, open, attach, rename, rm, stop and hire ensure() themselves — each shares ensure()'s probe rail (lifecycle.ts ensureManagerOn)
 /** Verbs that read EVERY space and so take no injected --space: `paw doctor` is a machine checkup, and the
  *  shell's PAW_SPACE must not narrow it (an explicit --space still does). */
 const ALL_SPACE_VERBS = new Set(["doctor"]);
 /** Verbs that write agent state (personas, pins, folders) — they name the space when PAW_SPACE picked it. */
-const SPACE_WRITING_VERBS = new Set(["adopt", "rename", "rm", "archive", "unarchive", "move", "relocate", "nice", "sleep", "claude", "teleport", "cron"]);
+const SPACE_WRITING_VERBS = new Set(["adopt", "hire", "rename", "rm", "archive", "unarchive", "move", "relocate", "nice", "sleep", "claude", "teleport", "cron"]);
 
 /** Raw cotal verbs that drive the control plane — the passthrough must bring the manager up too,
  *  or a cold-machine `paw cotal ps`/`start` dead-ends on a mesh with no manager answering. */

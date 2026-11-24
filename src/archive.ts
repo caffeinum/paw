@@ -246,7 +246,7 @@ export async function waitForTurnEnd(d: IdleWaitDeps): Promise<{ ended: true; wa
 
 /** The status row reader over ONE presence watch for the whole wait (a fresh observer per poll leaves its KV
  *  consumers behind for minutes — beads-eic). */
-async function turnReader(space: string, name: string): Promise<{ read: () => Promise<TurnRow>; close: () => Promise<void> }> {
+export async function turnReader(space: string, name: string): Promise<{ read: () => Promise<TurnRow>; close: () => Promise<void> }> {
   const auth = await humanEndpointAuth(space, "operator");
   const ep = new CotalEndpoint({
     space,
