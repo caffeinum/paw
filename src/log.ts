@@ -19,7 +19,7 @@ import { assertUnambiguousTarget, canonicalDir, folderForName, lookupFolderName,
 import { claudeProjectDir, latestSession } from "./adopt.ts";
 import { CodexParser, findCodexSessionFile, resolveCodexRoots } from "./codex-log.ts";
 import { HERMES_AGENT, hermesHomeFor, hermesVenv } from "./hermes-profile.ts";
-import { elsewhereLogs, runsElsewhere } from "./hosted.ts";
+import { elsewhereLogs, runsElsewhere, seatElsewhere, seenNotHere } from "./hosted.ts";
 import { meshAgentSession } from "./named.ts";
 import { labelPeer } from "./peer-ledger.ts";
 import { latestOpencodeSession, opencodeBlocks, resolveOpencodeDb } from "./opencode-log.ts";
@@ -154,6 +154,10 @@ export function resolveLogTarget(space: string, target: string | undefined): { n
       // Not registered with paw — a `cotal_spawn` peer. Its live process names its exact session.
       const live = meshAgentSession(space, target);
       if (live) return { name: target, folder: live.cwd, sessionId: live.sessionId };
+      // Another machine's agent on a remote space: its transcript is there, never "no agent".
+      const away = seatElsewhere(space, target);
+      if (away === "seen") throw new Error(seenNotHere(target, space, "its transcript"));
+      if (away) throw new Error(`paw: no logs for "${target}" here — ${elsewhereLogs(away)}`);
       throw new Error(`paw: no agent "${target}" — not registered with paw, and no live claude on the mesh carries that name (\`paw status\` for names)`);
     }
     return { name: target, folder: named };

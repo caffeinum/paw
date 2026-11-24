@@ -158,6 +158,7 @@ writeFileSync(
     "U-mac": { name: "mine", first: 1, last: 2, host: localHost() },
     "U-mac-old": { name: "moved", first: 1, last: 2, host: "aleks-mac-mini.local" },
     "U-mac-new": { name: "moved", first: 3, last: 4, host: localHost() },
+    "U-scan": { name: "agent-scan", first: 1, last: 2, host: "aleks-macbook.fixture.invalid" },
   }),
 );
 const pdir = ns.claudeProjectDir(folder);
@@ -293,6 +294,30 @@ space.noteSpaceChoice({ space: "team2027", how: "env" });
   writeFileSync(join(home, ".claude", "sessions", "4242.json"), JSON.stringify({ sessionId: "11111111-old", cwd: folder, pid: 4242, updatedAt: 1 }));
   const held = pickSession(pdir, folder, (pid) => pid === 4242);
   assert(held?.id === "11111111-old" && held.holderPid === 4242, "pickSession: a session a LIVE claude holds here beats a newer dead transcript");
+}
+
+// attach / log / type / unstick on another machine's agent: say where it runs, never "no agent" (2026-11-24:
+// `paw attach agent-scan` on the mini said `no agent "agent-scan" in space team2027`; it ran on aleks-macbook)
+{
+  const { noSeatHereRefusal, attachResolved } = await import("../src/open.ts");
+  const { resolveLogTarget } = await import("../src/log.ts");
+  const { liveSeatRuntime } = await import("../src/commands/unstick.ts");
+  const { elsewhereAttach, seatElsewhere } = await import("../src/hosted.ts");
+  const want = "paw: agent-scan runs on aleks-macbook — attach there (`paw attach agent-scan` on that machine); from here `paw chat @agent-scan` messages it over the mesh";
+  const scan = seatElsewhere("team2027", "agent-scan");
+  assert(scan !== "seen" && scan?.how === "hosted" && scan.where === "aleks-macbook", `seatElsewhere: the ledger's newest host-carrying sighting names the machine (${JSON.stringify(scan)})`);
+  assert(noSeatHereRefusal("team2027", "agent-scan") === want, `attach: another machine's agent → where it runs, one line (${noSeatHereRefusal("team2027", "agent-scan")})`);
+  assert((await errOfAsync(() => attachResolved("team2027", "agent-scan"))) === want, "attachResolved refuses with the same line, before any manager call");
+  assert(!existsSync(sp("team2027", "personas", "agent-scan.md")), "…and mints no persona for it");
+  const seen = noSeatHereRefusal("team2027", "foo") ?? "";
+  assert(seen.includes("no seat on this machine") && seen.includes("no sighting says which machine") && seen.includes("`paw chat @foo`") && !seen.includes("runs on"), `attach: a ledger name with no host → no guessed machine (${seen})`);
+  assert(noSeatHereRefusal("team2027", "nobody") === 'paw: no agent "nobody" in space team2027 (`paw status` lists them)', "attach: a name unknown everywhere still says no agent");
+  assert(noSeatHereRefusal("team2027", "mine")?.startsWith('paw: no agent "mine"') === true, "attach: this host's own sighting is not another machine's");
+  assert(elsewhereAttach("agent-scan", { how: "hosted", where: "aleks-macbook" }, "lab").includes("`paw chat @agent-scan#lab`"), "a space a bare name wouldn't reach is named in the chat hint");
+  const log = errOf(() => resolveLogTarget("team2027", "agent-scan"));
+  assert(log === 'paw: no logs for "agent-scan" here — logs live on aleks-macbook, where it runs', `paw log: where its transcript is, not "no agent" (${log})`);
+  const typed = await errOfAsync(() => liveSeatRuntime("team2027", "agent-scan", "type into"));
+  assert(typed === "paw: agent-scan runs on aleks-macbook — its terminal is there, nothing here to type into; from here `paw chat @agent-scan` messages it over the mesh", `paw type / unstick: where its terminal is, before any manager call (${typed})`);
 }
 
 // wake gate backstop: the teleported branch reports `elsewhere`, never a bare {spawned:false}

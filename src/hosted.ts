@@ -15,12 +15,15 @@
  */
 import { existsSync } from "node:fs";
 import { hostname } from "node:os";
+import { join } from "node:path";
 import { loadManagerInstanceIdentity } from "@cotal-ai/workspace";
 import { personaFilePath, type PsRow } from "./addressing.ts";
 import { pawCotalRoot } from "./cotal-root.ts";
 import { isRemoteSpace } from "./server.ts";
 import { ORIGIN, readTeleported } from "./teleport-plan.ts";
 import { localHost, machineLabel, machineName } from "./host-stamp.ts";
+import { pawHomeRoot, readLedgerHosts } from "./namespace.ts";
+import { resolveSpace } from "./space.ts";
 
 export { localHost, machineLabel, machineName, stampHost } from "./host-stamp.ts";
 
@@ -125,9 +128,42 @@ export function elsewhereFiles(name: string, e: Elsewhere, placeholders: string[
   return `not sent — ${name} runs on ${e.where} and can't open ${placeholders.join(" ")} (${placeholders.length === 1 ? "a file" : "files"} on this machine)`;
 }
 
+/**
+ * Where `name` runs when THIS machine has no seat for it, for verbs that hold no roster card (attach,
+ * log, type, unstick): a persona here with the `teleported:` marker, else — on a remote space with no
+ * persona here — the peer ledger's newest host-carrying sighting (src/namespace.ts readLedgerHosts, the
+ * one the mailbox keeps) when that host isn't this one. `seen`: the ledger knows the name but no sighting
+ * names a host — never a guessed machine. Undefined: nothing anywhere says it exists elsewhere.
+ */
+export function seatElsewhere(space: string, name: string, home: string = pawHomeRoot(), here: string = localHost()): Elsewhere | "seen" | undefined {
+  if (!/^[A-Za-z0-9_-]+$/.test(name)) return undefined;
+  const persona = join(home, "spaces", space, "personas", `${name}.md`);
+  if (existsSync(persona)) return runsElsewhere(space, name);
+  if (!isRemoteSpace(space)) return undefined;
+  const hosts = readLedgerHosts(join(home, "spaces", space));
+  if (!hosts.has(name)) return undefined;
+  const host = hosts.get(name);
+  if (host === undefined) return "seen";
+  return host === here ? undefined : { how: "hosted", where: machineLabel(host) };
+}
+
+/** `name`, or `name#space` when a bare name would land in another space here. */
+const addressIn = (name: string, space?: string): string => (space === undefined || space === resolveSpace() ? name : `${name}#${space}`);
+
 /** Why attach refuses: the terminal is on the agent's machine. */
-export function elsewhereAttach(name: string, e: Elsewhere): string {
-  return `paw: "${name}" runs on ${e.where} — attach to it there; from here \`paw chat @${name}\` messages it`;
+export function elsewhereAttach(name: string, e: Elsewhere, space?: string): string {
+  return `paw: ${name} runs on ${e.where} — attach there (\`paw attach ${name}\` on that machine); from here \`paw chat @${addressIn(name, space)}\` messages it over the mesh`;
+}
+
+/** Why a verb that needs this machine's seat (a terminal, a transcript) has none, when the ledger saw
+ *  the name but not its machine. */
+export function seenNotHere(name: string, space: string, needs: string): string {
+  return `paw: ${name} has no seat on this machine — the ${space} mesh has seen it, but no sighting says which machine runs it, so ${needs} isn't here; \`paw chat @${addressIn(name, space)}\` messages it over the mesh`;
+}
+
+/** Why a verb that types into a terminal refuses: the terminal is on the agent's machine. */
+export function elsewhereTerminal(name: string, e: Elsewhere, action: string, space?: string): string {
+  return `paw: ${name} runs on ${e.where} — its terminal is there, nothing here to ${action}; from here \`paw chat @${addressIn(name, space)}\` messages it over the mesh`;
 }
 
 /** The `paw status` note (and chat's tasks view) for an agent running elsewhere. */
