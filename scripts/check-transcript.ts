@@ -328,6 +328,23 @@ assert(tailRead(file, 10_000).split("\n")[0] === "AAAAAAAAAA", "a window larger 
   assert(lastUsage([manual, turn(10_000)])?.limit === undefined, "a MANUAL /compact fires wherever the operator typed it — it says nothing about the window");
   const auto = JSON.stringify({ type: "system", compactMetadata: { trigger: "auto", preTokens: 194_701 } });
   assert(lastUsage([auto, turn(10_000)])?.limit === 200_000, "an AUTO compact boundary in the tail sets the window");
+
+  // 2026-11-24, `paw restart <a> --agent kit`: kit (storage: claude) appends to the SAME transcript, its
+  // assistant records carrying `msg_kit_…` ids (the shape copied from skills' transcript). Right after the
+  // swap the newest turn is claude's, so CTX showed claude's last occupancy on a kit seat.
+  const { recordHarness, transcriptHarness, lastModel } = await import("../src/transcript.ts");
+  const kitTurn = (read: number, input = 230) =>
+    JSON.stringify({ type: "assistant", timestamp: "2026-11-24T23:50:27.947Z", entrypoint: "sdk-cli", message: { id: "msg_kit_9700ccacb3034508b86b3b8c7700e357", model: "grok-4.7", role: "assistant", stop_reason: "end_turn", usage: { cache_creation_input_tokens: 0, cache_read_input_tokens: read, input_tokens: input, output_tokens: 6 } } });
+  const claudeTurn = (read: number) => JSON.stringify({ ...JSON.parse(turn(read)), message: { ...JSON.parse(turn(read)).message, id: "msg_01ABCdef" } });
+  assert(recordHarness(JSON.parse(kitTurn(1))) === "kit" && recordHarness(JSON.parse(claudeTurn(1))) === "claude" && recordHarness(JSON.parse(synthZero)) === "claude", "recordHarness: msg_kit_ ids are kit's, the rest (incl. synthetic) claude's");
+  assert(transcriptHarness("kit") === "kit" && transcriptHarness(undefined) === "claude" && transcriptHarness("claude") === "claude" && transcriptHarness("hermes") === undefined, "transcriptHarness: persona agent → which records count");
+  assert(lastUsage([claudeTurn(180_000)], "kit") === undefined, "swapped to kit, no kit turn yet → CTX unknown, not claude's 180k");
+  assert(lastUsage([claudeTurn(180_000), kitTurn(33_024)], "kit")?.tokens === 33_254, "the first kit turn → kit's own occupancy");
+  assert(lastUsage([claudeTurn(180_000), kitTurn(33_024)], "kit")?.limit === undefined, "kit: claude's windows are never applied to a kit model");
+  assert(lastUsage([kitTurn(33_024), claudeTurn(180_000)], "kit") === undefined, "back on claude in the file, persona still kit → unknown");
+  assert(lastUsage([kitTurn(33_024)], "claude") === undefined && lastUsage([kitTurn(33_024), claudeTurn(150_000)], "claude")?.tokens === 150_270, "swapped back to claude: unknown until claude's own turn");
+  assert(lastUsage([claudeTurn(180_000)])?.tokens === 180_270, "no harness given → the newest turn, as before");
+  assert(lastModel([kitTurn(1)], "claude") === undefined && lastModel([kitTurn(1)], "kit") === "grok-4.7", "lastModel: the previous harness's model is not the current one's");
   console.log("✓ context window fill");
 }
 
@@ -372,6 +389,14 @@ console.log("\nall paw transcript checks passed 🐾");
   assert(!!lastFailure([real("earlier"), synth(limit, { isApiErrorMessage: true }), JSON.stringify({ type: "user", message: { role: "user", content: "wake" } })])?.text.startsWith("You've hit"), "the NEWEST assistant turn decides, user records in between are skipped");
   assert(lastFailure(["not json", ""]) === undefined, "garbage lines are skipped, never a throw");
   for (const l of ["Request timed out", "Please run /login · API Error: 403", "Login expired · Please run /login"]) assert(failureText(l) === l, `failureText recognises: ${l}`);
+  // vercel/neon 2026-11-24: claude hit its weekly limit, the agent was swapped to kit, and `paw ls` kept
+  // the claude limit note on the kit seat — the newest assistant record was still claude's synthetic one.
+  const weekly = synth("You've hit your weekly limit · resets Nov 26, 10pm (UTC)", { isApiErrorMessage: true });
+  const kitReply = JSON.stringify({ type: "assistant", timestamp: "2026-11-24T23:50:27.947Z", message: { id: "msg_kit_1f", model: "grok-4.7", role: "assistant", content: [{ type: "text", text: "sent." }] } });
+  assert(!!lastFailure([weekly], "claude")?.text.startsWith("You've hit your weekly limit"), "on claude the limit note stays (it is claude's own failure)");
+  assert(lastFailure([weekly], "kit") === undefined, "swapped to kit → claude's limit note is history, cleared at once");
+  assert(lastFailure([weekly, kitReply], "kit") === undefined, "…and a newer kit turn is no failure either");
+  assert(!!lastFailure([weekly])?.text, "no harness given → as before");
   console.log("✓ runtime failures");
 }
 

@@ -24,7 +24,7 @@ import { KIT_AGENT } from "./kit.ts";
 import { HERMES_AGENT } from "./hermes-profile.ts";
 import { ACP_AGENT } from "./acp-agent.ts";
 import { claudeProjectsRoot, isClaudeHarness, personaTranscriptRoots, readAgentType, readResumeId, transcriptPath, transcriptPaths, writesClaudeTranscript } from "./session.ts";
-import { lastFailure, lastUsage, type ContextUsage } from "./transcript.ts";
+import { lastFailure, lastUsage, transcriptHarness, type ContextUsage, type TranscriptHarness } from "./transcript.ts";
 import { tailRead, turnOfProcess, turnState, type PendingTool, type TurnState } from "./transcript.ts";
 import { gitInfoMany, type GitInfo } from "./git.ts";
 import { isRemoteSpace, natsTls, pawServer } from "./server.ts";
@@ -217,11 +217,13 @@ export interface TranscriptRead {
  */
 const transcriptMemo = new Map<string, { stamp: string; failure?: { v: ReturnType<TranscriptRead["failure"]> }; context?: { v: ReturnType<TranscriptRead["context"]> }; turn?: { v: ReturnType<TranscriptRead["turn"]> } }>();
 
-function readTranscript(file: string | undefined): TranscriptRead | undefined {
+function readTranscript(file: string | undefined, harness: TranscriptHarness | undefined): TranscriptRead | undefined {
   if (!file) return undefined;
   const st = statSync(file);
   const mtimeMs = st.mtimeMs;
-  const stamp = `${st.mtimeMs}:${st.size}`;
+  // The harness is part of the key: a swap changes the answer for the same bytes (the old harness's
+  // usage and failure stop counting the moment the persona names another).
+  const stamp = `${st.mtimeMs}:${st.size}:${harness ?? "-"}`;
   let memo = transcriptMemo.get(file);
   if (memo?.stamp !== stamp) {
     memo = { stamp };
@@ -248,8 +250,8 @@ function readTranscript(file: string | undefined): TranscriptRead | undefined {
   };
   return {
     mtimeMs,
-    failure: () => (m.failure ??= { v: ((t) => (t ? attempt(() => lastFailure(lines(t.small))) : undefined))(readTails()) }).v,
-    context: () => (m.context ??= { v: ((t) => (t ? attempt(() => lastUsage(lines(t.context))) : undefined))(readTails()) }).v,
+    failure: () => (m.failure ??= { v: ((t) => (t ? attempt(() => lastFailure(lines(t.small), harness)) : undefined))(readTails()) }).v,
+    context: () => (m.context ??= { v: ((t) => (t ? attempt(() => lastUsage(lines(t.context), harness)) : undefined))(readTails()) }).v,
     turn: () => (m.turn ??= { v: ((t) => (t ? attempt(() => turnStateFrom(file, t.small)) : undefined))(readTails()) }).v,
   };
 }
@@ -1028,10 +1030,10 @@ export async function collectStatus(space: string, ctl?: ManagerControl, opts: C
   }
   const files = new Map([...byStore].map(([key, g]) => [key, transcriptPaths(g.pins, g.roots)]));
   const reads = new Map<string, TranscriptRead | undefined>(); // one tail read per transcript file
-  const transcriptOf = ({ pin, roots }: { pin?: string; roots: string[] }): TranscriptRead | undefined => {
+  const transcriptOf = ({ pin, roots, harness }: { pin?: string; roots: string[]; harness?: string }): TranscriptRead | undefined => {
     const file = pin ? files.get(roots.join("\0"))?.get(pin) : undefined;
     if (!file) return undefined;
-    if (!reads.has(file)) reads.set(file, readTranscript(file));
+    if (!reads.has(file)) reads.set(file, readTranscript(file, transcriptHarness(harness)));
     return reads.get(file);
   };
 

@@ -13,6 +13,7 @@
  * to, so nothing in this module needs a broker, a manager, or a running agent.
  */
 import { closeSync, openSync, readSync, statSync } from "node:fs";
+import { isClaudeHarness } from "./session.ts";
 
 /** One content part of a claude transcript record. */
 export type Part = {
@@ -370,14 +371,35 @@ export function recordFailure(rec: unknown): { text: string; ts: number } | unde
 
 /** Walk records NEWEST first: the latest assistant turn decides. A failure followed by a real reply
  *  means the agent recovered — reporting the old failure would be stale news presented as current. */
-export function lastFailure(lines: string[]): { text: string; ts: number } | undefined {
+export function lastFailure(lines: string[], harness?: TranscriptHarness): { text: string; ts: number } | undefined {
   for (let i = lines.length - 1; i >= 0; i--) {
     let rec: { type?: string } | undefined;
     try { rec = JSON.parse(lines[i]); } catch { continue; }
     if (rec?.type !== "assistant") continue;
+    // A turn the CURRENT harness didn't write is history: claude's "You've hit your weekly limit" on an
+    // agent swapped to kit is why it was swapped, not something kit is failing at (vercel/neon, 2026-11-24).
+    if (harness && recordHarness(rec) !== harness) return undefined;
     return recordFailure(rec);
   }
   return undefined;
+}
+
+/**
+ * Which harness wrote this transcript record. kit with `storage: claude` appends to the agent's claude
+ * transcript (src/swap.ts), and every assistant record it writes carries a `msg_kit_<hex>` message id
+ * (kit session/claude.go); claude's own ids are `msg_…` from the API, or none on a synthetic turn.
+ */
+export type TranscriptHarness = "claude" | "kit";
+export function recordHarness(rec: unknown): TranscriptHarness {
+  const id = (rec as { message?: { id?: unknown } } | null)?.message?.id;
+  return typeof id === "string" && id.startsWith("msg_kit_") ? "kit" : "claude";
+}
+
+/** The transcript harness a persona `agent:` writes as, or undefined for one that writes no claude
+ *  transcript (hermes, acp, codex…) — callers then read no transcript at all. */
+export function transcriptHarness(agentType: string | undefined): TranscriptHarness | undefined {
+  if (agentType === "kit") return "kit";
+  return isClaudeHarness(agentType) ? "claude" : undefined;
 }
 
 /**
@@ -468,25 +490,34 @@ export function recordUsage(rec: unknown): { tokens: number; ts: number } | unde
  * own transcript), so summing them would report cumulative spend, a different question by an order of
  * magnitude.
  */
-export function lastUsage(lines: string[]): ContextUsage | undefined {
+export function lastUsage(lines: string[], harness?: TranscriptHarness): ContextUsage | undefined {
   let found: { tokens: number; ts: number } | undefined;
   for (let i = lines.length - 1; i >= 0 && !found; i--) {
+    let rec: { type?: string; isSidechain?: boolean } | undefined;
     try {
-      found = recordUsage(JSON.parse(lines[i]));
+      rec = JSON.parse(lines[i]);
     } catch {
       continue; // a truncated tail line, as everywhere else here
     }
+    // Right after a harness swap the newest turn is the OLD harness's: its occupancy is another model's
+    // context (claude's 180k on a kit seat that hasn't run yet, 2026-11-24). Unknown until the current
+    // harness takes a turn — never the previous one's number.
+    if (harness && rec?.type === "assistant" && rec.isSidechain !== true && recordHarness(rec) !== harness) return undefined;
+    found = recordUsage(rec);
   }
   if (!found) return undefined;
+  // claude's windows (and its autocompact marks) say nothing about a kit model's window.
+  if (harness === "kit") return found;
   return { ...found, ...inferWindow(found.tokens, autoCompactPre(lines)) };
 }
 
 /** The model of the newest real assistant turn in this tail (`message.model`), skipping claude's
  *  `<synthetic>` error turns — what the agent is actually running on, not what was asked for. */
-export function lastModel(lines: string[]): string | undefined {
+export function lastModel(lines: string[], harness?: TranscriptHarness): string | undefined {
   for (let i = lines.length - 1; i >= 0; i--) {
     let rec: { type?: string; message?: { model?: unknown } } | undefined;
     try { rec = JSON.parse(lines[i]); } catch { continue; }
+    if (harness && rec?.type === "assistant" && recordHarness(rec) !== harness) return undefined; // the previous harness's model
     const m = rec?.type === "assistant" ? rec.message?.model : undefined;
     if (typeof m === "string" && m && m !== "<synthetic>" && m !== "kit-carried") return m;
   }

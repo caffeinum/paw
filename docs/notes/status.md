@@ -82,6 +82,15 @@ needed — paw attach x`, `⚠ api error 500`). Test: `check:status`, `check:top
   on the row, and a standing notice above that agent's chat ("your DMs queue and will be answered once it
   can run again"). Measured on this box: 907 "Login expired" synthetic turns in one day across
   transcripts — the class is common. Test: `check:transcript`.
+- **Harness swaps (2026-11-24).** kit with `storage: claude` appends to the SAME transcript, so after
+  `paw restart <a> --agent kit` the newest assistant record was still claude's: `paw ls` kept claude's
+  "⚠ You've hit your weekly limit" on vercel/neon (the very reason they were swapped) and CTX showed
+  claude's last occupancy. Each record's harness is read off its message id (`recordHarness`: kit writes
+  `msg_kit_<hex>`, kit session/claude.go; everything else is claude's), and `lastFailure`/`lastUsage`/`lastModel`
+  take the persona's harness (`transcriptHarness(agent:)`): a newest assistant record from the OTHER harness
+  means no failure and CTX `—` until the current harness takes its own turn. A kit occupancy gets no claude
+  window (`inferWindow` is claude's 200k/1M). The status memo is keyed by harness too. `paw attach`'s summary
+  and `paw chat`'s banner (src/agent-summary.ts) read the same way. Test: `check:transcript`.
 
 ## inferBusy
 
