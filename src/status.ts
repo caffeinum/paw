@@ -809,13 +809,6 @@ export function rowMatches(r: StateFields, state: RowState): boolean {
   }
 }
 
-/**
- * Every consumer on the space's DM stream, from ONE listing. It used to be one full listing PER AGENT
- * (each walked every consumer looking for its own prefix), so the cost grew with the square of the
- * fleet. CotalEndpoint keeps its JetStreamManager private, so this opens its own short-lived NATS
- * connection to the same server (core's exact client libs). Started before the agents needing it are
- * known, so it overlaps the roster read — {@link inboxLag} turns it into per-agent answers.
- */
 /** One DM durable's lag, plus when it last handed a message to its client (broker clock), if ever. */
 export type DmConsumer = { name: string; num_pending: number; num_ack_pending: number; delivered_at?: number };
 
@@ -831,6 +824,13 @@ const dmConsumer = (ci: { name: string; num_pending: number; num_ack_pending: nu
   return { name: ci.name, num_pending: ci.num_pending, num_ack_pending: ci.num_ack_pending, ...(at !== undefined ? { delivered_at: at } : {}) };
 };
 
+/**
+ * Every consumer on the space's DM stream, from ONE listing. It used to be one full listing PER AGENT
+ * (each walked every consumer looking for its own prefix), so the cost grew with the square of the
+ * fleet. CotalEndpoint keeps its JetStreamManager private, so this opens its own short-lived NATS
+ * connection to the same server (core's exact client libs). Started before the agents needing it are
+ * known, so it overlaps the roster read — {@link inboxLag} turns it into per-agent answers.
+ */
 export type DmConsumerListing =
   | { kind: "ok"; consumers: DmConsumer[] }
   | { kind: "no-stream" }
