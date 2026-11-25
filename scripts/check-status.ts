@@ -923,11 +923,6 @@ assert(!inferBusy("idle", true, BUSY_NOW + 5_000, BUSY_NOW), "an mtime in the FU
   console.log("✓ problems: classify");
 }
 
-if (failures > 0) {
-  console.error(`\n${failures} paw status check(s) failed`);
-  process.exit(1);
-}
-console.log("\nall paw status checks passed 🐾");
 
 
 // ---- keeper: unstickDecision (src/keeper.ts) — restart only an idle agent that never drains its inbox ----
@@ -962,3 +957,26 @@ console.log("\nall paw status checks passed 🐾");
 console.log("✓ keeper unstickDecision");
 }
 
+// SESSION column (2026-11-24): `"skills-28"` on claude, `07d2c3c5…` on kit for the SAME session. The
+// "skills-28" was claude's DERIVED per-process name (`nameSource: "derived"`, skills-55 after the next
+// restart), and kit has no claude process to derive one. Only a human-given name counts now.
+{
+  const { nameForSession } = await import("../src/named.ts");
+  const { sessionRef } = await import("../src/status.ts");
+  const pin = "07d2c3c5-d65f-4f98-aaa4-1455113bbd17";
+  const derived = [{ sessionId: pin, cwd: "/x", name: "skills-28", nameSource: "derived", pid: 1 }];
+  const user = [{ sessionId: pin, cwd: "/x", name: "research", nameSource: "user", pid: 1 }];
+  const legacy = [{ sessionId: pin, cwd: "/x", name: "research", pid: 1 }];
+  assert(nameForSession(pin, derived) === undefined, "session: claude's derived per-process name is not the session's name");
+  assert(nameForSession(pin, user) === "research" && nameForSession(pin, legacy) === "research", "session: a /rename (or a pre-nameSource index) still names it");
+  const claudeRow = sessionRef({ pin, harness: undefined, sessionName: nameForSession(pin, derived) });
+  const kitRow = sessionRef({ pin, harness: "kit", sessionName: nameForSession(pin, []) });
+  assert(claudeRow === kitRow && kitRow === "07d2c3c5…", `session: the same session reads the same on claude and on kit (${claudeRow} / ${kitRow})`);
+}
+
+// Last: every block above (the keeper's and the SESSION one ran after this check and could not fail it).
+if (failures > 0) {
+  console.error(`\n${failures} paw status check(s) failed`);
+  process.exit(1);
+}
+console.log("\nall paw status checks passed 🐾");

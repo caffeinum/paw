@@ -9,7 +9,9 @@ Moved verbatim from CLAUDE.md (2026-10-02 split). Index: [CLAUDE.md](../../CLAUD
   or not: **STATUS** (mesh idle/working/starting/offline via `meshStatus` over the manager ps —
   `mesh:"absent"` → starting), **RUNTIME** (the `manager.runtime` marker, shown only when live), **CWD**
   (tilde-abbreviated folder), **SESSION** (the human session name `"research"` via `nameForSession` if
-  set, else a short id), **INBOX** (per-agent durable DM-consumer lag — the ZOMBIE detector, added
+  set, else a short id — only a name a human gave it, `nameSource: "user"`: claude's own DERIVED
+  per-process name (`skills-28`, `skills-55` after the next restart) is ignored since 2026-11-24, when the
+  same session read `"skills-28"` on claude and `07d2c3c5…` on kit, which has no claude process to name it), **INBOX** (per-agent durable DM-consumer lag — the ZOMBIE detector, added
   after the 2026-07-12 team2027-research incident where a presence-`idle` agent sat deaf on an unacked
   DM for hours: `fetchInboxLag` queries JetStream `consumers.info(DM_<space>, dm_<id>)` where `id` is
   the agent's nkey from the manager's ps row (ps carries `id` — the card.id minted at spawn), rendering
