@@ -23,7 +23,7 @@ export const BATCH = 10;
 export const OVERLAP_MS = 10 * 60_000;
 /** The org's team list is re-read this often (a team made on github.com is found without a `teams --apply`). */
 export const LIST_EVERY_MS = 10 * 60_000;
-const SEEN_MAX = 5000;
+export const SEEN_MAX = 5000;
 const GH_TIMEOUT_MS = 45_000;
 
 export const pollEvery = (): number => {
@@ -128,7 +128,10 @@ export interface TeamsState {
   /** Rotation offset into the polled team list. */
   next: number;
   cursors: Record<string, TeamCursor>;
-  /** Comment ids already sent (or baselined): `ic:<id>`, `rc:<id>`, `rv:<id>`, `is:<id>`. */
+  /** "push" while a webhook forwarder streams the org (slow reconcile polls), "poll" otherwise; said on change. */
+  mode?: "push" | "poll";
+  /** Tags already sent (or baselined), {@link seenId}: `ic:<id>/<slug>`, `rc:…`, `rv:…`, `is:<owner>/<repo>#<n>/<slug>`
+   *  (before 2026-11-25: `<kind>:<id>`). Shared with the webhook receiver (src/github-forward.ts). */
   seen: string[];
 }
 
@@ -155,6 +158,16 @@ interface Commentish {
   updated_at?: string;
   submitted_at?: string;
   created_at?: string;
+}
+
+/**
+ * The dedupe id of one tag: the thing tagged and the team (one comment tagging two teams is two DMs), shared by
+ * the poller and the webhook receiver. An issue/PR body is keyed by its number (a webhook names a PR by its pull
+ * id, search by its issue id). `legacy` is the id written before 2026-11-25 (`<kind>:<id>`, no team), still
+ * honoured so an upgrade resends nothing.
+ */
+export function seenId(kind: "ic" | "rc" | "rv" | "is", id: number, repo: string, number: number, slug: string): { id: string; legacy: string } {
+  return { id: kind === "is" ? `is:${repo}#${number}/${slug}` : `${kind}:${id}/${slug}`, legacy: `${kind}:${id}` };
 }
 
 const mentions = (body: string | null | undefined, org: string, slug: string): boolean =>
@@ -189,10 +202,10 @@ export async function pollTeams(rest: Rest, org: string, targets: TeamTarget[], 
       continue;
     }
     const self = new Set(t.self.map((s) => s.toLowerCase()));
-    const take = (kind: string, repo: string, number: number, c: Commentish, at: string | undefined) => {
+    const take = (kind: "ic" | "rc" | "rv" | "is", repo: string, number: number, c: Commentish, at: string | undefined) => {
       if (typeof c.id !== "number" || !c.html_url || !at || at < cur.since || !mentions(c.body, org, t.slug)) return;
-      const id = `${kind}:${c.id}`;
-      if (seen.has(id)) return;
+      const { id, legacy } = seenId(kind, c.id, repo, number, t.slug);
+      if (seen.has(id) || seen.has(legacy)) return;
       seen.add(id);
       const login = c.user?.login;
       if (!login) return void found.push({ id, slug: t.slug, repo, number, login: "a deleted account", url: c.html_url });
@@ -223,6 +236,13 @@ export async function pollTeams(rest: Rest, org: string, targets: TeamTarget[], 
     if (!failed) cursors[t.slug] = { since: cur.since, polled: stamp };
   }
   return { found, cursors, seen: [...seen].slice(-SEEN_MAX), errors };
+}
+
+/** Every `@<org>/<slug>` a body tags (slugs lowercased, each once), with the same word bounds as the poller. */
+export function taggedSlugs(body: string | null | undefined, org: string): string[] {
+  if (!body) return [];
+  const re = new RegExp(`(?:^|[^A-Za-z0-9_/-])@${org.replace(/[-]/g, "\\-")}/([A-Za-z0-9_-]+)(?![A-Za-z0-9_-])`, "gi");
+  return [...new Set([...body.matchAll(re)].map((m) => m[1]!.toLowerCase()))];
 }
 
 export function mentionText(m: Mention): string {

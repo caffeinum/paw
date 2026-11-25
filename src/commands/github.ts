@@ -7,6 +7,7 @@
  *   paw github tick                     one sweep now (the global keeper runs one every 60s)
  *   paw github org [<org>]              the organization agents' teams live in (src/github-app.ts config)
  *   paw github teams [--apply]          a closed, memberless team per agent of the space: @org/<agent> tags reach it
+ *   paw github forward on|off|status    this machine streams the org's tags by webhook (src/github-forward.ts)
  *   paw github app set <agent> --app-id N --installation-id N --key <pem>   the agent's gh + git act as <slug>[bot]
  *   paw github app test <agent>         mint a token, list the installation's repos (read-only)
  *   paw github app ls                   registered Apps and their tokens' expiry
@@ -14,6 +15,7 @@
  * `<pr>` is the PR's URL, `owner/repo#N`, or `#N` inside the repo. The agent defaults to the caller
  * (COTAL_NAME, which cotal stamps into every agent's tools); `<agent>#<space>` names another space.
  */
+import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { delimiter, join, resolve } from "node:path";
 import { listAgents, personaFilePath, setPersonaKeys } from "../addressing.ts";
@@ -55,10 +57,12 @@ import {
   type SweepDeps,
 } from "../github-relay.ts";
 import { unfireable } from "./cron.ts";
+import { describeForward, forwardHealthy, readForwardStatus } from "../github-forward-status.ts";
+import { ensureSecret, secretPath } from "../github-forward.ts";
 import { callerSpace } from "../space.ts";
 
 const USAGE =
-  "github watch <pr> [<agent>[#space]] · github unwatch <pr> [<agent>[#space]] · github ls · github tick · github org [<org>] · github teams [--apply] [--org <org>] [--exclude <glob,…>] · " +
+  "github watch <pr> [<agent>[#space]] · github unwatch <pr> [<agent>[#space]] · github ls · github tick · github org [<org>] · github teams [--apply] [--org <org>] [--exclude <glob,…>] · github forward on|off|status [--space s] · " +
   "github app set <agent> --app-id N --installation-id N --key <pem> · github app test <agent> · github app ls   (<pr> = URL, owner/repo#N, or #N in the repo)";
 
 interface Args {
@@ -180,6 +184,7 @@ function ls(): void {
   for (const w of waiting) console.log(`${w.pr}  watch by ${w.agent}#${w.space}, not followed yet (next keeper tick)`);
   for (const m of s.mutes) console.log(`muted: ${m.pr} for ${m.agent}#${m.space}`);
   for (const o of s.outbox) console.log(`waiting to send: ${o.pr} → ${o.agent}#${o.space}${o.lastError ? ` (${o.attempts} failed: ${o.lastError})` : ""}`);
+  console.log(describeForward(readForwardStatus(), Date.now()));
   if (s.said) console.log(`last sweep said:\n${s.said.split("\n").map((l) => `  ${l}`).join("\n")}`);
 }
 
@@ -264,8 +269,59 @@ async function github(argv: string[]): Promise<void> {
       return teams(a, space, await liveRest());
     case "app":
       return app(a, space);
+    case "forward":
+      return forward(a, a.space ?? callerSpace());
     default:
       throw new Error(`paw github: ${a.sub ? `unknown subcommand "${a.sub}"` : "missing subcommand"} — ${USAGE}`);
+  }
+}
+
+/** `paw github forward on|off|status`: whether this machine streams the org's events (src/github-forward.ts). Exported for the check. */
+export function forward(a: Args, space: string, out: (l: string) => void = (l) => console.log(l), ghCheck: () => void = checkGhWebhook): void {
+  const [verb, extra] = a.positionals;
+  if (extra !== undefined || !verb) throw new Error(`paw github: forward takes on|off|status — ${USAGE}`);
+  if (verb === "status") {
+    const c = readConfig();
+    out(c.forward ? `on: the mailbox of space ${c.forward.space} runs \`gh webhook forward --org ${c.org ?? "<no org set>"}\`` : "off: team tags are polled (`paw github forward on` to stream them)");
+    const st = readForwardStatus();
+    out(describeForward(st, Date.now()));
+    if (c.org) out(forwardHealthy(c.org, Date.now(), st) ? "healthy: the keeper polls team tags only to reconcile" : "not healthy: the keeper polls team tags at the normal pace");
+    return;
+  }
+  if (verb === "off") {
+    const was = updateConfig((c) => {
+      const f = c.forward;
+      delete c.forward;
+      return f;
+    });
+    out(was ? `✓ off — the mailbox of space ${was.space} stops the forwarder within 30s; team tags go back to polling` : "✓ already off");
+    return;
+  }
+  if (verb !== "on") throw new Error(`paw github: forward "${verb}" is not on|off|status — ${USAGE}`);
+  if (a.org) throw new Error(`paw github: forward streams the configured org — set it with \`paw github org <org>\`, not --org`);
+  const orgName = orgOrThrow();
+  if (!listAgents(space).length) throw new Error(`paw github: space "${space}" has no agents — name the space whose mailbox should run it (--space)`);
+  ghCheck();
+  ensureSecret();
+  const prev = updateConfig((c) => {
+    const p = c.forward;
+    c.forward = { space };
+    return p;
+  });
+  out(`✓ on: the mailbox of space ${space} streams ${orgName}'s comments/reviews/issues/PRs with \`gh webhook forward\` (within 30s)${prev && prev.space !== space ? ` — moved from space ${prev.space}` : ""}`);
+  out(`  receiver: 127.0.0.1 only; deliveries signed with ${secretPath()} (0600)`);
+  out(`  GitHub allows one forward per org: run this on ONE machine. \`paw github forward status\` shows whether it is up.`);
+  out(`  the mailbox must run a release that has it: \`paw release && paw restart${space === "paw" ? "" : ` --space ${space}`}\` (mailbox only when the manager fingerprint is unchanged)`);
+}
+
+/** The cli/gh-webhook extension is installed (`gh webhook forward` exists), or a loud error. */
+function checkGhWebhook(): void {
+  const env = process.env;
+  const gh = findGh(env);
+  try {
+    execFileSync(gh, ["webhook", "forward", "--help"], { stdio: ["ignore", "pipe", "pipe"], timeout: 20_000, env });
+  } catch {
+    throw new Error("paw github: `gh webhook forward` is not available — `gh extension install cli/gh-webhook`, and give the login the admin:org_hook scope (`gh auth refresh -s admin:org_hook`)");
   }
 }
 

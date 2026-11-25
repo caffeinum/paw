@@ -27,7 +27,11 @@ import { withFileLock, withFileLockAsync } from "./lock.ts";
 import { personaValue } from "./session.ts";
 import { readTeleported } from "./teleport-plan.ts";
 import { botLogin, readConfig, type GithubConfig } from "./github-app.ts";
-import { BATCH, LIST_EVERY_MS, listTeams, mentionText, pollEvery, pollTeams, teamFor, type Rest, type TeamTarget, type TeamsState } from "./github-teams.ts";
+import { BATCH, LIST_EVERY_MS, listTeams, mentionText, pollEvery, pollTeams, SEEN_MAX, teamFor, type Rest, type Team, type TeamTarget, type TeamsState } from "./github-teams.ts";
+import { forwardHealthy } from "./github-forward-status.ts";
+
+/** With a webhook forwarder up, each team is still polled this often, to catch what the stream missed. */
+export const RECONCILE_MS = 30 * 60_000;
 
 /** The peer name relayed activity comes from. */
 export const GITHUB_SENDER = "github";
@@ -713,10 +717,34 @@ async function sweep(deps: SweepDeps): Promise<SweepResult> {
   return result;
 }
 
+/** Each team in `teams` that stands for a hosted agent: its poll target (with the agent's own logins) and its seats. */
+export function teamSeats(seats: Seat[], teams: Team[], config: GithubConfig): Map<string, { target: TeamTarget; seats: Seat[] }> {
+  const bySlug = new Map<string, { target: TeamTarget; seats: Seat[] }>();
+  for (const seat of seats) {
+    const team = teamFor(seat.agent, teams);
+    if (!team) continue;
+    const app = config.apps[seat.agent];
+    const self = [...(seat.login ? [seat.login] : []), ...(app ? [botLogin(app)] : [])];
+    const e = bySlug.get(team.slug) ?? { target: { slug: team.slug, self: [] }, seats: [] };
+    e.target.self.push(...self);
+    e.seats.push(seat);
+    bySlug.set(team.slug, e);
+  }
+  return bySlug;
+}
+
+/** How often team tags are polled: {@link pollEvery} while no forwarder streams them; with one up, slow enough
+ *  that each team is still reconciled every {@link RECONCILE_MS} (BATCH teams a poll, rotating). */
+export function teamPollEvery(healthy: boolean, teams: number): number {
+  if (!healthy) return pollEvery();
+  return Math.max(pollEvery(), Math.floor((RECONCILE_MS * BATCH) / Math.max(BATCH, teams)));
+}
+
 /**
  * Team mentions (src/github-teams.ts): every hosted agent with a team in the configured org is polled, at most
- * every `pollEvery()` and {@link BATCH} teams per sweep; each new mention is one DM to every hosted agent of
- * that name. Problems go to `said`; nothing here throws.
+ * every {@link teamPollEvery} and {@link BATCH} teams per sweep; each new mention is one DM to every hosted agent of
+ * that name. Problems go to `said`; nothing here throws. A mention the webhook receiver claimed (its id in `seen`)
+ * while this poll ran is not queued again.
  */
 async function teamMentions(deps: SweepDeps, rest: Rest, seats: Seat[], said: string[]): Promise<number> {
   const now = (deps.now ?? Date.now)();
@@ -731,7 +759,23 @@ async function teamMentions(deps: SweepDeps, rest: Rest, seats: Seat[], said: st
   if (!org) return 0;
   let st = readStore().teams;
   if (!st || st.org !== org) st = { org, teams: [], listedAt: 0, lastPoll: 0, next: 0, cursors: {}, seen: [] };
-  if (now - st.lastPoll < pollEvery()) return 0;
+  let healthy: boolean;
+  try {
+    healthy = forwardHealthy(org, now);
+  } catch (e) {
+    said.push((e as Error).message);
+    healthy = false;
+  }
+  const mode = healthy ? "push" : "poll";
+  if (st.mode !== mode) {
+    // The cadence switch is said once per change, so a fallback to polling is never silent.
+    const every = Math.round(teamPollEvery(healthy, teamSeats(seats, st.teams, config).size) / 60_000);
+    deps.log(healthy ? `github: team tags of ${org} arrive by webhook push; polling every ${every} min only to reconcile` : `github: no webhook forwarder streams ${org} — team tags are polled every ${every} min`);
+    const m = mode;
+    updateStore((s) => void (s.teams = { ...(s.teams?.org === org ? s.teams : st!), mode: m }));
+    st = { ...st, mode };
+  }
+  if (now - st.lastPoll < teamPollEvery(healthy, teamSeats(seats, st.teams, config).size)) return 0;
   if (now - st.listedAt >= LIST_EVERY_MS) {
     try {
       st = { ...st, teams: await listTeams(rest, org), listedAt: now };
@@ -740,32 +784,25 @@ async function teamMentions(deps: SweepDeps, rest: Rest, seats: Seat[], said: st
       if (!st.listedAt) return 0;
     }
   }
-  const bySlug = new Map<string, { target: TeamTarget; seats: Seat[] }>();
-  for (const seat of seats) {
-    const team = teamFor(seat.agent, st.teams);
-    if (!team) continue;
-    const app = config.apps[seat.agent];
-    const self = [...(seat.login ? [seat.login] : []), ...(app ? [botLogin(app)] : [])];
-    const e = bySlug.get(team.slug) ?? { target: { slug: team.slug, self: [] }, seats: [] };
-    e.target.self.push(...self);
-    e.seats.push(seat);
-    bySlug.set(team.slug, e);
-  }
+  const bySlug = teamSeats(seats, st.teams, config);
   const all = [...bySlug.keys()].sort();
   const start = all.length ? st.next % all.length : 0;
   const batch = [...all.slice(start), ...all.slice(0, start)].slice(0, BATCH);
   const polled = await pollTeams(rest, org, batch.map((s) => bySlug.get(s)!.target), st, now);
   said.push(...polled.errors);
-  const queued: Outgoing[] = polled.found.flatMap((m) =>
-    bySlug.get(m.slug)!.seats.map((seat) => ({ space: seat.space, agent: seat.agent, pr: prKey(m.repo, m.number), text: mentionText(m), attempts: 0 })),
-  );
-  for (const m of polled.found) deps.log(`github: @${org}/${m.slug} tagged by ${m.login} in ${m.repo}#${m.number}`);
-  const next: TeamsState = { ...st, lastPoll: now, next: start + batch.length, cursors: polled.cursors, seen: polled.seen };
-  updateStore((s) => {
-    s.teams = next;
+  const before = new Set(st.seen);
+  return updateStore((s) => {
+    const claimed = new Set((s.teams?.org === org ? s.teams.seen : []).filter((id) => !before.has(id)));
+    const found = polled.found.filter((m) => !claimed.has(m.id));
+    const queued: Outgoing[] = found.flatMap((m) =>
+      bySlug.get(m.slug)!.seats.map((seat) => ({ space: seat.space, agent: seat.agent, pr: prKey(m.repo, m.number), text: mentionText(m), attempts: 0 })),
+    );
+    for (const m of found) deps.log(`github: @${org}/${m.slug} tagged by ${m.login} in ${m.repo}#${m.number} (found by the poll)`);
+    const seen = [...new Set([...polled.seen, ...claimed])].slice(-SEEN_MAX);
+    s.teams = { ...st!, lastPoll: now, next: start + batch.length, cursors: polled.cursors, seen };
     s.outbox.push(...queued);
+    return queued.length;
   });
-  return queued.length;
 }
 
 /** Send every queued DM; a failure stays queued with its error, and is dropped after MAX_ATTEMPTS.

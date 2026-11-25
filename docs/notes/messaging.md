@@ -182,6 +182,49 @@ a PR with more than 100 reviews (later reviews unread).
 State: `<PAW_HOME>/github.json` `teams` (org, team list re-read every 10 min, per-team `since`/`polled`, rotation,
 seen ids). `check:github-identity`.
 
+## GitHub team tags by push: `gh webhook forward` {#github-forward}
+
+`src/github-forward.ts` + `src/github-forward-status.ts` + `paw github forward on|off|status` (2026-11-25). The
+`team:` poll above reaches 10 teams every 2 min, so with 45 teams a tag took up to ~10 min. Now one machine can
+stream the org's events and a tag arrives in seconds; the poll stays as a reconciliation fallback.
+
+- **Opt in, one machine:** `paw github forward on [--space s]` (needs `paw github org`, the `cli/gh-webhook`
+  extension and the `admin:org_hook` scope) records `forward: {space}` in `$PAW_HOME/github-config.json` and makes
+  the signing secret `$PAW_HOME/secrets/github-forward.secret` (0600, dir 0700, never printed or logged). `off`
+  removes it; `status` shows the config and health. Off by default: nothing changes for anyone who doesn't.
+- **Host: the mailbox of that space.** It is always up, one per space, and already holds long-lived child streams
+  (the artil relay); the keeper is a one-shot 60s tick and can't hold a websocket. Every other space's mailbox
+  stays idle (no gh, no port). Every 30s it re-reads the config, so `on`/`off` take effect without a restart —
+  once the mailbox runs a release that has this code (`paw release && paw restart`: mailbox-only, A1 passes).
+- **Receiver:** `127.0.0.1:<random port>/github`. A delivery whose `X-Hub-Signature-256` is not the HMAC-SHA256 of
+  the secret is answered 401 and logged (`REJECTED`), nothing parsed. gh gets the secret as `--secret=` on its argv
+  (visible to this user's `ps` only; gh-webhook has no other way).
+- **gh:** `gh webhook forward --org=<org> --events=issue_comment,pull_request_review,pull_request_review_comment,issues,pull_request --url=… --secret=…`.
+  It makes a temporary org dev hook ("cli") and streams it. `Forwarding Webhook events from GitHub...` on its stderr
+  = up. It exiting is restarted with backoff (5s doubling to 5 min) and said ONCE per streak (again only if the reason
+  changes: down / conflict / access). A 422 "Hook already exists" = another forward for this org somewhere (GitHub
+  allows one): said plainly, status `conflict`, retried every 5 min. A 403 = the gh login lacks `admin:org_hook`.
+- **Tags:** the comment (`issue_comment`, `pull_request_review_comment`: created/edited), the review body
+  (`pull_request_review`: submitted/edited) and an issue/PR body (`issues`/`pull_request`: opened/edited) are scanned
+  for `@<org>/<slug>`; each slug maps to the hosted agents whose team it is (the poller's `teamSeats`); tags by the
+  agent's own App bot or persona `github:` login are skipped. The id is claimed in the poller's `teams.seen` under the
+  store lock, then the poller's DM is sent (`you were tagged by <login> in <repo>#<n>` + URL) straight away; a failed
+  send goes to the outbox for the keeper. The poller, when it writes back, drops any of its finds the push claimed
+  meanwhile — so a tag is sent exactly once whichever side sees it first.
+- **Dedupe ids are per team** since this change: `ic:<id>/<slug>`, `rc:…`, `rv:…`, `is:<owner>/<repo>#<n>/<slug>`
+  (a body by number: a webhook names a PR by its pull id, search by its issue id). Before, one id per comment meant a
+  comment tagging two teams reached only the first. Old `<kind>:<id>` entries are still honoured.
+- **Cadence:** `<PAW_HOME>/github-forward.json` holds the forwarder's state + a 30s heartbeat. While it says `up`
+  (and the beat is < 90s old) the keeper polls team tags only to reconcile: each team every 30 min
+  (`max(2 min, 30 min × 10 / teams)` between polls). Otherwise the old pace. Each switch is one keeper-log line
+  (`arrive by webhook push…` / `no webhook forwarder streams <org> — team tags are polled every 2 min`).
+  `paw github ls` and `paw github forward status` print the health line.
+- **PR followers too:** a comment/review event on a PR the relay follows triggers one relay sweep (3s debounce) from
+  the mailbox, so PR followers hear it in seconds; the sweep is the keeper's own (same lock, cursors, outbox).
+  CI results and merges still wait for the keeper tick (those events aren't forwarded).
+
+`check:github-forward` (a stub `gh` POSTs signed fixture deliveries; no webhook is ever created).
+
 ## GitHub Apps: an agent writes as <slug>[bot] {#github-apps}
 
 `src/github-app.ts` + `paw github app set|test|ls` (2026-11-24). Agents used to push and comment as the operator.
