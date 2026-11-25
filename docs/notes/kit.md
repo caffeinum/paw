@@ -225,6 +225,17 @@ then the ordinary `restartAgent`. Principle: transparent, no inventions.
   refuses BEFORE writing when that launch couldn't happen (no linux kit, no provider named, no host login for it, a
   manager without `sandbox-kit`) — [sandbox.md#kit-in-the-vm](sandbox.md#kit-in-the-vm). `check:sandbox-kit`.
 
+- **What a swapped agent sees from `cotal_dm` differs by harness — the connectors word it differently, the
+  delivery is the same (2026-11-24, skills' context checks to the human seat `aleks-mac-mini`).** claude
+  (TS connector, `cotal_dm` in connector-claude-code's mcp) answers `DM stored as seq 21441 for aleks-mac-mini
+  (recipient was idle at send; delivery not confirmed).` — EVERY DM it sends says `stored … delivery not
+  confirmed`, with the recipient's status at send in the parentheses; `idle` is just the human seat's normal
+  state. kit (`engine.go` `ToolCotalDM` → cotal-go `DMWithID`) answers `delivered to aleks-mac-mini (local.…)`
+  for exactly the same thing: a JetStream publish acked by the DM stream (`c.js.Publish` with a msg id) — no
+  recipient read is observed either way. So the claude wording is the accurate one and kit's "delivered"
+  overclaims; nothing in paw sits between the tool and the agent, so the fix belongs in kit (say `stored as
+  seq N for X (delivery not confirmed)`, cotal-go returning the PubAck's seq). Documented here, not patched in paw.
+
 Test: `check:kit` (kitArgs, preflight with stub binaries, planSwap), `check:commands` (parseArgs), and
 `scripts/lean/kit/e2e-kit-swap.ts` (below).
 
