@@ -1412,9 +1412,13 @@ export async function ensureAgentSpawned(
       const logFrom = logOffset(managerLogPath(opts.space));
       const freshSession = lastWrite() === undefined;
       opts.progress?.(`starting ${opts.name}${agentType ? ` on ${agentType}` : ""}…`);
-      const retireMs = opts.timing?.retireMs ?? RETIREMENT_RETRY_MS;
+      // The re-drive follows the manager's FINAL teardown of the uid it accepted (no process ever ran),
+      // so the name is free: it gets a short retirement window and no held-name window. That keeps the
+      // whole re-drive inside RETIREMENT_REDRIVE_MS, and the lock hold under the wake deadline.
+      const retireMs = Math.min(opts.timing?.retireMs ?? RETIREMENT_RETRY_MS, attempt === 1 ? Infinity : REDRIVE_RETIRE_MS);
       const reply = await spawnPinned(ctl, args, opts.name, {
         retireMs,
+        heldMs: attempt === 1 ? SESSION_RELEASE_MS : 0,
         retireStepMs: opts.timing?.retireStepMs,
         onRetiring: () => {
           raced = true;
@@ -1841,9 +1845,18 @@ export const RETIREMENT_RETRY_MS = 45_000;
 /** The first and the largest wait between two retirement re-drives (see spawnPinned). */
 export const RETIREMENT_STEP_MS = 500;
 export const RETIREMENT_STEP_MAX_MS = 1_000;
-/** What the one re-drive of an accepted-then-retired spawn adds to a lock holder's time: its own
- *  retirement wait and spawn call, plus the witness interval the first attempt waited to see the retirement. */
-export const RETIREMENT_REDRIVE_MS = RETIREMENT_RETRY_MS + SPAWN_ACCEPT_MS + SEAT_WITNESS_EVERY_MS;
+/** The retirement window of the one re-drive (below): it runs after the manager logged the accepted
+ *  uid's final teardown, so the name is already free; this only absorbs a teardown still settling. */
+export const REDRIVE_RETIRE_MS = 10_000;
+/**
+ * What the one re-drive of an accepted-then-retired spawn adds to a lock holder's time. Attempt 1's
+ * readiness wait: no pid was ever seen, so its budget never grew past {@link SPAWN_READY_MS}, and the
+ * manager's retirement line can land anywhere in it (~23s for vercel, 2026-11-24), plus the witness
+ * interval that read it. Then attempt 2's spawnPinned: {@link REDRIVE_RETIRE_MS} of retirement re-drive,
+ * no held-name window (nothing ever held the name), and its spawn call. Attempt 2's own readiness wait
+ * is the FIRST_SPAWN_READY_MS already in {@link SPAWN_LOCK_HOLD_MS}.
+ */
+export const RETIREMENT_REDRIVE_MS = SPAWN_READY_MS + SEAT_WITNESS_EVERY_MS + REDRIVE_RETIRE_MS + SPAWN_ACCEPT_MS;
 
 /**
  * The longest a LEGITIMATE {@link ensureAgentSpawned} can hold `spawn.<name>.lock`, summed from the waits
@@ -1919,9 +1932,9 @@ async function spawnPinned(
   ctl: ManagerControl,
   args: Record<string, unknown>,
   name: string,
-  retire: { retireMs: number; retireStepMs?: number; onRetiring: () => void },
+  retire: { retireMs: number; heldMs: number; retireStepMs?: number; onRetiring: () => void },
 ) {
-  const deadline = Date.now() + SESSION_RELEASE_MS;
+  const deadline = Date.now() + retire.heldMs;
   const retireDeadline = Date.now() + retire.retireMs;
   // A retirement normally completes ~1-2s after the despawn (manager.log: refused, verify-evict, retired),
   // so the re-drive polls at a short step that grows only to RETIREMENT_STEP_MAX_MS. The old 1→8s doubling
@@ -1942,7 +1955,7 @@ async function spawnPinned(
     }
     if (reply.ok || !isNameHeldRefusal(reply.error) || Date.now() >= deadline) {
       if (!reply.ok && isNameHeldRefusal(reply.error)) {
-        return { ...reply, error: `"${name}" is still held on the mesh ${Math.round(SESSION_RELEASE_MS / 1000)}s after it should have stopped — \`paw status\` / \`paw cotal ps\` for who holds it (${reply.error})` };
+        return { ...reply, error: `"${name}" is still held on the mesh ${Math.round(retire.heldMs / 1000)}s after it should have stopped — \`paw status\` / \`paw cotal ps\` for who holds it (${reply.error})` };
       }
       return reply;
     }

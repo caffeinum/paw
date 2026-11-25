@@ -204,8 +204,13 @@ the full bound — that one is the broker, not paw.
   `retired N issuance(s) bound to uid` shape, so paw waited out the readiness budget and said "the manager
   logged nothing". It now matches any `static retirement <name>: …uid <uid>` line, and when the spawn followed a
   retirement refusal (`raced`) and the new seat was retired with no pid ever seen, ensureAgentSpawned spawns it
-  ONCE more, saying so; a second such outcome throws, quoting the manager's line. `SPAWN_LOCK_HOLD_MS` gains
-  `RETIREMENT_REDRIVE_MS` for that second try. check:wake-gate ("retirement race", "spawn lands").
+  ONCE more, saying so; a second such outcome throws, quoting the manager's line. That re-drive's spawnPinned
+  gets `REDRIVE_RETIRE_MS` (10s) of reservation retries and no held-name window (the manager already logged the
+  uid's final teardown; no process ever held the name). `SPAWN_LOCK_HOLD_MS` gains `RETIREMENT_REDRIVE_MS` =
+  attempt 1's readiness wait (`SPAWN_READY_MS` + one witness read: the retirement line can land anywhere in it,
+  ~23s for vercel) + those 10s + a spawn call → 578s, under the sleep host's 600s wake deadline (doctor's
+  `SPAWN_LOCK_STALE_MS` follows). check:wake-gate walks the worst holder as a timeline, independent of the
+  constant's addends, and asserts the wake-deadline margin ("retirement race", "spawn lands", "lock:").
 
 ## restarting a live process needs consent (2026-10-23)
 - The gate's zombie restart (running process, off the mesh, transcript stale) killed live agents with

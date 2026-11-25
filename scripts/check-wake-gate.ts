@@ -561,6 +561,26 @@ try {
         (e: Error) => e.message,
       );
       assert(calls2.filter((c) => c === "spawn vercel").length === 3 && err.includes("the manager retired it") && !err.includes("logged nothing"), `retirement race: bounded to one re-drive, then loud (${calls2.join()} · ${err.split(" — ")[0]})`);
+      // The re-drive's own spawnPinned is short: the manager has just logged the accepted uid's final
+      // teardown, so a reservation still refusing gets REDRIVE_RETIRE_MS (not the full 45s), and that's
+      // what keeps SPAWN_LOCK_HOLD_MS under the wake deadline.
+      const R = await import("../src/addressing.ts");
+      const calls3: string[] = [];
+      transcriptAged("g17", "vercel", folder, 1_740_000);
+      let k = 0;
+      const ctl3 = fakeCtl(() => fleet(0, 6).slice(1), calls3);
+      (ctl3 as unknown as { spawn: (a: { name: string }) => Promise<unknown> }).spawn = async (a) => {
+        calls3.push(`spawn ${a.name}`);
+        k++;
+        return k === 2 ? { ok: true, data: { name: a.name, owner: "local", actor: "ACTOR2", uid: "uid2" } } : refusal();
+      };
+      const t3 = Date.now();
+      const err3 = await ensureAgentSpawned(ctl3, { space: "g17", name: "vercel", cwd: folder, probePresence: healthy, timing: { ...fast, retireMs: 60_000, retireStepMs: 200 }, witness, say: () => {}, progress: () => {} }).then(
+        () => "",
+        (e: Error) => e.message,
+      );
+      const took3 = Date.now() - t3;
+      assert(err3.includes("still retiring") && took3 >= R.REDRIVE_RETIRE_MS && took3 < R.REDRIVE_RETIRE_MS + 5_000, `retirement race: the re-drive's reservation wait is bounded by ${R.REDRIVE_RETIRE_MS / 1000}s, not the first try's 60s (${took3}ms · ${err3.split("\n")[0]})`);
     }
     {
       // A plain start (nothing stopped here) that hits the reservation: not "offline by paw".
@@ -651,10 +671,21 @@ try {
   }
 
   // --- fix 2: spawn-lock waiters outlast a legitimate holder ---------------------------------------
-  assert(
-    SPAWN_LOCK_HOLD_MS >= STARTING_GRACE_MS + 2 * SESSION_RELEASE_MS + 2 * RETIREMENT_RETRY_MS + 3 * SPAWN_ACCEPT_MS + FIRST_SPAWN_READY_MS && FIRST_SPAWN_READY_MS > SPAWN_READY_MS,
-    `lock: wait (${SPAWN_LOCK_HOLD_MS / 1000}s) covers grace + session release + held-name retries + retirement re-drive (twice: the accepted-then-retired re-spawn) + three spawn calls + the first-spawn readiness budget`,
-  );
+  {
+    // The worst legitimate holder, walked as a timeline (not the constant's own addends): grace · session
+    // release · attempt 1's spawnPinned (held-name window, then the full retirement window, then a spawn call
+    // that answers at SPAWN_ACCEPT_MS) · its readiness wait (no pid ever seen → SPAWN_READY_MS, plus the
+    // witness read that finds the retirement) · the re-drive's spawnPinned (REDRIVE_RETIRE_MS + a spawn
+    // call) · attempt 2's first-spawn readiness · the presence probe.
+    const { REDRIVE_RETIRE_MS } = await import("../src/addressing.ts");
+    const { PRESENCE_PROBE_MS } = await import("../src/presence-health.ts");
+    const { WAKE_DEADLINE_MS } = await import("../src/sleep-host.ts");
+    const attempt1 = SESSION_RELEASE_MS + RETIREMENT_RETRY_MS + 2 * SPAWN_ACCEPT_MS + SPAWN_READY_MS + 5_000;
+    const attempt2 = REDRIVE_RETIRE_MS + SPAWN_ACCEPT_MS + FIRST_SPAWN_READY_MS;
+    const worst = STARTING_GRACE_MS + SESSION_RELEASE_MS + attempt1 + attempt2 + PRESENCE_PROBE_MS;
+    assert(SPAWN_LOCK_HOLD_MS >= worst && FIRST_SPAWN_READY_MS > SPAWN_READY_MS, `lock: wait (${SPAWN_LOCK_HOLD_MS / 1000}s) covers the worst legitimate holder walked step by step (${worst / 1000}s, incl. the accepted-then-retired re-drive)`);
+    assert(SPAWN_LOCK_HOLD_MS < WAKE_DEADLINE_MS, `lock: the hold (${SPAWN_LOCK_HOLD_MS / 1000}s) stays under a wake's ${WAKE_DEADLINE_MS / 1000}s deadline`);
+  }
   assert(SPAWN_LOCK_OPTS.maxWaitMs === SPAWN_LOCK_HOLD_MS && SPAWN_LOCK_OPTS.staleMs === SPAWN_LOCK_HOLD_MS, "lock: waiters wait the hold bound, and a live holder isn't aged out sooner");
   {
     // A LIVE holder (our own pid) whose lock is 90s old — past the generic 60s stale age. With the spawn

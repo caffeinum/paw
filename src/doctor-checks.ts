@@ -446,7 +446,7 @@ export async function guard(id: string, space: string | undefined, f: () => Row[
 
 // ---- locks (machine + space) -----------------------------------------------------------------------
 
-const SPAWN_LOCK_STALE_MS = 553_000; // addressing.ts SPAWN_LOCK_OPTS.staleMs (check:doctor asserts they agree)
+const SPAWN_LOCK_STALE_MS = 578_000; // addressing.ts SPAWN_LOCK_OPTS.staleMs (check:doctor asserts they agree)
 export const LOCK_STALE = { lifecycle: LIFECYCLE_LOCK_OPTS.staleMs ?? 540_000, spawn: SPAWN_LOCK_STALE_MS, revive: 2 * 3_600_000, other: 60_000 };
 
 /** The stale age lock.ts uses for a lock of this file name. */
