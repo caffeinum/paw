@@ -56,10 +56,12 @@ function seatLines(path: string, name: string, from: number): string[] {
   return buf.toString("utf8").split("\n").map(stripStamp).filter(ours);
 }
 
-/** The manager's `static retirement <name>: retired N issuance(s) bound to uid <uid>` line for THIS
- *  incarnation after `from`, if any. cotal logs it when it tears down a seat's footprint: credentials,
- *  DM/deliver durables, ACL row. Paired with a pid that still runs, it means the manager dropped a seat
- *  it had launched without stopping it (#96). Undefined when none. */
+/** The manager's `static retirement <name>: …` line naming THIS incarnation's uid after `from`, if any.
+ *  cotal logs one when it tears down a seat's footprint: `retired N issuance(s) bound to uid <uid>` for a
+ *  seat that ran, `no credential-ledger row was ever released under uid <uid>; …` for one it retired
+ *  before any credential was issued (vercel, 2026-11-24: accepted, never launched). Paired with a pid that
+ *  still runs, it means the manager dropped a seat it had launched without stopping it (#96). Undefined
+ *  when none. */
 export function seatRetirement(path: string, name: string, uid: string, from: number): string | undefined {
   const size = logOffset(path);
   if (size <= from) return undefined;
@@ -71,10 +73,12 @@ export function seatRetirement(path: string, name: string, uid: string, from: nu
   } finally {
     closeSync(fd);
   }
-  const want = `static retirement ${name}: retired `;
+  const want = `static retirement ${name}: `;
+  if (!/^[a-z0-9]+$/i.test(uid)) throw new Error(`paw: seatRetirement: "${uid}" is not a lifecycle uid`);
+  const names = new RegExp(`\\buid ${uid}(?![a-z0-9])`, "i");
   return buf
     .toString("utf8")
     .split("\n")
-    .find((l) => l.includes(want) && l.trimEnd().endsWith(` bound to uid ${uid}`))
+    .find((l) => l.includes(want) && names.test(l))
     ?.trim();
 }

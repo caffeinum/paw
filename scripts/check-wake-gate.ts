@@ -311,6 +311,10 @@ try {
     writeFileSync(log, "2026-11-05T03:00:00.000Z static retirement canary: retired 1 issuance(s) bound to uid old\n2026-11-05T03:40:51.333Z static retirement canary: retired 1 issuance(s) bound to uid plw\n");
     assert(!!seatRetirement(log, "canary", "plw", from)?.endsWith("bound to uid plw") && !seatRetirement(log, "canary", "nope", from), "seatRetirement: finds THIS uid's retirement line only");
     assert(!seatRetirement(log, "canary-env", "plw", from), "seatRetirement: name is exact");
+    // 2026-11-24 vercel: a spawn accepted right behind a retirement refusal, retired before it launched.
+    writeFileSync(log, "2026-11-24T23:36:59.098Z static retirement vercel: no credential-ledger row was ever released under uid 5liql4woj1okjnjh65125x6pmvvmrn7; the barrier's eviction set is empty (SPEC 13.1)\n");
+    assert(!!seatRetirement(log, "vercel", "5liql4woj1okjnjh65125x6pmvvmrn7", 0)?.includes("no credential-ledger row"), "seatRetirement: a never-launched incarnation's retirement line counts too");
+    assert(!seatRetirement(log, "vercel", "5liql4woj1okjnjh65125x6pmvvmrn", 0), "seatRetirement: a uid prefix is not this uid");
   }
 
   // --- fix 3: the global loop — running + offline + idle transcript, with the fleet offline too ------
@@ -501,6 +505,64 @@ try {
       assert(raw.includes("opId=4f1fc4386f07e903f1b3ef99bf") && raw.includes("membership inventory incomplete") && rest.length === 0, "retirement: cotal's raw facts on ONE trailing line");
     }
     {
+      // The re-drive polls at a short step: with retirement done after ~1.5s, the spawn lands within ~2s
+      // (it used to double 1→2→4→8s, so a ~2s retirement cost a ~7s restart).
+      const R = await import("../src/addressing.ts");
+      assert(R.RETIREMENT_STEP_MS <= 500 && R.RETIREMENT_STEP_MAX_MS <= 1000, `retirement: re-drive step ${R.RETIREMENT_STEP_MS}ms growing to at most ${R.RETIREMENT_STEP_MAX_MS}ms`);
+      const calls: string[] = [];
+      transcriptAged("g14", "fast", folder, 1_740_000);
+      let spawned = false;
+      const freeAt = Date.now() + 1_500;
+      const ctl = fakeCtl(() => [{ name: "fast", status: "running", mesh: spawned ? "idle" : "offline" }, ...fleet(0, 6).slice(1)], calls);
+      (ctl as unknown as { spawn: (a: { name: string }) => Promise<unknown> }).spawn = async (a) => {
+        calls.push(`spawn ${a.name}`);
+        if (Date.now() < freeAt) return refusal();
+        spawned = true;
+        return { ok: true, data: { name: a.name, owner: "local", actor: "ACTORNEW" } };
+      };
+      const t0 = Date.now();
+      const r = await ensureAgentSpawned(ctl, { space: "g14", name: "fast", cwd: folder, probePresence: healthy, timing: fast, progress: () => {}, restartLive: "allow" });
+      const took = Date.now() - freeAt;
+      assert(!!r.spawned && took < 1_000, `retirement: spawn lands ${took}ms after the name frees (bound 1s; was up to 8s), ${Date.now() - t0}ms in all`);
+    }
+    {
+      // vercel 2026-11-24: the spawn after the refusals was ACCEPTED, but the manager retired that new
+      // incarnation before it launched ("no credential-ledger row was ever released under uid …") and
+      // paw waited out the budget, then said "the manager logged nothing". Now: one more spawn, said.
+      const calls: string[] = [];
+      transcriptAged("g15", "vercel", folder, 1_740_000);
+      let n = 0;
+      let live = false;
+      const ctl = fakeCtl(() => [...(live ? [{ name: "vercel", status: "running", mesh: "idle" }] : []), ...fleet(0, 6).slice(1)], calls);
+      (ctl as unknown as { spawn: (a: { name: string }) => Promise<unknown> }).spawn = async (a) => {
+        calls.push(`spawn ${a.name}`);
+        n++;
+        if (n === 1) return refusal();
+        if (n === 3) live = true;
+        return { ok: true, data: { name: a.name, owner: "local", actor: `ACTOR${n}`, uid: `uid${n}` } };
+      };
+      const said: string[] = [];
+      const witness = { pids: () => [], alive: () => false, retired: (uid: string) => (uid === "uid2" ? `static retirement vercel: no credential-ledger row was ever released under uid ${uid}` : undefined), onMesh: async () => undefined };
+      const r = await ensureAgentSpawned(ctl, { space: "g15", name: "vercel", cwd: folder, probePresence: healthy, timing: { ...fast, retireStepMs: 20 }, witness, say: (l) => said.push(l), progress: () => {} });
+      assert(!!r.spawned && calls.filter((c) => c === "spawn vercel").length === 3, `retirement race: accepted-then-retired seat is spawned once more (${calls.join()})`);
+      assert(said.some((l) => l.includes("retired the new one before it launched") && l.includes("uid uid2")), `retirement race: said out loud, with the manager's line (${said.join(" | ")})`);
+      // Bounded: a second accepted-then-retired outcome fails loud, naming the manager's retirement.
+      const calls2: string[] = [];
+      transcriptAged("g16", "vercel", folder, 1_740_000);
+      let m = 0;
+      const ctl2 = fakeCtl(() => fleet(0, 6).slice(1), calls2);
+      (ctl2 as unknown as { spawn: (a: { name: string }) => Promise<unknown> }).spawn = async (a) => {
+        calls2.push(`spawn ${a.name}`);
+        return ++m === 1 ? refusal() : { ok: true, data: { name: a.name, owner: "local", actor: `ACTOR${m}`, uid: `uid${m}` } };
+      };
+      const always = { ...witness, retired: (uid: string) => `static retirement vercel: no credential-ledger row was ever released under uid ${uid}` };
+      const err = await ensureAgentSpawned(ctl2, { space: "g16", name: "vercel", cwd: folder, probePresence: healthy, timing: { ...fast, retireStepMs: 20 }, witness: always, say: () => {}, progress: () => {} }).then(
+        () => "",
+        (e: Error) => e.message,
+      );
+      assert(calls2.filter((c) => c === "spawn vercel").length === 3 && err.includes("the manager retired it") && !err.includes("logged nothing"), `retirement race: bounded to one re-drive, then loud (${calls2.join()} · ${err.split(" — ")[0]})`);
+    }
+    {
       // A plain start (nothing stopped here) that hits the reservation: not "offline by paw".
       const msg = retirementRefusal({ space: "g12", name: "zed", waitedMs: RETIREMENT_RETRY_MS, error: refusal().error, opId: "op1", tty: false });
       assert(msg.startsWith("paw: couldn't start zed — cotal is still retiring its previous copy") && msg.includes("still not retired after 45s of retries.") && !msg.includes("\x1b"), `retirement: plain start, no timeout cause (${msg.split("\n")[0]})`);
@@ -590,8 +652,8 @@ try {
 
   // --- fix 2: spawn-lock waiters outlast a legitimate holder ---------------------------------------
   assert(
-    SPAWN_LOCK_HOLD_MS >= STARTING_GRACE_MS + 2 * SESSION_RELEASE_MS + RETIREMENT_RETRY_MS + 2 * SPAWN_ACCEPT_MS + FIRST_SPAWN_READY_MS && FIRST_SPAWN_READY_MS > SPAWN_READY_MS,
-    `lock: wait (${SPAWN_LOCK_HOLD_MS / 1000}s) covers grace + session release + held-name retries + retirement re-drive + two spawn calls + the first-spawn readiness budget`,
+    SPAWN_LOCK_HOLD_MS >= STARTING_GRACE_MS + 2 * SESSION_RELEASE_MS + 2 * RETIREMENT_RETRY_MS + 3 * SPAWN_ACCEPT_MS + FIRST_SPAWN_READY_MS && FIRST_SPAWN_READY_MS > SPAWN_READY_MS,
+    `lock: wait (${SPAWN_LOCK_HOLD_MS / 1000}s) covers grace + session release + held-name retries + retirement re-drive (twice: the accepted-then-retired re-spawn) + three spawn calls + the first-spawn readiness budget`,
   );
   assert(SPAWN_LOCK_OPTS.maxWaitMs === SPAWN_LOCK_HOLD_MS && SPAWN_LOCK_OPTS.staleMs === SPAWN_LOCK_HOLD_MS, "lock: waiters wait the hold bound, and a live holder isn't aged out sooner");
   {
