@@ -43,6 +43,7 @@
     "check:paste": "node scripts/check-paste.ts",
     "check:rail": "node scripts/check-rail.ts",
     "check:rename": "node scripts/check-rename.ts",
+    "check:hire": "node scripts/check-hire.ts",
     "check:rm": "node scripts/check-rm.ts",
     "check:archive": "node scripts/check-archive.ts",
     "check:spawn-env": "node scripts/check-spawn-env.ts",

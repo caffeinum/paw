@@ -13,6 +13,7 @@ const claude: Loader = () => import("./claude.ts"); // "claude" (real claude in 
 const chat: Loader = () => import("./chat.ts"); // "chat" (message it — REPL; --fresh births a new agent)
 const open: Loader = () => import("./open.ts"); // "open" + "attach" (attach its terminal)
 const adopt: Loader = () => import("./adopt.ts"); // "adopt" (resume a past claude session)
+const hire: Loader = () => import("./hire.ts"); // "hire" (a new agent for a task: names itself, you chat with it)
 const rename: Loader = () => import("./rename.ts"); // "rename" (relabel an agent, keep its session)
 const rm: Loader = () => import("./rm.ts"); // "rm" (forget an agent; always keeps its transcript)
 const archive: Loader = () => import("./archive.ts"); // "archive" + "unarchive" (retire an agent once its task is done)
@@ -66,6 +67,7 @@ export const COMMAND_LOADERS: Readonly<Record<string, Loader>> = {
   open,
   attach: open,
   adopt,
+  hire,
   rename,
   rm,
   archive,
