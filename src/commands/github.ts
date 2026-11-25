@@ -5,12 +5,42 @@
  *   paw github unwatch <pr> [<agent>]   stop: drops a watch, or mutes a PR followed by branch or author
  *   paw github ls                       what this machine follows, for whom and why, and what waits to be sent
  *   paw github tick                     one sweep now (the global keeper runs one every 60s)
+ *   paw github org [<org>]              the organization agents' teams live in (src/github-app.ts config)
+ *   paw github teams [--apply]          a closed, memberless team per agent of the space: @org/<agent> tags reach it
+ *   paw github app set <agent> --app-id N --installation-id N --key <pem>   the agent's gh + git act as <slug>[bot]
+ *   paw github app test <agent>         mint a token, list the installation's repos (read-only)
+ *   paw github app ls                   registered Apps and their tokens' expiry
  *
  * `<pr>` is the PR's URL, `owner/repo#N`, or `#N` inside the repo. The agent defaults to the caller
  * (COTAL_NAME, which cotal stamps into every agent's tools); `<agent>#<space>` names another space.
  */
 import { existsSync } from "node:fs";
-import { delimiter, join } from "node:path";
+import { delimiter, join, resolve } from "node:path";
+import { listAgents, personaFilePath, setPersonaKeys } from "../addressing.ts";
+import {
+  appIdentity,
+  assertOrg,
+  botEmail,
+  botLogin,
+  githubHttp,
+  keepKey,
+  keyPathFor,
+  loadKey,
+  mintToken,
+  orgOrThrow,
+  readConfig,
+  refreshTokens,
+  settingsFile,
+  tokenDir,
+  tokenExpiry,
+  updateConfig,
+  withSettingsArg,
+  writeToken,
+  type AppConfig,
+  type Http,
+} from "../github-app.ts";
+import { createTeam, ghRest, listTeams, planTeams, slugGuess, type Rest } from "../github-teams.ts";
+import { personaValue, readAgentType, readClaudeArgs, readSandbox } from "../session.ts";
 import { registry, type Command } from "@cotal-ai/core";
 import {
   ghGraphql,
@@ -27,23 +57,33 @@ import {
 import { unfireable } from "./cron.ts";
 import { callerSpace } from "../space.ts";
 
-const USAGE = "github watch <pr> [<agent>[#space]] · github unwatch <pr> [<agent>[#space]] · github ls · github tick   (<pr> = URL, owner/repo#N, or #N in the repo)";
+const USAGE =
+  "github watch <pr> [<agent>[#space]] · github unwatch <pr> [<agent>[#space]] · github ls · github tick · github org [<org>] · github teams [--apply] [--org <org>] · " +
+  "github app set <agent> --app-id N --installation-id N --key <pem> · github app test <agent> · github app ls   (<pr> = URL, owner/repo#N, or #N in the repo)";
 
 interface Args {
   sub?: string;
   positionals: string[];
   space?: string;
+  apply?: boolean;
+  org?: string;
+  appId?: string;
+  installationId?: string;
+  key?: string;
 }
+
+const VALUED = { "--space": "space", "--org": "org", "--app-id": "appId", "--installation-id": "installationId", "--key": "key" } as const;
 
 function parseArgs(argv: string[]): Args {
   const out: Args = { positionals: [] };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]!;
-    if (a === "--space") {
+    if (a in VALUED) {
       const v = argv[++i];
-      if (v === undefined) throw new Error(`paw github: --space needs a value — ${USAGE}`);
-      out.space = v;
-    } else if (a.startsWith("--")) throw new Error(`paw github: unknown flag "${a}" — ${USAGE}`);
+      if (v === undefined || v.startsWith("--")) throw new Error(`paw github: ${a} needs a value — ${USAGE}`);
+      out[VALUED[a as keyof typeof VALUED]] = v;
+    } else if (a === "--apply") out.apply = true;
+    else if (a.startsWith("--")) throw new Error(`paw github: unknown flag "${a}" — ${USAGE}`);
     else out.positionals.push(a);
   }
   out.sub = out.positionals.shift();
@@ -76,6 +116,12 @@ async function liveGh() {
   const { daemonEnv } = await import("../lifecycle.ts");
   const env = daemonEnv();
   return ghGraphql(env, findGh(env));
+}
+
+async function liveRest(): Promise<Rest> {
+  const { daemonEnv } = await import("../lifecycle.ts");
+  const env = daemonEnv();
+  return ghRest(env, findGh(env));
 }
 
 async function watch(a: Args, space: string): Promise<void> {
@@ -144,14 +190,18 @@ export async function liveSweepDeps(log: (line: string) => void): Promise<SweepD
   const { machineName } = await import("../host-stamp.ts");
   const meshUp = new Map<string, string>();
   let gh: SweepDeps["gh"];
+  let rest: Rest;
   try {
     gh = await liveGh();
+    rest = await liveRest();
   } catch (e) {
     const why = (e as Error).message;
     gh = () => Promise.reject(new Error(why));
+    rest = () => Promise.reject(new Error(why));
   }
   return {
     gh,
+    rest,
     machineOf: machineName,
     log,
     send: async (space, agent, text) => {
@@ -169,13 +219,24 @@ export async function liveSweepDeps(log: (line: string) => void): Promise<SweepD
   };
 }
 
-/** The keeper's call (src/global.ts): one sweep, logged to the keeper's stderr. */
+/** Re-mint every App token near expiry; a failure is said once while unchanged (the store's `said` is the
+ *  relay's, so App problems keep their own last line in memory of this process only — the keeper is one-shot,
+ *  so it says them every tick they persist, which is what a broken bot identity deserves). */
+async function refreshAppTokens(log: (line: string) => void, http: Http = githubHttp): Promise<void> {
+  const r = await refreshTokens(http);
+  for (const a of r.minted) log(`github: minted a fresh App token for ${a}`);
+  for (const p of r.problems) log(`github: ${p}`);
+}
+
+/** The keeper's call (src/global.ts): App tokens first (an agent mid-push needs one), then one sweep. */
 export async function githubKeeperSweep(): Promise<void> {
   const log = (l: string) => console.error(`paw keeper: ${l}`);
+  await refreshAppTokens(log);
   await githubSweep(await liveSweepDeps(log));
 }
 
 async function tick(): Promise<void> {
+  await refreshAppTokens((l) => console.log(l));
   const deps = await liveSweepDeps((l) => console.log(l));
   const r = await githubSweep(deps);
   if (!r) return console.log("another sweep is running — nothing done");
@@ -196,8 +257,120 @@ async function github(argv: string[]): Promise<void> {
       return ls();
     case "tick":
       return tick();
+    case "org":
+      return org(a);
+    case "teams":
+      return teams(a, space, await liveRest());
+    case "app":
+      return app(a, space);
     default:
       throw new Error(`paw github: ${a.sub ? `unknown subcommand "${a.sub}"` : "missing subcommand"} — ${USAGE}`);
+  }
+}
+
+function org(a: Args): void {
+  const [name, extra] = a.positionals;
+  if (extra !== undefined) throw new Error(`paw github: org takes one name — ${USAGE}`);
+  if (name === undefined) {
+    const o = readConfig().org;
+    console.log(o ?? "no organization set — `paw github org <org>`");
+    return;
+  }
+  assertOrg(name);
+  updateConfig((c) => void (c.org = name));
+  console.log(`✓ agents' teams live in ${name}`);
+}
+
+/** `paw github teams [--apply]`: a closed, memberless team per agent of the space. Exported for the check. */
+export async function teams(a: Args, space: string, rest: Rest, out: (l: string) => void = (l) => console.log(l)): Promise<void> {
+  if (a.positionals.length) throw new Error(`paw github: teams takes no arguments — ${USAGE}`);
+  const orgName = orgOrThrow(a.org);
+  const agents = listAgents(space).map((x) => x.name).sort();
+  if (!agents.length) throw new Error(`paw github: space "${space}" has no agents`);
+  const existing = await listTeams(rest, orgName);
+  const plan = planTeams(agents, existing);
+  const missing = plan.filter((p) => !p.team);
+  for (const p of plan) if (p.team) out(`✓ ${p.agent}: @${orgName}/${p.team.slug} exists — left alone`);
+  if (!a.apply) {
+    for (const p of missing) out(`+ ${p.agent}: would create @${orgName}/${slugGuess(p.agent)} (closed, no members)`);
+    out(missing.length ? `dry run: ${missing.length} team(s) to create — again with --apply` : "nothing to create");
+    return;
+  }
+  if (!missing.length) return out("nothing to create");
+  const me = (await rest("GET", "user")) as { login?: string };
+  if (!me?.login) throw new Error("paw github: GitHub's GET /user answered without a login — check `gh auth status`");
+  const made: string[] = [];
+  for (const p of missing) {
+    try {
+      const t = await createTeam(rest, orgName, p.agent, me.login);
+      made.push(t.slug);
+      out(`+ ${p.agent}: created @${orgName}/${t.slug} (closed, no members)`);
+    } catch (e) {
+      throw new Error(`paw github: creating the team for ${p.agent} failed: ${(e as Error).message}${made.length ? ` (created before it: ${made.join(", ")})` : ""} — fix it and run again (existing teams are left alone)`);
+    }
+  }
+  // The relay re-reads the team list on its own every 10 minutes; make the new ones polled from the next tick.
+  updateStore((s) => {
+    if (s.teams?.org === orgName) s.teams.listedAt = 0;
+  });
+}
+
+async function app(a: Args, space: string): Promise<void> {
+  const [verb, agent, extra] = a.positionals;
+  if (extra !== undefined) throw new Error(`paw github: app ${verb} takes one agent — ${USAGE}`);
+  if (verb === "ls") return appLs();
+  if (!agent) throw new Error(`paw github: app ${verb ?? ""} needs an agent — ${USAGE}`);
+  if (verb === "set") return appSet(a, space, agent);
+  if (verb === "test") return appTest(agent);
+  throw new Error(`paw github: app ${verb ? `"${verb}" is not set|test|ls` : "needs set|test|ls"} — ${USAGE}`);
+}
+
+/** `paw github app set`: keep the key, learn the bot, mint the first token, wire the persona. Exported for the check. */
+export async function appSet(a: Args, space: string, agent: string, http: Http = githubHttp, out: (l: string) => void = (l) => console.log(l)): Promise<void> {
+  if (!a.appId || !/^[1-9]\d*$/.test(a.appId)) throw new Error(`paw github: app set needs --app-id <number> (the App's settings page: "App ID") — ${USAGE}`);
+  if (!a.installationId || !/^[1-9]\d*$/.test(a.installationId)) throw new Error(`paw github: app set needs --installation-id <number> (the number at the end of the installation's settings URL) — ${USAGE}`);
+  if (!a.key) throw new Error(`paw github: app set needs --key <the downloaded .pem> — ${USAGE}`);
+  const persona = personaFilePath(space, agent);
+  if (!existsSync(persona)) throw new Error(`paw github: no agent "${agent}" in space "${space}"`);
+  const kind = readAgentType(persona) ?? "claude";
+  if (kind !== "claude") throw new Error(`paw github: "${agent}" is a ${kind} agent — App identities reach claude agents only (through claude's --settings)`);
+  const other = Object.entries(readConfig().apps).find(([n, x]) => n === agent && x.space !== space);
+  if (other) throw new Error(`paw github: "${agent}" already has an App in space "${other[1].space}" — one App per agent name on this machine`);
+  const where = readSandbox(persona) ? "sandbox" : "host";
+  const settings = settingsFile(tokenDir(agent, where)).agent;
+  const args = withSettingsArg(readClaudeArgs(persona), settings); // refused here, before anything is minted
+  const { slug, botId, minted } = await appIdentity(a.appId, a.installationId, loadKey(a.key), http);
+  const keyAt = keepKey(agent, a.key);
+  const cfg: AppConfig = { space, appId: a.appId, installationId: a.installationId, slug, botId, where };
+  const dir = writeToken(agent, cfg, minted);
+  updateConfig((c) => void (c.apps[agent] = cfg));
+  setPersonaKeys(space, agent, { claudeArgs: JSON.stringify(args) });
+  out(`✓ ${agent}#${space} acts on GitHub as ${botLogin(cfg)} <${botEmail(cfg)}>`);
+  out(`  key kept at ${keyAt} (0600) — delete the downloaded copy${resolve(a.key) === keyAt ? "" : ` (${a.key})`}`);
+  out(`  token: ${dir.host}/token, expires ${minted.expiresAt}; the keeper re-mints it before that`);
+  out(`  persona claudeArgs: --settings ${settings} (gh via GH_CONFIG_DIR, git credential helper + author/committer)`);
+  const login = personaValue(persona, "github");
+  if (login) out(`  note: persona github: ${login} still names the account whose own PR events are filtered and whose PRs it follows`);
+  out(`  takes effect at its next start: \`paw restart ${agent}${space === "paw" ? "" : ` --space ${space}`}\` (paw never restarts it for you)`);
+}
+
+/** `paw github app test`: mint a token and list the installation's repositories (read-only). */
+export async function appTest(agent: string, http: Http = githubHttp, out: (l: string) => void = (l) => console.log(l)): Promise<void> {
+  const cfg = readConfig().apps[agent];
+  if (!cfg) throw new Error(`paw github: "${agent}" has no App — \`paw github app set ${agent} --app-id N --installation-id N --key <pem>\``);
+  const m = await mintToken(cfg, loadKey(keyPathFor(agent)), http);
+  const r = (await http("GET", "/installation/repositories?per_page=100", m.token)) as { total_count?: number; repositories?: { full_name?: string }[] };
+  if (!Array.isArray(r?.repositories) || typeof r.total_count !== "number") throw new Error("GitHub's GET /installation/repositories answered without repositories");
+  out(`✓ ${botLogin(cfg)} (App ${cfg.appId}, installation ${cfg.installationId}) — token minted, expires ${m.expiresAt}`);
+  out(`  ${r.total_count} repositor${r.total_count === 1 ? "y" : "ies"}: ${r.repositories.map((x) => x.full_name).join(", ")}${r.total_count > r.repositories.length ? ", …" : ""}`);
+}
+
+function appLs(): void {
+  const apps = Object.entries(readConfig().apps);
+  if (!apps.length) return console.log("no GitHub Apps registered — `paw github app set <agent> --app-id N --installation-id N --key <pem>`");
+  for (const [agent, cfg] of apps) {
+    const exp = tokenExpiry(agent, cfg);
+    console.log(`${agent}#${cfg.space}  ${botLogin(cfg)}  App ${cfg.appId} · installation ${cfg.installationId} · ${cfg.where} · token ${exp ? `expires ${new Date(exp).toISOString()}` : "none yet (next keeper tick)"}`);
   }
 }
 

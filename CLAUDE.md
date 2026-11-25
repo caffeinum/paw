@@ -311,6 +311,13 @@ Each entry: what it is + the most load-bearing rule. Full notes behind the link.
   checked out, the persona `github: <login>`'s open PRs, `paw github watch <pr>` (`unwatch` = drop/mute); its own login's
   events never come back; first sight baselines; outbox retried ≤5; `<PAW_HOME>/github.json`. `check:github-relay`.
   → [messaging.md#github](docs/notes/messaging.md#github)
+- `src/github-teams.ts` + `src/github-app.ts` — `paw github org|teams [--apply]`: a closed, memberless team per agent
+  (`@org/<agent>` autocompletes); the relay polls `team:` search (REST, ≤10 teams/2 min, cursor + overlap) and DMs a
+  tag as `github` (who, where, comment URL; deduped by id; search sees review comments). `paw github app set|test|ls`:
+  a hand-made GitHub App per agent; key 0600 in `$PAW_HOME/secrets/github-apps/`, the keeper re-mints the 1h token
+  into the agent's token dir (VM home for sandboxed), persona `claudeArgs: --settings` → GH_CONFIG_DIR + git
+  credential helper + bot author; no connector change (A1). `check:github-identity`.
+  → [messaging.md#github-teams](docs/notes/messaging.md#github-teams), [messaging.md#github-apps](docs/notes/messaging.md#github-apps)
 - `src/inbox.ts` — `paw inbox`: pure reader + shared cursor; `--watch` keeps its own high-water mark;
   `--json` never advances the cursor; `--sent`, `--mark-read`. → [messaging.md#paw-inbox](docs/notes/messaging.md#paw-inbox)
 - `src/feed.ts` — `messageText` (THE flattener), `observerEndpoint`, `readConversation`, `pollLoop`. → [messaging.md#srcfeedts](docs/notes/messaging.md#srcfeedts)

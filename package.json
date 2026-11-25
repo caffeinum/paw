@@ -18,6 +18,7 @@
     "check:handoff-relay": "node scripts/check-handoff-relay.ts",
     "check:artil-relay": "node scripts/check-artil-relay.ts",
     "check:github-relay": "node scripts/check-github-relay.ts",
+    "check:github-identity": "node scripts/check-github-identity.ts",
     "check:addressing": "node scripts/check-addressing.ts",
     "check:dm": "node scripts/check-dm.ts",
     "check:web": "node scripts/check-web.ts",
