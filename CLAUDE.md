@@ -318,6 +318,12 @@ Each entry: what it is + the most load-bearing rule. Full notes behind the link.
   into the agent's token dir (VM home for sandboxed), persona `claudeArgs: --settings` → GH_CONFIG_DIR + git
   credential helper + bot author; no connector change (A1). `check:github-identity`.
   → [messaging.md#github-teams](docs/notes/messaging.md#github-teams), [messaging.md#github-apps](docs/notes/messaging.md#github-apps)
+- `src/github-forward.ts` — `paw github forward on|off|status` (opt-in, one machine per org): the mailbox of that space runs
+  `gh webhook forward --org` (backoff, said once per streak, "hook already exists" = another forward) into a 127.0.0.1
+  receiver that checks `X-Hub-Signature-256` (secret 0600 in `$PAW_HOME/secrets/`); team tags DM in seconds, claimed in
+  the poller's per-team `teams.seen` (exactly once either way); followed-PR events poke a relay sweep. While up
+  (`github-forward.json` heartbeat) the keeper polls teams only to reconcile (each every 30 min). `check:github-forward`.
+  → [messaging.md#github-forward](docs/notes/messaging.md#github-forward)
 - `src/inbox.ts` — `paw inbox`: pure reader + shared cursor; `--watch` keeps its own high-water mark;
   `--json` never advances the cursor; `--sent`, `--mark-read`. → [messaging.md#paw-inbox](docs/notes/messaging.md#paw-inbox)
 - `src/feed.ts` — `messageText` (THE flattener), `observerEndpoint`, `readConversation`, `pollLoop`. → [messaging.md#srcfeedts](docs/notes/messaging.md#srcfeedts)

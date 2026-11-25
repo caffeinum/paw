@@ -214,6 +214,12 @@ ok("nobody else is told", sent.every((s) => s.agent === "evals-intern"), sent);
 now += 130_000;
 await sweep();
 ok("the overlap re-read sends nothing twice", sent.length === 0, sent);
+gh.issues[0]!.teams.push("pm");
+gh.issues[0]!.updated_at = iso(now - 1_000);
+gh.comments.push({ kind: "ic", repo: "acme/evals", number: 5, id: 15, body: "@acme/evals-intern and @acme/pm, both of you", user: "caffeinum", at: iso(now - 1_000) });
+now += 130_000;
+await sweep();
+ok("one comment tagging two teams is one DM to each", sent.filter((s) => s.text.endsWith("issuecomment-15")).map((s) => s.agent).sort().join() === "evals-intern,pm", sent);
 // batch rotation: 12 more agents with teams → 16 teams, 10 per poll
 for (let i = 0; i < 12; i++) {
   persona(`a${i}`);

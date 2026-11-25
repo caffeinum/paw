@@ -23,6 +23,7 @@ import { startLedgerRecorder } from "./ledger-recorder.ts";
 import { observerEndpoint } from "./feed.ts";
 import { startHandoffRelay } from "./handoff-relay.ts";
 import { ARTIL_SENDER, startArtilRelay } from "./artil-relay.ts";
+import { startGithubForward } from "./github-forward.ts";
 import { machineName } from "./host-stamp.ts";
 import { startOfficeBridge } from "./office-daemon.ts";
 import { pawServer } from "./server.ts";
@@ -127,7 +128,32 @@ async function mailbox(argv: string[]): Promise<void> {
     log: (line) => console.error(`[mailbox] ${line}`),
     machineOf: machineName,
   });
+  // GitHub team tags by push (src/github-forward.ts): only in the mailbox of the space `paw github forward on`
+  // named; idle (no gh, no port) everywhere else.
+  const stopGithubForward = await (async () => {
+    const { ghRest } = await import("./github-teams.ts");
+    const { daemonEnv } = await import("./lifecycle.ts");
+    const gh = await import("./commands/github.ts");
+    const { githubSweep } = await import("./github-relay.ts");
+    const log = (line: string) => console.error(`[mailbox] ${line}`);
+    return startGithubForward(space, {
+      send: async (s, agent, text) => {
+        const { sendAsYou } = await import("./dm.ts");
+        const { GITHUB_SENDER } = await import("./github-relay.ts");
+        await sendAsYou({ space: s, server: pawServer(s), target: agent, text, byName: true, sender: GITHUB_SENDER });
+      },
+      log,
+      machineOf: machineName,
+      gh: () => gh.findGh(daemonEnv()),
+      rest: () => ghRest(daemonEnv(), gh.findGh(daemonEnv())),
+      poke: async () => void (await githubSweep(await gh.liveSweepDeps(log))),
+    });
+  })().catch((e: Error) => {
+    console.error(`[mailbox] github webhook forwarder failed to start — team tags are polled: ${e.message}`);
+    return async () => {};
+  });
   const leave = async () => {
+    await stopGithubForward().catch(() => {});
     stopHandoffRelay();
     await stopArtilRelay().catch(() => {});
     await stopOffice().catch(() => {});
