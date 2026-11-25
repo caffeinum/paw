@@ -139,6 +139,103 @@ is logged once while unchanged. Two sweeps at once (keeper + `paw github tick`):
 
 `check:github-relay` (fake GitHub, stub send).
 
+## GitHub teams: tag an agent with @org/<agent> {#github-teams}
+
+`src/github-teams.ts` + `paw github org|teams` (2026-11-24). The operator wanted to tag an agent on GitHub with
+autocomplete. A user can't be autocompleted unless it is a real account; a TEAM can, so each agent gets one.
+
+- `paw github org <org>` once (stored in `$PAW_HOME/github-config.json`; `--org` overrides per call). No org ⇒
+  every team verb fails loud; the relay just doesn't poll teams.
+- `paw github teams [--space s]` is a dry run: every agent of the space, `✓` for a team that exists (same name,
+  any case, or the slug GitHub would give it), `+` for one it would create. `--apply` creates the missing ones:
+  `POST orgs/<org>/teams {name: <agent>, privacy: closed}` (a `secret` team does not autocomplete), then
+  `DELETE …/memberships/<you>` (GitHub makes the creator a maintainer; removed so no seat is used), then reads
+  the members back and fails loud if any remain. Existing teams are never touched. An API error stops the run
+  and names the teams made before it; running it again is safe.
+- Team names are the agent names (`[A-Za-z0-9_-]+`); the slug is whatever GitHub answers (it lowercases).
+
+**Delivery without a webhook receiver** (the operator: "I'm not sure we need a receiver"). The relay sweep
+(keeper, 60s) calls `teamMentions` after the PR part: at most every 2 min (`PAW_GITHUB_TEAM_POLL_MS`) and at most
+10 teams a poll (rotating), for every hosted agent whose name has a team in the org:
+1. one REST search per team, `org:<org> team:<org>/<slug> updated:>=<last poll − 10 min>` (REST search has its own
+   30/min bucket, so it costs no GraphQL points; the 10 min overlap covers the search index's lag);
+2. for each hit: `issues/<n>/comments?since=`, and for a PR `pulls/<n>/comments?since=` (inline review comments)
+   and `pulls/<n>/reviews` (first 100) — search says which issue, never which comment;
+3. a comment/review/new issue body that contains `@<org>/<slug>` (word-bounded, any case) and was written
+   or edited after the team was first polled (its baseline) is ONE DM from `github` to every hosted agent of
+   that name:
+   ```
+   you were tagged by <login> in <owner>/<repo>#<n>
+   <html_url of the comment>
+   ```
+   The agent reads the comment itself with `gh`. Deduped by comment id (`ic:`/`rc:`/`rv:`/`is:`, last 5000 kept);
+   tags by the agent's own App bot or persona `github:` login are skipped. Through the same outbox as PR events.
+4. a failed search keeps that team's cursor (said once in the keeper log); a failed comment read keeps it too.
+
+Does search see review comments? **Yes** (checked read-only, 2026-11-24): firegoat-ai/evals#1837 mentions
+`@firegoat-ai/mini-cto` ONLY in an inline review comment, and `team:firegoat-ai/mini-cto` returns it. The comment
+scan reads review comments and review bodies anyway. Not verified yet: that a mention of a team with NO members is
+indexed the same way (every team checked had one member) — tag a fresh team once after `--apply` and `paw github
+tick` to see it arrive. Not covered: a mention added by editing an issue/PR BODY (only a new issue's body counts),
+a PR with more than 100 reviews (later reviews unread).
+
+State: `<PAW_HOME>/github.json` `teams` (org, team list re-read every 10 min, per-team `since`/`polled`, rotation,
+seen ids). `check:github-identity`.
+
+## GitHub Apps: an agent writes as <slug>[bot] {#github-apps}
+
+`src/github-app.ts` + `paw github app set|test|ls` (2026-11-24). Agents used to push and comment as the operator.
+Each agent can get its own GitHub App, which the operator creates BY HAND (steps below); paw never creates one.
+
+- `paw github app set <agent> --app-id N --installation-id N --key <pem> [--space s]`: refuses a non-claude
+  agent and a persona whose `claudeArgs` already pass another `--settings` (before any network call); then
+  `GET /app` with the App's JWT (slug; the App id must match), mints a token, `GET /users/<slug>[bot]` (bot id);
+  copies the key to `$PAW_HOME/secrets/github-apps/<agent>.pem` (0600, dir 0700; never printed); writes the
+  token dir; records `{space, appId, installationId, slug, botId, where}` in `$PAW_HOME/github-config.json`; adds
+  `--settings <token dir>/claude-settings.json` to the persona's `claudeArgs`. Takes effect at the agent's next
+  start — paw never restarts it.
+- Token dir: `$PAW_HOME/github-apps/<agent>/` for a host agent; `<VM home>/.paw-github/` (= `/root/.paw-github`)
+  for a sandboxed one — its private home is already mounted, so no launcher/manager change and only the TOKEN goes
+  into the VM, never the key. Files (0600): `token`, `token.json` (expiry), `gh/config.yml` + `gh/hosts.yml`
+  (gh's migrated multi-account format, `version: "1"`, so gh never rewrites it), `claude-settings.json`.
+- `claude-settings.json` is `{env: …}`, which claude applies to itself and every tool it runs:
+  `GH_CONFIG_DIR` (gh reads hosts.yml on EVERY run, so a re-minted token is used with no restart);
+  `GIT_AUTHOR_*`/`GIT_COMMITTER_*` = `<slug>[bot] <<botId>+<slug>[bot]@users.noreply.github.com>`;
+  `GIT_CONFIG_COUNT/KEY/VALUE`: `credential.https://github.com.helper` reset (empty — the operator's keychain/gh
+  helper must not answer first) then a shell helper that `cat`s the token file, and `url.https://github.com/.insteadOf`
+  for `git@github.com:` and `ssh://git@github.com/` (an ssh remote would otherwise push with the operator's key).
+- Refresh: the keeper (`githubKeeperSweep`, and `paw github tick`) re-mints any token missing or within 15 min of
+  its 1 h expiry, before the relay sweep. A failure is a keeper log line every tick until fixed.
+- `paw github app test <agent>`: mints a token and lists `GET /installation/repositories` (read-only).
+  `paw github app ls`: what is registered and when each token expires.
+- Why `--settings` and not the connector: the connector is in the manager's import graph (a connector edit means a
+  full fleet restart, check:doctor A1); persona `claudeArgs` already reach the claude launch, host and sandbox.
+- Not done: kit/codex/acp agents (no `--settings`); the relay's own-event filter still uses persona `github:`
+  (GraphQL names a bot without `[bot]`), so the bot's own PR comments may come back to it as PR events.
+
+### Creating the App for an agent (the operator, by hand) {#github-app-manual-steps}
+
+For `evals-intern` (repeat per agent, swapping the name):
+1. github.com → firegoat-ai → Settings → Developer settings → GitHub Apps → **New GitHub App**
+   (`https://github.com/organizations/firegoat-ai/settings/apps/new`).
+2. Name: `firegoat-evals-intern` (globally unique; the bot will be `firegoat-evals-intern[bot]`). Homepage URL:
+   the org or repo URL (anything).
+3. Webhook: **untick Active** — paw needs no webhook (mentions are polled). No callback URL, no device flow.
+4. Repository permissions: Contents **Read and write**, Pull requests **Read and write**, Issues **Read and
+   write**, Metadata **Read-only** (forced), Workflows **Read and write** only if it must push
+   `.github/workflows/` changes. Nothing at organization or account level.
+5. "Where can this GitHub App be installed?": **Only on this account**. Create.
+6. On the App's page note the **App ID**. Under "Private keys" → **Generate a private key**: a `.pem` downloads.
+7. Install App → firegoat-ai → **Only select repositories** → pick the repos it works in (e.g. `evals`) → Install.
+   The URL you land on ends in the **installation id**: `…/settings/installations/<installation-id>`.
+8. On the agent's machine:
+   ```
+   paw github app set evals-intern --space team2027 --app-id <App ID> --installation-id <installation id> --key ~/Downloads/firegoat-evals-intern.<date>.private-key.pem
+   paw github app test evals-intern
+   rm ~/Downloads/firegoat-evals-intern.*.private-key.pem
+   paw restart evals-intern --space team2027     # when it is idle: the new env is read at start
+   ```
+
 ## paw inbox
 
 - `src/inbox.ts` — `paw inbox [--history] [--watch] [--limit N]`: read the human peer ("you")'s DM inbox — the

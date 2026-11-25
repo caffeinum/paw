@@ -26,6 +26,8 @@ import { listAgents, personaFilePath } from "./addressing.ts";
 import { withFileLock, withFileLockAsync } from "./lock.ts";
 import { personaValue } from "./session.ts";
 import { readTeleported } from "./teleport-plan.ts";
+import { botLogin, readConfig, type GithubConfig } from "./github-app.ts";
+import { BATCH, LIST_EVERY_MS, listTeams, mentionText, pollEvery, pollTeams, teamFor, type Rest, type TeamTarget, type TeamsState } from "./github-teams.ts";
 
 /** The peer name relayed activity comes from. */
 export const GITHUB_SENDER = "github";
@@ -88,6 +90,8 @@ export interface Store {
   outbox: Outgoing[];
   /** What the last sweep logged about itself, so an unchanged problem is said once, not every minute. */
   said?: string;
+  /** Team-mention polling (src/github-teams.ts): the org's teams, per-team cursors, the ids already sent. */
+  teams?: TeamsState;
 }
 
 const emptyStore = (): Store => ({ watches: [], mutes: [], prs: {}, outbox: [] });
@@ -488,6 +492,11 @@ export interface SweepDeps {
   log: (line: string) => void;
   /** The folder → checkout read (tests replace it). */
   checkout?: (folder: string) => Checkout | undefined;
+  /** REST with the operator's login, for team mentions; absent = no team polling. */
+  rest?: Rest;
+  /** The machine's GitHub config (org, Apps); tests replace it. */
+  config?: () => GithubConfig;
+  now?: () => number;
 }
 
 export interface SweepResult {
@@ -690,6 +699,8 @@ async function sweep(deps: SweepDeps): Promise<SweepResult> {
     });
   }
 
+  if (deps.rest) result.queued += await teamMentions(deps, deps.rest, seats, said);
+
   const lines = [...new Set(said)];
   if (lines.join("\n") !== (store.said ?? "")) {
     lines.forEach((l) => deps.log(`github: ${l}`));
@@ -700,6 +711,61 @@ async function sweep(deps: SweepDeps): Promise<SweepResult> {
   result.sent = flushed.sent;
   result.failed = flushed.failed;
   return result;
+}
+
+/**
+ * Team mentions (src/github-teams.ts): every hosted agent with a team in the configured org is polled, at most
+ * every `pollEvery()` and {@link BATCH} teams per sweep; each new mention is one DM to every hosted agent of
+ * that name. Problems go to `said`; nothing here throws.
+ */
+async function teamMentions(deps: SweepDeps, rest: Rest, seats: Seat[], said: string[]): Promise<number> {
+  const now = (deps.now ?? Date.now)();
+  let config: GithubConfig;
+  try {
+    config = (deps.config ?? readConfig)();
+  } catch (e) {
+    said.push((e as Error).message);
+    return 0;
+  }
+  const org = config.org;
+  if (!org) return 0;
+  let st = readStore().teams;
+  if (!st || st.org !== org) st = { org, teams: [], listedAt: 0, lastPoll: 0, next: 0, cursors: {}, seen: [] };
+  if (now - st.lastPoll < pollEvery()) return 0;
+  if (now - st.listedAt >= LIST_EVERY_MS) {
+    try {
+      st = { ...st, teams: await listTeams(rest, org), listedAt: now };
+    } catch (e) {
+      said.push(`could not list the teams of ${org}: ${(e as Error).message}`);
+      if (!st.listedAt) return 0;
+    }
+  }
+  const bySlug = new Map<string, { target: TeamTarget; seats: Seat[] }>();
+  for (const seat of seats) {
+    const team = teamFor(seat.agent, st.teams);
+    if (!team) continue;
+    const app = config.apps[seat.agent];
+    const self = [...(seat.login ? [seat.login] : []), ...(app ? [botLogin(app)] : [])];
+    const e = bySlug.get(team.slug) ?? { target: { slug: team.slug, self: [] }, seats: [] };
+    e.target.self.push(...self);
+    e.seats.push(seat);
+    bySlug.set(team.slug, e);
+  }
+  const all = [...bySlug.keys()].sort();
+  const start = all.length ? st.next % all.length : 0;
+  const batch = [...all.slice(start), ...all.slice(0, start)].slice(0, BATCH);
+  const polled = await pollTeams(rest, org, batch.map((s) => bySlug.get(s)!.target), st, now);
+  said.push(...polled.errors);
+  const queued: Outgoing[] = polled.found.flatMap((m) =>
+    bySlug.get(m.slug)!.seats.map((seat) => ({ space: seat.space, agent: seat.agent, pr: prKey(m.repo, m.number), text: mentionText(m), attempts: 0 })),
+  );
+  for (const m of polled.found) deps.log(`github: @${org}/${m.slug} tagged by ${m.login} in ${m.repo}#${m.number}`);
+  const next: TeamsState = { ...st, lastPoll: now, next: start + batch.length, cursors: polled.cursors, seen: polled.seen };
+  updateStore((s) => {
+    s.teams = next;
+    s.outbox.push(...queued);
+  });
+  return queued.length;
 }
 
 /** Send every queued DM; a failure stays queued with its error, and is dropped after MAX_ATTEMPTS.
