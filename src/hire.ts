@@ -6,8 +6,10 @@
  * `paw chat @<name> --only`. The chat follows the rename through the rename trail (src/rename-trail.ts).
  * grok is kit with grok-4.7; codex is kit on its codex provider with kit's default model (kit alone is the same
  * today: kit's default provider is codex). Not `paw chat --agent codex`, which is cotal's codex connector.
+ * Bare `paw hire` (no task) on a terminal asks for the task on one line (`hire › `), then does the same.
  */
 import { randomBytes } from "node:crypto";
+import { createInterface } from "node:readline/promises";
 import { registry, type Command } from "@cotal-ai/core";
 import { agentRecord, applyAgentType, canonicalDir, ensureAgentSpawned, registerInstance, type AgentTypeSpec } from "./addressing.ts";
 import { sendAsYou } from "./dm.ts";
@@ -27,7 +29,8 @@ export const HIRE_HARNESS: Readonly<Record<HireAgent, AgentTypeSpec | undefined>
   codex: { agent: "kit", provider: "codex" },
 };
 
-export type HireArgs = { prompt: string; agent: HireAgent; space?: string };
+/** prompt undefined = bare `paw hire`: the task is typed at the prompt (see {@link hireTask}). */
+export type HireArgs = { prompt?: string; agent: HireAgent; space?: string };
 
 export function parseHireArgs(argv: string[]): HireArgs {
   let prompt: string | undefined;
@@ -56,8 +59,8 @@ export function parseHireArgs(argv: string[]): HireArgs {
     else if (a.startsWith("-") && !/\s/.test(a)) throw new Error(`paw: unknown flag "${a}" (a task that starts with "-": paw hire -- "<task>") — ${HIRE_USAGE}`);
     else take(a); // a quoted task with spaces is the task even when it starts with "-"
   }
-  if (prompt === undefined || !prompt.trim()) throw new Error(`paw: hire needs the task — ${HIRE_USAGE}`);
-  return { prompt, agent, ...(space !== undefined ? { space } : {}) };
+  if (prompt !== undefined && !prompt.trim()) throw new Error(`paw: hire needs the task — ${HIRE_USAGE}`);
+  return { ...(prompt !== undefined ? { prompt } : {}), agent, ...(space !== undefined ? { space } : {}) };
 }
 
 /** The new hire's first message: the preamble, then the operator's words untouched. */
@@ -78,7 +81,7 @@ function tempName(): string {
   return `hire-${randomBytes(3).toString("hex")}`;
 }
 
-export const HIRE_USAGE = `hire "<task>" [--agent ${HIRE_AGENTS.join("|")}] [--space s] [-- "<task>"]   (a new agent here for the task: it names itself from your words via \`paw rename\`, then works on it; you drop into \`paw chat @<it> --only\`, which follows the rename. grok = kit -m grok-4.7; codex = kit on its codex provider, kit's default model — not chat's --agent codex connector)`;
+export const HIRE_USAGE = `hire ["<task>"] [--agent ${HIRE_AGENTS.join("|")}] [--space s] [-- "<task>"]   (a new agent here for the task: it names itself from your words via \`paw rename\`, then works on it; you drop into \`paw chat @<it> --only\`, which follows the rename. no task on a terminal: type it at the prompt; grok = kit -m grok-4.7; codex = kit on its codex provider, kit's default model — not chat's --agent codex connector)`;
 
 /** Everything hire reaches outside this module — real by default, stubbed by check:hire. */
 export interface HireDeps {
@@ -90,9 +93,27 @@ export interface HireDeps {
   send: (space: string, name: string, text: string) => Promise<void>;
   renamedTo: (space: string, name: string) => string | undefined;
   tty: () => boolean;
+  /** One typed line, or undefined when the operator aborted (Ctrl-C / Ctrl-D). */
+  ask: (prompt: string) => Promise<string | undefined>;
   chat: (raw: string[]) => Promise<void>;
   out: (line: string) => void;
   err: (line: string) => void;
+}
+
+/** readline's question, as paw's y/n confirms use it — but Ctrl-C and Ctrl-D end it as an abort, not a hang. */
+async function askLine(prompt: string): Promise<string | undefined> {
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  const abort = new AbortController();
+  rl.on("SIGINT", () => abort.abort());
+  rl.on("close", () => abort.abort());
+  try {
+    return await rl.question(prompt, { signal: abort.signal });
+  } catch (e) {
+    if (abort.signal.aborted) return undefined;
+    throw e;
+  } finally {
+    rl.close();
+  }
 }
 
 const realDeps: HireDeps = {
@@ -108,6 +129,7 @@ const realDeps: HireDeps = {
   },
   renamedTo: (space, name) => renamedSince(space, name, performance.timeOrigin),
   tty: () => !!process.stdin.isTTY && !!process.stdout.isTTY,
+  ask: askLine,
   chat: async (raw) => {
     await import("./chat.ts");
     const chat = registry.all<Command>("command").find((c) => c.name === "chat");
@@ -143,8 +165,21 @@ export async function hireIn(space: string, folder: string, prompt: string, agen
   return current;
 }
 
+/** The task: the one on argv, else (bare `paw hire`, on a terminal) the line typed at `hire › `, verbatim. */
+export async function hireTask(prompt: string | undefined, d: Pick<HireDeps, "tty" | "ask" | "err">): Promise<string> {
+  if (prompt !== undefined) return prompt;
+  if (!d.tty()) throw new Error(`paw hire needs a task (or a terminal to type one) — ${HIRE_USAGE}`);
+  const typed = await d.ask("hire › ");
+  if (typed === undefined) throw new Error("paw: hire aborted — no agent created");
+  if (!typed.trim()) throw new Error("paw: hire needs a task — nothing was typed, no agent created");
+  d.err("creating agent…");
+  return typed;
+}
+
 async function hire(argv: string[]): Promise<void> {
-  const { prompt, agent, space: spaceArg } = parseHireArgs(argv);
+  const args = parseHireArgs(argv);
+  const { agent, space: spaceArg } = args;
+  const prompt = await hireTask(args.prompt, realDeps);
   // A defaulted space yields to the calling agent's own (COTAL_SPACE), as archive's does — an agent on team2027
   // hiring must hire into team2027. (Not a CALLER_SPACE_VERBS entry: see archiveSpace.)
   const { archiveSpace } = await import("./archive.ts");

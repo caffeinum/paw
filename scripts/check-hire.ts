@@ -36,7 +36,9 @@ const plain = parseHireArgs([task]);
 assert(plain.prompt === task && plain.agent === "claude" && plain.space === undefined, "default: claude, the task kept as typed");
 assert(parseHireArgs(["--agent", "grok", task]).agent === "grok", "--agent before the task");
 assert(parseHireArgs([task, "--agent", "codex", "--space", "s1"]).space === "s1", "--agent/--space after the task");
-assert(throwsMsg(() => parseHireArgs([]), /needs the task/), "no task → fails loud");
+assert(parseHireArgs([]).prompt === undefined, "no task → bare hire (the task is typed at the prompt)");
+const bareFlags = parseHireArgs(["--agent", "kit", "--space", "s0"]);
+assert(bareFlags.prompt === undefined && bareFlags.agent === "kit" && bareFlags.space === "s0", "bare hire keeps --agent/--space");
 assert(throwsMsg(() => parseHireArgs(["   "]), /needs the task/), "a blank task → fails loud");
 assert(throwsMsg(() => parseHireArgs(["fix", "the", "bug"]), /ONE task — quote it/), "an unquoted multi-word task → fails loud, says quote it");
 assert(throwsMsg(() => parseHireArgs([task, "--agent", "gpt"]), /hire takes claude, kit, grok, codex/), "an unknown --agent → fails loud with the list");
@@ -93,6 +95,7 @@ assert(hireBrief(odd).endsWith(odd), "brief: newlines, backticks, $ and quotes s
       send: async (_s: string, n: string, text: string) => void calls.push(["send", n, text]),
       renamedTo: (_s: string, n: string) => (calls.push(["renamedTo", n]), o.renamedTo),
       tty: () => o.tty,
+      ask: async () => undefined,
       chat: async (raw: string[]) => void calls.push(["chat", ...raw]),
       out: (l: string) => void out.push(l),
       err: () => undefined,
@@ -138,6 +141,71 @@ assert(hireBrief(odd).endsWith(odd), "brief: newlines, backticks, $ and quotes s
     threw = (e as Error).message;
   }
   assert(/temporary name .* is taken/.test(threw) && !t.calls.some((c) => c[0] === "register"), "flow: a taken temp name fails loud before anything is registered");
+}
+
+// bare `paw hire`: the prompt reader (hireTask), stubbed
+{
+  const { hireTask, hireIn } = await import("../src/hire.ts");
+  const prompter = (o: { tty: boolean; typed?: string }) => {
+    const asked: string[] = [];
+    const errs: string[] = [];
+    const d = {
+      tty: () => o.tty,
+      ask: async (p: string) => (asked.push(p), o.typed),
+      err: (l: string) => void errs.push(l),
+    };
+    return { asked, errs, d };
+  };
+  const rejects = async (p: Promise<unknown>, re: RegExp): Promise<boolean> => {
+    try {
+      await p;
+      return false;
+    } catch (e) {
+      return re.test((e as Error).message);
+    }
+  };
+
+  const given = prompter({ tty: true, typed: "nope" });
+  assert((await hireTask(task, given.d)) === task && given.asked.length === 0, "bare: a task on argv → no prompt");
+
+  const noTty = prompter({ tty: false, typed: task });
+  assert(await rejects(hireTask(undefined, noTty.d), /^paw hire needs a task \(or a terminal to type one\)/), "bare, no tty → fails loud");
+  assert(noTty.asked.length === 0, "bare, no tty → never reads stdin");
+
+  const empty = prompter({ tty: true, typed: "   " });
+  assert(await rejects(hireTask(undefined, empty.d), /nothing was typed/), "bare: empty input → fails loud");
+  assert(!empty.errs.some((l) => l.includes("creating agent")), "bare: empty input → no 'creating agent'");
+
+  const aborted = prompter({ tty: true, typed: undefined });
+  assert(await rejects(hireTask(undefined, aborted.d), /hire aborted/), "bare: Ctrl-C / Ctrl-D → fails loud");
+
+  const typed = "  fix the -v flag: it's `broken` $HOME  ";
+  const ok = prompter({ tty: true, typed });
+  const got = await hireTask(undefined, ok.d);
+  assert(ok.asked[0] === "hire › ", `bare: prompts "hire › " (${ok.asked[0]})`);
+  assert(got === typed, "bare: the typed task comes back verbatim (not trimmed)");
+  assert(ok.errs.includes("creating agent…"), "bare: says 'creating agent…' once the task is in");
+
+  const sent: string[] = [];
+  const chatted: string[][] = [];
+  const name = await hireIn("hs", "/w/app", got, "claude", {
+    ensure: async () => undefined,
+    isTaken: () => false,
+    register: (_s, _f, n) => n,
+    applyType: () => undefined,
+    spawn: async () => undefined,
+    send: async (_s, _n, text) => void sent.push(text),
+    renamedTo: () => undefined,
+    tty: () => true,
+    ask: async () => {
+      throw new Error("hireIn never prompts");
+    },
+    chat: async (raw) => void chatted.push(raw),
+    out: () => undefined,
+    err: () => undefined,
+  });
+  assert(sent.length === 1 && sent[0] === hireBrief(typed) && sent[0].endsWith(`\n${typed}`), "bare: the typed task reaches the new hire verbatim");
+  assert(JSON.stringify(chatted) === JSON.stringify([[`@${name}`, "--only", "--space", "hs"]]), "bare: then drops into paw chat @<name> --only");
 }
 
 if (failures > 0) {
