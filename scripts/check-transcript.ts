@@ -336,7 +336,7 @@ assert(tailRead(file, 10_000).split("\n")[0] === "AAAAAAAAAA", "a window larger 
   const kitTurn = (read: number, input = 230) =>
     JSON.stringify({ type: "assistant", timestamp: "2026-11-24T23:50:27.947Z", entrypoint: "sdk-cli", message: { id: "msg_kit_9700ccacb3034508b86b3b8c7700e357", model: "grok-4.7", role: "assistant", stop_reason: "end_turn", usage: { cache_creation_input_tokens: 0, cache_read_input_tokens: read, input_tokens: input, output_tokens: 6 } } });
   const claudeTurn = (read: number) => JSON.stringify({ ...JSON.parse(turn(read)), message: { ...JSON.parse(turn(read)).message, id: "msg_01ABCdef" } });
-  assert(recordHarness(JSON.parse(kitTurn(1))) === "kit" && recordHarness(JSON.parse(claudeTurn(1))) === "claude" && recordHarness(JSON.parse(synthZero)) === "claude", "recordHarness: msg_kit_ ids are kit's, the rest (incl. synthetic) claude's");
+  assert(recordHarness(JSON.parse(kitTurn(1))) === "kit" && recordHarness(JSON.parse(claudeTurn(1))) === "claude" && recordHarness(JSON.parse(synthZero)) === undefined, "recordHarness: msg_kit_ ids are kit's, real API ids claude's, a synthetic failure names neither");
   assert(transcriptHarness("kit") === "kit" && transcriptHarness(undefined) === "claude" && transcriptHarness("claude") === "claude" && transcriptHarness("hermes") === undefined, "transcriptHarness: persona agent → which records count");
   assert(lastUsage([claudeTurn(180_000)], "kit") === undefined, "swapped to kit, no kit turn yet → CTX unknown, not claude's 180k");
   assert(lastUsage([claudeTurn(180_000), kitTurn(33_024)], "kit")?.tokens === 33_254, "the first kit turn → kit's own occupancy");
@@ -345,6 +345,12 @@ assert(tailRead(file, 10_000).split("\n")[0] === "AAAAAAAAAA", "a window larger 
   assert(lastUsage([kitTurn(33_024)], "claude") === undefined && lastUsage([kitTurn(33_024), claudeTurn(150_000)], "claude")?.tokens === 150_270, "swapped back to claude: unknown until claude's own turn");
   assert(lastUsage([claudeTurn(180_000)])?.tokens === 180_270, "no harness given → the newest turn, as before");
   assert(lastModel([kitTurn(1)], "claude") === undefined && lastModel([kitTurn(1)], "kit") === "grok-4.7", "lastModel: the previous harness's model is not the current one's");
+  // kit's own Failure() record (kit session/claude.go): claude's synthetic shape, uuid id, zero usage —
+  // no msg_kit_ id. Read as claude's, a kit seat lost both its own error note and its CTX.
+  const kitFail = JSON.stringify({ entrypoint: "sdk-cli", isApiErrorMessage: true, isSidechain: false, type: "assistant", timestamp: "2026-11-24T23:51:00.000Z", message: { content: [{ text: "API Error: provider 429 rate limited", type: "text" }], id: "0b6f1a52-3c1e-4c8e-9a51-6d2f3f1e7a10", model: "<synthetic>", role: "assistant", stop_reason: "stop_sequence", stop_sequence: "", type: "message", usage: { cache_creation_input_tokens: 0, cache_read_input_tokens: 0, input_tokens: 0, output_tokens: 0 } } });
+  assert(lastUsage([kitTurn(51_000), kitFail], "kit")?.tokens === 51_230, "kit's own failure turn: CTX still reads kit's last real turn, not —");
+  assert(lastModel([kitTurn(1), kitFail], "kit") === "grok-4.7", "kit's own failure turn: the model is still kit's");
+  assert(lastUsage([claudeTurn(180_000), kitFail], "kit") === undefined, "a failure with only claude's turn behind it is no kit measurement");
   console.log("✓ context window fill");
 }
 
@@ -362,6 +368,13 @@ assert(tailRead(file, 10_000).split("\n")[0] === "AAAAAAAAAA", "a window larger 
   assert(two.length === 1 && (two[0] as { text: string }).text === "[DM from a] one\nline two\n[#general b] three", `claude DM: several live messages in one block, the historical catch-up stays hidden (${JSON.stringify(two)})`);
   assert(feedAll([rec({ type: "attachment", attachment: { type: "hook_additional_context", content: ["<persisted-output>…</persisted-output>"], hookEvent: "SessionStart" } })]).length === 0, "claude DM: other hook context (SessionStart output) is not a message");
   assert(feedAll([rec({ type: "attachment", attachment: { type: "hook_success", hookName: "Stop" } })]).length === 0, "claude DM: other attachments stay hidden");
+  // A DM over Claude Code's ~10KB hook cap (a pasted log; firegoat-ai-evals, attachment UserPromptSubmit-8dac25f6):
+  // saved to a file, only a 2KB preview kept in the record — with no `(If this asks for work…)` tail.
+  const big = `<persisted-output>\nOutput too large (54.1KB). Full output saved to: /x/tool-results/hook-497b-UserPromptSubmit-8dac25f6-1-additionalContext.txt\n\nPreview (first 2KB):\n📨 Cotal — 1 new message from peers:\n[DM from aleks-macbook] this is error:\n  [Pasted text #1]\n  Error with Permissions-Policy header\n...\n</persisted-output>`;
+  const bigOut = feedAll([wake, rec({ type: "attachment", attachment: { type: "hook_additional_context", content: [big], hookName: "UserPromptSubmit", hookEvent: "UserPromptSubmit" } })]);
+  const bigText = (bigOut[1] as { text?: string } | undefined)?.text ?? "";
+  assert(bigOut.length === 2 && bigOut[1].kind === "incoming" && bigText.startsWith("[DM from aleks-macbook] this is error:") && bigText.includes("54.1KB in all, saved to /x/tool-results/hook-497b-UserPromptSubmit-8dac25f6-1-additionalContext.txt"), `claude DM over the hook cap: the preview is shown, marked cut, naming the saved file (${JSON.stringify(bigOut)})`);
+  assert(feedAll([rec({ type: "attachment", attachment: { type: "hook_additional_context", content: ["<persisted-output>\nOutput too large (12KB). Full output saved to: /x/a.txt\n\nPreview (first 2KB):\n# Beads Workflow Context\n...\n</persisted-output>"], hookEvent: "SessionStart" } })]).length === 0, "persisted SessionStart output (bd prime) stays hidden");
   console.log("✓ claude DM via the prompt hook");
 }
 
@@ -383,11 +396,6 @@ assert(tailRead(file, 10_000).split("\n")[0] === "AAAAAAAAAA", "a window larger 
   console.log("✓ api-request-blob");
 }
 
-if (failures > 0) {
-  console.error(`\n${failures} paw transcript check(s) failed`);
-  process.exit(1);
-}
-console.log("\nall paw transcript checks passed 🐾");
 
 
 // ── runtime failures the model never produced (recordFailure / lastFailure) ─────────────────────
@@ -411,8 +419,17 @@ console.log("\nall paw transcript checks passed 🐾");
   const weekly = synth("You've hit your weekly limit · resets Nov 26, 10pm (UTC)", { isApiErrorMessage: true });
   const kitReply = JSON.stringify({ type: "assistant", timestamp: "2026-11-24T23:50:27.947Z", message: { id: "msg_kit_1f", model: "grok-4.7", role: "assistant", content: [{ type: "text", text: "sent." }] } });
   assert(!!lastFailure([weekly], "claude")?.text.startsWith("You've hit your weekly limit"), "on claude the limit note stays (it is claude's own failure)");
-  assert(lastFailure([weekly], "kit") === undefined, "swapped to kit → claude's limit note is history, cleared at once");
-  assert(lastFailure([weekly, kitReply], "kit") === undefined, "…and a newer kit turn is no failure either");
+  const claudeReply = JSON.stringify({ type: "assistant", timestamp: "2026-11-24T20:00:00.000Z", message: { id: "msg_01ABC", model: "claude-opus-5", role: "assistant", content: [{ type: "text", text: "on it" }] } });
+  const claudeWake = JSON.stringify({ type: "user", isMeta: true, message: { role: "user", content: '<channel source="cotal" kind="dm" from="you" from_id="local.U1">\n📨 New dm from you — delivering your Cotal inbox now.\n</channel>' } });
+  const kitPrompt = JSON.stringify({ type: "user", message: { role: "user", content: '<channel source="cotal" kind="dm" from="you" msg_id="8793e626">check #2</channel>' } });
+  const kitFail = synth("API Error: provider 429 rate limited", { isApiErrorMessage: true, message: { id: "0b6f1a52-3c1e-4c8e-9a51-6d2f3f1e7a10", role: "assistant", model: "<synthetic>", content: [{ type: "text", text: "API Error: provider 429 rate limited" }] } });
+  assert(lastFailure([claudeReply, claudeWake, weekly], "kit") === undefined, "swapped to kit → claude's limit note (after claude's own turn) is history, cleared at once");
+  assert(!!lastFailure([claudeReply, claudeWake, weekly], "claude")?.text.startsWith("You've hit your weekly limit"), "…and still claude's own note on a claude seat");
+  assert(lastFailure([claudeReply, weekly, kitReply], "kit") === undefined, "…and a newer kit turn is no failure either");
+  assert(lastFailure([kitReply, kitPrompt, kitFail], "kit")?.text === "API Error: provider 429 rate limited", "kit's own Failure() record (uuid id, <synthetic>) stays on a kit seat");
+  assert(lastFailure([claudeReply, weekly, kitPrompt, kitFail], "kit")?.text === "API Error: provider 429 rate limited", "kit failing its FIRST turn after the swap: the kit prompt (msg_id envelope) makes the failure kit's");
+  assert(lastFailure([kitReply, kitPrompt, kitFail], "claude") === undefined, "swapped back to claude: kit's failure is history");
+  assert(!!lastFailure([weekly], "kit")?.text, "a tail with nothing but the failure doesn't say whose it was → shown as before, never dropped on a guess");
   assert(!!lastFailure([weekly])?.text, "no harness given → as before");
   console.log("✓ runtime failures");
 }
@@ -441,3 +458,9 @@ console.log("\nall paw transcript checks passed 🐾");
   assert(out[1]?.kind === "result" && out[1].lines[0] === "/Users/aleks/Github/team2027/canary-env" && !out[1].isError, "its output lands on the result rail");
   console.log("✓ bang commands");
 }
+
+if (failures > 0) {
+  console.error(`\n${failures} paw transcript check(s) failed`);
+  process.exit(1);
+}
+console.log("\nall paw transcript checks passed 🐾");

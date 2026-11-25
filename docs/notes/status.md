@@ -103,6 +103,13 @@ needed — paw attach x`, `⚠ api error 500`). Test: `check:status`, `check:top
   means no failure and CTX `—` until the current harness takes its own turn. A kit occupancy gets no claude
   window (`inferWindow` is claude's 200k/1M). The status memo is keyed by harness too. `paw attach`'s summary
   and `paw chat`'s banner (src/agent-summary.ts) read the same way. Test: `check:transcript`.
+- **A synthetic failure names no harness.** kit's `Failure()` writes claude's exact synthetic shape
+  (`isApiErrorMessage`, `model: "<synthetic>"`, a uuid id, zero usage — no `msg_kit_`), so `recordHarness`
+  returns undefined for any synthetic record. `lastUsage`/`lastModel` skip it (as they always skipped zero
+  usage); `lastFailure` asks `turnHarness`: walking back, the nearest real assistant turn, or the prompt that
+  opened the turn (a kit envelope carries `msg_id="…"`, claude's wake doesn't). So kit's own 429 stays on a kit
+  seat, kit failing its very first turn after a swap is kit's, and claude's limit note is still history. A tail
+  with neither filters nothing. (Read as claude's, a kit seat had lost its error note and its CTX.)
 
 ## inferBusy
 

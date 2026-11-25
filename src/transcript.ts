@@ -249,10 +249,25 @@ export function cotalHookBlocks(attachment: unknown): Block[] {
   for (const c of a.content) {
     if (typeof c !== "string") continue;
     const live = /^\u{1F4E8} Cotal \u2014 \d+ new messages? from peers:\n([\s\S]*?)\n\(If this asks for work, [^\n]*\)(?:\n|$)/mu.exec(c);
-    const body = live?.[1]?.trim();
+    const body = live?.[1]?.trim() ?? persistedCotalPreview(c);
     if (body) out.push({ kind: "incoming", text: body });
   }
   return out;
+}
+
+/**
+ * A cotal hook block over Claude Code's size cap (~10KB — a pasted log) isn't in the transcript at all:
+ * it is saved to a file and the attachment holds `<persisted-output>` · `Output too large (54.1KB). Full
+ * output saved to: <path>` · `Preview (first 2KB):` · the first 2KB, which has no `(If this asks for work…)`
+ * tail (firegoat-ai-evals, 2026-11). The preview is what the seat's own transcript shows, so it is what
+ * paw shows — marked as cut, with the size and where the rest went. Undefined for any other persisted
+ * output (SessionStart `bd prime` and the like).
+ */
+function persistedCotalPreview(c: string): string | undefined {
+  const m = /^<persisted-output>\nOutput too large \(([^)]+)\)\. Full output saved to: ([^\n]+)\n\nPreview \([^)]*\):\n\u{1F4E8} Cotal \u2014 \d+ new messages? from peers:\n([\s\S]*?)(?:\n\.\.\.)?\n<\/persisted-output>\s*$/u.exec(c);
+  const preview = m?.[3]?.trim();
+  if (!m || !preview) return undefined;
+  return `${preview}\n… (cut at Claude Code's preview; ${m[1]} in all, saved to ${m[2]})`;
 }
 
 export function userTextBlock(text: string): Block {
@@ -400,25 +415,62 @@ export function lastFailure(lines: string[], harness?: TranscriptHarness): { tex
     if (rec?.type !== "assistant") continue;
     // A turn the CURRENT harness didn't write is history: claude's "You've hit your weekly limit" on an
     // agent swapped to kit is why it was swapped, not something kit is failing at (vercel/neon, 2026-11-24).
-    if (harness && recordHarness(rec) !== harness) return undefined;
+    // A synthetic failure names no harness itself (kit's Failure() writes claude's exact shape), so the
+    // turn it ended decides. A tail that never says whose turn it was filters nothing (shown as before).
+    if (harness) {
+      const owner = recordHarness(rec) ?? turnHarness(lines, i);
+      if (owner && owner !== harness) return undefined;
+    }
     return recordFailure(rec);
   }
   return undefined;
 }
 
 /**
- * Which harness wrote this transcript record. kit with `storage: claude` appends to the agent's claude
- * transcript (src/swap.ts), and every assistant record it writes carries a `msg_kit_<hex>` message id
- * (kit session/claude.go); claude's own ids are `msg_…` from the API, or none on a synthetic turn.
+ * Which harness wrote this transcript record, or undefined for one that doesn't say.
+ *
+ * kit with `storage: claude` appends to the agent's claude transcript (src/swap.ts), and every assistant
+ * TURN it writes carries a `msg_kit_<hex>` message id (kit session/claude.go); claude's own ids are
+ * `msg_…` from the API. A SYNTHETIC failure record (`model: "<synthetic>"` / `isApiErrorMessage`) is
+ * written in the same shape by both — kit's `Failure()` copies claude's, uuid id and all — so it is
+ * neutral here; {@link turnHarness} decides it from the turn it ended.
  */
 export type TranscriptHarness = "claude" | "kit";
-export function recordHarness(rec: unknown): TranscriptHarness {
-  const id = (rec as { message?: { id?: unknown } } | null)?.message?.id;
+export function recordHarness(rec: unknown): TranscriptHarness | undefined {
+  const r = rec as { isApiErrorMessage?: unknown; message?: { id?: unknown; model?: unknown } } | null;
+  if (!r || typeof r !== "object") return undefined;
+  if (r.isApiErrorMessage === true || r.message?.model === "<synthetic>") return undefined;
+  const id = r.message?.id;
   return typeof id === "string" && id.startsWith("msg_kit_") ? "kit" : "claude";
 }
 
+/**
+ * The harness whose turn record `i` belongs to, walking back from it: the nearest assistant turn that
+ * names its harness, or the prompt that opened the turn — kit writes each cotal message INTO the prompt
+ * as an envelope with `msg_id="…"` ({@link kitEnvelopeBlocks}), claude's wake carries none. Undefined
+ * when the tail holds neither.
+ */
+export function turnHarness(lines: string[], i: number): TranscriptHarness | undefined {
+  for (let j = i - 1; j >= 0; j--) {
+    let rec: { type?: string; isSidechain?: boolean; message?: { content?: unknown } } | undefined;
+    try { rec = JSON.parse(lines[j]); } catch { continue; }
+    if (!rec || rec.isSidechain === true) continue;
+    if (rec.type === "assistant") {
+      const h = recordHarness(rec);
+      if (h) return h;
+      continue;
+    }
+    if (rec.type !== "user") continue;
+    const c = rec.message?.content;
+    const text = typeof c === "string" ? c : Array.isArray(c) ? (c as Part[]).map((p) => (p?.type === "text" ? p.text ?? "" : "")).join("\n") : "";
+    if (!text.includes('<channel source="cotal"')) continue;
+    return kitEnvelopeBlocks(text) ? "kit" : "claude";
+  }
+  return undefined;
+}
+
 /** The transcript harness a persona `agent:` writes as, or undefined for one that writes no claude
- *  transcript (hermes, acp, codex…) — callers then read no transcript at all. */
+ *  transcript (hermes, acp, codex…) — callers then apply no harness filter. */
 export function transcriptHarness(agentType: string | undefined): TranscriptHarness | undefined {
   if (agentType === "kit") return "kit";
   return isClaudeHarness(agentType) ? "claude" : undefined;
@@ -524,7 +576,11 @@ export function lastUsage(lines: string[], harness?: TranscriptHarness): Context
     // Right after a harness swap the newest turn is the OLD harness's: its occupancy is another model's
     // context (claude's 180k on a kit seat that hasn't run yet, 2026-11-24). Unknown until the current
     // harness takes a turn — never the previous one's number.
-    if (harness && rec?.type === "assistant" && rec.isSidechain !== true && recordHarness(rec) !== harness) return undefined;
+    // A synthetic failure (either harness's) carries zero usage and names no harness — skipped below.
+    if (harness && rec?.type === "assistant" && rec.isSidechain !== true) {
+      const h = recordHarness(rec);
+      if (h && h !== harness) return undefined;
+    }
     found = recordUsage(rec);
   }
   if (!found) return undefined;
@@ -539,7 +595,10 @@ export function lastModel(lines: string[], harness?: TranscriptHarness): string 
   for (let i = lines.length - 1; i >= 0; i--) {
     let rec: { type?: string; message?: { model?: unknown } } | undefined;
     try { rec = JSON.parse(lines[i]); } catch { continue; }
-    if (harness && rec?.type === "assistant" && recordHarness(rec) !== harness) return undefined; // the previous harness's model
+    if (harness && rec?.type === "assistant") {
+      const h = recordHarness(rec);
+      if (h && h !== harness) return undefined; // the previous harness's model
+    }
     const m = rec?.type === "assistant" ? rec.message?.model : undefined;
     if (typeof m === "string" && m && m !== "<synthetic>" && m !== "kit-carried") return m;
   }

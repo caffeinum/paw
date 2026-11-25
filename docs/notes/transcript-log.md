@@ -97,7 +97,12 @@ message(s) from peers:` · the items (`[DM from X] …`, `[#general Y] …`) · 
 the wake alone and the newest DM on screen was the PREVIOUS one (skills' context checks #2/#4). Now
 `cotalHookBlocks` turns the live block into one `incoming` block after its wake; the `📚 … historical`
 catch-up block stays hidden (replayed context). kit writes the DM into the user record itself (its envelope
-carries `msg_id`), so nothing changes there. Test: `check:transcript` ("claude DM via the prompt hook").
+carries `msg_id`), so nothing changes there. A hook block over Claude Code's ~10KB cap (a pasted log) is
+saved to a file and the attachment keeps only `<persisted-output>` · `Output too large (54.1KB). Full output
+saved to: <path>` · a 2KB preview with no `(If this asks for work…)` tail; a preview that opens with `📨 Cotal —`
+is shown, marked cut, with the size and the path (the file isn't read: a sandboxed seat's path is inside its
+VM). Other persisted output (SessionStart `bd prime`) stays hidden. Test: `check:transcript` ("claude DM via the
+prompt hook", "over the hook cap").
 - **Claude Code's own `last-prompt` record lags too, and that one is not paw's.** Claude Code writes
   `{type: "last-prompt", lastPrompt}` (what its `/resume` picker shows) only for a NON-meta user prompt. A
   cotal wake is meta and its text is the nudge, not the DM, so on claude `lastPrompt` stays whatever the last
