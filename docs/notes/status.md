@@ -18,6 +18,16 @@ Moved verbatim from CLAUDE.md (2026-10-02 split). Index: [CLAUDE.md](../../CLAUD
   `✓` (drained), `N queued` (num_pending, undelivered), `N unread` (num_ack_pending, delivered-unacked),
   `—` (no consumer / not ps-listed — legit), or `?` (query FAILED — stderr detail, never a fabricated 0).
   A LIVE agent with queued/unread > 0 gets `⚠ inbox stuck — …, agent not consuming` and a footer count.
+  **Except a kit seat that took its mail (`kitTookIt`, 2026-11-24):** nothing queued, and its transcript
+  written at or after the durable's `delivered.last_active` (the broker's last hand-off, an RFC3339 string
+  on the wire; `DmConsumer.delivered_at` → `InboxState.deliveredAt`). vercel/neon showed `N unread, agent not
+  consuming` while answering every DM. kit double-acks at turn end and cotal-go releases a held message only
+  after a SUCCESSFUL ack, so an ack that fails (a reply timeout on a slow broker) keeps it `unread` for the
+  process's life — the likely cause from kit/cotal-go's code, not observed on the live broker; the real fix
+  (release or retry a failed ack) is kit's. The INBOX cell still says `2 unread`; only the stuck claim goes.
+  No delivery time or no transcript = no evidence = the old rule; claude seats keep the old rule (the TS
+  connector acks without waiting). Tests: `check:status` ("kit:"), `scripts/lean/kit/e2e-kit-managed.ts`
+  (a real kit seat drains to 0/0 and its durable carries the delivery time).
   CotalEndpoint keeps its jsm private, so status opens its own short-lived NATS connection via
   `@nats-io/{transport-node,jetstream}` (core's own client libs, now direct deps; creds via controlCreds
   under PAW_AUTH). ConsumerNotFound(10014)/StreamNotFound(10059) → `—`; other errors → `?`. A REMOTE space reads only the seats THIS machine's manager spawned, by exact durable name, with paw's consumer-INFO-only cred — [remote-mesh.md](remote-mesh.md).),
