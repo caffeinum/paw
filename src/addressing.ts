@@ -1404,187 +1404,205 @@ export async function ensureAgentSpawned(
       args.events = false;
       resolveAcpHost(config);
     }
-    const logFrom = logOffset(managerLogPath(opts.space));
-    const freshSession = lastWrite() === undefined;
-    opts.progress?.(`starting ${opts.name}${agentType ? ` on ${agentType}` : ""}…`);
-    const retireMs = opts.timing?.retireMs ?? RETIREMENT_RETRY_MS;
-    const reply = await spawnPinned(ctl, args, opts.name, {
-      retireMs,
-      retireStepMs: opts.timing?.retireStepMs,
-      onRetiring: () => (opts.progress ?? ((l: string) => console.error(`paw: ${l}`)))(`waiting for cotal to finish retiring the old ${opts.name} (up to ${Math.round(retireMs / 1000)}s)…`),
-    });
-    if (isRetirementRefusal(reply)) {
-      // Still reserved after the bounded re-drive. A caller that stopped it (the zombie restart here, or
-      // restartAgent before calling us) has left it OFFLINE; say that first, then the one command.
-      const stopped = restartedFrom ?? (opts.reuseUnmanaged === false ? {} : undefined);
-      throw new Error(retirementRefusal({ space: opts.space, name: opts.name, stopped, waitedMs: retireMs, error: reply.error ?? "", opId: reply.blocked?.opId }));
-    }
-    if (!reply.ok && reply.seatCap) {
-      // Refused before any effect (cotal states `not-executed`): no name, no creds, no process.
-      throw new Error(seatCapRefusal({ space: opts.space, name: opts.name, facts: reply.seatCap, defaultSpace: opts.space === resolveSpace() }));
-    }
-    if (!reply.ok) {
-      const err = reply.error ?? "no reply";
-      // The cmux runtime reports "couldn't reach the app" not only when cmux is closed, but also when
-      // cmux's `automation.socketControlMode` is the default `cmuxOnly` — that gate authorizes socket
-      // control by cmux PROCESS LINEAGE, and paw's manager is a DETACHED daemon (setsid, reparented to
-      // init) with no cmux-surface ancestry, so every spawn is rejected ("broken pipe"). No paw-side
-      // env fix beats it. Point the operator at the real lever. (2026-07-08 debugging, hard-won.)
-      const cmuxGate = /cmux/i.test(err) && /reach the app|socket|broken pipe/i.test(err)
-        ? `\n  if cmux IS running, this is almost certainly cmux's automation gate: paw's manager is a\n` +
-          `  detached daemon, but cmux's automation.socketControlMode defaults to "cmuxOnly" (only\n` +
-          `  cmux-launched processes may drive the socket). Set it to "password" (+ automation.socketPassword)\n` +
-          `  or "automation" in ~/.config/cmux/cmux.json, then \`cmux reload-config\`. Or use \`paw runtime tmux\`.`
-        : "";
-      throw new Error(`paw: failed to start agent "${opts.name}" (${err})${cmuxGate}`);
-    }
+    // One re-drive, bounded: a spawn the manager accepted right behind a retirement refusal, whose new
+    // incarnation it then retired before any process ran (vercel, 2026-11-24 — "no credential-ledger row
+    // was ever released under uid …"), gets one more spawn. A second such outcome fails loud below.
+    let raced = false;
+    for (let attempt = 1; ; attempt++) {
+      const logFrom = logOffset(managerLogPath(opts.space));
+      const freshSession = lastWrite() === undefined;
+      opts.progress?.(`starting ${opts.name}${agentType ? ` on ${agentType}` : ""}…`);
+      // The re-drive follows the manager's FINAL teardown of the uid it accepted (no process ever ran),
+      // so the name is free: it gets a short retirement window and no held-name window. That keeps the
+      // whole re-drive inside RETIREMENT_REDRIVE_MS, and the lock hold under the wake deadline.
+      const retireMs = Math.min(opts.timing?.retireMs ?? RETIREMENT_RETRY_MS, attempt === 1 ? Infinity : REDRIVE_RETIRE_MS);
+      const reply = await spawnPinned(ctl, args, opts.name, {
+        retireMs,
+        heldMs: attempt === 1 ? SESSION_RELEASE_MS : 0,
+        retireStepMs: opts.timing?.retireStepMs,
+        onRetiring: () => {
+          raced = true;
+          (opts.progress ?? ((l: string) => console.error(`paw: ${l}`)))(`waiting for cotal to finish retiring the old ${opts.name} (up to ${Math.round(retireMs / 1000)}s)…`);
+        },
+      });
+      if (isRetirementRefusal(reply)) {
+        // Still reserved after the bounded re-drive. A caller that stopped it (the zombie restart here, or
+        // restartAgent before calling us) has left it OFFLINE; say that first, then the one command.
+        const stopped = restartedFrom ?? (opts.reuseUnmanaged === false ? {} : undefined);
+        throw new Error(retirementRefusal({ space: opts.space, name: opts.name, stopped, waitedMs: retireMs, error: reply.error ?? "", opId: reply.blocked?.opId }));
+      }
+      if (!reply.ok && reply.seatCap) {
+        // Refused before any effect (cotal states `not-executed`): no name, no creds, no process.
+        throw new Error(seatCapRefusal({ space: opts.space, name: opts.name, facts: reply.seatCap, defaultSpace: opts.space === resolveSpace() }));
+      }
+      if (!reply.ok) {
+        const err = reply.error ?? "no reply";
+        // The cmux runtime reports "couldn't reach the app" not only when cmux is closed, but also when
+        // cmux's `automation.socketControlMode` is the default `cmuxOnly` — that gate authorizes socket
+        // control by cmux PROCESS LINEAGE, and paw's manager is a DETACHED daemon (setsid, reparented to
+        // init) with no cmux-surface ancestry, so every spawn is rejected ("broken pipe"). No paw-side
+        // env fix beats it. Point the operator at the real lever. (2026-07-08 debugging, hard-won.)
+        const cmuxGate = /cmux/i.test(err) && /reach the app|socket|broken pipe/i.test(err)
+          ? `\n  if cmux IS running, this is almost certainly cmux's automation gate: paw's manager is a\n` +
+            `  detached daemon, but cmux's automation.socketControlMode defaults to "cmuxOnly" (only\n` +
+            `  cmux-launched processes may drive the socket). Set it to "password" (+ automation.socketPassword)\n` +
+            `  or "automation" in ~/.config/cmux/cmux.json, then \`cmux reload-config\`. Or use \`paw runtime tmux\`.`
+          : "";
+        throw new Error(`paw: failed to start agent "${opts.name}" (${err})${cmuxGate}`);
+      }
 
-    // The v0.4 spawn reply STATES the allocated principal (`owner`+`actor`) instead of handing back a
-    // raw nkey for paw to re-derive with `wirePrincipal`. Callers unicast this id straight away, before
-    // presence lands, and the wire wants the `<owner>.<actor>` dot-form — so build it from the two
-    // tokens the manager actually allocated rather than guessing an owner for a bare key. A reply
-    // missing either yields NO id (the caller then waits for presence) — never a half-formed principal,
-    // which would be a recipient that resolves to nobody.
-    const allocated = reply.data as { name?: string; owner?: string; actor?: string } | undefined;
-    if (allocated?.name && allocated.name !== opts.name) {
-      // A manager that ignored the pin. Never leave a renamed sibling running on this agent's session.
-      await ctl.despawn(allocated.name).catch(() => {});
-      throw new Error(`paw: the manager started "${opts.name}" as "${allocated.name}" (name still held); despawned it — retry in a few seconds`);
-    }
-    const id = allocated?.owner && allocated.actor ? principalKey(allocated.owner, allocated.actor).key : undefined;
+      // The v0.4 spawn reply STATES the allocated principal (`owner`+`actor`) instead of handing back a
+      // raw nkey for paw to re-derive with `wirePrincipal`. Callers unicast this id straight away, before
+      // presence lands, and the wire wants the `<owner>.<actor>` dot-form — so build it from the two
+      // tokens the manager actually allocated rather than guessing an owner for a bare key. A reply
+      // missing either yields NO id (the caller then waits for presence) — never a half-formed principal,
+      // which would be a recipient that resolves to nobody.
+      const allocated = reply.data as { name?: string; owner?: string; actor?: string } | undefined;
+      if (allocated?.name && allocated.name !== opts.name) {
+        // A manager that ignored the pin. Never leave a renamed sibling running on this agent's session.
+        await ctl.despawn(allocated.name).catch(() => {});
+        throw new Error(`paw: the manager started "${opts.name}" as "${allocated.name}" (name still held); despawned it — retry in a few seconds`);
+      }
+      const id = allocated?.owner && allocated.actor ? principalKey(allocated.owner, allocated.actor).key : undefined;
 
-    // The reply is the ACCEPTANCE, not the outcome (see ManagerControl.spawn): the agent is allocated,
-    // not yet alive. Under the old blocking `start` a claude that never came up surfaced HERE as a
-    // failed reply; now it would surface as a caller timing out somewhere later with no idea why. So
-    // paw does the readiness wait itself, re-writing an erased ~/.claude.json trust entry while claude
-    // boots and naming what the pane shows if it never comes up. Both startup prompts (trust dialog,
-    // dev-channels gate) are cotal's to answer since 0.80 (readStartupPrompt).
-    // kit has no TUI: no trust dialog, no dev-channels gate, nothing on a pane to answer.
-    // Nor does hermes: its gateway is a daemon, not a pane to read.
-    const watch = kit || hermes || acp ? { poll: () => {}, cause: () => "", stuck: () => false } : startupWatch(opts.space, opts.name, cwd, agentType);
-    const uid = typeof (reply.data as { uid?: unknown } | undefined)?.uid === "string" ? (reply.data as { uid: string }).uid : undefined;
-    const witness = seatWitness(opts.space, opts.name, opts.witness);
-    const logPath = managerLogPath(opts.space);
-    // The clock starts at the manager's ACCEPTANCE — the launch. A clone, a registration or a held-name
-    // retry before it never eats into the seat's own boot time (#96).
-    const waitFrom = Date.now();
-    const budgetMs = freshSession ? Math.max(readyMs, firstSpawnMs) : readyMs;
-    let limit = readyMs;
-    let ticked = 0;
-    let row: PsRow | undefined;
-    let after: ManagerReply = { ok: false, error: "never asked" };
-    let pids: number[] = [];
-    const everSeen = new Set<number>();
-    let retired: string | undefined;
-    let nextWitness = Date.now() + 2_000; // first look soon: a manager that dropped the seat logs it within ~2s
-    const secs = (ms: number) => Math.round(ms / 1000);
-    const pidText = (p: number[]) => `pid ${p.join(", ")}`;
-    const lookAtSeat = () => {
-      pids = witness.pids(uid).filter((p) => witness.alive(p));
-      for (const p of pids) everSeen.add(p);
-      if (uid) retired = witness.retired(uid, logFrom);
-    };
-    opts.progress?.(`the manager accepted it — waiting up to ${secs(readyMs)}s for ${opts.name} to reach the mesh…`);
-    for (;;) {
-      watch.poll();
-      after = await ctl.ps().catch((e: Error) => ({ ok: false, error: e.message }) as ManagerReply);
-      row = after.ok ? ((after.data as PsRow[]) ?? []).find((r) => r.name === opts.name) : undefined;
-      if (row?.mesh !== undefined && LIVE_PRESENCE.has(row.mesh)) {
-        clearRestartHistory(opts.space, opts.name);
-        return { spawned: true, id };
+      // The reply is the ACCEPTANCE, not the outcome (see ManagerControl.spawn): the agent is allocated,
+      // not yet alive. Under the old blocking `start` a claude that never came up surfaced HERE as a
+      // failed reply; now it would surface as a caller timing out somewhere later with no idea why. So
+      // paw does the readiness wait itself, re-writing an erased ~/.claude.json trust entry while claude
+      // boots and naming what the pane shows if it never comes up. Both startup prompts (trust dialog,
+      // dev-channels gate) are cotal's to answer since 0.80 (readStartupPrompt).
+      // kit has no TUI: no trust dialog, no dev-channels gate, nothing on a pane to answer.
+      // Nor does hermes: its gateway is a daemon, not a pane to read.
+      const watch = kit || hermes || acp ? { poll: () => {}, cause: () => "", stuck: () => false } : startupWatch(opts.space, opts.name, cwd, agentType);
+      const uid = typeof (reply.data as { uid?: unknown } | undefined)?.uid === "string" ? (reply.data as { uid: string }).uid : undefined;
+      const witness = seatWitness(opts.space, opts.name, opts.witness);
+      const logPath = managerLogPath(opts.space);
+      // The clock starts at the manager's ACCEPTANCE — the launch. A clone, a registration or a held-name
+      // retry before it never eats into the seat's own boot time (#96).
+      const waitFrom = Date.now();
+      const budgetMs = freshSession ? Math.max(readyMs, firstSpawnMs) : readyMs;
+      let limit = readyMs;
+      let ticked = 0;
+      let row: PsRow | undefined;
+      let after: ManagerReply = { ok: false, error: "never asked" };
+      let pids: number[] = [];
+      const everSeen = new Set<number>();
+      let retired: string | undefined;
+      let nextWitness = Date.now() + 2_000; // first look soon: a manager that dropped the seat logs it within ~2s
+      const secs = (ms: number) => Math.round(ms / 1000);
+      const pidText = (p: number[]) => `pid ${p.join(", ")}`;
+      const lookAtSeat = () => {
+        pids = witness.pids(uid).filter((p) => witness.alive(p));
+        for (const p of pids) everSeen.add(p);
+        if (uid) retired = witness.retired(uid, logFrom);
+      };
+      opts.progress?.(`the manager accepted it — waiting up to ${secs(readyMs)}s for ${opts.name} to reach the mesh…`);
+      for (;;) {
+        watch.poll();
+        after = await ctl.ps().catch((e: Error) => ({ ok: false, error: e.message }) as ManagerReply);
+        row = after.ok ? ((after.data as PsRow[]) ?? []).find((r) => r.name === opts.name) : undefined;
+        if (row?.mesh !== undefined && LIVE_PRESENCE.has(row.mesh)) {
+          clearRestartHistory(opts.space, opts.name);
+          return { spawned: true, id };
+        }
+        const elapsed = Date.now() - waitFrom;
+        const s = Math.floor(elapsed / 15_000) * 15;
+        if (s > ticked) {
+          ticked = s;
+          opts.progress?.(`still waiting for ${opts.name} to reach the mesh (${s}s of ${secs(limit)}s)…`);
+        }
+        if (Date.now() >= nextWitness || elapsed >= limit) {
+          nextWitness = Date.now() + SEAT_WITNESS_EVERY_MS;
+          lookAtSeat();
+          // The manager retired THIS incarnation and doesn't list it: it will never list it again. Waiting
+          // out the budget can't change the verdict, so give it now.
+          if (after.ok && !row && retired) break;
+          // The pid the longer first-spawn budget was granted for has exited: nothing left to wait for.
+          if (limit > readyMs && !pids.length) break;
+        }
+        if (elapsed >= limit) {
+          // A launched process that is alive and not parked at a prompt is still booting: on a first spawn
+          // it gets the longer budget, said out loud — never a verdict of "gone" while its pid runs.
+          if (limit < budgetMs && pids.length && !watch.stuck()) {
+            say(`paw: "${opts.name}" launched as ${pidText(pids)}, alive, not on the mesh yet after ${secs(elapsed)}s — first spawn of a fresh session, waiting up to ${secs(budgetMs)}s`);
+            limit = budgetMs;
+          } else break;
+        }
+        await sleep(500);
       }
-      const elapsed = Date.now() - waitFrom;
-      const s = Math.floor(elapsed / 15_000) * 15;
-      if (s > ticked) {
-        ticked = s;
-        opts.progress?.(`still waiting for ${opts.name} to reach the mesh (${s}s of ${secs(limit)}s)…`);
+      const waited = secs(Date.now() - waitFrom);
+      lookAtSeat();
+      const listed = after.ok && !!row && row.status !== "exited";
+      if (raced && attempt === 1 && after.ok && !row && !everSeen.size && retired) {
+        say(`paw: the manager accepted "${opts.name}" right after retiring its old copy, then retired the new one before it launched (manager.log: "${retired}") — starting it once more`);
+        raced = false;
+        continue;
       }
-      if (Date.now() >= nextWitness || elapsed >= limit) {
-        nextWitness = Date.now() + SEAT_WITNESS_EVERY_MS;
-        lookAtSeat();
-        // The manager retired THIS incarnation and doesn't list it: it will never list it again. Waiting
-        // out the budget can't change the verdict, so give it now.
-        if (after.ok && !row && retired) break;
-        // The pid the longer first-spawn budget was granted for has exited: nothing left to wait for.
-        if (limit > readyMs && !pids.length) break;
-      }
-      if (elapsed >= limit) {
-        // A launched process that is alive and not parked at a prompt is still booting: on a first spawn
-        // it gets the longer budget, said out loud — never a verdict of "gone" while its pid runs.
-        if (limit < budgetMs && pids.length && !watch.stuck()) {
-          say(`paw: "${opts.name}" launched as ${pidText(pids)}, alive, not on the mesh yet after ${secs(elapsed)}s — first spawn of a fresh session, waiting up to ${secs(budgetMs)}s`);
-          limit = budgetMs;
-        } else break;
-      }
-      await sleep(500);
-    }
-    const waited = secs(Date.now() - waitFrom);
-    lookAtSeat();
-    const listed = after.ok && !!row && row.status !== "exited";
 
-    // ALIVE, but the manager doesn't list it: it launched the seat and then dropped it (team2027, #96:
-    // pid 49934 ran on, on the mesh, while ps had no row). Not "gone", not a connector refusal — the
-    // process table and the manager log say what happened, so paw says that.
-    if (after.ok && !row && pids.length) {
-      const onMesh = id ? await witness.onMesh(id) : undefined;
-      const where = onMesh ? "it is on the mesh" : onMesh === false ? `it isn't on the mesh after ${waited}s` : "its presence couldn't be read";
-      throw new SeatAliveError(
-        `paw: "${opts.name}" was launched as ${pidText(pids)} and its process is alive (${where}), but the manager no longer lists it` +
-          (retired
-            ? ` — right after launching it the manager retired this incarnation (manager.log: "${retired}"), which tears down its credentials and DM inbox, so a message sent to it now is not delivered`
-            : ` — the manager logged no reason`) +
-          `. \`paw restart ${opts.name}#${opts.space}\` replaces it with a seat the manager runs; ${logPath} for the manager's side.`,
-        { name: opts.name, space: opts.space, pids },
+      // ALIVE, but the manager doesn't list it: it launched the seat and then dropped it (team2027, #96:
+      // pid 49934 ran on, on the mesh, while ps had no row). Not "gone", not a connector refusal — the
+      // process table and the manager log say what happened, so paw says that.
+      if (after.ok && !row && pids.length) {
+        const onMesh = id ? await witness.onMesh(id) : undefined;
+        const where = onMesh ? "it is on the mesh" : onMesh === false ? `it isn't on the mesh after ${waited}s` : "its presence couldn't be read";
+        throw new SeatAliveError(
+          `paw: "${opts.name}" was launched as ${pidText(pids)} and its process is alive (${where}), but the manager no longer lists it` +
+            (retired
+              ? ` — right after launching it the manager retired this incarnation (manager.log: "${retired}"), which tears down its credentials and DM inbox, so a message sent to it now is not delivered`
+              : ` — the manager logged no reason`) +
+            `. \`paw restart ${opts.name}#${opts.space}\` replaces it with a seat the manager runs; ${logPath} for the manager's side.`,
+          { name: opts.name, space: opts.space, pids },
+        );
+      }
+      // Listed, alive, not parked at a prompt: still starting. Its principal is allocated and its durable
+      // inbox exists, so messages wait there and land when it joins.
+      if (listed && !watch.stuck()) {
+        const activeMs = lastWrite();
+        say(
+          `paw: "${opts.name}" ${pids.length ? `launched as ${pidText(pids)}, alive,` : "is running but"} not on the mesh yet after ${waited}s` +
+            (activeMs ? ` (transcript written ${secs(Date.now() - activeMs)}s ago)` : "") +
+            ` — still starting; messages wait in its durable inbox`,
+        );
+        return { spawned: true, id, starting: true };
+      }
+      const gone = after.ok && !listed && !pids.length;
+      const diagnostic = gone ? seatDiagnostic(logPath, opts.name, logFrom) : undefined;
+      // kit writes its refusal (a model it can't resolve, -P contradicting -m, …) to its own stderr,
+      // which the runtime doesn't keep — so name the exit and the flags it was given instead of nothing.
+      const kitExit = gone && kit && !diagnostic ? seatExit(logPath, opts.name, logFrom) : undefined;
+      // No row, no pid ever seen, nothing logged: the manager never launched a process. Only then is a
+      // connector that refused after acceptance the suspect — and which manager code runs is the fact paw adds.
+      const neverLaunched = gone && !row && !everSeen.size && !retired && !diagnostic && !kitExit;
+      let managerCode = "";
+      if (neverLaunched) {
+        try {
+          const root = runningManagerRoot(opts.space);
+          managerCode = root ? ` (the manager runs ${describeCodeRoot(root)})` : "";
+        } catch (e) {
+          managerCode = ` (${(e as Error).message})`;
+        }
+      }
+      throw new Error(
+        `paw: the manager accepted "${opts.name}" but it never reached the mesh within ${waited}s` +
+          (gone
+            ? ` — its process is gone (ps row: ${row ? `status=${row.status}` : "missing"}${everSeen.size ? `; it ran as ${pidText([...everSeen])} and exited` : ""})`
+            : "") +
+          (gone && retired ? ` — the manager retired it (manager.log: "${retired}")` : "") +
+          (diagnostic ? ` — the manager logged: ${diagnostic}` : "") +
+          (kitExit
+            ? ` — kit exited at launch (${kitExit}); it prints why on its own stderr, which the runtime doesn't keep — ` +
+              `check the model/provider it was given (persona provider:/model:, kitArgs: ${JSON.stringify(readKitArgs(config))})`
+            : "") +
+          (neverLaunched
+            ? ` — no process carrying this launch was ever seen and the manager logged nothing for it: its connector may have refused the launch after accepting it, ` +
+              `which cotal logs nowhere${managerCode}; a manager older than this paw refuses persona keys it doesn't know — ` +
+              `\`paw release\` + \`paw restart --space ${opts.space}\` runs this checkout's`
+            : "") +
+          (!after.ok ? ` — and the manager didn't answer ps to say whether it still runs (${after.error ?? "no reply"})` : "") +
+          (watch.cause() || (gone || !after.ok ? "" : ` — it is stuck at a prompt`)) +
+          `. \`paw status\` to see its row, \`paw log ${opts.name}\` for what it did, ${logPath} for the manager's side.`,
       );
     }
-    // Listed, alive, not parked at a prompt: still starting. Its principal is allocated and its durable
-    // inbox exists, so messages wait there and land when it joins.
-    if (listed && !watch.stuck()) {
-      const activeMs = lastWrite();
-      say(
-        `paw: "${opts.name}" ${pids.length ? `launched as ${pidText(pids)}, alive,` : "is running but"} not on the mesh yet after ${waited}s` +
-          (activeMs ? ` (transcript written ${secs(Date.now() - activeMs)}s ago)` : "") +
-          ` — still starting; messages wait in its durable inbox`,
-      );
-      return { spawned: true, id, starting: true };
-    }
-    const gone = after.ok && !listed && !pids.length;
-    const diagnostic = gone ? seatDiagnostic(logPath, opts.name, logFrom) : undefined;
-    // kit writes its refusal (a model it can't resolve, -P contradicting -m, …) to its own stderr,
-    // which the runtime doesn't keep — so name the exit and the flags it was given instead of nothing.
-    const kitExit = gone && kit && !diagnostic ? seatExit(logPath, opts.name, logFrom) : undefined;
-    // No row, no pid ever seen, nothing logged: the manager never launched a process. Only then is a
-    // connector that refused after acceptance the suspect — and which manager code runs is the fact paw adds.
-    const neverLaunched = gone && !row && !everSeen.size && !retired && !diagnostic && !kitExit;
-    let managerCode = "";
-    if (neverLaunched) {
-      try {
-        const root = runningManagerRoot(opts.space);
-        managerCode = root ? ` (the manager runs ${describeCodeRoot(root)})` : "";
-      } catch (e) {
-        managerCode = ` (${(e as Error).message})`;
-      }
-    }
-    throw new Error(
-      `paw: the manager accepted "${opts.name}" but it never reached the mesh within ${waited}s` +
-        (gone
-          ? ` — its process is gone (ps row: ${row ? `status=${row.status}` : "missing"}${everSeen.size ? `; it ran as ${pidText([...everSeen])} and exited` : ""})`
-          : "") +
-        (gone && retired ? ` — the manager retired it (manager.log: "${retired}")` : "") +
-        (diagnostic ? ` — the manager logged: ${diagnostic}` : "") +
-        (kitExit
-          ? ` — kit exited at launch (${kitExit}); it prints why on its own stderr, which the runtime doesn't keep — ` +
-            `check the model/provider it was given (persona provider:/model:, kitArgs: ${JSON.stringify(readKitArgs(config))})`
-          : "") +
-        (neverLaunched
-          ? ` — no process carrying this launch was ever seen and the manager logged nothing for it: its connector may have refused the launch after accepting it, ` +
-            `which cotal logs nowhere${managerCode}; a manager older than this paw refuses persona keys it doesn't know — ` +
-            `\`paw release\` + \`paw restart --space ${opts.space}\` runs this checkout's`
-          : "") +
-        (!after.ok ? ` — and the manager didn't answer ps to say whether it still runs (${after.error ?? "no reply"})` : "") +
-        (watch.cause() || (gone || !after.ok ? "" : ` — it is stuck at a prompt`)) +
-        `. \`paw status\` to see its row, \`paw log ${opts.name}\` for what it did, ${logPath} for the manager's side.`,
-    );
   }, SPAWN_LOCK_OPTS);
 }
 
@@ -1824,6 +1842,22 @@ export const SPAWN_ACCEPT_MS = 60_000;
  *  past this bound the teardown is failing, not slow, and paw stops and says so. */
 export const RETIREMENT_RETRY_MS = 45_000;
 
+/** The first and the largest wait between two retirement re-drives (see spawnPinned). */
+export const RETIREMENT_STEP_MS = 500;
+export const RETIREMENT_STEP_MAX_MS = 1_000;
+/** The retirement window of the one re-drive (below): it runs after the manager logged the accepted
+ *  uid's final teardown, so the name is already free; this only absorbs a teardown still settling. */
+export const REDRIVE_RETIRE_MS = 10_000;
+/**
+ * What the one re-drive of an accepted-then-retired spawn adds to a lock holder's time. Attempt 1's
+ * readiness wait: no pid was ever seen, so its budget never grew past {@link SPAWN_READY_MS}, and the
+ * manager's retirement line can land anywhere in it (~23s for vercel, 2026-11-24), plus the witness
+ * interval that read it. Then attempt 2's spawnPinned: {@link REDRIVE_RETIRE_MS} of retirement re-drive,
+ * no held-name window (nothing ever held the name), and its spawn call. Attempt 2's own readiness wait
+ * is the FIRST_SPAWN_READY_MS already in {@link SPAWN_LOCK_HOLD_MS}.
+ */
+export const RETIREMENT_REDRIVE_MS = SPAWN_READY_MS + SEAT_WITNESS_EVERY_MS + REDRIVE_RETIRE_MS + SPAWN_ACCEPT_MS;
+
 /**
  * The longest a LEGITIMATE {@link ensureAgentSpawned} can hold `spawn.<name>.lock`, summed from the waits
  * it actually makes: the starting grace, the session-release wait, spawnPinned's held-name retry window,
@@ -1834,7 +1868,8 @@ export const RETIREMENT_RETRY_MS = 45_000;
  * spawner could break a live holder's lock mid-spawn. A DEAD holder is still broken at once (pid stamp).
  */
 export const SPAWN_LOCK_HOLD_MS =
-  STARTING_GRACE_MS + SESSION_RELEASE_MS + SESSION_RELEASE_MS + RETIREMENT_RETRY_MS + 2 * SPAWN_ACCEPT_MS + FIRST_SPAWN_READY_MS + PRESENCE_PROBE_MS + 20_000;
+  STARTING_GRACE_MS + SESSION_RELEASE_MS + SESSION_RELEASE_MS + RETIREMENT_RETRY_MS + 2 * SPAWN_ACCEPT_MS + FIRST_SPAWN_READY_MS + PRESENCE_PROBE_MS + 20_000 +
+  RETIREMENT_REDRIVE_MS;
 
 /** Lock timeouts for every holder of {@link spawnLockPath}. */
 export const SPAWN_LOCK_OPTS: LockOpts = { maxWaitMs: SPAWN_LOCK_HOLD_MS, staleMs: SPAWN_LOCK_HOLD_MS };
@@ -1897,11 +1932,15 @@ async function spawnPinned(
   ctl: ManagerControl,
   args: Record<string, unknown>,
   name: string,
-  retire: { retireMs: number; retireStepMs?: number; onRetiring: () => void },
+  retire: { retireMs: number; heldMs: number; retireStepMs?: number; onRetiring: () => void },
 ) {
-  const deadline = Date.now() + SESSION_RELEASE_MS;
+  const deadline = Date.now() + retire.heldMs;
   const retireDeadline = Date.now() + retire.retireMs;
-  let step = retire.retireStepMs ?? 1000;
+  // A retirement normally completes ~1-2s after the despawn (manager.log: refused, verify-evict, retired),
+  // so the re-drive polls at a short step that grows only to RETIREMENT_STEP_MAX_MS. The old 1→8s doubling
+  // left the name free for up to 8s before the next try, turning a ~2s restart into ~10s, and a slow
+  // teardown into the whole 45s bound. Each refused try is also cotal's nudge (it re-drives the teardown).
+  let step = retire.retireStepMs ?? RETIREMENT_STEP_MS;
   let told = false;
   for (;;) {
     const reply = await ctl.spawn(args, SPAWN_ACCEPT_MS); // a claude cold-start can take a while
@@ -1911,12 +1950,12 @@ async function spawnPinned(
       if (!told) retire.onRetiring();
       told = true;
       await sleep(Math.min(step, left));
-      step = Math.min(step * 2, 8000);
+      step = Math.min(Math.round(step * 1.5), RETIREMENT_STEP_MAX_MS);
       continue;
     }
     if (reply.ok || !isNameHeldRefusal(reply.error) || Date.now() >= deadline) {
       if (!reply.ok && isNameHeldRefusal(reply.error)) {
-        return { ...reply, error: `"${name}" is still held on the mesh ${Math.round(SESSION_RELEASE_MS / 1000)}s after it should have stopped — \`paw status\` / \`paw cotal ps\` for who holds it (${reply.error})` };
+        return { ...reply, error: `"${name}" is still held on the mesh ${Math.round(retire.heldMs / 1000)}s after it should have stopped — \`paw status\` / \`paw cotal ps\` for who holds it (${reply.error})` };
       }
       return reply;
     }

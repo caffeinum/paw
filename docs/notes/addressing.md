@@ -183,12 +183,34 @@ A despawn starts cotal's retirement teardown (footprint + standing-authority rev
 retirement) and the name stays reserved until it completes. A spawn right behind it (the wake gate's
 zombie restart, `paw restart`) is refused with a structured `ai.cotal.ep.lifecycle-blocked` detail
 (`blockedOp=retirement remedy=retry`); `replyOf` (src/control.ts) now keeps it as `ManagerReply.blocked`.
-`spawnPinned` re-drives such a refusal (cotal: retrying re-drives the teardown) with backoff 1s→8s for
+`spawnPinned` re-drives such a refusal (cotal: retrying re-drives the teardown) with backoff (500ms→1s since 2026-11-24, below) for
 `RETIREMENT_RETRY_MS` (45s), printing ONE "waiting for cotal to finish retiring…" line. Exhausted →
 `retirementRefusal`: says the agent is offline by paw's own stop, names a timing-out broker link when the
 `(last attempt: …)` clause says timeout (team2027 2026-10-21: "membership inventory incomplete (timeout)"),
 one `paw start <name> --space <s>`, cotal's raw facts on one dim line. Any other refusal is not retried.
 CLI-side only (ensureAgentSpawned runs in the caller) — live without a release. check:wake-gate fix 5.
+
+### restart races the retirement (2026-11-24)
+team2027 manager.log, `paw restart` / `--agent` swaps: despawn → refused (+0.3s) → `static retirement X:
+retired 1 issuance(s)` (+1.5s) → refused again → spawn lands only on the next 2s/4s/8s backoff tick. The hold
+clear itself logs nothing on cotal 0.110's static path (`driveStaticRetirement`; only `retirementsPending`, a
+count, reaches status), so the spawn retry IS the only observation of "retirement finished". The re-drive now
+polls 500ms → ×1.5 → 1s cap (`RETIREMENT_STEP_MS`/`RETIREMENT_STEP_MAX_MS`), same 45s bound, same loud
+`retirementRefusal`; a broker that times the teardown out (`static retirement X (…): timeout`) still takes
+the full bound — that one is the broker, not paw.
+- **Accepted, then retired before launch** (vercel 23:36): the spawn after two refusals was ACCEPTED, then the
+  manager tore the new lifecycle down 21s later — `static retirement vercel: no credential-ledger row was ever
+  released under uid <new uid>` — and no launcher line ran. `seatRetirement` (src/manager-log.ts) only knew the
+  `retired N issuance(s) bound to uid` shape, so paw waited out the readiness budget and said "the manager
+  logged nothing". It now matches any `static retirement <name>: …uid <uid>` line, and when the spawn followed a
+  retirement refusal (`raced`) and the new seat was retired with no pid ever seen, ensureAgentSpawned spawns it
+  ONCE more, saying so; a second such outcome throws, quoting the manager's line. That re-drive's spawnPinned
+  gets `REDRIVE_RETIRE_MS` (10s) of reservation retries and no held-name window (the manager already logged the
+  uid's final teardown; no process ever held the name). `SPAWN_LOCK_HOLD_MS` gains `RETIREMENT_REDRIVE_MS` =
+  attempt 1's readiness wait (`SPAWN_READY_MS` + one witness read: the retirement line can land anywhere in it,
+  ~23s for vercel) + those 10s + a spawn call → 578s, under the sleep host's 600s wake deadline (doctor's
+  `SPAWN_LOCK_STALE_MS` follows). check:wake-gate walks the worst holder as a timeline, independent of the
+  constant's addends, and asserts the wake-deadline margin ("retirement race", "spawn lands", "lock:").
 
 ## restarting a live process needs consent (2026-10-23)
 - The gate's zombie restart (running process, off the mesh, transcript stale) killed live agents with

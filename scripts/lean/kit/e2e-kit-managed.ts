@@ -88,7 +88,7 @@ const ram = (label: string, name: string) => {
   if (!p) return console.log(`  RAM ${label}: no kit process`);
   console.log(`  RAM ${label}: kit pid ${p.pid} footprint ${footprintMb(p.pid).toFixed(1)} MB, rss ${p.rssMb.toFixed(1)} MB`);
 };
-type Row = { name: string; live?: boolean; unmanaged?: boolean; mesh?: string; runtime?: string };
+type Row = { name: string; live?: boolean; unmanaged?: boolean; mesh?: string; runtime?: string; inbox?: { kind: string; queued?: number; unread?: number; deliveredAt?: number } };
 const statusRow = (name: string): Row | undefined => {
   const r = paw("status", "--json");
   try {
@@ -155,6 +155,18 @@ try {
   ok("noted the word", !!(await reply(NAME, "NOTED")));
   await until(() => (peer(NAME)?.status === "idle" ? true : undefined), 30_000);
   ram("after 2 turns", NAME);
+  // 2026-11-24: `paw ls` said "inbox stuck — N unread, agent not consuming" on kit seats that answered.
+  // Two DMs answered and idle: its DM durable must be drained, and the row must not call it stuck.
+  const drained = await until(() => {
+    const r = statusRow(NAME);
+    return r?.inbox?.kind === "lag" && r.inbox.queued === 0 && r.inbox.unread === 0 ? r : undefined;
+  }, 30_000, 1000);
+  ok("idle after answering: its DM inbox is drained (0 queued, 0 unread)", !!drained, JSON.stringify(statusRow(NAME)?.inbox));
+  // The consumption evidence `inboxStuck` weighs for kit (kitTookIt): the broker's last delivery time, read
+  // off the real server's consumer info (an RFC3339 string, whatever the client's type says).
+  ok("its DM durable carries the broker's last delivery time", typeof drained?.inbox?.deliveredAt === "number" && Math.abs(drained.inbox.deliveredAt - Date.now()) < 600_000, JSON.stringify(drained?.inbox));
+  const plain = paw("status", NAME).out;
+  ok("…and `paw status` doesn't call it stuck", !/inbox stuck/.test(plain), plain.trim().split("\n").slice(-2).join(" | "));
 
   const rs = paw("restart", NAME);
   ok("paw restart kitty", rs.code === 0, tail(rs.out + rs.err));

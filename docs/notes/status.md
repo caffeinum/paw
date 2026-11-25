@@ -9,13 +9,25 @@ Moved verbatim from CLAUDE.md (2026-10-02 split). Index: [CLAUDE.md](../../CLAUD
   or not: **STATUS** (mesh idle/working/starting/offline via `meshStatus` over the manager ps —
   `mesh:"absent"` → starting), **RUNTIME** (the `manager.runtime` marker, shown only when live), **CWD**
   (tilde-abbreviated folder), **SESSION** (the human session name `"research"` via `nameForSession` if
-  set, else a short id), **INBOX** (per-agent durable DM-consumer lag — the ZOMBIE detector, added
+  set, else a short id — only a name a human gave it, `nameSource: "user"`: claude's own DERIVED
+  per-process name (`skills-28`, `skills-55` after the next restart) is ignored since 2026-11-24, when the
+  same session read `"skills-28"` on claude and `07d2c3c5…` on kit, which has no claude process to name it), **INBOX** (per-agent durable DM-consumer lag — the ZOMBIE detector, added
   after the 2026-07-12 team2027-research incident where a presence-`idle` agent sat deaf on an unacked
   DM for hours: `fetchInboxLag` queries JetStream `consumers.info(DM_<space>, dm_<id>)` where `id` is
   the agent's nkey from the manager's ps row (ps carries `id` — the card.id minted at spawn), rendering
   `✓` (drained), `N queued` (num_pending, undelivered), `N unread` (num_ack_pending, delivered-unacked),
   `—` (no consumer / not ps-listed — legit), or `?` (query FAILED — stderr detail, never a fabricated 0).
   A LIVE agent with queued/unread > 0 gets `⚠ inbox stuck — …, agent not consuming` and a footer count.
+  **Except a kit seat that took its mail (`kitTookIt`, 2026-11-24):** nothing queued, and its transcript
+  written at or after the durable's `delivered.last_active` (the broker's last hand-off, an RFC3339 string
+  on the wire; `DmConsumer.delivered_at` → `InboxState.deliveredAt`). vercel/neon showed `N unread, agent not
+  consuming` while answering every DM. kit double-acks at turn end and cotal-go releases a held message only
+  after a SUCCESSFUL ack, so an ack that fails (a reply timeout on a slow broker) keeps it `unread` for the
+  process's life — the likely cause from kit/cotal-go's code, not observed on the live broker; the real fix
+  (release or retry a failed ack) is kit's. The INBOX cell still says `2 unread`; only the stuck claim goes.
+  No delivery time or no transcript = no evidence = the old rule; claude seats keep the old rule (the TS
+  connector acks without waiting). Tests: `check:status` ("kit:"), `scripts/lean/kit/e2e-kit-managed.ts`
+  (a real kit seat drains to 0/0 and its durable carries the delivery time).
   CotalEndpoint keeps its jsm private, so status opens its own short-lived NATS connection via
   `@nats-io/{transport-node,jetstream}` (core's own client libs, now direct deps; creds via controlCreds
   under PAW_AUTH). ConsumerNotFound(10014)/StreamNotFound(10059) → `—`; other errors → `?`. A REMOTE space reads only the seats THIS machine's manager spawned, by exact durable name, with paw's consumer-INFO-only cred — [remote-mesh.md](remote-mesh.md).),
@@ -82,6 +94,22 @@ needed — paw attach x`, `⚠ api error 500`). Test: `check:status`, `check:top
   on the row, and a standing notice above that agent's chat ("your DMs queue and will be answered once it
   can run again"). Measured on this box: 907 "Login expired" synthetic turns in one day across
   transcripts — the class is common. Test: `check:transcript`.
+- **Harness swaps (2026-11-24).** kit with `storage: claude` appends to the SAME transcript, so after
+  `paw restart <a> --agent kit` the newest assistant record was still claude's: `paw ls` kept claude's
+  "⚠ You've hit your weekly limit" on vercel/neon (the very reason they were swapped) and CTX showed
+  claude's last occupancy. Each record's harness is read off its message id (`recordHarness`: kit writes
+  `msg_kit_<hex>`, kit session/claude.go; everything else is claude's), and `lastFailure`/`lastUsage`/`lastModel`
+  take the persona's harness (`transcriptHarness(agent:)`): a newest assistant record from the OTHER harness
+  means no failure and CTX `—` until the current harness takes its own turn. A kit occupancy gets no claude
+  window (`inferWindow` is claude's 200k/1M). The status memo is keyed by harness too. `paw attach`'s summary
+  and `paw chat`'s banner (src/agent-summary.ts) read the same way. Test: `check:transcript`.
+- **A synthetic failure names no harness.** kit's `Failure()` writes claude's exact synthetic shape
+  (`isApiErrorMessage`, `model: "<synthetic>"`, a uuid id, zero usage — no `msg_kit_`), so `recordHarness`
+  returns undefined for any synthetic record. `lastUsage`/`lastModel` skip it (as they always skipped zero
+  usage); `lastFailure` asks `turnHarness`: walking back, the nearest real assistant turn, or the prompt that
+  opened the turn (a kit envelope carries `msg_id="…"`, claude's wake doesn't). So kit's own 429 stays on a kit
+  seat, kit failing its very first turn after a swap is kit's, and claude's limit note is still history. A tail
+  with neither filters nothing. (Read as claude's, a kit seat had lost its error note and its CTX.)
 
 ## inferBusy
 

@@ -17,6 +17,9 @@ export interface SessionIndexEntry {
   sessionId: string;
   cwd: string;
   name?: string;
+  /** How claude got `name`: `user` (`--session-name`, `/rename`) or `derived` (its own `<folder>-<n>`
+   *  per process, e.g. `skills-28` then `skills-55` after a restart). */
+  nameSource?: string;
   updatedAt?: number;
   pid?: number;
   startedAt?: number;
@@ -38,6 +41,7 @@ export function readIndex(): SessionIndexEntry[] {
           sessionId: rec.sessionId,
           cwd: rec.cwd,
           name: typeof rec.name === "string" ? rec.name : undefined,
+          nameSource: typeof rec.nameSource === "string" ? rec.nameSource : undefined,
           updatedAt: typeof rec.updatedAt === "number" ? rec.updatedAt : undefined,
           pid: typeof rec.pid === "number" ? rec.pid : undefined,
           startedAt: typeof rec.startedAt === "number" ? rec.startedAt : undefined,
@@ -178,7 +182,10 @@ export function meshAgentSession(space: string, name: string): { sessionId: stri
 /** The human name (`claude --session-name` / `/rename`) recorded for a session id, if any. Lets
  *  `paw status` show "research" instead of a bare uuid so a session is recognizable at a glance. */
 export function nameForSession(sessionId: string, index: SessionIndexEntry[] = readIndex()): string | undefined {
-  for (const e of index) if (e.sessionId === sessionId && e.name) return e.name;
+  // A DERIVED name is per claude PROCESS (`skills-28`, then `skills-55` after a restart) and absent on any
+  // seat with no claude process (kit, an asleep agent): `paw ls` showed `"skills-28"` on claude and an id
+  // prefix on kit for the same session (2026-11-24). Only a name a human gave the session is its name.
+  for (const e of index) if (e.sessionId === sessionId && e.name && e.nameSource !== "derived") return e.name;
   return undefined;
 }
 

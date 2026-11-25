@@ -24,7 +24,7 @@ import { KIT_AGENT } from "./kit.ts";
 import { HERMES_AGENT } from "./hermes-profile.ts";
 import { ACP_AGENT } from "./acp-agent.ts";
 import { claudeProjectsRoot, isClaudeHarness, personaTranscriptRoots, readAgentType, readResumeId, transcriptPath, transcriptPaths, writesClaudeTranscript } from "./session.ts";
-import { lastFailure, lastUsage, type ContextUsage } from "./transcript.ts";
+import { lastFailure, lastUsage, transcriptHarness, type ContextUsage, type TranscriptHarness } from "./transcript.ts";
 import { tailRead, turnOfProcess, turnState, type PendingTool, type TurnState } from "./transcript.ts";
 import { gitInfoMany, type GitInfo } from "./git.ts";
 import { isRemoteSpace, natsTls, pawServer } from "./server.ts";
@@ -47,7 +47,7 @@ const c = { dim: wrap("2"), bold: wrap("1"), green: wrap("32"), yellow: wrap("33
  *  - none:  no durable consumer (agent never connected, or no ps id) — a legitimate state, not an error.
  *  - error: the JetStream query FAILED — rendered "?" (never a fabricated 0); detail goes to stderr. */
 export type InboxState =
-  | { kind: "lag"; queued: number; unread: number }
+  | { kind: "lag"; queued: number; unread: number; /** when the broker last handed this durable's client a message */ deliveredAt?: number }
   | { kind: "none" }
   | { kind: "error" };
 
@@ -217,11 +217,13 @@ export interface TranscriptRead {
  */
 const transcriptMemo = new Map<string, { stamp: string; failure?: { v: ReturnType<TranscriptRead["failure"]> }; context?: { v: ReturnType<TranscriptRead["context"]> }; turn?: { v: ReturnType<TranscriptRead["turn"]> } }>();
 
-function readTranscript(file: string | undefined): TranscriptRead | undefined {
+function readTranscript(file: string | undefined, harness: TranscriptHarness | undefined): TranscriptRead | undefined {
   if (!file) return undefined;
   const st = statSync(file);
   const mtimeMs = st.mtimeMs;
-  const stamp = `${st.mtimeMs}:${st.size}`;
+  // The harness is part of the key: a swap changes the answer for the same bytes (the old harness's
+  // usage and failure stop counting the moment the persona names another).
+  const stamp = `${st.mtimeMs}:${st.size}:${harness ?? "-"}`;
   let memo = transcriptMemo.get(file);
   if (memo?.stamp !== stamp) {
     memo = { stamp };
@@ -248,8 +250,8 @@ function readTranscript(file: string | undefined): TranscriptRead | undefined {
   };
   return {
     mtimeMs,
-    failure: () => (m.failure ??= { v: ((t) => (t ? attempt(() => lastFailure(lines(t.small))) : undefined))(readTails()) }).v,
-    context: () => (m.context ??= { v: ((t) => (t ? attempt(() => lastUsage(lines(t.context))) : undefined))(readTails()) }).v,
+    failure: () => (m.failure ??= { v: ((t) => (t ? attempt(() => lastFailure(lines(t.small), harness)) : undefined))(readTails()) }).v,
+    context: () => (m.context ??= { v: ((t) => (t ? attempt(() => lastUsage(lines(t.context), harness)) : undefined))(readTails()) }).v,
     turn: () => (m.turn ??= { v: ((t) => (t ? attempt(() => turnStateFrom(file, t.small)) : undefined))(readTails()) }).v,
   };
 }
@@ -389,7 +391,23 @@ export function inboxStuck(r: AgentStatus): boolean {
   // be the zombie this looks for. An agent that is genuinely wedged stops writing its transcript and
   // falls out of `busy` within seconds, so the warning still arrives — just not aimed at working peers.
   if (r.busy === true || r.mesh === "working") return false;
-  return r.live && r.inbox.kind === "lag" && (r.inbox.queued > 0 || r.inbox.unread > 0);
+  if (!r.live || r.inbox.kind !== "lag" || (r.inbox.queued === 0 && r.inbox.unread === 0)) return false;
+  return !kitTookIt(r);
+}
+
+/**
+ * A kit seat holding `unread` mail it already TOOK: nothing undelivered, and its transcript was written at
+ * or after the broker last handed it a message. kit writes the message into its transcript as the turn
+ * opens and acks with a DOUBLE ack at turn end; when that ack fails (its reply timing out on a slow broker —
+ * team2027 was timing out leases and retirements that night) cotal-go keeps the message held in progress
+ * for the process's life and never releases it, so `num_ack_pending` can stay up on a seat that answers
+ * every DM (vercel/neon in `paw ls`, 2026-11-24; the likely cause, read from kit/cotal-go, not observed on
+ * the live broker). A real zombie never writes after the delivery. Claude seats keep
+ * the plain rule: cotal's TS connector acks without waiting, so its `unread` on an idle seat IS the signal.
+ */
+export function kitTookIt(r: Pick<AgentStatus, "harness" | "inbox" | "activeMs">): boolean {
+  if (r.harness !== KIT_AGENT || r.inbox.kind !== "lag" || r.inbox.queued > 0) return false;
+  return r.inbox.deliveredAt !== undefined && r.activeMs !== undefined && r.activeMs >= r.inbox.deliveredAt;
 }
 
 function stuckOf(space: string, name: string): { stuck?: { since: number; restarts: number } } {
@@ -791,6 +809,21 @@ export function rowMatches(r: StateFields, state: RowState): boolean {
   }
 }
 
+/** One DM durable's lag, plus when it last handed a message to its client (broker clock), if ever. */
+export type DmConsumer = { name: string; num_pending: number; num_ack_pending: number; delivered_at?: number };
+
+/** `delivered.last_active` from a consumer info: the server sends an RFC3339 string (the client's type
+ *  says Nanos). Unparseable or absent → undefined: no evidence, never a guessed time. */
+export function deliveredAt(ci: { delivered?: { last_active?: unknown } }): number | undefined {
+  const v = ci.delivered?.last_active;
+  const t = typeof v === "string" ? Date.parse(v) : NaN;
+  return Number.isFinite(t) && t > 0 ? t : undefined;
+}
+const dmConsumer = (ci: { name: string; num_pending: number; num_ack_pending: number; delivered?: { last_active?: unknown } }): DmConsumer => {
+  const at = deliveredAt(ci);
+  return { name: ci.name, num_pending: ci.num_pending, num_ack_pending: ci.num_ack_pending, ...(at !== undefined ? { delivered_at: at } : {}) };
+};
+
 /**
  * Every consumer on the space's DM stream, from ONE listing. It used to be one full listing PER AGENT
  * (each walked every consumer looking for its own prefix), so the cost grew with the square of the
@@ -799,7 +832,7 @@ export function rowMatches(r: StateFields, state: RowState): boolean {
  * known, so it overlaps the roster read — {@link inboxLag} turns it into per-agent answers.
  */
 export type DmConsumerListing =
-  | { kind: "ok"; consumers: Array<{ name: string; num_pending: number; num_ack_pending: number }> }
+  | { kind: "ok"; consumers: DmConsumer[] }
   | { kind: "no-stream" }
   | { kind: "unreachable"; message: string }
   | { kind: "failed"; message: string };
@@ -826,8 +859,8 @@ async function listDmConsumers(space: string, server: string): Promise<DmConsume
   try {
     try {
       const jsm = await jetstreamManager(nc);
-      const consumers: Array<{ name: string; num_pending: number; num_ack_pending: number }> = [];
-      for await (const ci of jsm.consumers.list(dmStream(space))) consumers.push({ name: ci.name, num_pending: ci.num_pending, num_ack_pending: ci.num_ack_pending });
+      const consumers: DmConsumer[] = [];
+      for await (const ci of jsm.consumers.list(dmStream(space))) consumers.push(dmConsumer(ci));
       return { kind: "ok", consumers };
     } catch (e) {
       const code = e instanceof JetStreamApiError ? e.code : undefined;
@@ -855,11 +888,11 @@ async function readDmConsumers(space: string, server: string, durables: string[]
   }
   try {
     const jsm = await jetstreamManager(nc, { checkAPI: false });
-    const consumers: Array<{ name: string; num_pending: number; num_ack_pending: number }> = [];
+    const consumers: DmConsumer[] = [];
     for (const name of durables) {
       try {
         const ci = await jsm.consumers.info(dmStream(space), name);
-        consumers.push({ name: ci.name, num_pending: ci.num_pending, num_ack_pending: ci.num_ack_pending });
+        consumers.push(dmConsumer(ci));
       } catch (e) {
         const code = e instanceof JetStreamApiError ? e.code : undefined;
         if (code === JetStreamApiCodes.StreamNotFound) return { kind: "no-stream" };
@@ -928,7 +961,7 @@ export function inboxLag(listing: DmConsumerListing, server: string, agents: Arr
     const dummyUid = "a".repeat(26);
     const prefix = dmDurable(principal.owner, principal.actor, dummyUid).slice(0, -dummyUid.length);
     const match = listing.consumers.find((ci) => ci.name.startsWith(prefix));
-    lag.set(name, match ? { kind: "lag", queued: match.num_pending, unread: match.num_ack_pending } : { kind: "none" });
+    lag.set(name, match ? { kind: "lag", queued: match.num_pending, unread: match.num_ack_pending, ...(match.delivered_at !== undefined ? { deliveredAt: match.delivered_at } : {}) } : { kind: "none" });
   }
   return lag;
 }
@@ -1028,10 +1061,10 @@ export async function collectStatus(space: string, ctl?: ManagerControl, opts: C
   }
   const files = new Map([...byStore].map(([key, g]) => [key, transcriptPaths(g.pins, g.roots)]));
   const reads = new Map<string, TranscriptRead | undefined>(); // one tail read per transcript file
-  const transcriptOf = ({ pin, roots }: { pin?: string; roots: string[] }): TranscriptRead | undefined => {
+  const transcriptOf = ({ pin, roots, harness }: { pin?: string; roots: string[]; harness?: string }): TranscriptRead | undefined => {
     const file = pin ? files.get(roots.join("\0"))?.get(pin) : undefined;
     if (!file) return undefined;
-    if (!reads.has(file)) reads.set(file, readTranscript(file));
+    if (!reads.has(file)) reads.set(file, readTranscript(file, transcriptHarness(harness)));
     return reads.get(file);
   };
 
