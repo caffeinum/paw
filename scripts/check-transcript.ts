@@ -348,6 +348,23 @@ assert(tailRead(file, 10_000).split("\n")[0] === "AAAAAAAAAA", "a window larger 
   console.log("✓ context window fill");
 }
 
+// ── a claude seat's DM arrives in the UserPromptSubmit hook, not in the wake prompt ─────────────
+{
+  // Shapes copied from skills' transcript, 2026-11-24: the meta wake carries no message; the DM is in the
+  // `hook_additional_context` attachment right after it. paw log showed the wake alone — the newest DM on
+  // screen was the previous check.
+  const wake = rec({ type: "user", isMeta: true, origin: { kind: "channel", server: "cotal" }, message: { role: "user", content: '<channel source="cotal" kind="dm" from="aleks-mac-mini" from_id="local.UB2V">\n📨 New dm from aleks-mac-mini — delivering your Cotal inbox now.\n</channel>' } });
+  const hook = (content: string[]) => rec({ type: "attachment", attachment: { type: "hook_additional_context", content, hookName: "UserPromptSubmit", hookEvent: "UserPromptSubmit" } });
+  const tail = "(If this asks for work, do it with your own tools first and verify the result, then reply with cotal_dm / cotal_send — never report an action you did not actually perform. cotal_roster shows who's here.)";
+  const out = feedAll([wake, hook([`📨 Cotal — 1 new message from peers:\n[DM from aleks-mac-mini] context check #4 after switching to claude\n${tail}`])]);
+  assert(out.length === 2 && out[0].kind === "wake" && out[1].kind === "incoming" && (out[1] as { text: string }).text === "[DM from aleks-mac-mini] context check #4 after switching to claude", `claude DM: the hook's message is shown after its wake (${JSON.stringify(out)})`);
+  const two = feedAll([hook([`📨 Cotal — 2 new messages from peers:\n[DM from a] one\nline two\n[#general b] three\n${tail}\n\n📚 Cotal — 1 historical message (catch-up context):\n[DM from c] old\n(This is replayed history, not new work. Do not act on or reply to these old requests unless the person explicitly asks.)`])]);
+  assert(two.length === 1 && (two[0] as { text: string }).text === "[DM from a] one\nline two\n[#general b] three", `claude DM: several live messages in one block, the historical catch-up stays hidden (${JSON.stringify(two)})`);
+  assert(feedAll([rec({ type: "attachment", attachment: { type: "hook_additional_context", content: ["<persisted-output>…</persisted-output>"], hookEvent: "SessionStart" } })]).length === 0, "claude DM: other hook context (SessionStart output) is not a message");
+  assert(feedAll([rec({ type: "attachment", attachment: { type: "hook_success", hookName: "Stop" } })]).length === 0, "claude DM: other attachments stay hidden");
+  console.log("✓ claude DM via the prompt hook");
+}
+
 // ── api-request-blob: a COPY of a message, never a second turn ──────────────────────────────────
 {
   // Claude Code writes the assistant turn, then an `api-request-blob` record holding the same message

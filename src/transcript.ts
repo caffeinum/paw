@@ -233,6 +233,28 @@ export function kitEnvelopeBlocks(text: string): Block[] | undefined {
   });
 }
 
+/**
+ * The DM text a CLAUDE seat was actually given. cotal wakes it with a meta prompt that carries no message
+ * ("📨 New dm from X — delivering your Cotal inbox now.") and hands the messages over in the connector's
+ * UserPromptSubmit hook, which Claude Code records as an `attachment` of type `hook_additional_context`:
+ * `📨 Cotal — N new message(s) from peers:` · the items · `(If this asks for work, …)` (connector-core
+ * formatInjection). paw log showed only the wake, so the last message on screen was the PREVIOUS check
+ * (skills, 2026-11-24). The live block becomes one `incoming` block; the historical catch-up block
+ * (`📚 Cotal — … historical`) is replayed context, not news, and stays hidden.
+ */
+export function cotalHookBlocks(attachment: unknown): Block[] {
+  const a = attachment as { type?: string; content?: unknown } | null;
+  if (!a || a.type !== "hook_additional_context" || !Array.isArray(a.content)) return [];
+  const out: Block[] = [];
+  for (const c of a.content) {
+    if (typeof c !== "string") continue;
+    const live = /^\u{1F4E8} Cotal \u2014 \d+ new messages? from peers:\n([\s\S]*?)\n\(If this asks for work, [^\n]*\)(?:\n|$)/mu.exec(c);
+    const body = live?.[1]?.trim();
+    if (body) out.push({ kind: "incoming", text: body });
+  }
+  return out;
+}
+
 export function userTextBlock(text: string): Block {
   const slash = slashCommandText(text);
   if (slash) return { kind: "user", text: slash };
@@ -552,6 +574,7 @@ export class TranscriptParser {
     // Only `user`/`assistant` records are turns. Claude Code also writes `api-request-blob` records: a
     // COPY of a message (with `message.role`) as it was sent to the API. Read by role, every one of them
     // replayed its turn — goat-film's one DM to "you" showed as two `↩ you` lines (2026-10-24).
+    if (rec.type === "attachment") return cotalHookBlocks((rec as { attachment?: unknown }).attachment);
     if (rec.type !== undefined && rec.type !== "user" && rec.type !== "assistant") return [];
     const msg: { role?: string; content?: unknown; model?: string } = rec.message ?? (rec as { role?: string; content?: unknown });
     const role = msg.role ?? rec.type;
