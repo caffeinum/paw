@@ -58,7 +58,7 @@ import { unfireable } from "./cron.ts";
 import { callerSpace } from "../space.ts";
 
 const USAGE =
-  "github watch <pr> [<agent>[#space]] · github unwatch <pr> [<agent>[#space]] · github ls · github tick · github org [<org>] · github teams [--apply] [--org <org>] · " +
+  "github watch <pr> [<agent>[#space]] · github unwatch <pr> [<agent>[#space]] · github ls · github tick · github org [<org>] · github teams [--apply] [--org <org>] [--exclude <glob,…>] · " +
   "github app set <agent> --app-id N --installation-id N --key <pem> · github app test <agent> · github app ls   (<pr> = URL, owner/repo#N, or #N in the repo)";
 
 interface Args {
@@ -70,9 +70,10 @@ interface Args {
   appId?: string;
   installationId?: string;
   key?: string;
+  exclude?: string;
 }
 
-const VALUED = { "--space": "space", "--org": "org", "--app-id": "appId", "--installation-id": "installationId", "--key": "key" } as const;
+const VALUED = { "--space": "space", "--org": "org", "--app-id": "appId", "--installation-id": "installationId", "--key": "key", "--exclude": "exclude" } as const;
 
 function parseArgs(argv: string[]): Args {
   const out: Args = { positionals: [] };
@@ -281,12 +282,25 @@ function org(a: Args): void {
   console.log(`✓ agents' teams live in ${name}`);
 }
 
+/** `--exclude a,beads-*`: comma-separated agent names or `*` globs to leave without a team. */
+export function excludeMatcher(spec: string | undefined): (name: string) => boolean {
+  if (spec === undefined) return () => false;
+  const pats = spec.split(",").map((p) => p.trim());
+  if (pats.some((p) => !p)) throw new Error(`paw github: --exclude has an empty pattern in "${spec}"`);
+  const res = pats.map((p) => new RegExp(`^${p.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*")}$`));
+  return (name) => res.some((r) => r.test(name));
+}
+
 /** `paw github teams [--apply]`: a closed, memberless team per agent of the space. Exported for the check. */
 export async function teams(a: Args, space: string, rest: Rest, out: (l: string) => void = (l) => console.log(l)): Promise<void> {
   if (a.positionals.length) throw new Error(`paw github: teams takes no arguments — ${USAGE}`);
   const orgName = orgOrThrow(a.org);
-  const agents = listAgents(space).map((x) => x.name).sort();
-  if (!agents.length) throw new Error(`paw github: space "${space}" has no agents`);
+  const all = listAgents(space).map((x) => x.name).sort();
+  if (!all.length) throw new Error(`paw github: space "${space}" has no agents`);
+  const skip = excludeMatcher(a.exclude);
+  const agents = all.filter((n) => !skip(n));
+  for (const n of all) if (skip(n)) out(`- ${n}: excluded`);
+  if (!agents.length) throw new Error(`paw github: --exclude ${a.exclude} leaves no agents`);
   const existing = await listTeams(rest, orgName);
   const plan = planTeams(agents, existing);
   const missing = plan.filter((p) => !p.team);

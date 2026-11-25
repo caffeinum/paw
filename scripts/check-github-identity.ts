@@ -23,7 +23,7 @@
 import { execFileSync } from "node:child_process";
 import { generateKeyPairSync, verify } from "node:crypto";
 import { createServer } from "node:http";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -148,6 +148,18 @@ lines.length = 0;
 gh.calls.length = 0;
 await C.teams({ positionals: [], apply: true }, SPACE, fakeRest, out);
 ok("a second --apply is a no-op", lines.at(-1) === "nothing to create" && !gh.calls.some((c) => c.startsWith("POST")), lines);
+
+// --exclude: names and * globs drop agents from the plan; a pattern list that drops everyone fails loud
+const skip = C.excludeMatcher("beads-*,agent.browser,pm");
+ok("--exclude matches globs and exact names, and escapes regex characters", skip("beads-vbx4-125-3-17") && skip("pm") && !skip("pmx") && !skip("agentxbrowser") && skip("agent.browser") && !skip("devops"));
+ok("--exclude refuses an empty pattern", (await rejects(async () => C.excludeMatcher("a,,b"), /empty pattern/)) === "");
+const beadsPersona = persona("beads-oowr");
+lines.length = 0;
+gh.calls.length = 0;
+await C.teams({ positionals: [], exclude: "beads-*" }, SPACE, fakeRest, out);
+ok("--exclude beads-* leaves the beads agent out of the dry run", lines.includes("- beads-oowr: excluded") && !lines.some((l) => l.startsWith("+ beads-oowr")), lines);
+ok("--exclude that leaves nothing fails loud", (await rejects(() => C.teams({ positionals: [], exclude: "*" }, SPACE, fakeRest, out), /leaves no agents/)) === "");
+rmSync(beadsPersona);
 persona("ops2");
 gh.keepMember = true;
 ok("a member left behind fails loud", (await rejects(() => C.teams({ positionals: [], apply: true }, SPACE, fakeRest, out), /still has 1 member/)) === "");
