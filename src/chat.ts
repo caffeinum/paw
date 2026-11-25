@@ -129,7 +129,7 @@ import {
   type PasteBlock,
 } from "./paste.ts";
 import { isRemoteSpace, pawServer } from "./server.ts";
-import { renamedSince } from "./rename-trail.ts";
+import { followTarget, readRenameTrail } from "./rename-trail.ts";
 import { draftRows, fitRows, parseComposed, RAIL, railMessage, railPastes, saidRows, strayPastes, type ViewOpts } from "./compose-view.ts";
 import { displayPos, echoRows, fitPainted, wrappedWidth } from "./width.ts";
 
@@ -485,6 +485,16 @@ async function chat(argv: string[]): Promise<void> {
   const space = spaceArg ?? resolveSpace();
   const server = serverArg ?? pawServer(space);
   const remoteSpace = isRemoteSpace(space);
+  // A name renamed BEFORE this chat began (a non-tty `paw hire` printed `paw chat @hire-… --only`, and the hire
+  // has renamed itself since): chat the name it has now, not the chooser's "no agent".
+  if (target !== undefined && !fresh && !remoteSpace && folderForName(space, target) === undefined) {
+    const to = followTarget(readRenameTrail(space), target, false, performance.timeOrigin);
+    if (to) {
+      process.stderr.write(`paw: ${target} is "${to}" now (renamed) — chatting with it\n`);
+      target = to;
+      if (filter?.kind === "agent") filter = { kind: "agent", name: to };
+    }
+  }
   /** Boot skipped THIS machine's manager (the target runs on another machine — bootNeedsManager): the
    *  first command that needs it (a wake, /ps) ensures it then. */
   let managerDeferred = false;
@@ -3960,15 +3970,17 @@ async function chat(argv: string[]): Promise<void> {
     refreshFooter();
   };
   // A target that renames itself (`paw rename`, the first thing a `paw hire` agent does) is FOLLOWED, not
-  // lost: the rename trail (src/rename-trail.ts) says where its name went. Only renames since this process
-  // began — an old trail out of a name that was reused later must not pull the chat away.
+  // lost: the rename trail (src/rename-trail.ts) says where its name went. A name still registered follows
+  // only renames since this process began (an old trail out of a reused name must not pull the chat away);
+  // a name no longer registered follows the whole trail. A remote space's renames happen on another machine:
+  // the local trail never moves there, so it isn't polled.
   const followRename = (): void => {
     if (!curName || closing) return;
     let to: string | undefined;
     try {
-      to = renamedSince(space, curName, performance.timeOrigin);
+      to = followTarget(readRenameTrail(space), curName, folderForName(space, curName) !== undefined, performance.timeOrigin);
     } catch (e) {
-      clearInterval(renameTimer);
+      if (renameTimer) clearInterval(renameTimer);
       emit(c.red(`! can't follow renames any more: ${(e as Error).message}`));
       return;
     }
@@ -3981,6 +3993,7 @@ async function chat(argv: string[]): Promise<void> {
     targetLost = undefined;
     if (filter?.kind === "agent") filter = { kind: "agent", name: to };
     lookup = "found";
+    closeChooser(); // a lookup that missed the old name may have opened it
     fields.status = okSlot(undefined);
     fields.info = loadingSlot();
     syncPrompt();
@@ -3989,8 +4002,8 @@ async function chat(argv: string[]): Promise<void> {
     refreshFooter();
     emit(c.dim(`↪ ${from} is "${to}" now (renamed) — following it`));
   };
-  const renameTimer = setInterval(followRename, 1000);
-  renameTimer.unref();
+  const renameTimer = remoteSpace ? undefined : setInterval(followRename, 1000);
+  renameTimer?.unref();
   /**
    * Forget an endpoint that is gone (stopped after a failed startup, or never started): its roster,
    * "you"'s id and the presence seed all described IT. Left set, a `/reconnect` trusted the dead

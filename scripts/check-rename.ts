@@ -205,6 +205,115 @@ assert(renameAgentOnDisk(SPACE, FOLDER, "api2", "queue2").from === "api", "a for
   assert(throws(() => assertRenamable(SPACE, "web-beta", "queue2")), "self-rename precheck: a name another agent holds fails loud");
   assert(assertRenamable(SPACE, "web-beta", "login redirect") === "login-redirect", "self-rename precheck: a free name passes, cleaned");
   assert(renamedWakeText("hire-ab12", "login-redirect").includes('"login-redirect"'), "self-rename wake DM names the new name");
+
+  // chat's follow decision (followTarget): a registered name follows only hops since the chat began; a name
+  // no longer registered (a printed `paw chat @hire-…` run after the hire renamed itself) follows them all.
+  const { followTarget } = await import("../src/rename-trail.ts");
+  const t = { "hire-ab12": { to: "login-redirect", at: 1000 } };
+  assert(followTarget(t, "hire-ab12", true, 2000) === undefined, "follow: still registered, renamed before the chat began → stays");
+  assert(followTarget(t, "hire-ab12", false, 2000) === "login-redirect", "follow: no longer registered, renamed before the chat began → follows");
+  assert(followTarget(t, "hire-ab12", true, 500) === "login-redirect", "follow: renamed during the chat → follows");
+  assert(followTarget(t, "other", false, 0) === undefined, "follow: a name with no trail → stays");
+}
+
+// A corrupt renamed.json fails the rename WHOLE — read before anything moves, and the error names the file.
+{
+  const { writeFileSync } = await import("node:fs");
+  const { spaceDir } = await import("../src/addressing.ts");
+  const CS = "test-corrupt";
+  const CF = "/fake/corrupt/web";
+  setFolderName(CS, CF, "web");
+  ensurePersonaFile(CS, "web");
+  const trailFile = join(spaceDir(CS), "renamed.json");
+  writeFileSync(trailFile, "{not json");
+  let msg = "";
+  try {
+    renameAgentOnDisk(CS, CF, "api");
+  } catch (e) {
+    msg = (e as Error).message;
+  }
+  assert(msg.includes(trailFile), `corrupt trail: the error names the file (${msg})`);
+  assert(existsSync(personaFilePath(CS, "web")) && !existsSync(personaFilePath(CS, "api")), "corrupt trail: the persona did not move");
+  assert(lookupFolderName(CS, CF) === "web", "corrupt trail: the folder still maps to the old name");
+  writeFileSync(trailFile, JSON.stringify({ x: { to: 5 } }));
+  assert(throws(() => renameAgentOnDisk(CS, CF, "api")) && existsSync(personaFilePath(CS, "web")), "a malformed trail entry also fails before anything moves");
+}
+
+// The self-rename halves with their outside reach stubbed: renameSelf (in the agent's turn) and renameChild
+// (the detached child: wait for the turn → idle re-check right before the move → rename → always finish).
+{
+  const { renameSelf, renameChild } = await import("../src/rename.ts");
+  type Turn = { ended: boolean; why: string };
+  const mk = (o: { spawnOk?: boolean; waits?: Array<{ ended: true } | { ended: false; why: string }>; idles?: Turn[]; renameFails?: string; wakeOk?: boolean } = {}) => {
+    const calls: string[] = [];
+    const waits = [...(o.waits ?? [{ ended: true }])];
+    const idles = [...(o.idles ?? [{ ended: true, why: "idle" }])];
+    const deps = {
+      spawn: (_s: string, sub: string[], key: string) => (calls.push(`spawn ${sub.join(" ")} key=${key}`), o.spawnOk ?? true),
+      watch: async (_s: string, n: string) => {
+        calls.push(`watch ${n}`);
+        return {
+          wait: async () => (calls.push("wait"), waits.shift() ?? { ended: true as const }),
+          idle: async () => (calls.push("idle"), idles.shift() ?? { ended: true, why: "idle" }),
+          close: async () => void calls.push("close"),
+        };
+      },
+      renameNow: async (_s: string, target: string, newName: string, beforeMove: () => Promise<void>) => {
+        await beforeMove();
+        calls.push(`renameNow ${target} ${newName}`);
+        if (o.renameFails) throw new Error(o.renameFails);
+      },
+      wake: (_s: string, n: string, text: string) => (calls.push(`wake ${n}: ${text}`), { ok: o.wakeOk ?? true, detail: "x" }),
+      finish: (_s: string, key: string) => void calls.push(`finish ${key}`),
+      log: () => undefined,
+    };
+    return { calls, deps };
+  };
+  const err = async (fn: () => Promise<unknown>): Promise<string> => {
+    try {
+      await fn();
+      return "";
+    } catch (e) {
+      return (e as Error).message;
+    }
+  };
+
+  // renameSelf: refusals before the spawn; the child is spawned with the cleaned name and the from-key.
+  const s1 = mk();
+  assert(renameSelf(SPACE, "web-beta", "login redirect", s1.deps) === "login-redirect", "self: returns the cleaned new name");
+  assert(s1.calls[0] === `spawn rename web-beta login-redirect --space ${SPACE} key=web-beta`, `self: spawns the child keyed by the old name (${s1.calls[0]})`);
+  const s2 = mk();
+  assert(throws(() => renameSelf(SPACE, "web-beta", "queue2", s2.deps)) && s2.calls.length === 0, "self: a taken name fails loud, nothing spawned");
+  const s3 = mk({ spawnOk: false });
+  assert(throws(() => renameSelf(SPACE, "web-beta", "fresh-name", s3.deps)), "self: a rename already in flight (pidfile held) fails loud");
+
+  // renameChild: the happy path.
+  const c1 = mk();
+  await renameChild(SPACE, "hire-ab12", "login-redirect", c1.deps);
+  assert(c1.calls.join(" | ") === "watch hire-ab12 | wait | idle | renameNow hire-ab12 login-redirect | close | finish hire-ab12", `child: wait → idle → rename → close → finish (${c1.calls.join(" | ")})`);
+
+  // An operator line started a new turn during the wait: it is waited out before anything moves.
+  const c2 = mk({ idles: [{ ended: false, why: "mid-turn" }, { ended: true, why: "idle" }], waits: [{ ended: true }, { ended: true }] });
+  await renameChild(SPACE, "hire-ab12", "login-redirect", c2.deps);
+  assert(c2.calls.join(" | ") === "watch hire-ab12 | wait | idle | wait | idle | renameNow hire-ab12 login-redirect | close | finish hire-ab12", `child: a turn started late is waited out before the move (${c2.calls.join(" | ")})`);
+
+  // The turn never ends: nothing renamed, the agent is told, the pidfile is freed.
+  const c3 = mk({ waits: [{ ended: false, why: "did not finish its turn within 30m (last: busy)" }] });
+  const m3 = await err(() => renameChild(SPACE, "hire-ab12", "login-redirect", c3.deps));
+  assert(/nothing was renamed/.test(m3) && !c3.calls.some((c) => c.startsWith("renameNow")), "child: a turn that never ends → fails loud, nothing renamed");
+  assert(c3.calls.some((c) => c.startsWith("wake hire-ab12: ✕ paw rename gave up")) && c3.calls.at(-1) === "finish hire-ab12", "child: …the agent is woken with why, the pidfile freed");
+
+  // The rename itself fails: the agent hears it under its OLD name, the error propagates, the pidfile is freed.
+  const c4 = mk({ renameFails: "the name is taken" });
+  const m4 = await err(() => renameChild(SPACE, "hire-ab12", "login-redirect", c4.deps));
+  assert(m4 === "the name is taken", "child: a failed rename propagates its error");
+  assert(c4.calls.some((c) => c.startsWith('wake hire-ab12: ✕ paw rename to "login-redirect" failed: the name is taken')), "child: …and wakes the agent under its old name");
+  assert(c4.calls.slice(-2).join(" | ") === "close | finish hire-ab12", "child: …the watch is closed and the pidfile freed");
+
+  // The late turn never ends either: fail before the move.
+  const c5 = mk({ idles: [{ ended: false, why: "mid-turn" }], waits: [{ ended: true }, { ended: false, why: "did not finish" }] });
+  const m5 = await err(() => renameChild(SPACE, "hire-ab12", "login-redirect", c5.deps));
+  assert(/nothing was renamed/.test(m5) && !c5.calls.some((c) => c.startsWith("renameNow")) && c5.calls.at(-1) === "finish hire-ab12", "child: a late turn that never ends → nothing renamed, pidfile freed");
 }
 
 if (failures > 0) {

@@ -4,13 +4,15 @@
  * verbatim under a short preamble (pick a 1–2 word name from the operator's own words, `paw rename
  * <name>` yourself, end the turn; you are woken under the new name to do the task), then drops into
  * `paw chat @<name> --only`. The chat follows the rename through the rename trail (src/rename-trail.ts).
- * grok and codex are kit with that model; kit alone is kit's defaults (provider codex).
+ * grok is kit with grok-4.7; codex is kit on its codex provider with kit's default model (kit alone is the same
+ * today: kit's default provider is codex). Not `paw chat --agent codex`, which is cotal's codex connector.
  */
 import { randomBytes } from "node:crypto";
 import { registry, type Command } from "@cotal-ai/core";
 import { agentRecord, applyAgentType, canonicalDir, ensureAgentSpawned, registerInstance, type AgentTypeSpec } from "./addressing.ts";
 import { sendAsYou } from "./dm.ts";
-import { ensure, resolveSpace, withEnsuredManager } from "./lifecycle.ts";
+import { ensure, withEnsuredManager } from "./lifecycle.ts";
+import { spaceWasChosen } from "./space.ts";
 import { renamedSince } from "./rename-trail.ts";
 import { pawServer } from "./server.ts";
 
@@ -22,7 +24,7 @@ export const HIRE_HARNESS: Readonly<Record<HireAgent, AgentTypeSpec | undefined>
   claude: undefined,
   kit: { agent: "kit" },
   grok: { agent: "kit", provider: "grok", model: "grok-4.7" },
-  codex: { agent: "kit", provider: "codex", model: "gpt-6.1-sol" },
+  codex: { agent: "kit", provider: "codex" },
 };
 
 export type HireArgs = { prompt: string; agent: HireAgent; space?: string };
@@ -35,16 +37,24 @@ export function parseHireArgs(argv: string[]): HireArgs {
     if (v === undefined || v.startsWith("-")) throw new Error(`paw: ${flag} needs a value`);
     return v;
   };
+  const take = (a: string): void => {
+    if (prompt !== undefined) throw new Error(`paw: hire takes ONE task — quote it: paw hire "<task>"`);
+    prompt = a;
+  };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
+    if (a === "--") {
+      // Everything after `--` is the task, even one that starts with `-`.
+      for (const rest of argv.slice(i + 1)) take(rest);
+      break;
+    }
     if (a === "--agent") {
       const v = value(a, argv[++i]);
       if (!(HIRE_AGENTS as readonly string[]).includes(v)) throw new Error(`paw: --agent "${v}" — hire takes ${HIRE_AGENTS.join(", ")}`);
       agent = v as HireAgent;
     } else if (a === "--space") space = value(a, argv[++i]);
-    else if (a.startsWith("-")) throw new Error(`paw: unknown flag "${a}" — ${HIRE_USAGE}`);
-    else if (prompt !== undefined) throw new Error(`paw: hire takes ONE task — quote it: paw hire "<task>"`);
-    else prompt = a;
+    else if (a.startsWith("-") && !/\s/.test(a)) throw new Error(`paw: unknown flag "${a}" (a task that starts with "-": paw hire -- "<task>") — ${HIRE_USAGE}`);
+    else take(a); // a quoted task with spaces is the task even when it starts with "-"
   }
   if (prompt === undefined || !prompt.trim()) throw new Error(`paw: hire needs the task — ${HIRE_USAGE}`);
   return { prompt, agent, ...(space !== undefined ? { space } : {}) };
@@ -68,33 +78,78 @@ function tempName(): string {
   return `hire-${randomBytes(3).toString("hex")}`;
 }
 
-export const HIRE_USAGE = `hire "<task>" [--agent ${HIRE_AGENTS.join("|")}] [--space s]   (a new agent here for the task: it names itself from your words via \`paw rename\`, then works on it; you drop into \`paw chat @<it> --only\`, which follows the rename. grok = kit -m grok-4.7, codex = kit -m gpt-6.1-sol)`;
+export const HIRE_USAGE = `hire "<task>" [--agent ${HIRE_AGENTS.join("|")}] [--space s] [-- "<task>"]   (a new agent here for the task: it names itself from your words via \`paw rename\`, then works on it; you drop into \`paw chat @<it> --only\`, which follows the rename. grok = kit -m grok-4.7; codex = kit on its codex provider, kit's default model — not chat's --agent codex connector)`;
+
+/** Everything hire reaches outside this module — real by default, stubbed by check:hire. */
+export interface HireDeps {
+  ensure: (space: string) => Promise<void>;
+  isTaken: (space: string, name: string) => boolean;
+  register: (space: string, folder: string, name: string) => string;
+  applyType: (space: string, name: string, spec: AgentTypeSpec) => void;
+  spawn: (space: string, name: string, folder: string) => Promise<void>;
+  send: (space: string, name: string, text: string) => Promise<void>;
+  renamedTo: (space: string, name: string) => string | undefined;
+  tty: () => boolean;
+  chat: (raw: string[]) => Promise<void>;
+  out: (line: string) => void;
+  err: (line: string) => void;
+}
+
+const realDeps: HireDeps = {
+  ensure: async (space) => {
+    await ensure({ needMesh: true, needManager: true, space });
+  },
+  isTaken: (space, name) => agentRecord(space, name) !== undefined,
+  register: registerInstance,
+  applyType: applyAgentType,
+  spawn: (space, name, folder) => withEnsuredManager(space, (ctl) => ensureAgentSpawned(ctl, { space, name, cwd: folder })).then(() => undefined),
+  send: async (space, name, text) => {
+    await sendAsYou({ space, server: pawServer(space), target: name, byName: true, text });
+  },
+  renamedTo: (space, name) => renamedSince(space, name, performance.timeOrigin),
+  tty: () => !!process.stdin.isTTY && !!process.stdout.isTTY,
+  chat: async (raw) => {
+    await import("./chat.ts");
+    const chat = registry.all<Command>("command").find((c) => c.name === "chat");
+    if (!chat) throw new Error("paw: the chat command did not register — can't drop into the chat");
+    await chat.run({ values: {}, positionals: [], raw });
+  },
+  out: (l) => console.log(l),
+  err: (l) => console.error(l),
+};
+
+/** The hire itself: register an extra here under a temp name, set its harness, spawn it, DM it the brief,
+ *  then chat with it (or, off a terminal, print how to). Returns the name it had when hire finished. */
+export async function hireIn(space: string, folder: string, prompt: string, agent: HireAgent, d: HireDeps = realDeps): Promise<string> {
+  // Up only once the argv is known good: a typo must not boot daemons (the mailbox too — the DM below sends as you).
+  await d.ensure(space);
+  const temp = tempName();
+  if (d.isTaken(space, temp)) throw new Error(`paw: the temporary name "${temp}" is taken in space ${space} — run hire again`);
+  const name = d.register(space, folder, temp);
+  const spec = HIRE_HARNESS[agent];
+  if (spec) d.applyType(space, name, spec);
+  await d.spawn(space, name, folder);
+  await d.send(space, name, hireBrief(prompt));
+  d.err(`paw: hired "${name}" (${agent}) in ${folder} — it renames itself from your words, then starts`);
+
+  // It may already have renamed itself while we sent: chat the name it has now.
+  const current = d.renamedTo(space, name) ?? name;
+  if (!d.tty()) {
+    // The chat follows the whole rename trail for a name that is no longer registered, so this line stays good after the rename.
+    d.out(`hired ${current}#${space} — talk to it: paw chat @${current} --only --space ${space}  (it renames itself shortly; the chat follows it to the new name)`);
+    return current;
+  }
+  await d.chat([`@${current}`, "--only", "--space", space]);
+  return current;
+}
 
 async function hire(argv: string[]): Promise<void> {
   const { prompt, agent, space: spaceArg } = parseHireArgs(argv);
-  const space = spaceArg ?? resolveSpace();
-  const folder = canonicalDir(".");
-  // Up only once the argv is known good: a typo must not boot daemons (the mailbox too — the DM below sends as you).
-  await ensure({ needMesh: true, needManager: true, space });
-  const temp = tempName();
-  if (agentRecord(space, temp)) throw new Error(`paw: the temporary name "${temp}" is taken in space ${space} — run hire again`);
-  const name = registerInstance(space, folder, temp);
-  const spec = HIRE_HARNESS[agent];
-  if (spec) applyAgentType(space, name, spec);
-  await withEnsuredManager(space, (ctl) => ensureAgentSpawned(ctl, { space, name, cwd: folder }));
-  await sendAsYou({ space, server: pawServer(space), target: name, byName: true, text: hireBrief(prompt) });
-  console.error(`paw: hired "${name}" (${agent}) in ${folder} — it renames itself from your words, then starts`);
-
-  // It may already have renamed itself while we sent: chat the name it has now.
-  const current = renamedSince(space, name, performance.timeOrigin) ?? name;
-  if (!process.stdin.isTTY || !process.stdout.isTTY) {
-    console.log(`hired ${current}#${space} — talk to it: paw chat @${current} --only --space ${space}  (it renames itself shortly; \`paw status --space ${space}\` shows the new name)`);
-    return;
-  }
-  await import("./chat.ts");
-  const chat = registry.all<Command>("command").find((c) => c.name === "chat");
-  if (!chat) throw new Error("paw: the chat command did not register — can't drop into the chat");
-  await chat.run({ values: {}, positionals: [], raw: [`@${current}`, "--only", "--space", space] });
+  // A defaulted space yields to the calling agent's own (COTAL_SPACE), as archive's does — an agent on team2027
+  // hiring must hire into team2027. (Not a CALLER_SPACE_VERBS entry: see archiveSpace.)
+  const { archiveSpace } = await import("./archive.ts");
+  const space = archiveSpace(spaceArg, spaceWasChosen(), process.env);
+  await hireIn(space, canonicalDir("."), prompt, agent);
 }
 
 const hireCommand: Command = {

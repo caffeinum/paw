@@ -17,20 +17,38 @@ function trailPath(space: string): string {
 export function readRenameTrail(space: string): RenameTrail {
   const file = trailPath(space);
   if (!existsSync(file)) return {};
-  const parsed: unknown = JSON.parse(readFileSync(file, "utf8"));
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error(`paw: ${file} is not a { from: { to, at } } map`);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileSync(file, "utf8"));
+  } catch (e) {
+    throw new Error(`paw: ${file} is unreadable (${(e as Error).message}) — fix or delete it; it only lets a chat follow a renamed agent`);
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error(`paw: ${file} is not a { from: { to, at } } map — fix or delete it`);
+  for (const [from, hop] of Object.entries(parsed)) {
+    const h = hop as { to?: unknown; at?: unknown } | null;
+    if (!h || typeof h.to !== "string" || typeof h.at !== "number") throw new Error(`paw: ${file}: the entry for "${from}" is not { to, at } — fix or delete it`);
+  }
   return parsed as RenameTrail;
 }
 
-/** Record `from → to`. Called under the registry lock (renameAgentOnDisk), so writes don't race. */
-export function recordRename(space: string, from: string, to: string, at: number = Date.now()): void {
-  const trail = readRenameTrail(space);
-  trail[from] = { to, at };
-  delete trail[to]; // the name is held again: an older trail out of it is stale
+/** Pure: `trail` with `from → to` recorded. */
+export function withRename(trail: RenameTrail, from: string, to: string, at: number = Date.now()): RenameTrail {
+  const next = { ...trail, [from]: { to, at } };
+  delete next[to]; // the name is held again: an older trail out of it is stale
+  return next;
+}
+
+/** Write the whole trail. Called under the registry lock (renameAgentOnDisk), so writes don't race. */
+export function writeRenameTrail(space: string, trail: RenameTrail): void {
   const file = trailPath(space);
   const tmp = `${file}.${process.pid}.tmp`;
   writeFileSync(tmp, JSON.stringify(trail, null, 2) + "\n");
   renameSync(tmp, file);
+}
+
+/** Record `from → to` (read, then write). */
+export function recordRename(space: string, from: string, to: string, at: number = Date.now()): void {
+  writeRenameTrail(space, withRename(readRenameTrail(space), from, to, at));
 }
 
 /** Pure: the name `name` ended up under, following every rename recorded at or after `since`
@@ -49,4 +67,12 @@ export function followTrail(trail: RenameTrail, name: string, since: number): st
 
 export function renamedSince(space: string, name: string, since: number): string | undefined {
   return followTrail(readRenameTrail(space), name, since);
+}
+
+/** Pure: where a chat aimed at `name` should go now. A name that is still registered follows only renames
+ *  since the chat began (`since`) — an old trail out of a name reused later must not pull it away. A name
+ *  that is NOT registered (it was renamed before this chat started: a `paw chat @hire-…` printed by a
+ *  non-tty `paw hire` and run later) follows the whole trail. */
+export function followTarget(trail: RenameTrail, name: string, registered: boolean, since: number): string | undefined {
+  return followTrail(trail, name, registered ? since : 0);
 }

@@ -605,8 +605,8 @@ drop into the chat with that agent in only mode".
 - **Birth.** An EXTRA agent at the current folder (`registerInstance`, so a folder that already has its default
   agent can hire more) under a temporary `hire-<6 hex>`; `--agent` is applied before the spawn (`applyAgentType`,
   what `paw chat --agent` uses). Default claude. `kit` = kit's defaults (provider codex), `grok` = kit
-  `provider: grok` + `model: grok-4.7`, `codex` = kit `provider: codex` + `model: gpt-6.1-sol` (the codex model
-  docs/notes/kit.md names). Argv is checked BEFORE anything boots: hire is not in NEEDS_MANAGER, it `ensure()`s
+  `provider: grok` + `model: grok-4.7`, `codex` = kit `provider: codex` with kit's default model (no pinned id to
+  go stale). Not `paw chat --agent codex`, which is cotal's codex connector. Argv is checked BEFORE anything boots: hire is not in NEEDS_MANAGER, it `ensure()`s
   itself after parsing, so a typo never starts daemons.
 - **First message.** Sent as a DM from you (`sendAsYou`, so kit — which takes no launch prompt — gets it the same
   way): a short preamble — pick a 1–2 word kebab-case name reusing the operator's own words, run `paw rename
@@ -617,18 +617,28 @@ drop into the chat with that agent in only mode".
   turn, then a detached child (`spawnDetachedHandoff` kind `rename`, keyed by the old name, `PAW_SPACE` pinned,
   log `spaces/<s>/rename.<old>.log`) waits for the turn to END (`turnReader` + `waitForTurnEnd`), renames +
   respawns on the same pin, and DMs the agent under its new name ("you are X now — carry on"), which is when it
-  starts the task. A failure after the wait is DMed to the agent too (it is waiting to be woken).
+  starts the task. Right before anything moves it re-reads the turn: a line the operator typed during the wait
+  started a new turn, and that one is waited out too (the stop would kill it). A failure after the wait is DMed
+  to the agent too (it is waiting to be woken). `renameSelf`/`renameChild` take their outside reach as deps.
 - **Following the rename.** Every on-disk rename (`renameAgentOnDisk`) writes `spaces/<s>/renamed.json`
-  (`old → { to, at }`, src/rename-trail.ts). `paw chat` checks it every second for its current target and
+  (`old → { to, at }`, src/rename-trail.ts). The trail is read and validated BEFORE the persona moves, so a
+  corrupt file fails the whole rename (naming the file) instead of half of it. `paw chat` checks it every second for its current target and
   follows renames made since its process started (`performance.timeOrigin`, so an old trail out of a reused
-  name never pulls a chat away): target, `--only` filter, prompt and banner switch and it says
+  name never pulls a chat away); a target that is NOT registered any more follows the whole trail, so the
+  command a non-tty hire printed still works after the rename (`followTarget`). A remote space isn't polled
+  (its renames happen on another machine). On a follow the chooser closes: target, `--only` filter, prompt and banner switch and it says
   `↪ old is "new" now (renamed) — following it`. This works for any rename, not just a hire. Messages from
   before the rename stay under the old name, so the filtered view no longer shows them.
 - **Chat.** On a tty hire runs `paw chat @<name> --only` in-process (the name re-read from the trail first);
   `--only` is chat's existing flag: the view filtered to that one agent. Off a tty it prints the command and
   exits 0.
-- `rename` and `hire` joined CALLER_SPACE_VERBS: inside an agent they act on its COTAL_SPACE.
-- Tests: `check:hire` (argv, harness map vs checkAgentSpec, brief), `check:rename` (trail, follow, self-rename
-  prechecks), `check:dispatch` (caller space). E2E done by hand in an isolated space with a real claude: a hire
+- **Space.** Inside an agent, `rename` and `hire` act on its COTAL_SPACE when the space was only defaulted —
+  via `archiveSpace` (src/archive.ts), NOT CALLER_SPACE_VERBS: src/space.ts is in the manager's import graph and
+  editing it forces a full manager restart (check:doctor A1).
+- **Argv.** A task starting with `-` works quoted (an argument with whitespace is the task) or after `--`.
+- Tests: `check:hire` (argv, harness map vs checkAgentSpec, brief, the `hireIn` flow with stubbed deps for each
+  --agent), `check:rename` (trail, corrupt trail, `followTarget`, self-rename prechecks, `renameSelf` and
+  `renameChild` with stubbed deps: happy path, late turn, never-ending turn, failed rename). Not covered: a kit /
+  grok / codex hire end to end (whether kit's status row reports turns for the child's wait). E2E done by hand in an isolated space with a real claude: a hire
   for "make a file called shopping-list.md with three fruits" renamed itself `shopping-list`, was woken, wrote
   the file; a `paw chat @shopping-list --only` in a pty followed a rename to `fruits` and sent to it.

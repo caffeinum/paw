@@ -160,11 +160,11 @@ function ancestorPids(): Set<number> {
 
 /** The agent this process runs inside, in `space`: COTAL_NAME/COTAL_SPACE (cotal stamps them on an agent's tools),
  *  else the registered agent whose pinned session an ancestor process holds. An agent of ANOTHER space is said. */
-export async function selfIn(space: string, env: NodeJS.ProcessEnv = process.env): Promise<string | undefined> {
+export async function selfIn(space: string, env: NodeJS.ProcessEnv = process.env, verb: "archive" | "rename" = "archive"): Promise<string | undefined> {
   const n = env.COTAL_NAME?.trim();
   const s = env.COTAL_SPACE?.trim();
   if (n && s === space) return n;
-  if (n && s) throw new Error(`paw: you are "${n}" in space ${s}, but this archive acts on space ${space} — name it: \`paw archive ${n}#${s}\``);
+  if (n && s) throw new Error(`paw: you are "${n}" in space ${s}, but this ${verb} acts on space ${space} — name it: \`paw ${verb} ${n}#${s}${verb === "rename" ? " <newname>" : ""}\``);
   const pins = new Map<string, string>();
   for (const a of listAgents(space)) {
     const pin = readResumeId(personaFilePath(space, a.name));

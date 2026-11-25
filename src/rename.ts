@@ -23,8 +23,8 @@ import {
   stopAgent,
   withRegistryLock,
 } from "./addressing.ts";
-import { ensureSpaceFor, finishDetachedHandoff, handoffEnvKey, handoffLogPath, pawHomeDir, resolveSpace, spawnDetachedHandoff, wakeAgent, withEnsuredManager } from "./lifecycle.ts";
-import { recordRename } from "./rename-trail.ts";
+import { ensureSpaceFor, finishDetachedHandoff, handoffEnvKey, handoffLogPath, pawHomeDir, spawnDetachedHandoff, wakeAgent, withEnsuredManager } from "./lifecycle.ts";
+import { readRenameTrail, withRename, writeRenameTrail } from "./rename-trail.ts";
 import { dropSharedManagerControl } from "./control.ts";
 import { pawServer } from "./server.ts";
 import { moveCronJobs } from "./cron.ts";
@@ -93,6 +93,8 @@ export function renameAgentOnDisk(
   currentName?: string,
 ): { from: string; to: string } {
   return withRegistryLock(space, () => {
+    // Read (and validate) the trail BEFORE anything moves: a corrupt renamed.json must fail the rename whole.
+    const trail = readRenameTrail(space);
     const named = currentName !== undefined && agentRecord(space, currentName)?.folder === canonical;
     const from = named ? currentName! : lookupFolderName(space, canonical);
     if (!from) {
@@ -125,7 +127,7 @@ export function renameAgentOnDisk(
       renameSync(sandboxHomeOwnerFile(from), sandboxHomeOwnerFile(to));
     }
     writeFileSync(toFile, readFileSync(toFile, "utf8").replace(/^name:.*$/m, `name: ${to}`));
-    recordRename(space, from, to); // a chat filtered to the old name follows it (src/rename-trail.ts)
+    writeRenameTrail(space, withRename(trail, from, to)); // a chat filtered to the old name follows it (src/rename-trail.ts)
     return { from, to };
   });
 }
@@ -145,6 +147,40 @@ export function renamedWakeText(from: string, to: string): string {
   return `↻ you are "${to}" now (renamed from "${from}"; same session) — carry on with your task`;
 }
 
+/** What a self-rename's two halves reach outside this module — real by default, stubbed by check:rename. */
+export interface SelfRenameDeps {
+  spawn: (space: string, sub: string[], key: string) => boolean;
+  /** Open a turn watch on `name`: `wait` blocks until its turn has ended (settled), `idle` reads it once. */
+  watch: (space: string, name: string) => Promise<{ wait: () => Promise<{ ended: true } | { ended: false; why: string }>; idle: () => Promise<{ ended: boolean; why: string }>; close: () => Promise<void> }>;
+  renameNow: (space: string, target: string, newName: string, beforeMove: () => Promise<void>) => Promise<void>;
+  wake: (space: string, name: string, text: string) => { ok: boolean; detail: string };
+  finish: (space: string, key: string) => void;
+  log: (line: string) => void;
+}
+
+const realDeps: SelfRenameDeps = {
+  spawn: (space, sub, key) => spawnDetachedHandoff(space, "rename", sub, { PAW_SPACE: space }, { key, cwd: pawHomeDir() }),
+  watch: async (space, name) => {
+    const { turnReader, waitForTurnEnd, turnEnded } = await import("./archive.ts");
+    const reader = await turnReader(space, name);
+    return {
+      wait: async () => {
+        const w = await waitForTurnEnd({ read: reader.read, now: Date.now, sleep: (ms) => new Promise((r) => setTimeout(r, ms)), log: (l) => console.log(l) });
+        return w.ended ? { ended: true } : { ended: false, why: `did not finish its turn within ${Math.round(w.waitedMs / 60_000)}m (last: ${w.last})` };
+      },
+      idle: async () => turnEnded(await reader.read()),
+      close: async () => {
+        await reader.close();
+        await dropSharedManagerControl(space, pawServer(space)); // the reader's shared handle would keep this one-shot child alive
+      },
+    };
+  },
+  renameNow: (space, target, newName, beforeMove) => renameNow(space, target, newName, beforeMove),
+  wake: wakeAgent,
+  finish: (space, key) => finishDetachedHandoff(space, "rename", key),
+  log: (l) => console.log(l),
+};
+
 /**
  * `paw rename` run from INSIDE the agent being renamed. The rename restarts the agent, and the agent's
  * own turn is running this command: stopping it here would kill the command half-way (persona moved,
@@ -152,83 +188,88 @@ export function renamedWakeText(from: string, to: string): string {
  * to END (as a self-archive does), then renames + respawns it, then DMs it under the new name so it
  * resumes. Every refusal runs here first, so the agent sees it.
  */
-function renameSelf(space: string, from: string, newName: string): void {
+export function renameSelf(space: string, from: string, newName: string, d: SelfRenameDeps = realDeps): string {
   const to = assertRenamable(space, from, newName);
-  const sub = ["rename", from, to, "--space", space];
-  // PAW_SPACE pins the child to this space: COTAL_* is stripped from it, and a bare resolveSpace() there (the
-  // manager/mailbox ensure) would otherwise land on the default space.
-  if (!spawnDetachedHandoff(space, "rename", sub, { PAW_SPACE: space }, { key: from, cwd: pawHomeDir() }))
+  // PAW_SPACE pins the child to this space (realDeps.spawn): COTAL_* is stripped from it, and a bare
+  // resolveSpace() there (the manager/mailbox ensure) would otherwise land on the default space.
+  if (!d.spawn(space, ["rename", from, to, "--space", space], from))
     throw new Error(`paw: a rename of "${from}" is already in flight — progress: ${handoffLogPath(space, "rename", from)}`);
-  console.log(`⟳ "${from}" becomes "${to}" once THIS turn ends — end your turn now (a one-line reply).`);
-  console.log(`  a detached child waits for the turn to end, renames you, restarts you as "${to}" on this same session and wakes you with a DM.`);
-  console.log(`  progress: ${handoffLogPath(space, "rename", from)}`);
+  d.log(`⟳ "${from}" becomes "${to}" once THIS turn ends — end your turn now (a one-line reply).`);
+  d.log(`  a detached child waits for the turn to end, renames you, restarts you as "${to}" on this same session and wakes you with a DM.`);
+  d.log(`  progress: ${handoffLogPath(space, "rename", from)}`);
+  return to;
 }
 
-/** The detached child's wait: nothing is stopped mid-turn. */
-async function waitTurnEnd(space: string, name: string): Promise<void> {
-  const { turnReader, waitForTurnEnd } = await import("./archive.ts");
-  console.log(`[${new Date().toISOString()}] rename: waiting for "${name}" to finish its turn…`);
-  const reader = await turnReader(space, name);
+/**
+ * The detached child: wait for the turn to end (nothing is stopped mid-turn), check it is STILL idle right
+ * before anything moves (an operator line typed during the wait starts a new turn — wait that one out too),
+ * rename + respawn, and tell the agent either way: it ended its turn waiting to be woken.
+ */
+export async function renameChild(space: string, target: string, newName: string, d: SelfRenameDeps = realDeps): Promise<void> {
   try {
-    const w = await waitForTurnEnd({ read: reader.read, now: Date.now, sleep: (ms) => new Promise((r) => setTimeout(r, ms)), log: (l) => console.log(l) });
-    if (!w.ended) {
-      const msg = `"${name}" did not finish its turn within ${Math.round(w.waitedMs / 60_000)}m (last: ${w.last}) — nothing was renamed`;
-      const r = wakeAgent(space, name, `✕ paw rename gave up: ${msg}. Run \`paw rename <name>\` again and end your turn right after.`);
-      if (!r.ok) console.error(`paw: couldn't tell ${name} (${r.detail})`);
-      throw new Error(`paw: ${msg}`);
+    d.log(`[${new Date().toISOString()}] rename: waiting for "${target}" to finish its turn…`);
+    const watch = await d.watch(space, target);
+    try {
+      const w = await watch.wait();
+      if (!w.ended) {
+        const msg = `"${target}" ${w.why} — nothing was renamed`;
+        const r = d.wake(space, target, `✕ paw rename gave up: ${msg}. Run \`paw rename <name>\` again and end your turn right after.`);
+        if (!r.ok) console.error(`paw: couldn't tell ${target} (${r.detail})`);
+        throw new Error(`paw: ${msg}`);
+      }
+      const beforeMove = async (): Promise<void> => {
+        for (;;) {
+          const now = await watch.idle();
+          if (now.ended) return;
+          d.log(`  a new turn started (${now.why}) — waiting for it to end before anything moves`);
+          const again = await watch.wait();
+          if (!again.ended) throw new Error(`"${target}" ${again.why} — nothing was renamed`);
+        }
+      };
+      try {
+        await d.renameNow(space, target, newName, beforeMove);
+      } catch (e) {
+        const r = d.wake(space, target, `✕ paw rename to "${newName}" failed: ${(e as Error).message} — you are still "${target}"; rerun \`paw rename <name>\`, or carry on with your task`);
+        if (!r.ok) console.error(`paw: couldn't tell ${target} (${r.detail})`);
+        throw e;
+      }
+    } finally {
+      await watch.close();
     }
   } finally {
-    await reader.close();
-    await dropSharedManagerControl(space, pawServer(space)); // the reader's shared handle would keep this one-shot child alive
+    d.finish(space, target);
   }
 }
 
 async function rename(argv: string[]): Promise<void> {
   const parsed = parseArgs(argv);
-  const { space: spaceArg, newName } = parsed;
+  const { newName } = parsed;
   if (!newName) throw new Error(`paw: usage — paw rename [<folder|name>] <newname>`);
-  const child = process.env[handoffEnvKey("rename")] !== undefined;
+  // A defaulted space yields to the calling agent's own (COTAL_SPACE), as archive's does — an agent on team2027
+  // renaming itself must not land in `paw`. (Not a CALLER_SPACE_VERBS entry: see archiveSpace.)
+  const { archiveSpace, selfIn, callerIs } = await import("./archive.ts");
+  const space = archiveSpace(parsed.space, spaceWasChosen(), process.env);
+  if (process.env[handoffEnvKey("rename")] !== undefined) {
+    if (parsed.target === undefined) throw new Error("paw: the detached rename child needs <name> <newname>");
+    return renameChild(space, parsed.target, newName);
+  }
   let target = parsed.target;
   if (target === undefined) {
-    const { selfIn } = await import("./archive.ts");
-    const space = spaceArg ?? resolveSpace();
-    const me = await selfIn(space);
+    const me = await selfIn(space, process.env, "rename");
     if (!me) throw new Error(`paw: rename with one name renames the agent you are inside — none here; outside an agent: paw rename <folder|name> <newname>`);
     target = me;
   }
-  if (!child) {
-    const space = spaceArg ?? resolveSpace();
-    const self = agentRecord(space, target) !== undefined ? target : undefined;
-    if (self) {
-      const { callerIs } = await import("./archive.ts");
-      if (callerIs(space, self, readResumeId(personaFilePath(space, self)))) {
-        assertMutableByName(space, self, "rename");
-        return renameSelf(space, self, newName);
-      }
-    }
-  } else {
-    const space = spaceArg ?? resolveSpace();
-    try {
-      await waitTurnEnd(space, target);
-      try {
-        await renameNow(spaceArg, target, newName);
-      } catch (e) {
-        // The agent ended its turn waiting to be woken under the new name: a failure must reach it, not just this log.
-        const r = wakeAgent(space, target, `✕ paw rename to "${newName}" failed: ${(e as Error).message} — you are still "${target}"; rerun \`paw rename <name>\`, or carry on with your task`);
-        if (!r.ok) console.error(`paw: couldn't tell ${target} (${r.detail})`);
-        throw e;
-      }
-    } finally {
-      finishDetachedHandoff(space, "rename", target);
-    }
+  if (agentRecord(space, target) !== undefined && callerIs(space, target, readResumeId(personaFilePath(space, target)))) {
+    assertMutableByName(space, target, "rename");
+    renameSelf(space, target, newName);
     return;
   }
-  await renameNow(spaceArg, target, newName);
+  await renameNow(space, target, newName);
 }
 
-async function renameNow(spaceArg: string | undefined, target: string, newName: string): Promise<void> {
-  const child = process.env[handoffEnvKey("rename")] !== undefined;
-  const picked = defaultedSpace(target, spaceArg ?? resolveSpace(), spaceArg !== undefined || spaceWasChosen(), (s) => `paw rename ${target}#${s} ${newName}`);
+async function renameNow(spaceArg: string, target: string, newName: string, beforeMove?: () => Promise<void>): Promise<void> {
+  const child = beforeMove !== undefined;
+  const picked = defaultedSpace(target, spaceArg, true, (s) => `paw rename ${target}#${s} ${newName}`);
   if (picked.note) console.error(picked.note);
   const space = picked.space;
   assertUnambiguousTarget(space, target); // a bare token that's BOTH a known name and a folder here → fail loud
@@ -241,6 +282,7 @@ async function renameNow(spaceArg: string | undefined, target: string, newName: 
   const { from, to, restarted } = await withEnsuredManager(
     space,
     async (ctl) => {
+      await beforeMove?.(); // a self-rename: the agent must still be idle right before it is stopped
       // An agent NAME renames that agent (default or extra); a folder path relabels the folder's default.
       const { from, to } = renameAgentOnDisk(space, canonical, newName, target);
       // If the agent is live under the old name, retire it and respawn under the new one — it resumes
