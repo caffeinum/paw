@@ -431,6 +431,15 @@ assert(tailRead(file, 10_000).split("\n")[0] === "AAAAAAAAAA", "a window larger 
   assert(lastFailure([kitReply, kitPrompt, kitFail], "claude") === undefined, "swapped back to claude: kit's failure is history");
   assert(!!lastFailure([weekly], "kit")?.text, "a tail with nothing but the failure doesn't say whose it was → shown as before, never dropped on a guess");
   assert(!!lastFailure([weekly])?.text, "no harness given → as before");
+  // caffeinum/kit#4: kit's Failure() record in its real shape — claude's synthetic fields, but a msg_kit_ id.
+  const { recordHarness } = await import("../src/transcript.ts");
+  const kitFailTagged = JSON.stringify({ entrypoint: "sdk-cli", isApiErrorMessage: true, isSidechain: false, type: "assistant", timestamp: "2026-11-24T23:51:00.000Z", message: { content: [{ text: "API Error: provider 429 rate limited", type: "text" }], id: "msg_kit_3c1e4c8e9a516d2f3f1e7a100b6f1a52", model: "<synthetic>", role: "assistant", stop_reason: "stop_sequence", stop_sequence: "", type: "message", usage: { cache_creation_input_tokens: 0, cache_read_input_tokens: 0, input_tokens: 0, output_tokens: 0 } } });
+  assert(recordHarness(JSON.parse(kitFailTagged)) === "kit", "recordHarness: a synthetic record with a msg_kit_ id is kit's, before the synthetic check");
+  assert(lastFailure([claudeReply, claudeWake, kitFailTagged], "kit")?.text === "API Error: provider 429 rate limited", "a tagged kit failure stays on a kit seat even when the walk-back would say claude");
+  assert(lastFailure([kitReply, kitPrompt, kitFailTagged], "claude") === undefined, "…and is history on a claude seat, without the walk-back");
+  assert(recordHarness(JSON.parse(kitFail)) === undefined, "recordHarness: an untagged synthetic record (older kit) names neither");
+  assert(lastFailure([claudeReply, weekly, kitPrompt, kitFail], "kit")?.text === "API Error: provider 429 rate limited" && lastFailure([kitReply, kitPrompt, kitFail], "claude") === undefined, "untagged synthetic: the walk-back to the turn's prompt still decides");
+  assert(recordHarness(JSON.parse(weekly)) === undefined && !!lastFailure([claudeReply, claudeWake, weekly], "claude")?.text && lastFailure([claudeReply, claudeWake, weekly], "kit") === undefined, "claude's synthetic record → claude's (via its turn)");
   console.log("✓ runtime failures");
 }
 

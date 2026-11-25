@@ -415,8 +415,8 @@ export function lastFailure(lines: string[], harness?: TranscriptHarness): { tex
     if (rec?.type !== "assistant") continue;
     // A turn the CURRENT harness didn't write is history: claude's "You've hit your weekly limit" on an
     // agent swapped to kit is why it was swapped, not something kit is failing at (vercel/neon, 2026-11-24).
-    // A synthetic failure names no harness itself (kit's Failure() writes claude's exact shape), so the
-    // turn it ended decides. A tail that never says whose turn it was filters nothing (shown as before).
+    // A kit Failure() record names kit by its msg_kit_ id (kit#4). An untagged synthetic failure (claude's,
+    // or a kit build before kit#4) names no harness, so the turn it ended decides — a fallback only. A tail that never says whose turn it was filters nothing (shown as before).
     if (harness) {
       const owner = recordHarness(rec) ?? turnHarness(lines, i);
       if (owner && owner !== harness) return undefined;
@@ -431,17 +431,20 @@ export function lastFailure(lines: string[], harness?: TranscriptHarness): { tex
  *
  * kit with `storage: claude` appends to the agent's claude transcript (src/swap.ts), and every assistant
  * TURN it writes carries a `msg_kit_<hex>` message id (kit session/claude.go); claude's own ids are
- * `msg_…` from the API. A SYNTHETIC failure record (`model: "<synthetic>"` / `isApiErrorMessage`) is
- * written in the same shape by both — kit's `Failure()` copies claude's, uuid id and all — so it is
- * neutral here; {@link turnHarness} decides it from the turn it ended.
+ * `msg_…` from the API. kit's `Failure()` record keeps claude's SYNTHETIC shape (`model: "<synthetic>"` /
+ * `isApiErrorMessage`) but is tagged `msg_kit_` too (caffeinum/kit#4), so the id is checked first.
+ * An untagged synthetic record is neutral: claude writes it, and so do kit builds from before kit#4
+ * (uuid id) — {@link turnHarness} decides it from the turn it ended. That walk-back is only the
+ * fallback for those older kit builds.
  */
 export type TranscriptHarness = "claude" | "kit";
 export function recordHarness(rec: unknown): TranscriptHarness | undefined {
   const r = rec as { isApiErrorMessage?: unknown; message?: { id?: unknown; model?: unknown } } | null;
   if (!r || typeof r !== "object") return undefined;
-  if (r.isApiErrorMessage === true || r.message?.model === "<synthetic>") return undefined;
   const id = r.message?.id;
-  return typeof id === "string" && id.startsWith("msg_kit_") ? "kit" : "claude";
+  if (typeof id === "string" && id.startsWith("msg_kit_")) return "kit";
+  if (r.isApiErrorMessage === true || r.message?.model === "<synthetic>") return undefined;
+  return "claude";
 }
 
 /**
