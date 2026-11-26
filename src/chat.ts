@@ -487,7 +487,7 @@ async function chat(argv: string[]): Promise<void> {
   const remoteSpace = isRemoteSpace(space);
   // A name renamed BEFORE this chat began (a non-tty `paw hire` printed `paw chat @hire-… --only`, and the hire
   // has renamed itself since): chat the name it has now, not the chooser's "no agent".
-  if (target !== undefined && !fresh && !remoteSpace && folderForName(space, target) === undefined) {
+  if (target !== undefined && !fresh && folderForName(space, target) === undefined) {
     const to = followTarget(readRenameTrail(space), target, false, performance.timeOrigin);
     if (to) {
       process.stderr.write(`paw: ${target} is "${to}" now (renamed) — chatting with it\n`);
@@ -3987,8 +3987,9 @@ async function chat(argv: string[]): Promise<void> {
   // A target that renames itself (`paw rename`, the first thing a `paw hire` agent does) is FOLLOWED, not
   // lost: the rename trail (src/rename-trail.ts) says where its name went. A name still registered follows
   // only renames since this process began (an old trail out of a reused name must not pull the chat away);
-  // a name no longer registered follows the whole trail. A remote space's renames happen on another machine:
-  // the local trail never moves there, so it isn't polled.
+  // a name no longer registered follows the whole trail. Polled on remote spaces too: an agent hosted HERE on a
+  // remote space renames itself here and writes this machine's trail (team2027, 2026-11-25: `paw hire` stuck
+  // on hire-da9dcc after it became coach); another machine's renames simply never show up in it.
   /** A queued self-rename of the target: hold lines from the moment it is queued until the new name is live
    *  (src/rename-trail.ts RenameHold) — a line to the old name while its seat stops reached nobody. */
   const watchRenaming = (trail: ReturnType<typeof readRenameTrail>, followedFrom?: string): void => {
@@ -4058,7 +4059,7 @@ async function chat(argv: string[]): Promise<void> {
       emit(c.red(`! can't read the rename in flight: ${(e as Error).message}`));
     }
   };
-  const renameTimer = remoteSpace ? undefined : setInterval(followRename, 1000);
+  const renameTimer = setInterval(followRename, 1000);
   renameTimer?.unref();
   /**
    * Forget an endpoint that is gone (stopped after a failed startup, or never started): its roster,
