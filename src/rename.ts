@@ -24,7 +24,7 @@ import {
   withRegistryLock,
 } from "./addressing.ts";
 import { ensureSpaceFor, finishDetachedHandoff, handoffEnvKey, handoffLogPath, pawHomeDir, spawnDetachedHandoff, wakeAgent, withEnsuredManager } from "./lifecycle.ts";
-import { readRenameTrail, withRename, writeRenameTrail } from "./rename-trail.ts";
+import { clearRenamePending, markRenamePending, readRenameTrail, withRename, writeRenameTrail } from "./rename-trail.ts";
 import { dropSharedManagerControl } from "./control.ts";
 import { pawServer } from "./server.ts";
 import { moveCronJobs } from "./cron.ts";
@@ -144,7 +144,7 @@ export function assertRenamable(space: string, from: string, desired: string): s
 
 /** What a self-renamed agent is told when it comes back under its new name. */
 export function renamedWakeText(from: string, to: string): string {
-  return `↻ you are "${to}" now (renamed from "${from}"; same session) — carry on with your task`;
+  return `↻ you are "${to}" now (renamed from "${from}"; same session) — carry on with your task. Anything the operator typed while you were switching comes right after this; if the task is unclear, ask your question now`;
 }
 
 /** What a self-rename's two halves reach outside this module — real by default, stubbed by check:rename. */
@@ -155,6 +155,9 @@ export interface SelfRenameDeps {
   renameNow: (space: string, target: string, newName: string, beforeMove: () => Promise<void>) => Promise<void>;
   wake: (space: string, name: string, text: string) => { ok: boolean; detail: string };
   finish: (space: string, key: string) => void;
+  /** The queued-rename marker (src/rename-trail.ts): chat holds lines to the agent while it is there. */
+  markPending: (space: string, from: string, to: string) => void;
+  clearPending: (space: string, from: string) => void;
   log: (line: string) => void;
 }
 
@@ -178,6 +181,8 @@ const realDeps: SelfRenameDeps = {
   renameNow: (space, target, newName, beforeMove) => renameNow(space, target, newName, beforeMove),
   wake: wakeAgent,
   finish: (space, key) => finishDetachedHandoff(space, "rename", key),
+  markPending: markRenamePending,
+  clearPending: clearRenamePending,
   log: (l) => console.log(l),
 };
 
@@ -194,7 +199,9 @@ export function renameSelf(space: string, from: string, newName: string, d: Self
   // resolveSpace() there (the manager/mailbox ensure) would otherwise land on the default space.
   if (!d.spawn(space, ["rename", from, to, "--space", space], from))
     throw new Error(`paw: a rename of "${from}" is already in flight — progress: ${handoffLogPath(space, "rename", from)}`);
-  d.log(`⟳ "${from}" becomes "${to}" once THIS turn ends — end your turn now (a one-line reply).`);
+  d.markPending(space, from, to);
+  d.log(`⟳ "${from}" becomes "${to}" once THIS turn ends — end your turn now with one short line.`);
+  d.log(`  don't check \`paw status\`: it shows "${from}" until your turn ends. Questions for the operator wait for the wake DM.`);
   d.log(`  a detached child waits for the turn to end, renames you, restarts you as "${to}" on this same session and wakes you with a DM.`);
   d.log(`  progress: ${handoffLogPath(space, "rename", from)}`);
   return to;
@@ -237,7 +244,12 @@ export async function renameChild(space: string, target: string, newName: string
       await watch.close();
     }
   } finally {
-    d.finish(space, target);
+    // After the wake DM (renameNow sends it), so chat's held lines land behind it.
+    try {
+      d.clearPending(space, target);
+    } finally {
+      d.finish(space, target);
+    }
   }
 }
 

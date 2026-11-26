@@ -54,6 +54,23 @@ assert(sp.prompt === "--agent codex" && sp.agent === "grok" && sp.space === "s4"
 assert(throwsMsg(() => parseHireArgs(["--", "a", "b"]), /ONE task/), "-- with two words unquoted → ONE task");
 assert(throwsMsg(() => parseHireArgs(["-v"]), /unknown flag "-v".*paw hire -- /), "a lone -v → unknown flag, with the -- hint");
 
+// @name: the agent's name, up front (team2027, 2026-11-25: `paw hire @coach` briefed the agent with the task "@coach")
+const named = parseHireArgs(["@coach", task]);
+assert(named.name === "coach" && named.prompt === task, "@name then the task → named coach, the task kept");
+const bareNamed = parseHireArgs(["@coach"]);
+assert(bareNamed.name === "coach" && bareNamed.prompt === undefined, "a bare @name → named, the task is typed at the prompt");
+const flagged = parseHireArgs(["--agent", "kit", "@login-redirect", task, "--space", "s5"]);
+assert(flagged.name === "login-redirect" && flagged.agent === "kit" && flagged.space === "s5" && flagged.prompt === task, "@name among flags");
+assert(parseHireArgs(["--", "@coach"]).prompt === "@coach" && parseHireArgs(["--", "@coach"]).name === undefined, "-- @coach → a literal task, no name");
+assert(parseHireArgs(["@coach", "--", "@me"]).name === "coach" && parseHireArgs(["@coach", "--", "@me"]).prompt === "@me", "@name, then -- and a task that starts with @");
+assert(parseHireArgs(["@coach help me"]).prompt === "@coach help me", "a quoted task with spaces that starts with @ stays the task");
+assert(throwsMsg(() => parseHireArgs([task, "@x"]), /ONE task/), "an @word AFTER the task is not a name → ONE task");
+assert(throwsMsg(() => parseHireArgs(["@Coach"]), /isn't a usable name — lowercase kebab-case.*paw hire -- "@Coach"/), "@Coach (caps) → fails loud, with the -- hint");
+assert(throwsMsg(() => parseHireArgs(["@coach_bot"]), /isn't a usable name/), "@coach_bot (underscore) → fails loud");
+assert(throwsMsg(() => parseHireArgs(["@-coach"]), /isn't a usable name/), "@-coach → fails loud");
+assert(throwsMsg(() => parseHireArgs(["@"]), /isn't a usable name/), "a lone @ → fails loud");
+assert(throwsMsg(() => parseHireArgs(["@a", "@b"]), /ONE @name/), "two @names → fails loud");
+
 // harness map
 assert(HIRE_HARNESS.claude === undefined, "claude → paw's default harness (no agent: key)");
 assert(HIRE_HARNESS.kit?.agent === "kit" && HIRE_HARNESS.kit.model === undefined, "kit → kit, its own defaults");
@@ -78,6 +95,13 @@ assert(/1–2 words/.test(brief) && /own words from the task verbatim/.test(brie
 assert(/END THIS TURN/.test(brief), "brief: end the turn so the rename can land");
 const odd = "line one\n  `code` $HOME \"quoted\"\n";
 assert(hireBrief(odd).endsWith(odd), "brief: newlines, backticks, $ and quotes survive untouched");
+assert(/Do NOT run `paw status`/.test(brief) && /only lands after your turn ends/.test(brief), "brief: don't check paw status — the rename lands after the turn");
+assert(/one short line/.test(brief), "brief: end the turn with one short line");
+assert(/do NOT ask now/.test(brief) && /ask your question in the turn that begins with the wake DM/.test(brief), "brief: a question waits for the wake-DM turn, after the rename");
+assert(brief.indexOf("paw rename <name>") < brief.indexOf("do NOT ask now"), "brief: rename first, the question after");
+const namedBrief = hireBrief(task, "coach");
+assert(namedBrief.endsWith(`\n${task}`) && /as "coach"/.test(namedBrief), "named brief: says its name, the task verbatim last");
+assert(!/run `paw rename/.test(namedBrief) && /no `paw rename`/.test(namedBrief), "named brief: no self-rename step");
 
 // the flow (hireIn): ensure → register → harness → spawn → DM → re-read the name → chat, all stubbed
 {
@@ -132,6 +156,22 @@ assert(hireBrief(odd).endsWith(odd), "brief: newlines, backticks, $ and quotes s
   const nm = await hireIn("hs", "/w/app", task, "claude", n.deps);
   assert(!n.calls.some((c) => c[0] === "chat"), "flow (no tty): no chat");
   assert(n.out.length === 1 && n.out[0].includes(`paw chat @${nm} --only --space hs`), `flow (no tty): prints the chat command (${n.out[0]})`);
+
+  const nmd = fake({ tty: true });
+  const gotN = await hireIn("hs", "/w/app", task, "claude", nmd.deps, "coach");
+  assert(gotN === "coach", "flow (@name): born as coach");
+  assert(steps(nmd.calls) === "isTaken → ensure → register → spawn → send → renamedTo → chat", `flow (@name): taken checked before anything boots (${steps(nmd.calls)})`);
+  assert(nmd.calls.find((c) => c[0] === "register")?.[3] === "coach", "flow (@name): registered under its name, no temp name");
+  assert(nmd.calls.find((c) => c[0] === "send")?.[2] === hireBrief(task, "coach"), "flow (@name): the brief skips the self-rename");
+  assert(nmd.calls.find((c) => c[0] === "chat")?.[1] === "@coach", "flow (@name): chats @coach");
+  const nmt = fake({ tty: true, taken: true });
+  let takenMsg = "";
+  try {
+    await hireIn("hs", "/w/app", task, "claude", nmt.deps, "coach");
+  } catch (e) {
+    takenMsg = (e as Error).message;
+  }
+  assert(/the name "coach" is already used in space hs/.test(takenMsg) && steps(nmt.calls) === "isTaken", `flow (@name): a taken name fails loud before ensure/register (${steps(nmt.calls)})`);
 
   const t = fake({ tty: true, taken: true });
   let threw = "";

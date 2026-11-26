@@ -76,3 +76,111 @@ export function renamedSince(space: string, name: string, since: number): string
 export function followTarget(trail: RenameTrail, name: string, registered: boolean, since: number): string | undefined {
   return followTrail(trail, name, registered ? since : 0);
 }
+
+/**
+ * A self-rename that is QUEUED but has not landed: `spaces/<s>/renaming.json` maps the old name to
+ * `{ to, at }`. `renameSelf` writes it the moment the detached child is spawned; the child drops it in
+ * its `finally`, after the agent is back under the new name and its wake DM went out (or the rename gave
+ * up). While it is there, a chat aimed at the agent says `◌ renaming to <to>…` and HOLDS what you type,
+ * then sends it to the new name once it is live (src/chat.ts, {@link RenameHold}) — a line sent to the
+ * old name while its seat is being stopped was otherwise read by nobody (team2027, 2026-11-25).
+ */
+export type RenamePending = Record<string, { to: string; at: number }>;
+
+/** A child waits ≤30m for the turn to end; a marker older than this outlived a child that died hard. */
+export const RENAME_PENDING_MAX_MS = 35 * 60_000;
+
+function pendingPath(space: string): string {
+  return join(spaceDir(space), "renaming.json");
+}
+
+export function readRenamePending(space: string): RenamePending {
+  const file = pendingPath(space);
+  if (!existsSync(file)) return {};
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileSync(file, "utf8"));
+  } catch (e) {
+    throw new Error(`paw: ${file} is unreadable (${(e as Error).message}) — fix or delete it; it only marks a self-rename in flight`);
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error(`paw: ${file} is not a { from: { to, at } } map — fix or delete it`);
+  for (const [from, p] of Object.entries(parsed)) {
+    const h = p as { to?: unknown; at?: unknown } | null;
+    if (!h || typeof h.to !== "string" || typeof h.at !== "number") throw new Error(`paw: ${file}: the entry for "${from}" is not { to, at } — fix or delete it`);
+  }
+  return parsed as RenamePending;
+}
+
+function writeRenamePending(space: string, pending: RenamePending): void {
+  const file = pendingPath(space);
+  const tmp = `${file}.${process.pid}.tmp`;
+  writeFileSync(tmp, JSON.stringify(pending, null, 2) + "\n");
+  renameSync(tmp, file);
+}
+
+/** One rename per old name is in flight at a time (the child's pidfile is keyed by it), so no lock. */
+export function markRenamePending(space: string, from: string, to: string, at: number = Date.now()): void {
+  writeRenamePending(space, { ...readRenamePending(space), [from]: { to, at } });
+}
+
+export function clearRenamePending(space: string, from: string): void {
+  const pending = readRenamePending(space);
+  if (!(from in pending)) return;
+  delete pending[from];
+  writeRenamePending(space, pending);
+}
+
+/** Pure: the name `name` is being renamed to right now, if a fresh marker says so. */
+export function pendingRenameOf(pending: RenamePending, name: string, now: number): string | undefined {
+  const p = pending[name];
+  return p && now - p.at <= RENAME_PENDING_MAX_MS ? p.to : undefined;
+}
+
+/** The footer cell while a chat's target is mid-rename — never a bare `offline`. */
+export function renamingTag(from: string, to: string): string {
+  return `${from} ◌ renaming to ${to}…`;
+}
+
+/** The transcript line under the first line held during a rename. */
+export const renameHeldLine = (from: string, to: string): string => `◌ held — "${from}" is becoming "${to}"; sends to ${to} once it is back`;
+
+/**
+ * Pure: chat's lines to a target that is mid-rename. `begin` when the marker appears, `hold` each line typed
+ * meanwhile, `settle` every tick: nothing while the marker is there; once it is gone, the rename landed (the
+ * trail has `from → to`) → release to `to` when it is live; the rename gave up (no hop) → release to `from`,
+ * which the child woke again. The marker goes only after the wake DM, so held lines land after it.
+ */
+export class RenameHold {
+  private cur: { from: string; to: string; lines: string[] } | undefined;
+
+  get active(): { from: string; to: string; held: number } | undefined {
+    return this.cur && { from: this.cur.from, to: this.cur.to, held: this.cur.lines.length };
+  }
+
+  begin(from: string, to: string): void {
+    if (!this.cur) this.cur = { from, to, lines: [] };
+  }
+
+  /** Hold a line; true for the first one (say {@link renameHeldLine} once). */
+  hold(text: string): boolean {
+    if (!this.cur) throw new Error("RenameHold.hold: no rename in flight");
+    this.cur.lines.push(text);
+    return this.cur.lines.length === 1;
+  }
+
+  /** `renamedTo`: where the rename trail says `from` went (undefined = it never moved). */
+  settle(o: { stillPending: boolean; renamedTo: string | undefined; live: (name: string) => boolean }): { to: string; lines: string[]; landed: boolean } | undefined {
+    if (!this.cur || o.stillPending) return undefined;
+    const { from, to, lines } = this.cur;
+    const landed = o.renamedTo === to;
+    const target = landed ? to : from;
+    if (!o.live(target)) return undefined;
+    this.cur = undefined;
+    return { to: target, lines, landed };
+  }
+
+  /** Everything still held (a quit prints it). */
+  all(): { to: string; text: string }[] {
+    return this.cur ? this.cur.lines.map((text) => ({ to: this.cur!.to, text })) : [];
+  }
+}

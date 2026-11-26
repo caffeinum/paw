@@ -242,10 +242,11 @@ assert(renameAgentOnDisk(SPACE, FOLDER, "api2", "queue2").from === "api", "a for
 // The self-rename halves with their outside reach stubbed: renameSelf (in the agent's turn) and renameChild
 // (the detached child: wait for the turn → idle re-check right before the move → rename → always finish).
 {
-  const { renameSelf, renameChild } = await import("../src/rename.ts");
+  const { renameSelf, renameChild, renamedWakeText } = await import("../src/rename.ts");
   type Turn = { ended: boolean; why: string };
   const mk = (o: { spawnOk?: boolean; waits?: Array<{ ended: true } | { ended: false; why: string }>; idles?: Turn[]; renameFails?: string; wakeOk?: boolean } = {}) => {
     const calls: string[] = [];
+    const logged: string[] = [];
     const waits = [...(o.waits ?? [{ ended: true }])];
     const idles = [...(o.idles ?? [{ ended: true, why: "idle" }])];
     const deps = {
@@ -265,9 +266,11 @@ assert(renameAgentOnDisk(SPACE, FOLDER, "api2", "queue2").from === "api", "a for
       },
       wake: (_s: string, n: string, text: string) => (calls.push(`wake ${n}: ${text}`), { ok: o.wakeOk ?? true, detail: "x" }),
       finish: (_s: string, key: string) => void calls.push(`finish ${key}`),
-      log: () => undefined,
+      markPending: (_s: string, from: string, to: string) => void calls.push(`markPending ${from} ${to}`),
+      clearPending: (_s: string, from: string) => void calls.push(`clearPending ${from}`),
+      log: (l: string) => void logged.push(l),
     };
-    return { calls, deps };
+    return { calls, logged, deps };
   };
   const err = async (fn: () => Promise<unknown>): Promise<string> => {
     try {
@@ -282,38 +285,93 @@ assert(renameAgentOnDisk(SPACE, FOLDER, "api2", "queue2").from === "api", "a for
   const s1 = mk();
   assert(renameSelf(SPACE, "web-beta", "login redirect", s1.deps) === "login-redirect", "self: returns the cleaned new name");
   assert(s1.calls[0] === `spawn rename web-beta login-redirect --space ${SPACE} key=web-beta`, `self: spawns the child keyed by the old name (${s1.calls[0]})`);
+  assert(s1.calls[1] === "markPending web-beta login-redirect", `self: marks the rename queued once the child is spawned (${s1.calls[1]})`);
+  assert(s1.logged.some((l) => /don't check `paw status`/.test(l)), "self: tells the agent not to check paw status mid-turn");
   const s2 = mk();
   assert(throws(() => renameSelf(SPACE, "web-beta", "queue2", s2.deps)) && s2.calls.length === 0, "self: a taken name fails loud, nothing spawned");
   const s3 = mk({ spawnOk: false });
-  assert(throws(() => renameSelf(SPACE, "web-beta", "fresh-name", s3.deps)), "self: a rename already in flight (pidfile held) fails loud");
+  assert(throws(() => renameSelf(SPACE, "web-beta", "fresh-name", s3.deps)) && !s3.calls.some((c) => c.startsWith("markPending")), "self: a rename already in flight (pidfile held) fails loud, marks nothing");
 
   // renameChild: the happy path.
   const c1 = mk();
   await renameChild(SPACE, "hire-ab12", "login-redirect", c1.deps);
-  assert(c1.calls.join(" | ") === "watch hire-ab12 | wait | idle | renameNow hire-ab12 login-redirect | close | finish hire-ab12", `child: wait → idle → rename → close → finish (${c1.calls.join(" | ")})`);
+  assert(c1.calls.join(" | ") === "watch hire-ab12 | wait | idle | renameNow hire-ab12 login-redirect | close | clearPending hire-ab12 | finish hire-ab12", `child: wait → idle → rename → close → finish (${c1.calls.join(" | ")})`);
 
   // An operator line started a new turn during the wait: it is waited out before anything moves.
   const c2 = mk({ idles: [{ ended: false, why: "mid-turn" }, { ended: true, why: "idle" }], waits: [{ ended: true }, { ended: true }] });
   await renameChild(SPACE, "hire-ab12", "login-redirect", c2.deps);
-  assert(c2.calls.join(" | ") === "watch hire-ab12 | wait | idle | wait | idle | renameNow hire-ab12 login-redirect | close | finish hire-ab12", `child: a turn started late is waited out before the move (${c2.calls.join(" | ")})`);
+  assert(c2.calls.join(" | ") === "watch hire-ab12 | wait | idle | wait | idle | renameNow hire-ab12 login-redirect | close | clearPending hire-ab12 | finish hire-ab12", `child: a turn started late is waited out before the move (${c2.calls.join(" | ")})`);
 
   // The turn never ends: nothing renamed, the agent is told, the pidfile is freed.
   const c3 = mk({ waits: [{ ended: false, why: "did not finish its turn within 30m (last: busy)" }] });
   const m3 = await err(() => renameChild(SPACE, "hire-ab12", "login-redirect", c3.deps));
   assert(/nothing was renamed/.test(m3) && !c3.calls.some((c) => c.startsWith("renameNow")), "child: a turn that never ends → fails loud, nothing renamed");
-  assert(c3.calls.some((c) => c.startsWith("wake hire-ab12: ✕ paw rename gave up")) && c3.calls.at(-1) === "finish hire-ab12", "child: …the agent is woken with why, the pidfile freed");
+  assert(c3.calls.some((c) => c.startsWith("wake hire-ab12: ✕ paw rename gave up")) && c3.calls.slice(-2).join(" | ") === "clearPending hire-ab12 | finish hire-ab12", "child: …the agent is woken with why, the marker cleared, the pidfile freed");
 
   // The rename itself fails: the agent hears it under its OLD name, the error propagates, the pidfile is freed.
   const c4 = mk({ renameFails: "the name is taken" });
   const m4 = await err(() => renameChild(SPACE, "hire-ab12", "login-redirect", c4.deps));
   assert(m4 === "the name is taken", "child: a failed rename propagates its error");
   assert(c4.calls.some((c) => c.startsWith('wake hire-ab12: ✕ paw rename to "login-redirect" failed: the name is taken')), "child: …and wakes the agent under its old name");
-  assert(c4.calls.slice(-2).join(" | ") === "close | finish hire-ab12", "child: …the watch is closed and the pidfile freed");
+  assert(c4.calls.slice(-3).join(" | ") === "close | clearPending hire-ab12 | finish hire-ab12", "child: …the watch is closed, the marker cleared and the pidfile freed");
 
   // The late turn never ends either: fail before the move.
   const c5 = mk({ idles: [{ ended: false, why: "mid-turn" }], waits: [{ ended: true }, { ended: false, why: "did not finish" }] });
   const m5 = await err(() => renameChild(SPACE, "hire-ab12", "login-redirect", c5.deps));
   assert(/nothing was renamed/.test(m5) && !c5.calls.some((c) => c.startsWith("renameNow")) && c5.calls.at(-1) === "finish hire-ab12", "child: a late turn that never ends → nothing renamed, pidfile freed");
+  const wake = renamedWakeText("hire-da9dcc", "coach");
+  assert(/while you were switching/.test(wake) && /ask your question now/.test(wake), "wake DM: says held lines follow it and that now is the time to ask");
+}
+
+// A queued self-rename (spaces/<s>/renaming.json) and chat's hold while it is in flight (team2027, 2026-11-25:
+// "me" typed to hire-da9dcc while it restarted as coach reached nobody; the footer said "○ offline").
+{
+  const { readRenamePending, markRenamePending, clearRenamePending, pendingRenameOf, renamingTag, renameHeldLine, RenameHold, RENAME_PENDING_MAX_MS } = await import("../src/rename-trail.ts");
+  const PS = "test-pending";
+  assert(JSON.stringify(readRenamePending(PS)) === "{}", "pending: none by default");
+  markRenamePending(PS, "hire-da9dcc", "coach", 1000);
+  assert(readRenamePending(PS)["hire-da9dcc"]?.to === "coach", "pending: marked hire-da9dcc → coach");
+  assert(pendingRenameOf(readRenamePending(PS), "hire-da9dcc", 2000) === "coach", "pending: fresh → renaming to coach");
+  assert(pendingRenameOf(readRenamePending(PS), "hire-da9dcc", 1000 + RENAME_PENDING_MAX_MS + 1) === undefined, "pending: a marker older than any child's wait is ignored");
+  assert(pendingRenameOf(readRenamePending(PS), "coach", 2000) === undefined, "pending: only the old name is mid-rename");
+  clearRenamePending(PS, "hire-da9dcc");
+  clearRenamePending(PS, "hire-da9dcc");
+  assert(JSON.stringify(readRenamePending(PS)) === "{}", "pending: cleared (twice is fine)");
+  const { writeFileSync } = await import("node:fs");
+  const { spaceDir } = await import("../src/addressing.ts");
+  writeFileSync(join(spaceDir(PS), "renaming.json"), "[1]");
+  assert(throws(() => readRenamePending(PS)), "pending: a malformed marker file fails loud");
+  writeFileSync(join(spaceDir(PS), "renaming.json"), "{}");
+
+  // chat's footer during the switch
+  assert(renamingTag("hire-da9dcc", "coach") === "hire-da9dcc ◌ renaming to coach…", `chat footer: ${renamingTag("hire-da9dcc", "coach")}`);
+  assert(!/offline/.test(renamingTag("hire-da9dcc", "coach")), "chat footer: never a bare offline mid-rename");
+  assert(/sends to coach/.test(renameHeldLine("hire-da9dcc", "coach")), "chat: the held line names where it goes");
+
+  // The incident, replayed: queued → "me" typed → trail hop → marker cleared → coach live → "me" goes to coach.
+  const h = new RenameHold();
+  assert(h.active === undefined, "hold: idle until a rename is queued");
+  h.begin("hire-da9dcc", "coach");
+  assert(h.active?.from === "hire-da9dcc" && h.active.to === "coach" && h.active.held === 0, "hold: renaming state from the marker");
+  assert(h.hold("me") === true && h.hold("and you") === false, "hold: the first held line is announced once");
+  const liveSet = new Set<string>();
+  const live = (n: string) => liveSet.has(n);
+  assert(h.settle({ stillPending: true, renamedTo: undefined, live }) === undefined, "hold: nothing sent while the rename is queued");
+  assert(h.settle({ stillPending: true, renamedTo: "coach", live }) === undefined, "hold: nothing sent after the persona moved but before the wake DM went");
+  assert(h.settle({ stillPending: false, renamedTo: "coach", live }) === undefined, "hold: nothing sent until coach is live");
+  assert(JSON.stringify(h.all()) === JSON.stringify([{ to: "coach", text: "me" }, { to: "coach", text: "and you" }]), "hold: a quit meanwhile lists the held lines");
+  liveSet.add("coach");
+  const out = h.settle({ stillPending: false, renamedTo: "coach", live });
+  assert(out?.to === "coach" && out.landed && JSON.stringify(out.lines) === JSON.stringify(["me", "and you"]), "hold: the lines typed mid-rename reach the NEW name, in order");
+  assert(h.active === undefined && h.all().length === 0, "hold: done — back to normal sends");
+
+  // A rename that gave up: the lines go to the old name, which the child woke again.
+  const g = new RenameHold();
+  g.begin("hire-ab12", "login");
+  g.hold("hello");
+  const back = g.settle({ stillPending: false, renamedTo: undefined, live: (n) => n === "hire-ab12" });
+  assert(back?.to === "hire-ab12" && !back.landed && back.lines[0] === "hello", "hold: a rename that didn't land → the lines go to the old name");
+  assert(throws(() => new RenameHold().hold("x")), "hold: holding with no rename in flight fails loud");
 }
 
 if (failures > 0) {

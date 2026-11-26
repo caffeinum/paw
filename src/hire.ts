@@ -7,6 +7,8 @@
  * grok is kit with grok-4.7; codex is kit on its codex provider with kit's default model (kit alone is the same
  * today: kit's default provider is codex). Not `paw chat --agent codex`, which is cotal's codex connector.
  * Bare `paw hire` (no task) on a terminal asks for the task on one line (`hire › `), then does the same.
+ * `paw hire @name ["<task>"]` names it up front: born as `name` (kebab-case, free — else fail loud), its brief
+ * has no self-rename step; a bare `@name` asks for the task the same way. `--` before an `@…` task keeps it text.
  */
 import { randomBytes } from "node:crypto";
 import { createInterface } from "node:readline/promises";
@@ -29,11 +31,21 @@ export const HIRE_HARNESS: Readonly<Record<HireAgent, AgentTypeSpec | undefined>
   codex: { agent: "kit", provider: "codex" },
 };
 
-/** prompt undefined = bare `paw hire`: the task is typed at the prompt (see {@link hireTask}). */
-export type HireArgs = { prompt?: string; agent: HireAgent; space?: string };
+/** prompt undefined = bare `paw hire`: the task is typed at the prompt (see {@link hireTask}).
+ *  name = a leading `@name`: the agent is born under it and never renames itself. */
+export type HireArgs = { prompt?: string; name?: string; agent: HireAgent; space?: string };
+
+/** A hire's own name: lowercase kebab-case, as the self-naming brief asks for. */
+export function checkHireName(typed: string): string {
+  const name = typed.slice(1);
+  if (!/^[a-z0-9]+(-[a-z0-9]+)*$/.test(name))
+    throw new Error(`paw: "${typed}" isn't a usable name — lowercase kebab-case, e.g. @login-redirect (a task that starts with @: paw hire -- "${typed}")`);
+  return name;
+}
 
 export function parseHireArgs(argv: string[]): HireArgs {
   let prompt: string | undefined;
+  let name: string | undefined;
   let agent: HireAgent = "claude";
   let space: string | undefined;
   const value = (flag: string, v: string | undefined): string => {
@@ -57,19 +69,27 @@ export function parseHireArgs(argv: string[]): HireArgs {
       agent = v as HireAgent;
     } else if (a === "--space") space = value(a, argv[++i]);
     else if (a.startsWith("-") && !/\s/.test(a)) throw new Error(`paw: unknown flag "${a}" (a task that starts with "-": paw hire -- "<task>") — ${HIRE_USAGE}`);
-    else take(a); // a quoted task with spaces is the task even when it starts with "-"
+    else if (a.startsWith("@") && !/\s/.test(a) && prompt === undefined) {
+      // The agent's name, before the task (`paw hire @coach`, 2026-11-25: the whole "@coach" became the task).
+      if (name !== undefined) throw new Error(`paw: hire takes ONE @name — got @${name} and ${a} (a task that starts with @: paw hire @${name} -- "${a}")`);
+      name = checkHireName(a);
+    } else take(a); // a quoted task with spaces is the task even when it starts with "-"
   }
   if (prompt !== undefined && !prompt.trim()) throw new Error(`paw: hire needs the task — ${HIRE_USAGE}`);
-  return { ...(prompt !== undefined ? { prompt } : {}), agent, ...(space !== undefined ? { space } : {}) };
+  return { ...(prompt !== undefined ? { prompt } : {}), ...(name !== undefined ? { name } : {}), agent, ...(space !== undefined ? { space } : {}) };
 }
 
-/** The new hire's first message: the preamble, then the operator's words untouched. */
-export function hireBrief(prompt: string): string {
+/** The new hire's first message: the preamble, then the operator's words untouched. With `name` the operator
+ *  already named it — no self-rename step. */
+export function hireBrief(prompt: string, name?: string): string {
+  if (name !== undefined)
+    return [`You were just hired with \`paw hire\` as "${name}" — the operator named you, so keep that name (no \`paw rename\`).`, "", "The task, in the operator's words:", "", prompt].join("\n");
   return [
     "You were just hired with `paw hire`. Before anything else:",
     "1. Pick a really short name for yourself that matches the task below: 1–2 words, lowercase, kebab-case (e.g. `login-redirect`). Reuse the operator's own words from the task verbatim wherever you can.",
     "2. Rename yourself: run `paw rename <name>` (one argument — inside an agent it renames you). If it says the name is taken, pick another and run it again.",
-    "3. Then END THIS TURN with a one-line reply. The rename lands when your turn ends: paw restarts you under the new name on this same conversation and wakes you with a DM — start the task then.",
+    "3. Then END THIS TURN at once with one short line (e.g. `renaming to <name>`). Do NOT run `paw status` or check whether the rename landed: it only lands after your turn ends, so until then everything still shows your old name. paw then restarts you under the new name on this same conversation and wakes you with a DM — start the task in that turn.",
+    "4. If the task is unclear, do NOT ask now. Rename first, end the turn, and ask your question in the turn that begins with the wake DM.",
     "",
     "The task, in the operator's words:",
     "",
@@ -81,7 +101,7 @@ function tempName(): string {
   return `hire-${randomBytes(3).toString("hex")}`;
 }
 
-export const HIRE_USAGE = `hire ["<task>"] [--agent ${HIRE_AGENTS.join("|")}] [--space s] [-- "<task>"]   (a new agent here for the task: it names itself from your words via \`paw rename\`, then works on it; you drop into \`paw chat @<it> --only\`, which follows the rename. no task on a terminal: type it at the prompt; grok = kit -m grok-4.7; codex = kit on its codex provider, kit's default model — not chat's --agent codex connector)`;
+export const HIRE_USAGE = `hire [@name] ["<task>"] [--agent ${HIRE_AGENTS.join("|")}] [--space s] [-- "<task>"]   (a new agent here for the task: @name names it, else it names itself from your words via \`paw rename\`, then works on it; you drop into \`paw chat @<it> --only\`, which follows the rename. no task on a terminal: type it at the prompt; grok = kit -m grok-4.7; codex = kit on its codex provider, kit's default model — not chat's --agent codex connector)`;
 
 /** Everything hire reaches outside this module — real by default, stubbed by check:hire. */
 export interface HireDeps {
@@ -142,23 +162,25 @@ const realDeps: HireDeps = {
 
 /** The hire itself: register an extra here under a temp name, set its harness, spawn it, DM it the brief,
  *  then chat with it (or, off a terminal, print how to). Returns the name it had when hire finished. */
-export async function hireIn(space: string, folder: string, prompt: string, agent: HireAgent, d: HireDeps = realDeps): Promise<string> {
+export async function hireIn(space: string, folder: string, prompt: string, agent: HireAgent, d: HireDeps = realDeps, named?: string): Promise<string> {
+  // Taken is a fact on disk: refused before anything boots.
+  if (named !== undefined && d.isTaken(space, named)) throw new Error(`paw: the name "${named}" is already used in space ${space} — pick another (\`paw status --space ${space}\` lists them)`);
   // Up only once the argv is known good: a typo must not boot daemons (the mailbox too — the DM below sends as you).
   await d.ensure(space);
-  const temp = tempName();
-  if (d.isTaken(space, temp)) throw new Error(`paw: the temporary name "${temp}" is taken in space ${space} — run hire again`);
+  const temp = named ?? tempName();
+  if (named === undefined && d.isTaken(space, temp)) throw new Error(`paw: the temporary name "${temp}" is taken in space ${space} — run hire again`);
   const name = d.register(space, folder, temp);
   const spec = HIRE_HARNESS[agent];
   if (spec) d.applyType(space, name, spec);
   await d.spawn(space, name, folder);
-  await d.send(space, name, hireBrief(prompt));
-  d.err(`paw: hired "${name}" (${agent}) in ${folder} — it renames itself from your words, then starts`);
+  await d.send(space, name, hireBrief(prompt, named));
+  d.err(`paw: hired "${name}" (${agent}) in ${folder} — ${named !== undefined ? "it starts on the task" : "it renames itself from your words, then starts"}`);
 
   // It may already have renamed itself while we sent: chat the name it has now.
   const current = d.renamedTo(space, name) ?? name;
   if (!d.tty()) {
     // The chat follows the whole rename trail for a name that is no longer registered, so this line stays good after the rename.
-    d.out(`hired ${current}#${space} — talk to it: paw chat @${current} --only --space ${space}  (it renames itself shortly; the chat follows it to the new name)`);
+    d.out(`hired ${current}#${space} — talk to it: paw chat @${current} --only --space ${space}${named !== undefined ? "" : "  (it renames itself shortly; the chat follows it to the new name)"}`);
     return current;
   }
   await d.chat([`@${current}`, "--only", "--space", space]);
@@ -184,14 +206,14 @@ async function hire(argv: string[]): Promise<void> {
   // hiring must hire into team2027. (Not a CALLER_SPACE_VERBS entry: see archiveSpace.)
   const { archiveSpace } = await import("./archive.ts");
   const space = archiveSpace(spaceArg, spaceWasChosen(), process.env);
-  await hireIn(space, canonicalDir("."), prompt, agent);
+  await hireIn(space, canonicalDir("."), prompt, agent, realDeps, args.name);
 }
 
 const hireCommand: Command = {
   kind: "command",
   name: "hire",
   group: "Mesh",
-  summary: 'hire a new agent for a task: it names itself from your words, starts, and you chat with it — hire "<task>" [--agent claude|kit|grok|codex]',
+  summary: 'hire a new agent for a task: @name names it (else it names itself from your words), it starts, and you chat with it — hire [@name] "<task>" [--agent claude|kit|grok|codex]',
   usage: HIRE_USAGE,
   run: (a) => hire([...a.raw]),
 };

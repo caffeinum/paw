@@ -348,7 +348,9 @@ the full bound — that one is the broker, not paw.
   both commands.
   **Self-rename (2026-11-24):** inside an agent, `paw rename <newname>` (or naming yourself) hands off to a detached
   child that waits for the turn to end, then renames + respawns + DMs it under the new name; every rename is
-  recorded in `spaces/<s>/renamed.json`, which `paw chat` follows. → [cli.md#paw-hire](cli.md#paw-hire)
+  recorded in `spaces/<s>/renamed.json`, which `paw chat` follows. While one is queued, `spaces/<s>/renaming.json`
+  marks it: chat shows `◌ renaming to <new>…` and holds lines until the new name is live (2026-11-25).
+  → [cli.md#paw-hire](cli.md#paw-hire)
 
 ## paw move
 

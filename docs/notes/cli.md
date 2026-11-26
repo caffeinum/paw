@@ -636,6 +636,30 @@ drop into the chat with that agent in only mode".
   via `archiveSpace` (src/archive.ts), NOT CALLER_SPACE_VERBS: src/space.ts is in the manager's import graph and
   editing it forces a full manager restart (check:doctor A1).
 - **Argv.** A task starting with `-` works quoted (an argument with whitespace is the task) or after `--`.
+- **`paw hire @name ["<task>"]` (2026-11-25).** Live: `paw hire @coach` made the whole "@coach" the task, and the
+  agent was briefed with the task "@coach". A leading whitespace-free `@word` (before the task, not after `--`)
+  is the NAME: lowercase kebab-case (`checkHireName`, else fail loud with the `--` hint), refused if taken in
+  the space BEFORE anything boots, registered directly under it (no `hire-<hex>`), and the brief has no
+  self-rename step (`hireBrief(task, name)`). A bare `@name` asks for the task at `hire › `. `paw hire -- "@me"`
+  keeps a literal @-task; a quoted `"@x do y"` (whitespace) is the task too.
+- **Self-naming brief wording (2026-11-25).** The agent ran `paw rename coach`, then checked `paw status`
+  mid-turn ("the rename is queued but hasn't landed yet…") and asked "what should i coach?" in the same turn.
+  The brief now says: end the turn at once with one short line; do NOT run `paw status` (the rename only
+  lands after the turn ends); an unclear task's question waits for the turn that begins with the wake DM.
+  `renameSelf` prints the same, and the wake DM says "ask your question now".
+- **Nothing lost during the switch (2026-11-25).** Live: `me` typed at 16:23 went to `hire-da9dcc` while its
+  seat was being restarted as `coach` — read by nobody; the footer said `hire-da9dcc ○ offline`. Now
+  `renameSelf` writes `spaces/<s>/renaming.json` (`old → { to, at }`, src/rename-trail.ts) once the child is
+  spawned; the child clears it in its `finally`, AFTER the wake DM (or the give-up DM). Chat polls it with the
+  trail (1s): while it is there the footer says `old ◌ renaming to new…` (+ `◌ N waiting for new`), and lines
+  to the target are HELD (`RenameHold`, announced once); when the marker is gone they go to `new` once it is
+  live (the trail has the hop), or back to `old` when the rename gave up; a quit prints them. A marker older
+  than 35 min (a child that died hard) is ignored. Why the chat holds instead of the child re-delivering:
+  the chat is the one sender that knows a line is mid-rename, it holds before anything is sent (no
+  dedupe against what the old seat already read — a line it did read started a turn the child waited out),
+  and it reuses chat-away's hold-then-send shape; the child would need operator creds to read the old id's
+  DM stream. Not covered: a `paw dm` to the old name in that window (the old name is still registered until
+  the persona moves).
 - Tests: `check:hire` (argv, harness map vs checkAgentSpec, brief, the `hireIn` flow with stubbed deps for each
   --agent), `check:rename` (trail, corrupt trail, `followTarget`, self-rename prechecks, `renameSelf` and
   `renameChild` with stubbed deps: happy path, late turn, never-ending turn, failed rename). Not covered: a kit /
