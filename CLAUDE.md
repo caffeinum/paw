@@ -324,6 +324,10 @@ Each entry: what it is + the most load-bearing rule. Full notes behind the link.
   the poller's per-team `teams.seen` (exactly once either way); followed-PR events poke a relay sweep. While up
   (`github-forward.json` heartbeat) the keeper polls teams only to reconcile (each every 30 min). `check:github-forward`.
   → [messaging.md#github-forward](docs/notes/messaging.md#github-forward)
+- `src/github-react.ts` — `paw github react on|off|status` (default on): a delivered tag DM puts 👀 on its comment/body
+  (reviews can't), as the agent's App bot else the operator's gh; once per comment+team (`github.json` `reacted`), never
+  retried, never blocks the DM. A comment tagging a follower's team is left out of its follower DM (one comment = one
+  DM). `check:github-forward`, `check:github-relay`. → [messaging.md#github-react](docs/notes/messaging.md#github-react)
 - `src/inbox.ts` — `paw inbox`: pure reader + shared cursor; `--watch` keeps its own high-water mark;
   `--json` never advances the cursor; `--sent`, `--mark-read`. → [messaging.md#paw-inbox](docs/notes/messaging.md#paw-inbox)
 - `src/feed.ts` — `messageText` (THE flattener), `observerEndpoint`, `readConversation`, `pollLoop`. → [messaging.md#srcfeedts](docs/notes/messaging.md#srcfeedts)
