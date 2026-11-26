@@ -264,8 +264,10 @@ Each entry: what it is + the most load-bearing rule. Full notes behind the link.
 - `src/rename.ts` — relabel (moves persona + pin). Inside an agent `rename <new>` = itself, via a detached child that
   waits for the turn to end, then wakes it under the new name; every rename lands in `spaces/<s>/renamed.json`
   (src/rename-trail.ts), which `paw chat` follows. → [addressing.md#paw-rename](docs/notes/addressing.md#paw-rename)
-- `src/hire.ts` — `paw hire "<task>" [--agent claude|kit|grok|codex]`: extra agent here as `hire-<hex>`, first DM =
-  "name yourself from my words + `paw rename`" + the task verbatim, then `paw chat @it --only` (follows the rename);
+- `src/hire.ts` — `paw hire [@name] "<task>" [--agent claude|kit|grok|codex]`: extra agent here as `hire-<hex>` (or
+  `@name`: born under it, no self-rename), first DM = "name yourself from my words + `paw rename`, end the turn, no
+  `paw status`" + the task verbatim, then `paw chat @it --only` (follows the rename; holds lines while
+  `renaming.json` marks it mid-rename);
   grok = kit `grok-4.7`, codex = kit provider codex (kit's default model). `check:hire`. → [cli.md#paw-hire](docs/notes/cli.md#paw-hire)
 - `src/move.ts` — `paw move <a>#<from> --to-space <to> [--as <n>]`: another space, SAME machine — persona, kit dir, restart/unstick state, paw-owned hermes profile; source copies kept in `spaces/<from>/moved-to-<to>/`; session + beads stay (`--as` reassigns open beads); wake-gate consent, rollback on failure. → [addressing.md#paw-move](docs/notes/addressing.md#paw-move)
 - `src/relocate.ts` — `paw relocate <a>[#<s>] <new-folder> [--all]`: its folder moved (or paw `rename(2)`s it, same fs only); re-points persona `cwd:` + legacy registry, COPIES the session chain (cwd rewritten) + memory (git-root key) to the new slug — originals kept, a differing file blocks; other agents under the folder need `--all`; live = consent, stop → start resumes; self-relocate hands off to a detached child (lifecycle `spawnDetachedHandoff`, shared with self-adopt); `--archive-old` sets a clashing old folder aside; a defaulted space yields to the one space holding the agent. → [addressing.md#paw-relocate](docs/notes/addressing.md#paw-relocate)

@@ -129,7 +129,7 @@ import {
   type PasteBlock,
 } from "./paste.ts";
 import { isRemoteSpace, pawServer } from "./server.ts";
-import { followTarget, readRenameTrail } from "./rename-trail.ts";
+import { followTarget, pendingRenameOf, readRenamePending, readRenameTrail, RenameHold, renameHeldLine, renamingTag } from "./rename-trail.ts";
 import { draftRows, fitRows, parseComposed, RAIL, railMessage, railPastes, saidRows, strayPastes, type ViewOpts } from "./compose-view.ts";
 import { displayPos, echoRows, fitPainted, wrappedWidth } from "./width.ts";
 
@@ -1044,6 +1044,12 @@ async function chat(argv: string[]): Promise<void> {
     // about the agent: the target shows a loader, never `offline`.
     const linkUp = ready && !!conn && conn.phase(now) === "connected";
     const absent = lookup === "absent" ? "not found" : targetLost && lookup === "folder-gone" ? "folder gone" : undefined;
+    const switching = renameHold.active;
+    if (switching) {
+      if (switching.held) cell(heldCell(switching.held, switching.to), c.yellow);
+      cell(renamingTag(switching.from, switching.to), c.yellow);
+      return cells;
+    }
     const peer = peerStatusTag(curName ?? pendingName(), roster(), me, (n) => presenceVisible(filter, n), { connected: linkUp, absent });
     if (peer) cell(peer.text, peer.status === "working" ? c.yellow : peer.status === "waiting" ? c.magenta : peer.status === "absent" ? c.red : c.dim);
     return cells;
@@ -1132,6 +1138,8 @@ async function chat(argv: string[]): Promise<void> {
    *  the moment its presence appears — never refused, never a teleport history lesson. */
   let targetAway: AwayTarget | undefined;
   const heldAway = new HeldForReturn();
+  /** The target is renaming itself (a queued `paw rename`): lines to it wait here and go to the new name. */
+  const renameHold = new RenameHold();
   const roster =(): Presence[] | undefined => (ep && rosterSeen ? ep.getRoster() : undefined);
   const needEp = (): CotalEndpoint => {
     if (!ep || !ready) throw new Error("not connected yet — the line waits in the queue (◌) until it is");
@@ -2148,6 +2156,7 @@ async function chat(argv: string[]): Promise<void> {
     // A restarted agent comes back under a NEW id. Follow it, or every later line goes to the dead id —
     // the send still succeeds (the DM stream stores it) and nobody ever reads it (benmore-intern, 2026-09-16).
     if (ready && ev.type !== "offline" && curName && card.name === curName && card.id !== curId) curId = card.id;
+    if (ready && ev.type !== "offline" && ev.presence.status !== "offline" && renameHold.active) settleRename(lastRenameRead.stillPending, lastRenameRead.renamedTo);
     // The agent that couldn't be reached at startup came up after all: lines to it send again.
     if (ready && ev.type !== "offline" && ev.presence.status !== "offline" && targetLost && card.name.toLowerCase() === targetLost.name.toLowerCase()) {
       targetLost = undefined;
@@ -3837,7 +3846,13 @@ async function chat(argv: string[]): Promise<void> {
         const away = targetAway?.name.toLowerCase() === curName.toLowerCase() ? targetAway : undefined;
         const backPeer = away && findPeer(curName);
         if (backPeer && backPeer.status !== "offline") cameBack(backPeer.card); // a missed presence event
-        if (targetAway === away && away) {
+        const switching = renameHold.active;
+        if (switching && (curName === switching.from || curName === switching.to)) {
+          // Mid-rename: the old seat is about to stop and the new one isn't up — held, sent to the new name.
+          const first = renameHold.hold(flush(text, curName));
+          if (first) emit(c.dim(renameHeldLine(switching.from, switching.to)), "you");
+          refreshFooter();
+        } else if (targetAway === away && away) {
           // Another machine's agent, offline: held, sent when it is back — not refused (src/chat-away.ts).
           if (heldAway.hold(curName, flush(text, curName))) emit(c.dim(heldLine(curName)), "you");
           refreshFooter();
@@ -3974,11 +3989,47 @@ async function chat(argv: string[]): Promise<void> {
   // only renames since this process began (an old trail out of a reused name must not pull the chat away);
   // a name no longer registered follows the whole trail. A remote space's renames happen on another machine:
   // the local trail never moves there, so it isn't polled.
+  /** A queued self-rename of the target: hold lines from the moment it is queued until the new name is live
+   *  (src/rename-trail.ts RenameHold) — a line to the old name while its seat stops reached nobody. */
+  const watchRenaming = (trail: ReturnType<typeof readRenameTrail>, followedFrom?: string): void => {
+    const pending = readRenamePending(space);
+    const switching = renameHold.active;
+    if (!switching) {
+      // The target itself, or the name the chat just followed away from (a rename that landed inside one tick).
+      const from = [curName, followedFrom].find((n) => n !== undefined && pendingRenameOf(pending, n, Date.now()) !== undefined);
+      if (from) {
+        renameHold.begin(from, pending[from]!.to);
+        refreshFooter();
+      }
+      return;
+    }
+    settleRename(pendingRenameOf(pending, switching.from, Date.now()) !== undefined, trail[switching.from]?.to);
+  };
+  let lastRenameRead: { stillPending: boolean; renamedTo: string | undefined } = { stillPending: true, renamedTo: undefined };
+  const settleRename = (stillPending: boolean, renamedTo: string | undefined): void => {
+    lastRenameRead = { stillPending, renamedTo };
+    const live = (nm: string): boolean => {
+      const p = findPeer(nm);
+      return !!p && p.status !== "offline";
+    };
+    const done = renameHold.settle({ stillPending, renamedTo, live });
+    if (!done) return;
+    const peer = findPeer(done.to)!;
+    if (curName === done.to) curId = peer.card.id;
+    if (done.lines.length)
+      emit(c.green(`${LIVE} ${done.to} is ${done.landed ? "back under its new name" : "still here (the rename didn't land)"} — sending ${done.lines.length === 1 ? "the line" : `${done.lines.length} lines`} you typed meanwhile`));
+    for (const text of done.lines) sendDm(done.to, peer.card.id, text);
+    rl?.setPrompt(promptFor());
+    refreshFooter();
+  };
   const followRename = (): void => {
     if (!curName || closing) return;
     let to: string | undefined;
+    let trail: ReturnType<typeof readRenameTrail>;
     try {
-      to = followTarget(readRenameTrail(space), curName, folderForName(space, curName) !== undefined, performance.timeOrigin);
+      trail = readRenameTrail(space);
+      to = followTarget(trail, curName, folderForName(space, curName) !== undefined, performance.timeOrigin);
+      if (!to) watchRenaming(trail);
     } catch (e) {
       if (renameTimer) clearInterval(renameTimer);
       emit(c.red(`! can't follow renames any more: ${(e as Error).message}`));
@@ -4001,6 +4052,11 @@ async function chat(argv: string[]): Promise<void> {
     loadInfo();
     refreshFooter();
     emit(c.dim(`↪ ${from} is "${to}" now (renamed) — following it`));
+    try {
+      watchRenaming(trail, from);
+    } catch (e) {
+      emit(c.red(`! can't read the rename in flight: ${(e as Error).message}`));
+    }
   };
   const renameTimer = remoteSpace ? undefined : setInterval(followRename, 1000);
   renameTimer?.unref();
@@ -4391,7 +4447,7 @@ async function chat(argv: string[]): Promise<void> {
     const queued = deferred.unsentLines();
     const out = [...outbox.pending(), ...outbox.failed()];
     const kept = awayDraft ? [...keptUnsent, { to: awayDraft.to, text: awayDraft.text }] : keptUnsent;
-    const waiting = heldAway.all();
+    const waiting = [...heldAway.all(), ...renameHold.all()];
     const n = kept.length + queued.length + out.length + waiting.length;
     if (n) {
       writeOut(c.red(`\n✕ quitting with ${n} message${n === 1 ? "" : "s"} not sent:\n`));
