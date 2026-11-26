@@ -204,13 +204,16 @@ in the same launcher (`bin/paw-sandbox-run.mjs`) as claude's: `container run …
 | `$PAW_HOME/bin/linux-arm64/` (`KIT_LINUX_BIN` overrides) | `/paw/kit` | ro | the linux kit; the dir must hold nothing else (refused otherwise) |
 | `…/sandbox/<n>/creds/` | the creds dir's own path | ro | ONLY its mesh creds, re-copied on renewal — as for claude |
 | `…/sandbox/<n>/kit-auth/` | `/paw/kit-auth` | ro | ONE provider's access token ([below](#the-provider-login)) |
+| each `~/.claude/skills/<n>` (realpath) | `/paw/claude/skills/<n>` | ro | the operator's skills, as for claude; `handoff` is one |
 | `…/sandbox/<n>/seat/` | `/paw/seat` | ro | `bashenv.sh` (kit's persistent shell is a non-interactive bash, so `~/.env` + `~/.bashrc` reach it), a CA |
 
 Env by name only: `TERM`/`COLORTERM`/`LANG`/`LC_*`/`TZ`, `COTAL_SPACE`/`COTAL_NAME`; the paths (`HOME`, `KIT_HOME`,
 `CLAUDE_CONFIG_DIR`, `PATH`, `BASH_ENV`) from the per-launch env file. A broker on a private CA: the manager's
 `NODE_EXTRA_CA_CERTS` goes into `/paw/seat/ca` with `SSL_CERT_DIR=/etc/ssl/certs:/paw/seat/ca` (Go keeps the public
-roots); `SSL_CERT_FILE` is copied as a whole bundle. The brief gets `SANDBOX_KIT_BRIEF` (no claude skills/MCP lines:
-kit gets no skills mounted and has no MCP client — `paw mcp add --to <kit agent>` is refused).
+roots); `SSL_CERT_FILE` is copied as a whole bundle. The brief gets `SANDBOX_KIT_BRIEF` (no MCP lines: kit has no MCP
+client — `paw mcp add --to <kit agent>` is refused). The operator's skills mount read-only at `/paw/claude/skills/<n>`
+as for claude (2026-11-25: before that a kit seat got none, so `handoff --to` from neon found an empty dir); plugin
+skills don't (they need claude's `--plugin-dir`).
 
 **The linux kit.** Built by paw on the CLI side before the spawn when missing: `ensureKitLinuxBinary` cross-builds
 from `$KIT_SRC` (the same checkout the host kit comes from; default `~/Github/caffeinum/kit`). No checkout → fail loud

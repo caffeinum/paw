@@ -563,7 +563,7 @@ export function sandboxLaunch(spec: LaunchSpec, o: SandboxLaunchOpts): LaunchSpe
  * launcher.log (once per launch) and `skills.json` (read by `paw sandbox ls`). Empty mount points a previous launch
  * left in the agent's own skills dir are removed; an agent's own non-empty skill of the same name is shadowed.
  */
-function mountSandboxSkills(claudeDir: string, stateDir: string, select: SkillSelection, env: NodeJS.ProcessEnv): SandboxSkillSet {
+export function mountSandboxSkills(claudeDir: string, stateDir: string, select: SkillSelection, env: NodeJS.ProcessEnv): SandboxSkillSet {
   const set = collectSandboxSkills(select, env);
   const own = join(claudeDir, "skills");
   if (existsSync(own))
