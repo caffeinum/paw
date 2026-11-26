@@ -24,6 +24,7 @@ import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join } from "node:path";
 import type { LaunchSpec } from "@cotal-ai/core";
 import { hostKitLogin, KIT_AUTH_MOUNT, kitApiProvider, kitCliName, linkKitAuthMirror, vmKitLogin, vmOwnLoginHas } from "../bin/paw-sandbox-kitauth.mjs";
+import { readSandboxSkills } from "./sandbox-skills.ts";
 import { readAgentType, readSandbox, sandboxClaudeDir, sandboxStateDir } from "./session.ts";
 import {
   assertSandboxable,
@@ -32,6 +33,7 @@ import {
   containerName,
   readSandboxForward,
   readSandboxImage,
+  mountSandboxSkills,
   readSandboxMemory,
   SANDBOX_CLAUDE_MOUNT,
   SANDBOX_HOME_MOUNT,
@@ -265,6 +267,9 @@ export function sandboxKitLaunch(spec: LaunchSpec, o: SandboxKitLaunchOpts): Lau
     copyFileSync(extra, join(seatDir, "ca", "extra-ca.pem"));
     vmEnv.SSL_CERT_DIR = `/etc/ssl/certs:${SANDBOX_SEAT_MOUNT}/ca`;
   }
+  // The operator's skills, read-only at /paw/claude/skills/<name> as for a sandboxed claude (the brief's
+  // `/paw/claude/skills/handoff/handoff` is one). Plugins need claude's --plugin-dir, which kit has no use for.
+  const skills = mountSandboxSkills(claudeDir, stateDir, readSandboxSkills(o.configPath), env).mounts.filter((m) => m.kind === "skill");
   const vmEnvFile = join(stateDir, "vm.env");
   writeFileSync(vmEnvFile, Object.entries(vmEnv).map(([k, v]) => `${k}=${v}\n`).join(""), { mode: 0o600 });
 
@@ -284,6 +289,8 @@ export function sandboxKitLaunch(spec: LaunchSpec, o: SandboxKitLaunchOpts): Lau
     "-v", `${credsMirror}:${dirname(creds)}:ro`,
     "-v", `${kitBinDir}:${SANDBOX_KIT_MOUNT}:ro`,
     ...(login === "host" ? ["-v", `${authDir}:${KIT_AUTH_MOUNT}:ro`] : []),
+    // AFTER /paw/claude: each nests inside it.
+    ...skills.flatMap((m) => ["-v", `${m.host}:${m.vm}:ro`]),
     ...KIT_PASS_ENV.filter((k) => seatEnv[k] !== undefined).flatMap((k) => ["-e", k]),
     readSandboxImage(o.configPath),
     SANDBOX_KIT_BIN,

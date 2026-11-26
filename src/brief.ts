@@ -202,12 +202,15 @@ export const SANDBOX_BRIEF: readonly string[] = [
     `paw on the host stores it in that agent's folder and answers with a receipt; never put a secret in a DM.`,
 ];
 
-/** {@link SANDBOX_BRIEF} for a kit seat in the VM (src/sandbox-kit.ts): the same home rules, none of claude's
- *  skills/MCP/handoff mounts (kit has no MCP client and gets no skills mounted). */
+/** {@link SANDBOX_BRIEF} for a kit seat in the VM (src/sandbox-kit.ts): the same home rules and skills/handoff
+ *  mounts, no MCP (kit has no MCP client) and no plugin skills (they need claude's --plugin-dir). */
 export const SANDBOX_KIT_BRIEF: readonly string[] = [
   `YOU RUN IN A SANDBOX: a Linux VM whose filesystem is WIPED on every launch, except your folder, your`,
   `session store and your HOME (/root, persistent, private to you). Keep everything that must survive in ~:`,
   `secrets in ~/.env (KEY=value lines — your shell sources it automatically), shell setup in ~/.bashrc, tools via`,
   `plain installs (\`npm i -g x\`, \`pip install x\`, \`cargo install x\` land in ~ and on PATH). apt packages do NOT`,
   `survive. Never write a secret into your folder, a message or a log: ~/.env is the place.`,
+  `The operator's skills are mounted READ-ONLY under /paw/claude/skills/<name> (read a SKILL.md there to use one).`,
+  `To give another agent a secret: \`/paw/claude/skills/handoff/handoff --to <agent>[#space] NAME < file\` (or pipe it in).`,
+  `paw on the host stores it in that agent's folder and answers with a receipt; never put a secret in a DM.`,
 ];

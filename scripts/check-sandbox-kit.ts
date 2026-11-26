@@ -189,6 +189,8 @@ console.log("refusals before a launch (spawn site / swap)");
 
 console.log("the launch, through the kit connector");
 writeStore(kitStore, Date.now() + 3_600_000);
+mkdirSync(join(home, ".claude", "skills", "handoff"), { recursive: true });
+writeFileSync(join(home, ".claude", "skills", "handoff", "SKILL.md"), "---\nname: handoff\n---\n");
 const configPath = persona("neon", 'agent: kit\nkitArgs: ["-m","grok-4.7"]\nstorage: claude\n');
 const build = () =>
   kitConnector.buildLaunch({ space: SPACE, name: "neon", configPath, workspaceRoot: root, servers: "tls://192.168.64.1:4222", creds, id: "actor-neon", lifecycleUid: "lc-1", subscribe: ["general"] } as never);
@@ -215,6 +217,7 @@ const homeDir = sbx.sandboxHomeDir("neon");
   assert(kargs.includes("--overwrite") && f("--session-id") === PIN && kargs.slice(-2).join(" ") === "-m grok-4.7", "storage: claude → --overwrite; first boot --session-id <pin>; kitArgs verbatim, last");
   assert(f("--append-system-prompt-file") === join(kitDir, "system.md"), "its brief is in its kit dir");
   assert(vols.includes(`${folder}:${folder}`) && vols.includes(`${sandboxClaudeDir(configPath)}:/paw/claude`) && vols.includes(`${homeDir}:/root`), "folder rw, its claude store at /paw/claude (storage: claude lands there), its private home at /root");
+  assert(vols.includes(`${join(home, ".claude", "skills", "handoff")}:/paw/claude/skills/handoff:ro`) && vols.indexOf(`${sandboxClaudeDir(configPath)}:/paw/claude`) < vols.findIndex((v) => v.endsWith(":/paw/claude/skills/handoff:ro")), "the operator's skills are mounted read-only at /paw/claude/skills/<name>, after /paw/claude (the brief's handoff script is there)");
   assert(vols.includes(`${kitDir}:${kitDir}`), "kit's brief/state dir rw at its own path (schedules.json, read by paw sleep)");
   assert(vols.includes(`${join(home, ".paw", "bin", "linux-arm64")}:/paw/kit:ro`), "the linux kit's dir is mounted READ-ONLY at /paw/kit");
   assert(vols.includes(`${join(stateDir, "kit-auth")}:/paw/kit-auth:ro`), "the login mirror is mounted READ-ONLY at /paw/kit-auth");
