@@ -8,6 +8,7 @@
  *   paw github org [<org>]              the organization agents' teams live in (src/github-app.ts config)
  *   paw github teams [--apply]          a closed, memberless team per agent of the space: @org/<agent> tags reach it
  *   paw github forward on|off|status    this machine streams the org's tags by webhook (src/github-forward.ts)
+ *   paw github react on|off|status      👀 on the comment a delivered team tag came from (src/github-react.ts; default on)
  *   paw github app set <agent> --app-id N --installation-id N --key <pem>   the agent's gh + git act as <slug>[bot]
  *   paw github app test <agent>         mint a token, list the installation's repos (read-only)
  *   paw github app ls                   registered Apps and their tokens' expiry
@@ -62,7 +63,7 @@ import { ensureSecret, secretPath } from "../github-forward.ts";
 import { callerSpace } from "../space.ts";
 
 const USAGE =
-  "github watch <pr> [<agent>[#space]] · github unwatch <pr> [<agent>[#space]] · github ls · github tick · github org [<org>] · github teams [--apply] [--org <org>] [--exclude <glob,…>] · github forward on|off|status [--space s] · " +
+  "github watch <pr> [<agent>[#space]] · github unwatch <pr> [<agent>[#space]] · github ls · github tick · github org [<org>] · github teams [--apply] [--org <org>] [--exclude <glob,…>] · github forward on|off|status [--space s] · github react on|off|status · " +
   "github app set <agent> --app-id N --installation-id N --key <pem> · github app test <agent> · github app ls   (<pr> = URL, owner/repo#N, or #N in the repo)";
 
 interface Args {
@@ -271,6 +272,8 @@ async function github(argv: string[]): Promise<void> {
       return app(a, space);
     case "forward":
       return forward(a, a.space ?? callerSpace());
+    case "react":
+      return react(a);
     default:
       throw new Error(`paw github: ${a.sub ? `unknown subcommand "${a.sub}"` : "missing subcommand"} — ${USAGE}`);
   }
@@ -312,6 +315,22 @@ export function forward(a: Args, space: string, out: (l: string) => void = (l) =
   out(`  receiver: 127.0.0.1 only; deliveries signed with ${secretPath()} (0600)`);
   out(`  GitHub allows one forward per org: run this on ONE machine. \`paw github forward status\` shows whether it is up.`);
   out(`  the mailbox must run a release that has it: \`paw release && paw restart${space === "paw" ? "" : ` --space ${space}`}\` (mailbox only when the manager fingerprint is unchanged)`);
+}
+
+/** `paw github react on|off|status`: the 👀 on a delivered team tag's comment (src/github-react.ts). Exported for the check. */
+export function react(a: Args, out: (l: string) => void = (l) => console.log(l)): void {
+  const [verb, extra] = a.positionals;
+  if (extra !== undefined || !verb) throw new Error(`paw github: react takes on|off|status — ${USAGE}`);
+  if (verb === "status") {
+    out(readConfig().react === false ? "off: delivered team tags get no reaction (`paw github react on`)" : "on: a delivered team tag puts 👀 on its comment — as the agent's App bot when it has one, else as the operator's gh");
+    return;
+  }
+  if (verb !== "on" && verb !== "off") throw new Error(`paw github: react "${verb}" is not on|off|status — ${USAGE}`);
+  updateConfig((c) => {
+    if (verb === "off") c.react = false;
+    else delete c.react;
+  });
+  out(verb === "off" ? "✓ off — delivered team tags get no 👀 (from the next delivery)" : "✓ on — a delivered team tag puts 👀 on its comment (from the next delivery)");
 }
 
 /** The cli/gh-webhook extension is installed (`gh webhook forward` exists), or a loud error. */

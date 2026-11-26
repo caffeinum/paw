@@ -222,8 +222,29 @@ stream the org's events and a tag arrives in seconds; the poll stays as a reconc
 - **PR followers too:** a comment/review event on a PR the relay follows triggers one relay sweep (3s debounce) from
   the mailbox, so PR followers hear it in seconds; the sweep is the keeper's own (same lock, cursors, outbox).
   CI results and merges still wait for the keeper tick (those events aren't forwarded).
+- **One comment, one DM (2026-11-25):** a comment or review whose body tags a follower's team is left out of that
+  follower's PR DM — it already arrives as the tag DM (evals#2029: `@firegoat-ai/ux nice, merge it` reached ux as the
+  tag and again inside the `🐙 github · …` DM). Events carry the `owner/slug` teams their body tags; an event by the
+  agent's own logins stays (the tag path skips those). Two follower DMs a few seconds apart are otherwise distinct
+  events seen by distinct sweeps (the poke sweep, then the keeper's with the settled CI) — not repeats.
+  Tag deliveries log `→ <agent>#<space> (tag)`.
+- **gh-webhook exits on every websocket drop** (cli/gh-webhook v0.2.0: `handleWebsocket` wraps the read error with
+  `%w`, so `runFwd`'s `websocket.IsCloseError(err, 1006)` retry never matches; cobra then prints `Error: …` and the
+  whole flag usage, exit 1). paw restarts it (5s backoff); the DOWN line now quotes the `Error:` line
+  (`ghExitReason`), not the usage tail (2026-11-26T00:03Z: only `-R/-S/-U` flag lines were logged).
 
 `check:github-forward` (a stub `gh` POSTs signed fixture deliveries; no webhook is ever created).
+
+## 👀 on a delivered tag {#github-react}
+
+`src/github-react.ts` + `paw github react on|off|status` (config `react: false` = off; on by default). Once a team-tag
+DM is handed to the mesh — by push straight away, by poll when its outbox entry is sent — paw reacts `eyes` on what
+tagged: an issue/PR comment `POST repos/{o}/{r}/issues/comments/{id}/reactions`, a review comment
+`…/pulls/comments/{id}/reactions`, an issue/PR body `…/issues/{n}/reactions`. A review has no reaction endpoint:
+skipped, one log line. The tagged agent's App bot reacts with the installation token the keeper keeps in its token
+dir (missing/expired → a failure line, never the operator instead); an agent without an App → the operator's `gh`.
+Claimed in `github.json` `reacted` (tag ids, ≤5000) before the call: once per comment + team, never retried; a
+failure is one line and never touches the DM. The bot needs the App's Issues/Pull requests write permission.
 
 ## GitHub Apps: an agent writes as <slug>[bot] {#github-apps}
 

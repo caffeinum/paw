@@ -14,7 +14,12 @@
  *   7. while the forwarder is up the keeper polls only to reconcile; when gh exits it is said once, the status
  *      goes down, the keeper polls at the 2-min pace again (logged), and gh is started again with backoff;
  *   8. "a hook already exists" is said plainly and the status says conflict;
- *   9. the secret never appears in a log line; `forward off` stops the stub.
+ *   9. the secret never appears in a log line; `forward off` stops the stub;
+ *  10. 👀 on a delivered tag: an issue comment, a review comment and an issue body each hit their own reactions
+ *      endpoint; a review gets none (said); the agent's App bot reacts with its token when it has one, else the
+ *      operator's gh; a tag found by the poll reacts after its outbox send; once per comment + team; a failed
+ *      reaction is said once and the DM still goes; `paw github react off` = no call;
+ *  11. gh-webhook's exit (cobra: `Error: …` then the whole usage) is logged as its error line, not the usage.
  * Run: pnpm check:github-forward
  */
 import { createHmac } from "node:crypto";
@@ -79,7 +84,7 @@ setInterval(async () => {
   busy = true;
   if (fs.existsSync(path.join(dir, "exit"))) {
     fs.rmSync(path.join(dir, "exit"));
-    process.stderr.write("error receiving json event: websocket: close 1006 (abnormal closure)\\n");
+    process.stderr.write("Error: error receiving json event: websocket: close 1006 (abnormal closure): unexpected EOF\\nUsage:\\n  forward --events=<types> [--url=<url>] [flags]\\n\\nExamples:\\n# create a dev webhook\\n\\n$ gh webhook forward --events=issues --org=github --url=\\"http://localhost:9999/webhooks\\"\\n\\nFlags:\\n  -R, --repo string          Name of the repo where the webhook is installed\\n  -S, --secret string        Webhook secret for incoming events\\n  -U, --url string           Address of the local server to receive events.\\n");
     process.exit(1);
   }
   for (const f of fs.readdirSync(path.join(dir, "queue")).sort()) {
@@ -103,9 +108,19 @@ const runs = () => (existsSync(join(stubDir, "runs.jsonl")) ? readFileSync(join(
 const drained = () => until(() => readdirSync(queue).length === 0 && answers().length === seq);
 
 // ── fake REST (team list + the poller's search) ──
-const restState = { comments: [] as { id: number; body: string; user: string; at: string }[], searches: 0 };
+const restState = { comments: [] as { id: number; body: string; user: string; at: string }[], searches: 0, reactions: [] as string[], failReact: false };
+const botReactions: string[] = [];
+const fakeHttp: import("../src/github-app.ts").Http = async (method, path, auth, body) => {
+  botReactions.push(`${method} ${path} ${auth} ${JSON.stringify(body)}`);
+  return {};
+};
 const iso = (t: number) => new Date(t).toISOString().replace(/\.\d+Z$/, "Z");
-const fakeRest: import("../src/github-teams.ts").Rest = async (method, path) => {
+const fakeRest: import("../src/github-teams.ts").Rest = async (method, path, fields) => {
+  if (method === "POST" && path.endsWith("/reactions")) {
+    if (restState.failReact) throw new Error("gh api POST reactions failed: HTTP 403 Resource not accessible");
+    restState.reactions.push(`${path} ${JSON.stringify(fields)}`);
+    return {};
+  }
   if (method === "GET" && path.startsWith("orgs/acme/teams?")) return path.endsWith("page=1") ? [{ name: "evals-intern", slug: "evals-intern" }, { name: "pm", slug: "pm" }, { name: "nobody", slug: "nobody" }] : [];
   if (method === "GET" && path.startsWith("search/issues?")) {
     restState.searches++;
@@ -132,6 +147,7 @@ A.updateConfig((c) => {
   c.org = "acme";
   c.apps["evals-intern"] = { space: SPACE, appId: "1", installationId: "2", slug: "acme-evals-intern", botId: 9, where: "host" };
 });
+A.writeToken("evals-intern", A.readConfig().apps["evals-intern"]!, { token: "BOT_TOKEN", expiresAt: new Date(Date.now() + 3600e3).toISOString() });
 C.forward({ positionals: ["on"] }, SPACE, out, () => {});
 const secret = readFileSync(F.secretPath(), "utf8").trim();
 ok("forward on records the space and makes a 0600 secret", A.readConfig().forward?.space === SPACE && (statSync(F.secretPath()).mode & 0o777) === 0o600 && /^[0-9a-f]{64}$/.test(secret));
@@ -151,6 +167,7 @@ const deps = {
   machineOf: () => "here",
   gh: () => stub,
   rest: () => fakeRest,
+  http: fakeHttp,
   now: () => now,
   rescanMs: 100,
   beatMs: 100,
@@ -193,6 +210,41 @@ ok("a review body tag → one DM", ei.filter((t) => t === "you were tagged by re
 ok("a review comment tag → one DM to each tagged agent", ei.filter((t) => t.endsWith("#discussion_r4")).length === 1 && sent.filter((s) => s.agent === "pm" && s.text.endsWith("#discussion_r4")).length === 1, sent);
 ok("the edit of a sent comment, the agent's own bot, its github: login and a team nobody here owns send nothing", sent.length === 4, sent);
 
+// ── 10a. 👀 on what was delivered ──
+const eyes = JSON.stringify({ content: "eyes" });
+ok("an issue comment tag → the bot reacts on issues/comments/{id} with its own token", botReactions.filter((c) => c === `POST /repos/acme/evals/issues/comments/2/reactions BOT_TOKEN ${eyes}`).length === 1, botReactions);
+ok("a review comment tag → pulls/comments/{id}: the bot for evals-intern, the operator's gh for pm (no App)", botReactions.includes(`POST /repos/acme/evals/pulls/comments/4/reactions BOT_TOKEN ${eyes}`) && restState.reactions.filter((c) => c === `repos/acme/evals/pulls/comments/4/reactions ${eyes}`).length === 1, { botReactions, rest: restState.reactions });
+ok("a review gets no reaction, and that is said", !botReactions.some((c) => /reviews|\/3\//.test(c)) && logs.some((l) => /no 👀 on .*pullrequestreview-3: GitHub has no reactions on a review/.test(l)), logs);
+ok("nothing reacted for the skipped tags (edit, own bot, own login, foreign team)", botReactions.length === 2 && restState.reactions.length === 1, { botReactions, rest: restState.reactions });
+deliver("issues", { action: "opened", repository: repo, issue: { id: 777, number: 9, body: "@acme/pm please triage", user: { login: "caffeinum" }, html_url: "https://github.com/acme/evals/issues/9" } });
+await drained();
+ok("an issue body tag → issues/{number}/reactions", await until(() => restState.reactions.includes(`repos/acme/evals/issues/9/reactions ${eyes}`), 2_000), restState.reactions);
+const R2 = await import("../src/github-react.ts");
+const before10 = restState.reactions.length;
+await R2.reactToTag({ tag: "is:acme/evals#9/pm", kind: "is", ref: 9, repo: "acme/evals", number: 9, url: "u" }, "pm", { log, rest: () => fakeRest });
+ok("once per comment + team: the same tag again makes no call", restState.reactions.length === before10);
+restState.failReact = true;
+const sentBefore = sent.length;
+deliver("issue_comment", { action: "created", repository: repo, issue: { number: 5, pull_request: {} }, comment: comment(30, "@acme/pm look", "caffeinum") });
+await drained();
+await until(() => sent.length > sentBefore, 2_000);
+await new Promise((r) => setTimeout(r, 200));
+ok("a failed reaction: the DM still goes, the failure is said once", sent.some((x) => x.agent === "pm" && x.text.endsWith("#issuecomment-30")) && logs.filter((l) => /👀 on .*issuecomment-30 as the operator's gh FAILED: .*HTTP 403/.test(l)).length === 1, logs);
+restState.failReact = false;
+C.react({ positionals: ["off"] }, out);
+ok("react off is recorded", A.readConfig().react === false);
+const calls = botReactions.length + restState.reactions.length;
+deliver("issue_comment", { action: "created", repository: repo, issue: { number: 5, pull_request: {} }, comment: comment(31, "@acme/evals-intern with reactions off", "caffeinum") });
+await drained();
+await until(() => sent.some((x) => x.text.endsWith("#issuecomment-31")), 2_000);
+await new Promise((r) => setTimeout(r, 200));
+ok("off: the DM goes, no reaction call", sent.some((x) => x.text.endsWith("#issuecomment-31")) && botReactions.length + restState.reactions.length === calls);
+C.react({ positionals: ["on"] }, out);
+ok("react on removes the key (default on)", A.readConfig().react === undefined);
+lines.length = 0;
+C.react({ positionals: ["status"] }, out);
+ok("react status says on", lines.some((l) => l.startsWith("on: a delivered team tag puts 👀")), lines);
+
 // ── 6. one seen set with the poller ──
 const store = R.readStore();
 ok("the pushed ids are in the poller's seen set", ["ic:2/evals-intern", "rv:3/evals-intern", "rc:4/evals-intern", "rc:4/pm"].every((id) => store.teams?.seen.includes(id)), store.teams?.seen);
@@ -204,6 +256,7 @@ const sweepDeps = {
   machineOf: () => "here",
   log,
   checkout: () => undefined,
+  http: fakeHttp,
 };
 const sweep = async () => void (await R.githubSweep(sweepDeps));
 /** Move the fake clock, then let the forwarder write a heartbeat at the new time (it beats every 100 ms). */
@@ -223,6 +276,7 @@ deliver("issue_comment", { action: "created", repository: repo, issue: { number:
 await drained();
 await new Promise((r) => setTimeout(r, 200));
 ok("a later push does not resend what the poll sent", sent.length === before + 1, sent.slice(before));
+ok("a tag found by the poll reacts after its outbox send, once (the later push adds none)", botReactions.filter((c) => c.startsWith("POST /repos/acme/evals/issues/comments/20/reactions BOT_TOKEN")).length === 1, botReactions);
 
 // ── 7. cadence follows health; gh exiting falls back to polling ──
 ok("while up, the keeper said it polls only to reconcile", logs.some((l) => /arrive by webhook push; polling every \d+ min only to reconcile/.test(l)), logs);
@@ -232,7 +286,9 @@ await sweep();
 ok("while up, no poll 3 min after the last (the 2-min pace is off)", restState.searches === 0);
 writeFileSync(join(stubDir, "exit"), "");
 ok("gh exiting: the status goes down", await until(() => S.readForwardStatus()?.state === "down"), S.readForwardStatus());
-ok("gh exiting is said once, naming why", logs.filter((l) => /webhook forwarder DOWN: gh webhook forward exited \(exit 1\).*1006/.test(l)).length === 1, logs);
+ok("gh exiting is said once, naming why", logs.filter((l) => /webhook forwarder DOWN: gh webhook forward exited \(exit 1\): error receiving json event: websocket: close 1006 \(abnormal closure\): unexpected EOF;/.test(l)).length === 1, logs);
+ok("…as gh's error line, not its flag usage", !logs.some((l) => /--secret string|Usage:|Flags:/.test(l)), logs.filter((l) => /DOWN/.test(l)));
+ok("ghExitReason without an Error: line keeps the last non-usage lines", F.ghExitReason("boom: dial tcp: i/o timeout\nUsage:\n  -S, --secret string  x") === "boom: dial tcp: i/o timeout");
 await sweep();
 ok("down: the keeper polls again at the 2-min pace, and says so", restState.searches > 0 && logs.some((l) => /no webhook forwarder streams acme — team tags are polled every 2 min/.test(l)), { searches: restState.searches });
 ok("gh is started again with backoff and comes back up", await until(() => runs().length >= 2 && S.readForwardStatus()?.state === "up"), runs().length);

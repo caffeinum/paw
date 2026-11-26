@@ -30,7 +30,9 @@ import { createInterface } from "node:readline";
 import { readConfig, type GithubConfig } from "./github-app.ts";
 import { writeForwardStatus, type ForwardState, type ForwardStatus } from "./github-forward-status.ts";
 import { hostedSeats, prKey, readStore, teamSeats, updateStore, type PrKey } from "./github-relay.ts";
-import { LIST_EVERY_MS, listTeams, mentionText, SEEN_MAX, seenId, taggedSlugs, type Rest, type Team } from "./github-teams.ts";
+import { LIST_EVERY_MS, listTeams, mentionText, SEEN_MAX, seenId, taggedSlugs, type Rest, type TagKind, type Team } from "./github-teams.ts";
+import { reactToTag, type ReactTarget } from "./github-react.ts";
+import type { Http } from "./github-app.ts";
 
 export const FORWARD_EVENTS = ["issue_comment", "pull_request_review", "pull_request_review_comment", "issues", "pull_request"];
 export const RECEIVER_PATH = "/github";
@@ -70,6 +72,9 @@ export interface Tag {
   id: string;
   /** The id the poller wrote before 2026-11-25, when the payload has it (a PR body's issue id it has not). */
   legacy?: string;
+  kind: TagKind;
+  /** The comment/review id, or the issue number for a body (the reaction's target). */
+  ref: number;
   slug: string;
   repo: string;
   number: number;
@@ -92,8 +97,7 @@ export function tagsOf(event: string, p: Record<string, unknown>, org: string): 
   const repo = (p.repository as { full_name?: string } | undefined)?.full_name;
   const action = p.action as string | undefined;
   if (!repo) return { tags: [] };
-  type Kind = "ic" | "rc" | "rv" | "is";
-  const pick = (): { thing?: Bodyish; kind?: Kind; number?: number; isPr: boolean } => {
+  const pick = (): { thing?: Bodyish; kind?: TagKind; number?: number; isPr: boolean } => {
     const issue = p.issue as (Bodyish & { number?: number; pull_request?: unknown }) | undefined;
     const pull = p.pull_request as (Bodyish & { number?: number }) | undefined;
     const edit = action === "created" || action === "edited";
@@ -112,7 +116,7 @@ export function tagsOf(event: string, p: Record<string, unknown>, org: string): 
     const ids = seenId(kind, thing.id!, repo, number, slug);
     // A PR's pull id is not the issue id the poller once keyed its body by: no legacy id for it.
     const legacy = event === "pull_request" ? undefined : ids.legacy;
-    return { id: ids.id, ...(legacy ? { legacy } : {}), slug, repo, number, login, url: thing.html_url! };
+    return { id: ids.id, ...(legacy ? { legacy } : {}), kind, ref: kind === "is" ? number : thing.id!, slug, repo, number, login, url: thing.html_url! };
   });
   return { tags, ...(pr ? { pr } : {}) };
 }
@@ -127,6 +131,8 @@ export interface ForwardDeps {
   /** One relay sweep now (PR followers); absent = PR events wait for the keeper. */
   poke?: () => Promise<void>;
   config?: () => GithubConfig;
+  /** The App bot's HTTP for the 👀 reaction (tests replace it). */
+  http?: Http;
   now?: () => number;
   rescanMs?: number;
   beatMs?: number;
@@ -165,19 +171,37 @@ export async function deliverTags(org: string, tags: Tag[], deps: ForwardDeps): 
     if (!claimed) continue;
     deps.log(`github: @${org}/${t.slug} tagged by ${t.login} in ${t.repo}#${t.number} (webhook)`);
     const text = mentionText(t);
+    const react = reactTarget(t);
     for (const seat of e.seats) {
       try {
         await deps.send(seat.space, seat.agent, text);
-        sent++;
-        deps.log(`github: ${t.repo}#${t.number} → ${seat.agent}#${seat.space}`);
       } catch (err) {
         const lastError = (err as Error).message;
-        deps.log(`github: ${t.repo}#${t.number} → ${seat.agent}#${seat.space} failed (${lastError}); queued for the keeper`);
-        updateStore((s) => void s.outbox.push({ space: seat.space, agent: seat.agent, pr: prKey(t.repo, t.number), text, attempts: 1, lastError }));
+        deps.log(`github: ${t.repo}#${t.number} → ${seat.agent}#${seat.space} (tag) failed (${lastError}); queued for the keeper`);
+        updateStore((s) => void s.outbox.push({ space: seat.space, agent: seat.agent, pr: prKey(t.repo, t.number), text, attempts: 1, lastError, react }));
+        continue;
       }
+      sent++;
+      deps.log(`github: ${t.repo}#${t.number} → ${seat.agent}#${seat.space} (tag)`);
+      await reactToTag(react, seat.agent, { log: deps.log, rest: deps.rest, config: () => config, ...(deps.http ? { http: deps.http } : {}), ...(deps.now ? { now: deps.now } : {}) });
     }
   }
   return sent;
+}
+
+const reactTarget = (t: Tag): ReactTarget => ({ tag: t.id, kind: t.kind, ref: t.ref, repo: t.repo, number: t.number, url: t.url });
+
+/**
+ * Why gh exited, in one line. gh-webhook returns every error through cobra, which prints `Error: <why>` and then
+ * the whole flag usage, so the last lines of stderr are usage text: pick the `Error:` line (or else the last line
+ * that is not usage).
+ */
+export function ghExitReason(stderr: string): string {
+  const lines = stderr.split("\n").map((l) => l.trim()).filter(Boolean);
+  const err = lines.filter((l) => /^Error:\s/.test(l)).at(-1);
+  if (err) return err.replace(/^Error:\s*/, "");
+  const usage = /^(Usage:|Flags:|Examples?:|Global Flags:|-\w, --|--\w|forward --events|\$ gh |#)/;
+  return lines.filter((l) => !usage.test(l)).slice(-2).join(" | ");
 }
 
 export interface Receiver {
@@ -311,7 +335,7 @@ export function startGithubForward(space: string, deps: ForwardDeps): () => Prom
     let over = false;
     c.stdout!.resume();
     createInterface({ input: c.stderr! }).on("line", (line) => {
-      tail = `${tail}\n${line}`.slice(-2_000);
+      tail = `${tail}\n${line}`.slice(-8_000);
       if (/Forwarding Webhook events from GitHub/i.test(line)) {
         if (saidStreak) deps.log(`github: webhook forwarder for ${org} is back up after ${fails} failed start(s)`);
         else deps.log(`github: webhook forwarder for ${org} is up (receiver 127.0.0.1:${receiver?.port})`);
@@ -325,7 +349,7 @@ export function startGithubForward(space: string, deps: ForwardDeps): () => Prom
       over = true;
       if (child === c) child = undefined;
       if (ended || !org) return;
-      const detail = tail.trim().split("\n").slice(-3).join(" | ").replace(secret, "<secret>");
+      const detail = ghExitReason(tail).replaceAll(secret, "<secret>");
       fail(`gh webhook forward exited (${why})${detail ? `: ${detail}` : ""}`, CONFLICT.test(tail));
     };
     c.on("error", (e) => end(e.message));

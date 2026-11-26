@@ -27,7 +27,9 @@ import { withFileLock, withFileLockAsync } from "./lock.ts";
 import { personaValue } from "./session.ts";
 import { readTeleported } from "./teleport-plan.ts";
 import { botLogin, readConfig, type GithubConfig } from "./github-app.ts";
-import { BATCH, LIST_EVERY_MS, listTeams, mentionText, pollEvery, pollTeams, SEEN_MAX, teamFor, type Rest, type Team, type TeamTarget, type TeamsState } from "./github-teams.ts";
+import { BATCH, LIST_EVERY_MS, listTeams, mentionText, pollEvery, pollTeams, SEEN_MAX, teamFor, teamMentions as bodyTeamTags, type Rest, type Team, type TeamTarget, type TeamsState } from "./github-teams.ts";
+import { reactToTag, type ReactTarget } from "./github-react.ts";
+import type { Http } from "./github-app.ts";
 import { forwardHealthy } from "./github-forward-status.ts";
 
 /** With a webhook forwarder up, each team is still polled this often, to catch what the stream missed. */
@@ -86,6 +88,8 @@ export interface Outgoing {
   text: string;
   attempts: number;
   lastError?: string;
+  /** A team tag's DM: once it is sent, 👀 on the comment that tagged (src/github-react.ts). */
+  react?: ReactTarget;
 }
 export interface Store {
   watches: Watch[];
@@ -96,6 +100,8 @@ export interface Store {
   said?: string;
   /** Team-mention polling (src/github-teams.ts): the org's teams, per-team cursors, the ids already sent. */
   teams?: TeamsState;
+  /** Tags already given their 👀 (or tried once): {@link seenId} ids. */
+  reacted?: string[];
 }
 
 const emptyStore = (): Store => ({ watches: [], mutes: [], prs: {}, outbox: [] });
@@ -373,6 +379,8 @@ export interface Event {
   text: string;
   /** Who it is from, worded: `caffeinum (member)`. */
   who?: string;
+  /** The `owner/slug` teams its own body tags (a comment or review): a tagged agent gets those as tag DMs. */
+  tags?: string[];
 }
 
 const ASSOC: Record<string, string> = {
@@ -423,7 +431,7 @@ export function timelineEvents(nodes: unknown[]): Event[] {
     if (!n?.id) continue;
     if (n.__typename === "IssueComment") {
       const actor = actorOf(n.author);
-      out.push({ id: n.id, at: String(n.createdAt), kind: "comment", ...(actor ? { actor } : {}), who: whoOf(actor, n.authorAssociation as string), text: `commented:\n${indent(cleanBody(String(n.body ?? "")) || "(empty)")}\n   ${n.url}` });
+      out.push({ id: n.id, at: String(n.createdAt), kind: "comment", tags: bodyTeamTags(n.body as string | null), ...(actor ? { actor } : {}), who: whoOf(actor, n.authorAssociation as string), text: `commented:\n${indent(cleanBody(String(n.body ?? "")) || "(empty)")}\n   ${n.url}` });
     } else if (n.__typename === "PullRequestReview") {
       if (n.state === "PENDING" || !n.submittedAt) continue;
       const actor = actorOf(n.author);
@@ -433,7 +441,7 @@ export function timelineEvents(nodes: unknown[]): Event[] {
       const inline = (c?.nodes ?? []).map((x) => `   · ${x.path}${x.line ?? x.originalLine ? `:${x.line ?? x.originalLine}` : ""} — ${cleanBody(String(x.body ?? ""), 400).replace(/\n+/g, " ")}`);
       const more = (c?.totalCount ?? 0) > inline.length ? [`   · … ${c!.totalCount! - inline.length} more inline`] : [];
       const lines = [`${verb}${body ? ":" : ""}`, ...(body ? [indent(body)] : []), ...inline, ...more, `   ${n.url}`];
-      out.push({ id: n.id, at: String(n.submittedAt), kind: "review", ...(actor ? { actor } : {}), who: whoOf(actor, n.authorAssociation as string), text: lines.join("\n") });
+      out.push({ id: n.id, at: String(n.submittedAt), kind: "review", tags: bodyTeamTags(n.body as string | null), ...(actor ? { actor } : {}), who: whoOf(actor, n.authorAssociation as string), text: lines.join("\n") });
     } else if (n.__typename === "MergedEvent" || n.__typename === "ClosedEvent" || n.__typename === "ReopenedEvent") {
       const actor = actorOf(n.actor);
       const kind = n.__typename === "MergedEvent" ? "merged" : n.__typename === "ClosedEvent" ? "closed" : "reopened";
@@ -500,6 +508,8 @@ export interface SweepDeps {
   rest?: Rest;
   /** The machine's GitHub config (org, Apps); tests replace it. */
   config?: () => GithubConfig;
+  /** The App bot's HTTP for the 👀 on a tag (tests replace it). */
+  http?: Http;
   now?: () => number;
 }
 
@@ -653,6 +663,7 @@ async function sweep(deps: SweepDeps): Promise<SweepResult> {
     }
 
     const queued: Outgoing[] = [];
+    const tagged = taggedBy(deps, store, seats);
     const nextPrs: Record<PrKey, PrState> = {};
     const ended = new Set<PrKey>();
     for (const key of fresh) {
@@ -681,7 +692,8 @@ async function sweep(deps: SweepDeps): Promise<SweepResult> {
       const step = detail ? advance(prev, detail) : { events: [], cursor: prev.cursor, seen: prev.seen, ...(prev.ci ? { ci: prev.ci } : {}) };
       const next: PrState = { url: light.url, title: light.title, state: light.state, updatedAt: light.updatedAt, cursor: step.cursor, seen: step.seen, ...(step.ci ? { ci: step.ci } : {}), subs: followers };
       for (const sub of followers) {
-        const mine = step.events.filter((e) => !(sub.login && e.actor && e.actor.login.toLowerCase() === sub.login.toLowerCase()));
+        const tag = tagged(sub.agent);
+        const mine = step.events.filter((e) => !(sub.login && e.actor && e.actor.login.toLowerCase() === sub.login.toLowerCase()) && !(tag && tag.covers(e)));
         if (mine.length) queued.push({ space: sub.space, agent: sub.agent, pr: key, text: relayText({ key, title: next.title, url: next.url }, sub, mine, found.viewer), attempts: 0 });
       }
       if (!open) {
@@ -715,6 +727,33 @@ async function sweep(deps: SweepDeps): Promise<SweepResult> {
   result.sent = flushed.sent;
   result.failed = flushed.failed;
   return result;
+}
+
+/**
+ * A comment or review whose body tags an agent's team reaches it as a tag DM (src/github-forward.ts by push,
+ * {@link teamMentions} by poll); the follower DM leaves it out, so one comment is one DM (evals#2029, 2026-11-25:
+ * "@firegoat-ai/ux nice, merge it" came as the tag AND inside the follower DM). The tag path skips the agent's own
+ * logins, so an event by one of those stays in the follower DM. No org or no team for the agent → nothing dropped.
+ */
+function taggedBy(deps: SweepDeps, store: Store, seats: Seat[]): (agent: string) => { covers: (e: Event) => boolean } | undefined {
+  let config: GithubConfig;
+  try {
+    config = (deps.config ?? readConfig)();
+  } catch {
+    return () => undefined; // teamMentions says the config problem
+  }
+  const org = config.org;
+  const st = store.teams;
+  if (!org || st?.org !== org) return () => undefined;
+  const bySlug = teamSeats(seats, st.teams, config);
+  return (agent) => {
+    const slug = teamFor(agent, st.teams)?.slug;
+    const e = slug ? bySlug.get(slug) : undefined;
+    if (!slug || !e) return undefined;
+    const tag = `${org}/${slug}`.toLowerCase();
+    const self = new Set(e.target.self.map((s) => s.toLowerCase()));
+    return { covers: (ev) => !!ev.tags?.includes(tag) && !!ev.actor && !self.has(ev.actor.login.toLowerCase()) };
+  };
 }
 
 /** Each team in `teams` that stands for a hosted agent: its poll target (with the agent's own logins) and its seats. */
@@ -795,7 +834,7 @@ async function teamMentions(deps: SweepDeps, rest: Rest, seats: Seat[], said: st
     const claimed = new Set((s.teams?.org === org ? s.teams.seen : []).filter((id) => !before.has(id)));
     const found = polled.found.filter((m) => !claimed.has(m.id));
     const queued: Outgoing[] = found.flatMap((m) =>
-      bySlug.get(m.slug)!.seats.map((seat) => ({ space: seat.space, agent: seat.agent, pr: prKey(m.repo, m.number), text: mentionText(m), attempts: 0 })),
+      bySlug.get(m.slug)!.seats.map((seat) => ({ space: seat.space, agent: seat.agent, pr: prKey(m.repo, m.number), text: mentionText(m), attempts: 0, react: { tag: m.id, kind: m.kind, ref: m.ref, repo: m.repo, number: m.number, url: m.url } })),
     );
     for (const m of found) deps.log(`github: @${org}/${m.slug} tagged by ${m.login} in ${m.repo}#${m.number} (found by the poll)`);
     const seen = [...new Set([...polled.seen, ...claimed])].slice(-SEEN_MAX);
@@ -808,7 +847,7 @@ async function teamMentions(deps: SweepDeps, rest: Rest, seats: Seat[], said: st
 /** Send every queued DM; a failure stays queued with its error, and is dropped after MAX_ATTEMPTS.
  *  Only a sweep calls this (under the sweep lock), and only it removes entries, so the first `n` entries
  *  are still the ones it read when it writes back. */
-export async function flushOutbox(deps: Pick<SweepDeps, "send" | "log">): Promise<{ sent: number; failed: number }> {
+export async function flushOutbox(deps: Pick<SweepDeps, "send" | "log" | "rest" | "config" | "http" | "now">): Promise<{ sent: number; failed: number }> {
   const out = readStore().outbox;
   let sent = 0;
   let failed = 0;
@@ -816,8 +855,6 @@ export async function flushOutbox(deps: Pick<SweepDeps, "send" | "log">): Promis
   for (const o of out) {
     try {
       await deps.send(o.space, o.agent, o.text);
-      sent++;
-      deps.log(`github: ${o.pr} → ${o.agent}#${o.space}`);
     } catch (e) {
       failed++;
       const attempts = o.attempts + 1;
@@ -827,6 +864,13 @@ export async function flushOutbox(deps: Pick<SweepDeps, "send" | "log">): Promis
         deps.log(`github: ${o.pr} → ${o.agent}#${o.space} failed (${lastError}); again next tick`);
         kept.push({ ...o, attempts, lastError });
       }
+      continue;
+    }
+    sent++;
+    deps.log(`github: ${o.pr} → ${o.agent}#${o.space}${o.react ? " (tag)" : ""}`);
+    if (o.react) {
+      const rest = deps.rest;
+      await reactToTag(o.react, o.agent, { log: deps.log, ...(rest ? { rest: () => rest } : {}), ...(deps.config ? { config: deps.config } : {}), ...(deps.http ? { http: deps.http } : {}), ...(deps.now ? { now: deps.now } : {}) });
     }
   }
   if (out.length) updateStore((s) => void (s.outbox = [...kept, ...s.outbox.slice(out.length)]));

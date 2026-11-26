@@ -15,7 +15,9 @@
  *   7. a failed send stays queued and goes out next tick; dropped after MAX_ATTEMPTS;
  *   8. a mute silences one follower; a merge reaches the rest (no separate "closed"), then the PR, its
  *      watches and mutes are gone;
- *   9. a GitHub failure is logged once while unchanged; two sweeps at once → the second is a no-op.
+ *   9. a GitHub failure is logged once while unchanged; two sweeps at once → the second is a no-op;
+ *  4b. a comment that tags a follower's team reaches it as the tag DM only: the follower DM leaves it out
+ *      (evals#2029, 2026-11-25: one comment came twice), other followers and other comments unchanged.
  * Run: pnpm check:github-relay
  */
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
@@ -191,6 +193,22 @@ ok("old comments stay unsent", !f.includes("old news"));
 ok("why + how to stop", f.includes("because your folder has its branch checked out") && f.includes("paw github unwatch o/r#7") && w.includes("you ran `paw github watch`"));
 ok("a follower with no github: login is told the shared account is paw's reader", w.includes("[op is also the account paw reads GitHub with") && !f.includes("[op is also"), w);
 ok("the outbox is empty after a good send", R.readStore().outbox.length === 0);
+
+// ── 4b. a tag is one DM, not also a follower DM ──
+const A = await import("../src/github-app.ts");
+A.updateConfig((c) => void (c.org = "o"));
+R.updateStore((s) => void (s.teams = { org: "o", teams: [{ name: "watcher", slug: "watcher" }], listedAt: clock, lastPoll: clock, next: 0, cursors: {}, seen: [] }));
+pr7.timeline.push(comment("c4b", "alice", "@o/watcher nice, merge it"));
+touch(pr7);
+await sweep();
+ok("the tagged follower gets no follower DM for the comment that tagged it", to("watcher").length === 0, to("watcher").map((x) => x.text).join("|"));
+ok("another follower still gets that comment", (to("fixer")[0]?.text ?? "").includes("@o/watcher nice, merge it"), to("fixer")[0]?.text);
+pr7.timeline.push(comment("c4c", "alice", "cc @O/Watcher again"), comment("c4d", "alice", "and an untagged note"));
+touch(pr7);
+await sweep();
+const w4 = to("watcher")[0]?.text ?? "";
+ok("with a tag and a plain comment, the follower DM carries only the plain one", to("watcher").length === 1 && w4.includes("an untagged note") && !w4.includes("again"), w4);
+A.updateConfig((c) => void delete c.org);
 
 // ── 5. reviews ──
 const started = tick(); // a review begun now, submitted after the next comment

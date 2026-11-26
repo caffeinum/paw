@@ -51,14 +51,16 @@ export interface GithubConfig {
   apps: Record<string, AppConfig>;
   /** `paw github forward on`: this machine runs `gh webhook forward` for `org`, in the mailbox of `space`. */
   forward?: { space: string };
+  /** `paw github react off`: no 👀 on the comment a delivered team tag came from (default on). */
+  react?: boolean;
 }
 
 export function readConfig(): GithubConfig {
   const p = configPath();
   if (!existsSync(p)) return { apps: {} };
   const c = JSON.parse(readFileSync(p, "utf8")) as Partial<GithubConfig>;
-  if (typeof c.apps !== "object" || !c.apps || (c.org !== undefined && typeof c.org !== "string") || (c.forward !== undefined && typeof c.forward?.space !== "string"))
-    throw new Error(`paw github: ${p} is not a {org?, apps, forward?} config — fix or remove it`);
+  if (typeof c.apps !== "object" || !c.apps || (c.org !== undefined && typeof c.org !== "string") || (c.forward !== undefined && typeof c.forward?.space !== "string") || (c.react !== undefined && typeof c.react !== "boolean"))
+    throw new Error(`paw github: ${p} is not a {org?, apps, forward?, react?} config — fix or remove it`);
   return c as GithubConfig;
 }
 

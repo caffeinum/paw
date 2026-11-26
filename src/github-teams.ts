@@ -135,8 +135,13 @@ export interface TeamsState {
   seen: string[];
 }
 
+export type TagKind = "ic" | "rc" | "rv" | "is";
+
 export interface Mention {
   id: string;
+  /** What was tagged (for the 👀 reaction, src/github-react.ts): comment/review id, or the issue number for a body. */
+  kind: TagKind;
+  ref: number;
   slug: string;
   repo: string;
   number: number;
@@ -166,7 +171,7 @@ interface Commentish {
  * id, search by its issue id). `legacy` is the id written before 2026-11-25 (`<kind>:<id>`, no team), still
  * honoured so an upgrade resends nothing.
  */
-export function seenId(kind: "ic" | "rc" | "rv" | "is", id: number, repo: string, number: number, slug: string): { id: string; legacy: string } {
+export function seenId(kind: TagKind, id: number, repo: string, number: number, slug: string): { id: string; legacy: string } {
   return { id: kind === "is" ? `is:${repo}#${number}/${slug}` : `${kind}:${id}/${slug}`, legacy: `${kind}:${id}` };
 }
 
@@ -202,15 +207,16 @@ export async function pollTeams(rest: Rest, org: string, targets: TeamTarget[], 
       continue;
     }
     const self = new Set(t.self.map((s) => s.toLowerCase()));
-    const take = (kind: "ic" | "rc" | "rv" | "is", repo: string, number: number, c: Commentish, at: string | undefined) => {
+    const take = (kind: TagKind, repo: string, number: number, c: Commentish, at: string | undefined) => {
       if (typeof c.id !== "number" || !c.html_url || !at || at < cur.since || !mentions(c.body, org, t.slug)) return;
       const { id, legacy } = seenId(kind, c.id, repo, number, t.slug);
       if (seen.has(id) || seen.has(legacy)) return;
       seen.add(id);
       const login = c.user?.login;
-      if (!login) return void found.push({ id, slug: t.slug, repo, number, login: "a deleted account", url: c.html_url });
+      const ref = kind === "is" ? number : c.id;
+      if (!login) return void found.push({ id, kind, ref, slug: t.slug, repo, number, login: "a deleted account", url: c.html_url });
       if (self.has(login.toLowerCase())) return;
-      found.push({ id, slug: t.slug, repo, number, login, url: c.html_url });
+      found.push({ id, kind, ref, slug: t.slug, repo, number, login, url: c.html_url });
     };
     let failed = false;
     for (const it of items) {
@@ -245,6 +251,13 @@ export function taggedSlugs(body: string | null | undefined, org: string): strin
   return [...new Set([...body.matchAll(re)].map((m) => m[1]!.toLowerCase()))];
 }
 
-export function mentionText(m: Mention): string {
+/** Every `@<owner>/<slug>` a body tags, lowercased `owner/slug` (the relay drops a tag's comment from a follower DM). */
+export function teamMentions(body: string | null | undefined): string[] {
+  if (!body) return [];
+  const re = /(?:^|[^A-Za-z0-9_/-])@([A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)\/([A-Za-z0-9_-]+)(?![A-Za-z0-9_-])/g;
+  return [...new Set([...body.matchAll(re)].map((m) => `${m[1]}/${m[2]}`.toLowerCase()))];
+}
+
+export function mentionText(m: Pick<Mention, "login" | "repo" | "number" | "url">): string {
   return `you were tagged by ${m.login} in ${m.repo}#${m.number}\n${m.url}`;
 }
